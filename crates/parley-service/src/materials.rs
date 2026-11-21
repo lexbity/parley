@@ -3,7 +3,7 @@
 //! The public handlers do no policy work themselves: they authorize the local
 //! owner, then execute the corresponding transaction in the workspace.
 
-use super::{ApiState, Workspace, WorkspaceError, authorized, digest, new_id, now_utc};
+use super::{AppState, Workspace, WorkspaceError, authenticate, digest, new_id, now_utc};
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(super) fn routes() -> Router<ApiState> {
+pub(super) fn routes() -> Router<AppState> {
     Router::new()
         .route(
             "/api/v1/opportunities",
@@ -86,6 +86,7 @@ struct InterestInput {
     side: String,
     statement: String,
     knowledge_kind: String,
+    check_suggestion: Option<String>,
     claim_id: Option<String>,
     claim_revision: Option<i64>,
 }
@@ -166,12 +167,12 @@ struct ReadyInput {
 }
 
 async fn create_opportunity(
-    State(state): State<ApiState>,
+    State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<OpportunityCreate>,
 ) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state.workspace.create_opportunity(&input).await {
         Ok(value) => (StatusCode::CREATED, Json(value)).into_response(),
@@ -180,11 +181,11 @@ async fn create_opportunity(
 }
 
 async fn list_opportunities(
-    State(state): State<ApiState>,
+    State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state.workspace.list_opportunities().await {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
@@ -193,12 +194,12 @@ async fn list_opportunities(
 }
 
 async fn get_opportunity(
-    State(state): State<ApiState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state.workspace.get_opportunity(&id).await {
         Ok(Some(value)) => (StatusCode::OK, Json(value)).into_response(),
@@ -208,13 +209,13 @@ async fn get_opportunity(
 }
 
 async fn add_participant(
-    State(state): State<ApiState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(input): Json<ParticipantInput>,
 ) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state.workspace.add_participant(&id, &input).await {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
@@ -223,12 +224,12 @@ async fn add_participant(
 }
 
 async fn link_source(
-    State(state): State<ApiState>,
+    State(state): State<AppState>,
     Path((id, source_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state.workspace.set_source_link(&id, &source_id, true).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -237,12 +238,12 @@ async fn link_source(
 }
 
 async fn unlink_source(
-    State(state): State<ApiState>,
+    State(state): State<AppState>,
     Path((id, source_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state
         .workspace
@@ -255,13 +256,13 @@ async fn unlink_source(
 }
 
 async fn add_interest(
-    State(state): State<ApiState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(input): Json<InterestInput>,
 ) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state.workspace.add_interest(&id, &input).await {
         Ok(value) => (StatusCode::CREATED, Json(value)).into_response(),
@@ -270,13 +271,13 @@ async fn add_interest(
 }
 
 async fn save_exchange(
-    State(state): State<ApiState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(input): Json<ExchangeInput>,
 ) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state.workspace.save_exchange(&id, &input).await {
         Ok(value) => (StatusCode::CREATED, Json(value)).into_response(),
@@ -285,12 +286,12 @@ async fn save_exchange(
 }
 
 async fn attest_exchange(
-    State(state): State<ApiState>,
+    State(state): State<AppState>,
     Path((id, recipient_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state.workspace.attest_exchange(&id, &recipient_id).await {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
@@ -299,12 +300,12 @@ async fn attest_exchange(
 }
 
 async fn create_template(
-    State(state): State<ApiState>,
+    State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<TemplateInput>,
 ) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state.workspace.create_template(&input).await {
         Ok(value) => (StatusCode::CREATED, Json(value)).into_response(),
@@ -312,9 +313,9 @@ async fn create_template(
     }
 }
 
-async fn list_templates(State(state): State<ApiState>, headers: HeaderMap) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+async fn list_templates(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match sqlx::query_as::<_, (String,String,i64,String,String)>("SELECT id,family_id,version_no,status,body FROM template_version ORDER BY created_at DESC,id").fetch_all(state.workspace.pool()).await {
         Ok(rows) => (StatusCode::OK, Json(rows.into_iter().map(|(id,family_id,version,status,body)| json!({"id":id,"family_id":family_id,"version":version,"status":status,"body":body})).collect::<Vec<_>>())).into_response(),
@@ -323,12 +324,12 @@ async fn list_templates(State(state): State<ApiState>, headers: HeaderMap) -> im
 }
 
 async fn approve_template(
-    State(state): State<ApiState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state
         .workspace
@@ -341,12 +342,12 @@ async fn approve_template(
 }
 
 async fn activate_template(
-    State(state): State<ApiState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state
         .workspace
@@ -359,13 +360,13 @@ async fn activate_template(
 }
 
 async fn create_material(
-    State(state): State<ApiState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(input): Json<MaterialInput>,
 ) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state.workspace.create_material(&id, &input, None).await {
         Ok(value) => (StatusCode::CREATED, Json(value)).into_response(),
@@ -374,13 +375,13 @@ async fn create_material(
 }
 
 async fn edit_material(
-    State(state): State<ApiState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(input): Json<MaterialInput>,
 ) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state.workspace.create_material("", &input, Some(&id)).await {
         Ok(value) => (StatusCode::CREATED, Json(value)).into_response(),
@@ -389,12 +390,12 @@ async fn edit_material(
 }
 
 async fn list_materials(
-    State(state): State<ApiState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state.workspace.list_materials(&id).await {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
@@ -403,12 +404,12 @@ async fn list_materials(
 }
 
 async fn get_material(
-    State(state): State<ApiState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state.workspace.get_material(&id).await {
         Ok(Some(value)) => (StatusCode::OK, Json(value)).into_response(),
@@ -418,13 +419,13 @@ async fn get_material(
 }
 
 async fn approve_material(
-    State(state): State<ApiState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(input): Json<ApprovalInput>,
 ) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state
         .workspace
@@ -437,12 +438,12 @@ async fn approve_material(
 }
 
 async fn release_material(
-    State(state): State<ApiState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state.workspace.release_material(&id).await {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
@@ -451,13 +452,13 @@ async fn release_material(
 }
 
 async fn ack_release(
-    State(state): State<ApiState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(input): Json<ReleaseAckInput>,
 ) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state
         .workspace
@@ -469,9 +470,9 @@ async fn ack_release(
     }
 }
 
-async fn list_outputs(State(state): State<ApiState>, headers: HeaderMap) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+async fn list_outputs(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state.workspace.list_outputs().await {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
@@ -480,13 +481,13 @@ async fn list_outputs(State(state): State<ApiState>, headers: HeaderMap) -> impl
 }
 
 async fn mark_resource_ready(
-    State(state): State<ApiState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(input): Json<ReadyInput>,
 ) -> impl IntoResponse {
-    if let Err(error) = authorized(&headers, &state) {
-        return error_response(error.0, "unauthorized", error.1);
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
     }
     match state
         .workspace
@@ -511,6 +512,8 @@ fn workspace_error(error: WorkspaceError) -> axum::response::Response {
         WorkspaceError::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, "storage_error"),
         WorkspaceError::Invalid(_) => (StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"),
         WorkspaceError::IdempotencyConflict => (StatusCode::CONFLICT, "idempotency_conflict"),
+        WorkspaceError::NotFound => (StatusCode::NOT_FOUND, "not_found"),
+        WorkspaceError::StaleRevision => (StatusCode::CONFLICT, "stale_revision"),
     };
     error_response(status, code, &error.to_string())
 }
@@ -588,7 +591,7 @@ impl Workspace {
         .bind(&id)
         .fetch_all(&self.pool)
         .await?;
-        let source_variant_ids = sqlx::query_scalar("SELECT source_variant_id FROM opportunity_source WHERE opportunity_id=? ORDER BY source_variant_id").bind(&id).fetch_all(&self.pool).await?;
+        let source_variant_ids = sqlx::query_scalar("SELECT source_variant_id FROM source_opportunity_link WHERE opportunity_id=? ORDER BY source_variant_id").bind(&id).fetch_all(&self.pool).await?;
         let material_ids = sqlx::query_scalar(
             "SELECT id FROM material WHERE opportunity_id=? ORDER BY updated_at DESC,id",
         )
@@ -683,16 +686,8 @@ impl Workspace {
             ));
         }
         if link {
-            sqlx::query("INSERT INTO opportunity_source(opportunity_id,source_variant_id,created_at) VALUES(?,?,?) ON CONFLICT DO NOTHING").bind(opportunity_id).bind(source_variant_id).bind(now_utc()).execute(&mut *tx).await?;
             sqlx::query("INSERT INTO source_opportunity_link(source_variant_id,opportunity_id,created_at) VALUES(?,?,?) ON CONFLICT DO NOTHING").bind(source_variant_id).bind(opportunity_id).bind(now_utc()).execute(&mut *tx).await?;
         } else {
-            sqlx::query(
-                "DELETE FROM opportunity_source WHERE opportunity_id=? AND source_variant_id=?",
-            )
-            .bind(opportunity_id)
-            .bind(source_variant_id)
-            .execute(&mut *tx)
-            .await?;
             sqlx::query("DELETE FROM source_opportunity_link WHERE opportunity_id=? AND source_variant_id=?").bind(opportunity_id).bind(source_variant_id).execute(&mut *tx).await?;
         }
         let rev = bump_opportunity(&mut tx, opportunity_id, &now_utc()).await?;
@@ -725,6 +720,11 @@ impl Workspace {
             )
             || input.statement.trim().is_empty()
             || input.statement.len() > 3000
+            || (input.knowledge_kind == "hypothesis"
+                && input
+                    .check_suggestion
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty()))
         {
             return Err(WorkspaceError::Invalid(
                 "interest requires side, knowledge kind and a non-empty statement".into(),
@@ -771,8 +771,8 @@ impl Workspace {
                 "source-backed interests cannot be labelled as unverified hypotheses".into(),
             ));
         }
-        sqlx::query("INSERT INTO opportunity_interest(id,opportunity_id,party_id,side,statement,knowledge_kind,provenance_kind,claim_id,claim_revision,revision,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,1,'active',?)")
-            .bind(&id).bind(opportunity_id).bind(&input.recipient_id).bind(&input.side).bind(input.statement.trim()).bind(&input.knowledge_kind).bind(if source_backed { "source_claim" } else { "owner_report" }).bind(input.claim_id.as_deref()).bind(input.claim_revision).bind(&now).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO opportunity_interest(id,opportunity_id,party_id,side,statement,knowledge_kind,check_suggestion,provenance_kind,claim_id,claim_revision,revision,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,1,'active',?)")
+            .bind(&id).bind(opportunity_id).bind(&input.recipient_id).bind(&input.side).bind(input.statement.trim()).bind(&input.knowledge_kind).bind(input.check_suggestion.as_deref()).bind(if source_backed { "source_claim" } else { "owner_report" }).bind(input.claim_id.as_deref()).bind(input.claim_revision).bind(&now).execute(&mut *tx).await?;
         let rev = bump_opportunity(&mut tx, opportunity_id, &now).await?;
         event(
             &mut tx,
@@ -780,12 +780,12 @@ impl Workspace {
             opportunity_id,
             rev,
             "opportunity.interest_added",
-            json!({"interest_id":id,"recipient_id":input.recipient_id,"side":input.side,"knowledge_kind":input.knowledge_kind}),
+            json!({"interest_id":id,"recipient_id":input.recipient_id,"side":input.side,"knowledge_kind":input.knowledge_kind,"check_suggestion":input.check_suggestion}),
         )
         .await?;
         tx.commit().await?;
         Ok(
-            json!({"id":id,"opportunity_id":opportunity_id,"recipient_id":input.recipient_id,"side":input.side,"statement":input.statement,"knowledge_kind":input.knowledge_kind,"revision":1,"status":"active"}),
+            json!({"id":id,"opportunity_id":opportunity_id,"recipient_id":input.recipient_id,"side":input.side,"statement":input.statement,"knowledge_kind":input.knowledge_kind,"check_suggestion":input.check_suggestion,"revision":1,"status":"active"}),
         )
     }
 

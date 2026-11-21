@@ -6,7 +6,7 @@ test('s03_create_opportunity_for_selected_participant_without_creating_a_send', 
   await page.goto('/');
   const name = `Dana Lee ${randomUUID()}`;
   await page.getByRole('button', { name: 'Leads' }).click();
-  await page.getByLabel('Name').fill(name);
+  await page.locator('section[aria-labelledby="leads-heading"] input').fill(name);
   await page.getByRole('button', { name: 'Add lead' }).click();
   await expect(page.getByRole('status')).toContainText('No opportunity or outreach was created');
 

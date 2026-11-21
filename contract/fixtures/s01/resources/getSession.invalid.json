@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/Error","body":{"error":{"code":"SESSION_REQUIRED","message":"Sign in to the local workspace","details":[]}}}

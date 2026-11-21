@@ -2,6 +2,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE workspace_meta (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   schema_version INTEGER NOT NULL,
+  workspace_id TEXT NOT NULL,
   epoch TEXT NOT NULL,
   revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
   created_at TEXT NOT NULL
@@ -16,6 +17,7 @@ CREATE TABLE owner_profile (
 );
 CREATE TABLE resource (
   id TEXT PRIMARY KEY,
+  owner_id INTEGER NOT NULL DEFAULT 1 REFERENCES owner_profile(id),
   kind TEXT NOT NULL CHECK (kind IN ('gift','proof','artifact')),
   title TEXT NOT NULL,
   body_json TEXT NOT NULL,
@@ -56,8 +58,8 @@ CREATE TRIGGER event_no_update BEFORE UPDATE ON event
 BEGIN SELECT RAISE(ABORT, 'event log is append-only'); END;
 CREATE TRIGGER event_no_delete BEFORE DELETE ON event
 BEGIN SELECT RAISE(ABORT, 'event log is append-only'); END;
-INSERT INTO workspace_meta(singleton,schema_version,epoch,revision,created_at)
-VALUES(1,1,'initial',0,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+INSERT INTO workspace_meta(singleton,schema_version,workspace_id,epoch,revision,created_at)
+VALUES(1,1,'initial','initial',0,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 INSERT INTO owner_profile(id,display_name,timezone,pack_id,pack_version,settings_json)
 VALUES(1,'Owner','UTC','job_search','1.0.0','{}');
 INSERT INTO board_list(id,title,position) VALUES('inbox','Inbox',1024);

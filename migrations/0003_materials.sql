@@ -42,6 +42,7 @@ CREATE TABLE opportunity_interest (
   side TEXT NOT NULL CHECK(side IN ('them','me')),
   statement TEXT NOT NULL CHECK(length(trim(statement)) > 0),
   knowledge_kind TEXT NOT NULL CHECK(knowledge_kind IN ('observation','hypothesis','owner_report')),
+  check_suggestion TEXT,
   provenance_kind TEXT NOT NULL CHECK(provenance_kind IN ('owner_report','source_claim')),
   claim_id TEXT,
   claim_revision INTEGER,
@@ -51,7 +52,9 @@ CREATE TABLE opportunity_interest (
   FOREIGN KEY(opportunity_id, party_id) REFERENCES opportunity_party(opportunity_id, party_id) ON DELETE RESTRICT,
   FOREIGN KEY(claim_id, claim_revision) REFERENCES claim_revision(claim_id, revision),
   CHECK((provenance_kind='source_claim' AND claim_id IS NOT NULL AND claim_revision IS NOT NULL)
-     OR (provenance_kind='owner_report' AND claim_id IS NULL AND claim_revision IS NULL))
+     OR (provenance_kind='owner_report' AND claim_id IS NULL AND claim_revision IS NULL)),
+  CHECK(knowledge_kind <> 'hypothesis' OR check_suggestion IS NOT NULL),
+  CHECK(side <> 'me' OR knowledge_kind='owner_report')
 );
 CREATE INDEX opportunity_interest_scope ON opportunity_interest(opportunity_id,party_id,side,status);
 CREATE TRIGGER cited_interest_revision_invalidation

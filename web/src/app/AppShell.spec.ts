@@ -1,111 +1,182 @@
+import { mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { flushPromises, mount } from '@vue/test-utils';
+import { flushPromises } from '@vue/test-utils';
+import { parley, type GraphEntity, type Material, type Opportunity, type SavedSource } from '../api/client';
 import AppShell from './AppShell.vue';
 import { tabs } from './tabs';
 
-const api = vi.hoisted(() => ({
-  captureSource: vi.fn(), createEntity: vi.fn(), createResource: vi.fn(),
-  createOpportunity: vi.fn(), listEntities: vi.fn(), listResources: vi.fn(), listSources: vi.fn(),
-  listOpportunities: vi.fn(), listOutputs: vi.fn(), releaseMaterial: vi.fn(), acknowledgeRelease: vi.fn(),
-}));
-vi.mock('../api/client', () => api);
+afterEach(() => vi.restoreAllMocks());
 
-const entity = { id: 'p1', name: 'Dana Lee', kind: 'person', revision: 1 };
-const resource = { id: 'r1', title: 'Walkthrough', kind: 'gift', readiness: 'draft', revision: 1 };
+function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = []): void {
+  vi.spyOn(parley, 'connect').mockResolvedValue();
+  vi.spyOn(parley, 'listResources').mockResolvedValue([]);
+  vi.spyOn(parley, 'listParties').mockResolvedValue(parties);
+  vi.spyOn(parley, 'listSources').mockResolvedValue(sources);
+  vi.spyOn(parley, 'listOpportunities').mockResolvedValue([]);
+  vi.spyOn(parley, 'listOutputs').mockResolvedValue([]);
+}
 
-describe('App shell', () => {
-  afterEach(() => vi.resetAllMocks());
+function leadsSection(wrapper: ReturnType<typeof mount>) {
+  return wrapper.get('section[aria-labelledby="leads-heading"]');
+}
 
-  it('renders the five owner tabs in the mandated APP-01 order', async () => {
-    api.listEntities.mockResolvedValue([entity]);
-    api.listResources.mockResolvedValue([resource]);
-    api.listSources.mockResolvedValue([]);
-    api.listOpportunities.mockResolvedValue([]); api.listOutputs.mockResolvedValue([]);
+describe('AppShell', () => {
+  it('renders the mandated destination set and only the qualified tabs', () => {
+    expect([...tabs]).toEqual(['Resources', 'Leads', 'Queue', 'Output', 'Settings']);
+    stubWorkspace();
     const wrapper = mount(AppShell);
-    await flushPromises();
-    await wrapper.get('select').setValue('proof');
-    await wrapper.get('select').setValue('artifact');
     const labels = wrapper.findAll('nav[aria-label="Main navigation"] button').map((button) => button.text());
-    expect(labels).toEqual([...tabs]);
-    expect(wrapper.text()).toContain('Walkthrough');
+    expect(labels).toEqual(['Resources', 'Leads', 'Queue', 'Output']);
+    expect(labels).not.toContain('Settings');
+    expect(wrapper.get('h1').text()).toBe('Resources');
+    wrapper.unmount();
   });
 
-  it('creates an incomplete resource draft and reports a failed save', async () => {
-    api.listEntities.mockResolvedValue([]); api.listResources.mockResolvedValue([]); api.listSources.mockResolvedValue([]);
-    api.listOpportunities.mockResolvedValue([]); api.listOutputs.mockResolvedValue([]);
-    api.createResource.mockResolvedValue(resource);
-    const wrapper = mount(AppShell); await flushPromises();
-    await wrapper.get('input[placeholder*="onboarding"]').setValue('Walkthrough');
-    await wrapper.get('textarea').setValue('A real walkthrough offer');
-    await wrapper.find('form').trigger('submit'); await flushPromises();
-    expect(api.createResource).toHaveBeenCalledWith(expect.objectContaining({ kind: 'gift', title: 'Walkthrough' }));
-    expect(wrapper.text()).toContain('Draft saved');
-    api.createResource.mockRejectedValueOnce(new Error('disk full'));
-    await wrapper.find('form').trigger('submit'); await flushPromises();
-    expect(wrapper.text()).toContain('disk full');
+  it('keeps the resource editor mounted with its unsent buffer across tab switches', async () => {
+    stubWorkspace();
+    const wrapper = mount(AppShell);
+    await flushPromises();
+    const editorInput = wrapper.get('section[aria-label="Resources workspace"] input');
+    await editorInput.setValue('unsent resource title');
+    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(2)').trigger('click');
+    expect(wrapper.get('h1').text()).toBe('Leads');
+    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(1)').trigger('click');
+    expect((wrapper.get('section[aria-label="Resources workspace"] input').element as HTMLInputElement).value)
+      .toBe('unsent resource title');
+    wrapper.unmount();
   });
 
   it('creates a lead without an opportunity and saves source-only captures', async () => {
-    api.listEntities.mockResolvedValue([]); api.listResources.mockResolvedValue([]); api.listSources.mockResolvedValue([]);
-    api.listOpportunities.mockResolvedValue([]); api.listOutputs.mockResolvedValue([]);
-    api.createEntity.mockResolvedValue(entity);
-    api.captureSource.mockResolvedValue({ content_id: 'c1', variant_id: 'v1', occurrence_id: 'o1', normalized_sha256: 'a', raw_sha256: 'b' });
-    const wrapper = mount(AppShell); await flushPromises();
-    await wrapper.get('nav button:nth-child(2)').trigger('click');
-    await wrapper.get('select').setValue('org');
-    await wrapper.get('select').setValue('person');
-    await wrapper.get('input[required]').setValue('Dana Lee');
-    await wrapper.findAll('form')[0]!.trigger('submit'); await flushPromises();
-    expect(api.createEntity).toHaveBeenCalledWith('person', 'Dana Lee');
+    stubWorkspace([], []);
+    const createEntity = vi.spyOn(parley, 'createEntity')
+      .mockResolvedValue({ id: 'p1', kind: 'person', name: 'Dana Lee', revision: 1 });
+    const saveSource = vi.spyOn(parley, 'saveSource').mockResolvedValue({
+      content_id: 'c1', variant_id: 'v1', occurrence_id: 'o1', normalized_sha256: 'a', raw_sha256: 'b',
+    });
+    const wrapper = mount(AppShell);
+    await flushPromises();
+    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(2)').trigger('click');
+    const leads = leadsSection(wrapper);
+    await leads.get('select').setValue('org');
+    await leads.get('select').setValue('person');
+    await leads.get('input[required]').setValue('Dana Lee');
+    await leads.findAll('form')[0]!.trigger('submit');
+    await flushPromises();
+    expect(createEntity).toHaveBeenCalledWith({ kind: 'person', name: 'Dana Lee' }, expect.any(String));
     expect(wrapper.text()).toContain('No opportunity or outreach was created');
-    const areas = wrapper.findAll('textarea');
+    const areas = leads.findAll('textarea');
     await areas[0]!.setValue('Hiring update with an unresolved Dana mention.');
-    await wrapper.findAll('form')[1]!.trigger('submit'); await flushPromises();
-    expect(api.captureSource).toHaveBeenCalledWith('Hiring update with an unresolved Dana mention.');
+    await leads.findAll('form')[1]!.trigger('submit');
+    await flushPromises();
+    expect(saveSource).toHaveBeenCalledWith({ text: 'Hiring update with an unresolved Dana mention.', title: null, url: null });
     expect(wrapper.text()).toContain('No person was inferred or linked');
+    wrapper.unmount();
   });
 
-  it('shows source and lead failures and retains the other tab destinations', async () => {
-    api.listEntities.mockRejectedValue(new Error('workspace offline'));
-    api.listResources.mockResolvedValue([]); api.listSources.mockResolvedValue([]);
-    api.listOpportunities.mockResolvedValue([]); api.listOutputs.mockResolvedValue([]);
-    const wrapper = mount(AppShell); await flushPromises();
-    expect(wrapper.text()).toContain('workspace offline');
-    await wrapper.get('nav button:nth-child(2)').trigger('click');
-    api.createEntity.mockRejectedValueOnce(new Error('write denied'));
-    await wrapper.get('input[required]').setValue('Noah');
-    await wrapper.findAll('form')[0]!.trigger('submit'); await flushPromises();
-    expect(wrapper.text()).toContain('write denied');
-    api.captureSource.mockRejectedValueOnce(new Error('capture denied'));
-    await wrapper.findAll('textarea')[0]!.setValue('A source');
-    await wrapper.findAll('form')[1]!.trigger('submit'); await flushPromises();
-    expect(wrapper.text()).toContain('capture denied');
-    for (const tab of ['Queue', 'Output']) {
-      const button = wrapper.findAll('nav button').find((candidate) => candidate.text() === tab);
-      expect(button?.attributes('disabled')).toBeUndefined();
-    }
-    expect(wrapper.findAll('nav button').find((candidate) => candidate.text() === 'Settings')?.attributes('disabled')).toBeDefined();
-    expect(wrapper.get('h1').text()).toBe('Leads');
-  });
-
-  it('declares exactly the five top-level destinations from APP-01', () => {
-    expect([...tabs]).toEqual(['Resources', 'Leads', 'Queue', 'Output', 'Settings']);
-  });
-
-  it('creates a selected-participant opportunity and keeps Queue and Output material IDs aligned', async () => {
-    api.listEntities.mockResolvedValue([entity]); api.listResources.mockResolvedValue([]); api.listSources.mockResolvedValue([]);
-    api.listOpportunities.mockResolvedValue([]); api.listOutputs.mockResolvedValue([]);
-    api.createOpportunity.mockResolvedValue({ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: [] });
-    const wrapper = mount(AppShell); await flushPromises();
-    await wrapper.get('nav button:nth-child(3)').trigger('click');
-    await wrapper.get('input[required]').setValue('Onboarding');
+  it('creates a selected-participant opportunity and presents shared Output records', async () => {
+    stubWorkspace([{ id: 'p1', kind: 'person', name: 'Dana Lee', revision: 1 }]);
+    const created: Opportunity = { id: 'o1', title: 'Onboarding exchange', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: ['m1'] };
+    const queued: Material = { id: 'm1', opportunity_id: 'o1', recipient_id: 'p1', recipient_name: 'Dana Lee', kind: 'outreach', version: 1, body: 'Hello Dana.', content_sha256: 'a'.repeat(64), status: 'draft', gate: null };
+    vi.spyOn(parley, 'listOutputs').mockResolvedValue([queued]);
+    const createOpportunity = vi.spyOn(parley, 'createOpportunity').mockResolvedValue(created);
+    const wrapper = mount(AppShell);
+    await flushPromises();
+    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(3)').trigger('click');
+    await wrapper.get('input[maxlength="500"]').setValue('Onboarding exchange');
     await wrapper.get('select[required]').setValue('p1');
-    await wrapper.get('form').trigger('submit'); await flushPromises();
-    expect(api.createOpportunity).toHaveBeenCalledWith('Onboarding', 'p1');
+    await wrapper.get('section[aria-labelledby="queue-heading"] form').trigger('submit');
+    await flushPromises();
+    expect(createOpportunity).toHaveBeenCalledWith('Onboarding exchange', 'p1');
     expect(wrapper.text()).toContain('No message was created or sent');
-    expect(wrapper.text()).toContain('Onboarding');
-    await wrapper.get('nav button:nth-child(4)').trigger('click');
-    expect(wrapper.get('h1').text()).toBe('Output');
-    expect(wrapper.text()).toContain('No materials yet');
+    expect(wrapper.text()).toContain('Onboarding exchange');
+    expect(wrapper.text()).toContain('Dana Lee · v1 · draft');
+    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(4)').trigger('click');
+    expect(wrapper.text()).toContain('Approved materials');
+    expect(wrapper.text()).toContain('Dana Lee · outreach · v1 · draft');
+    wrapper.unmount();
+  });
+
+  it('reports opportunity creation errors and copies a released approved version', async () => {
+    const approved: Material = { id: 'm1', opportunity_id: 'o1', recipient_id: 'p1', recipient_name: 'Dana Lee', kind: 'outreach', version: 1, body: 'Hi Dana.', content_sha256: 'a'.repeat(64), status: 'approved', gate: null };
+    stubWorkspace([{ id: 'p1', kind: 'person', name: 'Dana Lee', revision: 1 }]);
+    vi.spyOn(parley, 'listOutputs').mockResolvedValue([approved]);
+    vi.spyOn(parley, 'createOpportunity').mockRejectedValueOnce(new Error('opportunity denied'));
+    const release = vi.spyOn(parley, 'releaseMaterial').mockResolvedValue({ release_id: 'r1', material_id: 'm1', version: 1, recipient_id: 'p1', body: 'Hi Dana.', content_sha256: approved.content_sha256, issued_at: '2026-11-21T12:00:00Z' });
+    const acknowledge = vi.spyOn(parley, 'acknowledgeRelease').mockResolvedValue();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(globalThis.navigator, 'clipboard', { configurable: true, value: { writeText } });
+    const wrapper = mount(AppShell);
+    await flushPromises();
+    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(3)').trigger('click');
+    await wrapper.get('input[maxlength="500"]').setValue('Onboarding');
+    await wrapper.get('select[required]').setValue('p1');
+    await wrapper.get('section[aria-labelledby="queue-heading"] form').trigger('submit');
+    await flushPromises();
+    expect(wrapper.text()).toContain('opportunity denied');
+    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(4)').trigger('click');
+    await wrapper.findAll('button').find((button) => button.text() === 'Copy approved text')!.trigger('click');
+    await flushPromises();
+    expect(release).toHaveBeenCalledWith('m1');
+    expect(writeText).toHaveBeenCalledWith('Hi Dana.');
+    expect(acknowledge).toHaveBeenCalledWith('r1', true);
+    expect(wrapper.text()).toContain('Marking it sent is a separate action');
+    wrapper.unmount();
+  });
+
+  it('records failed clipboard handoff after issuance and keeps unapproved copy disabled', async () => {
+    const approved: Material = { id: 'm2', opportunity_id: 'o1', recipient_id: 'p1', recipient_name: 'Dana Lee', kind: 'outreach', version: 2, body: 'Hi Dana.', content_sha256: 'b'.repeat(64), status: 'approved', gate: null };
+    const draft: Material = { ...approved, id: 'm3', version: 1, status: 'draft', gate: null };
+    stubWorkspace();
+    vi.spyOn(parley, 'listOutputs').mockResolvedValue([approved, draft]);
+    vi.spyOn(parley, 'releaseMaterial').mockResolvedValue({ release_id: 'r2', material_id: 'm2', version: 2, recipient_id: 'p1', body: 'Hi Dana.', content_sha256: approved.content_sha256, issued_at: '2026-11-21T12:00:00Z' });
+    const acknowledge = vi.spyOn(parley, 'acknowledgeRelease').mockResolvedValue();
+    Object.defineProperty(globalThis.navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error('clipboard unavailable')) } });
+    const wrapper = mount(AppShell);
+    await flushPromises();
+    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(4)').trigger('click');
+    const copyButtons = wrapper.findAll('button').filter((button) => button.text() === 'Copy approved text');
+    expect(copyButtons[1]?.attributes('disabled')).toBeDefined();
+    await copyButtons[0]!.trigger('click');
+    await flushPromises();
+    expect(acknowledge).toHaveBeenCalledWith('r2', false);
+    expect(wrapper.text()).toContain('clipboard unavailable');
+    wrapper.unmount();
+  });
+
+  it('reports a failed workspace connection instead of fetching directory data', async () => {
+    const connect = vi.spyOn(parley, 'connect').mockRejectedValue(new Error('session refused'));
+    const listParties = vi.spyOn(parley, 'listParties');
+    vi.spyOn(parley, 'listResources').mockResolvedValue([]);
+    vi.spyOn(parley, 'listParties').mockResolvedValue([]);
+    vi.spyOn(parley, 'listSources').mockResolvedValue([]);
+    vi.spyOn(parley, 'listOpportunities').mockResolvedValue([]);
+    vi.spyOn(parley, 'listOutputs').mockResolvedValue([]);
+    const wrapper = mount(AppShell);
+    await flushPromises();
+    expect(connect).toHaveBeenCalled();
+    expect(wrapper.text()).toContain('session refused');
+    expect(listParties).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it('reports directory and capture failures without losing the other destinations', async () => {
+    stubWorkspace([], []);
+    vi.spyOn(parley, 'createEntity').mockRejectedValueOnce(new Error('write denied'));
+    vi.spyOn(parley, 'saveSource').mockRejectedValueOnce(new Error('capture denied'));
+    const wrapper = mount(AppShell);
+    await flushPromises();
+    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(2)').trigger('click');
+    const leads = leadsSection(wrapper);
+    await leads.get('input[required]').setValue('Noah');
+    await leads.findAll('form')[0]!.trigger('submit');
+    await flushPromises();
+    expect(wrapper.text()).toContain('write denied');
+    await leads.findAll('textarea')[0]!.setValue('A source');
+    await leads.findAll('form')[1]!.trigger('submit');
+    await flushPromises();
+    expect(wrapper.text()).toContain('capture denied');
+    const labels = wrapper.findAll('nav[aria-label="Main navigation"] button').map((button) => button.text());
+    expect(labels).toEqual(['Resources', 'Leads', 'Queue', 'Output']);
+    wrapper.unmount();
   });
 });

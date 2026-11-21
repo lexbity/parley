@@ -1,16 +1,22 @@
-use parley_service::{Workspace, serve};
+use parley_service::{RunningService, Workspace};
 use serde_json::{Value, json};
 use std::{
     fs,
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::TcpStream,
 };
 
+type OwnerSession = (String, String, String);
 static NEXT: AtomicU64 = AtomicU64::new(0);
+static SESSIONS: OnceLock<Mutex<std::collections::HashMap<u16, OwnerSession>>> = OnceLock::new();
+static REQUESTS: AtomicU64 = AtomicU64::new(0);
 fn db_path() -> PathBuf {
     std::env::temp_dir().join(format!(
         "parley-s03-{}-{}.sqlite",
@@ -20,9 +26,18 @@ fn db_path() -> PathBuf {
 }
 
 async fn request(port: u16, method: &str, path: &str, body: Option<Value>) -> (u16, Value) {
+    let (cookie, token, epoch) = SESSIONS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .get(&port)
+        .unwrap()
+        .clone();
     let body = body.map(|value| value.to_string()).unwrap_or_default();
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    stream.write_all(format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\nX-Parley-Token: s03-owner-token\r\nIdempotency-Key: s03-{method}-{path}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+    let key = REQUESTS.fetch_add(1, Ordering::Relaxed);
+    stream.write_all(format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\nCookie: {cookie}\r\nX-Parley-Token: {token}\r\nX-Parley-Epoch: {epoch}\r\nIdempotency-Key: s03-{key}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
     let mut response = String::new();
     stream.read_to_string(&mut response).await.unwrap();
     let (head, payload) = response.split_once("\r\n\r\n").unwrap();
@@ -35,33 +50,76 @@ async fn request(port: u16, method: &str, path: &str, body: Option<Value>) -> (u
         .unwrap()
         .parse()
         .unwrap();
+    let payload = if head
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
+        let mut decoded = Vec::new();
+        let mut rest = payload;
+        loop {
+            let (size, tail) = rest.split_once("\r\n").unwrap();
+            let size = usize::from_str_radix(size.trim(), 16).unwrap();
+            rest = tail;
+            if size == 0 {
+                break;
+            }
+            decoded.extend_from_slice(&rest.as_bytes()[..size]);
+            rest = &rest[size + 2..];
+        }
+        String::from_utf8(decoded).unwrap()
+    } else {
+        payload.to_owned()
+    };
+    let value = if payload.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_str(&payload).unwrap()
+    };
+    let value = value.get("data").cloned().unwrap_or(value);
+    (status, value)
+}
+
+async fn owner_session(service: &RunningService) -> (String, String, String) {
+    let address = service.address;
+    let body = json!({"secret":service.bootstrap_secret}).to_string();
+    let mut stream = TcpStream::connect(address).await.unwrap();
+    stream.write_all(format!("POST /api/v1/session/bootstrap HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let cookie = response
+        .lines()
+        .find(|line| line.to_ascii_lowercase().starts_with("set-cookie:"))
+        .and_then(|line| {
+            line.split_once(':')
+                .map(|(_, value)| value.trim().split(';').next().unwrap().to_owned())
+        })
+        .unwrap();
+    let mut stream = TcpStream::connect(address).await.unwrap();
+    stream.write_all(format!("GET /api/v1/session HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nCookie: {cookie}\r\nContent-Length: 0\r\n\r\n").as_bytes()).await.unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let payload: Value = serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
     (
-        status,
-        if payload.is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_str(payload).unwrap()
-        },
+        cookie,
+        payload["mutation_token"].as_str().unwrap().to_owned(),
+        payload["epoch"].as_str().unwrap().to_owned(),
     )
 }
 
-async fn setup() -> (
-    PathBuf,
-    Workspace,
-    u16,
-    tokio::task::JoinHandle<Result<(), std::io::Error>>,
-) {
+async fn setup() -> (PathBuf, Workspace, u16, RunningService) {
     let path = db_path();
+    let service = parley_service::start_workspace(&path).await.unwrap();
+    let session = owner_session(&service).await;
+    let port = service.address.port();
+    SESSIONS
+        .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .unwrap()
+        .insert(port, session);
     let workspace = Workspace::open(&path).await.unwrap();
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = tokio::spawn(serve(
-        listener,
-        workspace.clone(),
-        "s03-owner-token".into(),
-        port,
-    ));
-    (path, workspace, port, server)
+    (path, workspace, port, service)
 }
 
 async fn create_party(port: u16, name: &str) -> String {
@@ -82,8 +140,8 @@ async fn prepare_exchange(
     recipient: &str,
     attest: bool,
 ) -> (String, String, i64) {
-    let(status,them)=request(port,"POST",&format!("/api/v1/opportunities/{opportunity}/interests"),Some(json!({"recipient_id":recipient,"side":"them","statement":"A clearer onboarding handoff","knowledge_kind":"hypothesis"}))).await;
-    assert_eq!(status, 201);
+    let(status,them)=request(port,"POST",&format!("/api/v1/opportunities/{opportunity}/interests"),Some(json!({"recipient_id":recipient,"side":"them","statement":"A clearer onboarding handoff","knowledge_kind":"hypothesis","check_suggestion":"Ask the owner whether this is current."}))).await;
+    assert_eq!(status, 201, "{them}");
     let(status,me)=request(port,"POST",&format!("/api/v1/opportunities/{opportunity}/interests"),Some(json!({"recipient_id":recipient,"side":"me","statement":"Offer a usable checklist","knowledge_kind":"owner_report"}))).await;
     assert_eq!(status, 201);
     let(status,exchange)=request(port,"POST",&format!("/api/v1/opportunities/{opportunity}/exchange"),Some(json!({"recipient_id":recipient,"they_get":"A practical onboarding checklist","i_get":"A better understanding of the handoff","interest_ids":[them["id"],me["id"]]}))).await;
@@ -108,7 +166,7 @@ async fn prepare_exchange(
 
 #[tokio::test]
 async fn s03_one_source_can_link_to_two_opportunities_and_unlink_independently() {
-    let (path, _workspace, port, server) = setup().await;
+    let (path, _workspace, port, service) = setup().await;
     let party = create_party(port, "Dana Lee").await;
     let (status, source) = request(
         port,
@@ -201,15 +259,15 @@ async fn s03_one_source_can_link_to_two_opportunities_and_unlink_independently()
     assert_eq!(status, 200);
     assert_eq!(second_after["source_variant_ids"][0], source_id);
     assert_eq!(source["variant_id"], source_id);
-    server.abort();
+    service.shutdown().await;
     let _ = fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output() {
-    let (path, _workspace, port, server) = setup().await;
+    let (path, _workspace, port, service) = setup().await;
     let recipient = create_party(port, "Dana Lee").await;
-    let(status,gift)=request(port,"POST","/api/v1/resources",Some(json!({"kind":"gift","title":"Onboarding checklist","body":{"what":"Onboarding checklist","delivery":"on_request"}}))).await;
+    let(status,gift)=request(port,"POST","/api/v1/entities",Some(json!({"kind":"gift","title":"Onboarding checklist","body":{"what":"Onboarding checklist","delivery":"on_request"}}))).await;
     assert_eq!(status, 201);
     let(status,ready)=request(port,"POST",&format!("/api/v1/resources/{}/ready",gift["id"].as_str().unwrap()),Some(json!({"body":{"what":"Onboarding checklist","format":"template","problem_tags":["onboarding"],"delivery":"on_request","time_to_produce_minutes":20,"cost_to_me":"low"}}))).await;
     assert_eq!(status, 204, "{ready}");
@@ -339,13 +397,13 @@ async fn s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_outpu
             .await
             .unwrap();
     assert_eq!(sent_events, 0);
-    server.abort();
+    service.shutdown().await;
     let _ = fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn s03_correction_after_approval_revokes_release_without_mutating_history() {
-    let (path, workspace, port, server) = setup().await;
+    let (path, workspace, port, service) = setup().await;
     let (status, org) = request(
         port,
         "POST",
@@ -457,6 +515,6 @@ async fn s03_correction_after_approval_revokes_release_without_mutating_history(
     .await
     .unwrap();
     assert_eq!(historic, sentence);
-    server.abort();
+    service.shutdown().await;
     let _ = fs::remove_file(path);
 }

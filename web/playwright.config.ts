@@ -1,8 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { defineConfig, devices } from '@playwright/test';
 
-// Workers inherit this ID so the configuration resolves to the same paths
-// throughout one invocation. Concurrent invocations get separate reports.
+// RFC-0004 INT-06: Playwright runs from user-facing entry points against the
+// mock first and against the actual Rust service second. Both projects run the
+// same spec files and report case IDs. The mock project starts only Vite with
+// the in-process fixture API; the rust project builds the Vite bundle and the
+// release binary once (rust-build dependency), then opens the embedded UI on a
+// fresh temporary workspace per test. Workers inherit this ID so the
+// configuration resolves to the same paths throughout one invocation;
+// concurrent invocations get separate reports.
 const runId = process.env.PARLEY_PLAYWRIGHT_RUN_ID ??= randomUUID();
 const runDirectory = `artifacts/playwright-${runId}`;
 

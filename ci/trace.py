@@ -210,8 +210,16 @@ def check_playwright_report(slice_id: str, report_path: Path) -> int:
     specs: list[dict[str, Any]] = []
     for suite in report.get("suites", []):
         _walk_playwright_suites(suite, specs)
-    spec_file = f"e2e/{slice_id}.spec.ts"
-    slice_specs = [spec for spec in specs if spec.get("file") == spec_file]
+    # Playwright JSON reports file paths relative to `rootDir`, which is the
+    # e2e directory for this project. Accept that canonical basename while
+    # keeping an explicit path match for reports that include `e2e/`.
+    spec_file = f"{slice_id}.spec.ts"
+    slice_specs = [
+        spec
+        for spec in specs
+        if str(spec.get("file", "")).replace("\\", "/").split("/")[-1]
+        == spec_file
+    ]
     if not slice_specs:
         errors.append(f"report contains no specs from {spec_file}")
     expected_by_project: dict[str, int] = {}

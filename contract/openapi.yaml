@@ -1,325 +1,1511 @@
 openapi: 3.1.0
 info:
-  title: Parley local workspace API
+  title: Parley local owner API
   version: 1.0.0
 servers:
-  - url: http://127.0.0.1:8989/api/v1
+- url: /api/v1
 paths:
-  /resources:
+  /health:
     get:
-      operationId: listResources
-      security: [{ WorkspaceToken: [] }]
+      operationId: getHealth
       responses:
-        '200': { description: Resource drafts, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Resource' } } } } }
+        '200':
+          description: Local service readiness. Does not probe a model.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          $ref: '#/components/responses/Error'
+  /session/bootstrap:
     post:
-      operationId: createResource
-      security: [{ WorkspaceToken: [] }]
-      parameters: [{ in: header, name: Idempotency-Key, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ResourceInput' } } } }
+      operationId: redeemBootstrap
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BootstrapRequest'
       responses:
-        '201': { description: Saved draft, content: { application/json: { schema: { $ref: '#/components/schemas/Resource' } } } }
-        '409': { description: Idempotency conflict }
-  /captures:
+        '200':
+          description: One-time bootstrap redeemed; sets an HttpOnly session cookie.
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+  /session:
     get:
-      operationId: listCaptures
-      security: [{ WorkspaceToken: [] }]
-      responses: { '200': { description: Independent capture occurrences } }
-    post:
-      operationId: saveCapture
-      security: [{ WorkspaceToken: [] }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CaptureInput' } } } }
-      responses: { '201': { description: Source saved without inferred identity } }
+      operationId: getSession
+      security:
+      - sessionCookie: []
+      responses:
+        '200':
+          description: Private workspace session and mutation token.
+          headers:
+            X-Parley-Epoch:
+              schema:
+                type: string
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '401':
+          $ref: '#/components/responses/Error'
   /entities:
     get:
       operationId: listEntities
-      security: [{ WorkspaceToken: [] }]
-      responses: { '200': { description: Directory entities } }
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: query
+        name: kind
+        required: false
+        description: 'Repeated values OR together (RFC-0004 §4.3). Owner-resource
+          kinds are gift, proof, artifact and the aggregate resource; directory kinds
+          are person, org and project. Without the filter both entity families are
+          returned.
+
+          '
+        style: form
+        explode: true
+        schema:
+          type: array
+          items:
+            type: string
+            enum:
+            - gift
+            - proof
+            - artifact
+            - resource
+            - person
+            - org
+            - project
+      responses:
+        '200':
+          description: Saved workspace entities, newest resources first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityList'
+        '401':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
     post:
       operationId: createEntity
-      security: [{ WorkspaceToken: [] }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/EntityInput' } } } }
-      responses: { '201': { description: New independent entity } }
+      security:
+      - sessionCookie: []
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - $ref: '#/components/schemas/CreateResource'
+              - $ref: '#/components/schemas/EntityInput'
+      responses:
+        '201':
+          description: New entity and receipt committed atomically.
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Entity'
+        '400':
+          $ref: '#/components/responses/Error'
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+        '503':
+          $ref: '#/components/responses/Error'
+  /entities/{id}:
+    get:
+      operationId: getEntity
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: One saved resource with its current strong ETag.
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceEnvelope'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+    patch:
+      operationId: updateEntity
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - in: header
+        name: If-Match
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateResource'
+      responses:
+        '200':
+          description: Updated draft and receipt committed atomically.
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Resource'
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+        '412':
+          $ref: '#/components/responses/Error'
+        '428':
+          $ref: '#/components/responses/Error'
+  /events:
+    get:
+      operationId: getEvents
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: query
+        name: after
+        schema:
+          type: string
+          pattern: ^[0-9]+$
+        required: false
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Ordered committed events after the supplied cursor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventPage'
+        '400':
+          $ref: '#/components/responses/Error'
+        '401':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+  /captures:
+    get:
+      operationId: listCaptures
+      security:
+      - sessionCookie: []
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Independent source occurrences, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SavedSource'
+        '401':
+          $ref: '#/components/responses/Error'
+    post:
+      operationId: saveCapture
+      security:
+      - sessionCookie: []
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaptureInput'
+      responses:
+        '201':
+          description: Source saved without inferred identity or link.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedSource'
+        '400':
+          $ref: '#/components/responses/Error'
+        '401':
+          $ref: '#/components/responses/Error'
   /graph/related:
     post:
       operationId: createRelatedEntity
-      security: [{ WorkspaceToken: [] }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RelatedEntityInput' } } } }
-      responses: { '201': { description: Atomically created entity, attributed edge and layout }, '422': { description: Evidence or endpoint rejected } }
+      security:
+      - sessionCookie: []
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RelatedEntityInput'
+      responses:
+        '201':
+          description: Atomically created entity, attributed edge and layout.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphEntity'
+        '401':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+  /resources:
+    get:
+      operationId: listResources
+      security:
+      - WorkspaceToken: []
+      responses:
+        '200':
+          description: Resource drafts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Resource'
+    post:
+      operationId: createResource
+      security:
+      - WorkspaceToken: []
+      parameters:
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 200
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResourceInput'
+      responses:
+        '201':
+          description: Saved draft
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Resource'
+        '409':
+          description: Idempotency conflict
   /opportunities:
     get:
       operationId: listOpportunities
-      security: [{ WorkspaceToken: [] }]
-      responses: { '200': { description: Opportunity records and their shared material IDs } }
+      security:
+      - sessionCookie: []
+      responses:
+        '200':
+          description: Opportunity records and shared material IDs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpportunityList'
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
     post:
       operationId: createOpportunity
-      security: [{ WorkspaceToken: [] }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/OpportunityInput' } } } }
-      responses: { '201': { description: Opportunity and explicit primary participant committed together } }
+      security:
+      - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpportunityInput'
+      responses:
+        '201':
+          description: Opportunity with explicit primary participant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Opportunity'
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
   /opportunities/{id}:
     get:
       operationId: getOpportunity
-      security: [{ WorkspaceToken: [] }]
-      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
-      responses: { '200': { description: Opportunity detail }, '404': { description: Missing opportunity } }
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Opportunity detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Opportunity'
+        '404':
+          description: Missing opportunity
   /opportunities/{id}/sources/{source_id}:
     parameters:
-      - { in: path, name: id, required: true, schema: { type: string } }
-      - { in: path, name: source_id, required: true, schema: { type: string } }
+    - in: path
+      name: id
+      required: true
+      schema:
+        type: string
+    - in: path
+      name: source_id
+      required: true
+      schema:
+        type: string
     post:
       operationId: linkOpportunitySource
-      security: [{ WorkspaceToken: [] }]
-      responses: { '204': { description: Link to the existing source variant } }
+      security:
+      - sessionCookie: []
+      responses:
+        '204':
+          description: Link to the existing source variant
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
     delete:
       operationId: unlinkOpportunitySource
-      security: [{ WorkspaceToken: [] }]
-      responses: { '204': { description: Remove only this opportunity association } }
+      security:
+      - sessionCookie: []
+      responses:
+        '204':
+          description: Remove only this opportunity association
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
   /opportunities/{id}/participants:
     post:
       operationId: addOpportunityParticipant
-      security: [{ WorkspaceToken: [] }]
-      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ParticipantInput' } } } }
-      responses: { '200': { description: Updated explicit membership } }
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ParticipantInput'
+      responses:
+        '200':
+          description: Updated explicit membership
   /opportunities/{id}/interests:
     post:
       operationId: addOpportunityInterest
-      security: [{ WorkspaceToken: [] }]
-      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/InterestInput' } } } }
-      responses: { '201': { description: Recipient-scoped interest with stated knowledge type } }
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InterestInput'
+      responses:
+        '201':
+          description: Recipient-scoped interest with stated knowledge type
   /opportunities/{id}/exchange:
     post:
       operationId: saveOpportunityExchange
-      security: [{ WorkspaceToken: [] }]
-      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ExchangeInput' } } } }
-      responses: { '201': { description: New immutable exchange version with attestation reset } }
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExchangeInput'
+      responses:
+        '201':
+          description: New immutable exchange version with attestation reset
   /opportunities/{id}/exchange/{recipient_id}/attest:
     post:
       operationId: attestOpportunityExchange
-      security: [{ WorkspaceToken: [] }]
+      security:
+      - sessionCookie: []
       parameters:
-        - { in: path, name: id, required: true, schema: { type: string } }
-        - { in: path, name: recipient_id, required: true, schema: { type: string } }
-      responses: { '200': { description: Explicit attestation bound to the current exchange and interest digest } }
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - in: path
+        name: recipient_id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Explicit attestation bound to the current exchange and interest
+            digest
   /templates:
     get:
       operationId: listTemplates
-      security: [{ WorkspaceToken: [] }]
-      responses: { '200': { description: Immutable template versions and lifecycle state } }
+      security:
+      - sessionCookie: []
+      responses:
+        '200':
+          description: Immutable template versions and lifecycle state
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
     post:
       operationId: createTemplate
-      security: [{ WorkspaceToken: [] }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TemplateInput' } } } }
-      responses: { '201': { description: Validated immutable template candidate }, '422': { description: Invalid slots or fixed text } }
+      security:
+      - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TemplateInput'
+      responses:
+        '201':
+          description: Validated immutable template candidate
+        '422':
+          description: Invalid slots or fixed text
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
   /templates/{id}/approve:
     post:
       operationId: approveTemplate
-      security: [{ WorkspaceToken: [] }]
-      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
-      responses: { '204': { description: Owner approved this template version } }
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '204':
+          description: Owner approved this template version
   /templates/{id}/activate:
     post:
       operationId: activateTemplate
-      security: [{ WorkspaceToken: [] }]
-      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
-      responses: { '204': { description: Revalidated active template version } }
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '204':
+          description: Revalidated active template version
   /resources/{id}/ready:
     post:
       operationId: markResourceReady
-      security: [{ WorkspaceToken: [] }]
-      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReadyResourceInput' } } } }
-      responses: { '204': { description: Resource passed its kind-specific readiness validator }, '422': { description: Missing or invalid required evidence } }
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReadyResourceInput'
+      responses:
+        '204':
+          description: Resource passed its kind-specific readiness validator
+        '422':
+          description: Missing or invalid required evidence
   /opportunities/{id}/materials:
     get:
       operationId: listOpportunityMaterials
-      security: [{ WorkspaceToken: [] }]
-      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
-      responses: { '200': { description: Same immutable material heads shown in Output } }
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Opportunity materials, same IDs shown in Output.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MaterialList'
     post:
       operationId: createMaterial
-      security: [{ WorkspaceToken: [] }]
-      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/MaterialInput' } } } }
-      responses: { '201': { description: New immutable material version bound to a participant and exchange }, '422': { description: Invalid resolver, recipient, or sentence binding } }
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MaterialInput'
+      responses:
+        '201':
+          description: Immutable material version bound to participant and exchange.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MaterialRecord'
+        '422':
+          description: Invalid resolver
+          recipient: null
+          or sentence binding: null
   /materials/{id}:
     get:
       operationId: getMaterial
-      security: [{ WorkspaceToken: [] }]
-      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
-      responses: { '200': { description: Current immutable material head } }
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Current immutable material head.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MaterialRecord'
   /materials/{id}/versions:
     post:
       operationId: editMaterial
-      security: [{ WorkspaceToken: [] }]
-      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/MaterialInput' } } } }
-      responses: { '201': { description: New version; prior approved and released bytes remain immutable } }
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MaterialInput'
+      responses:
+        '201':
+          description: New immutable version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MaterialRecord'
   /materials/{id}/approve:
     post:
       operationId: approveMaterial
-      security: [{ WorkspaceToken: [] }]
-      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ApprovalInput' } } } }
-      responses: { '200': { description: Version-bound approval and complete gate snapshot }, '422': { description: Hard gate or unoverridden soft gate blocks approval } }
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalInput'
+      responses:
+        '200':
+          description: Version-bound approval and complete gate snapshot
+        '422':
+          description: Hard gate or unoverridden soft gate blocks approval
   /materials/{id}/release:
     post:
       operationId: releaseMaterial
-      security: [{ WorkspaceToken: [] }]
-      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
-      responses: { '200': { description: Exact approved bytes plus committed issuance record }, '422': { description: Current dependency or gate check blocks release } }
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Exact approved bytes and committed issuance record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleasedMaterial'
+        '422':
+          description: Current dependency or gate check blocks release
   /releases/{id}/ack:
     post:
       operationId: acknowledgeRelease
-      security: [{ WorkspaceToken: [] }]
-      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReleaseAckInput' } } } }
-      responses: { '204': { description: Clipboard success or failure recorded independently of approval } }
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReleaseAckInput'
+      responses:
+        '204':
+          description: Clipboard success or failure recorded independently of approval
   /outputs:
     get:
       operationId: listOutputs
-      security: [{ WorkspaceToken: [] }]
-      responses: { '200': { description: Searchable material index sharing opportunity and material IDs } }
+      security:
+      - sessionCookie: []
+      responses:
+        '200':
+          description: Searchable index sharing opportunity and material IDs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MaterialList'
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
 components:
   securitySchemes:
-    WorkspaceToken: { type: apiKey, in: header, name: X-Parley-Token }
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: parley_session
+  parameters:
+    MutationToken:
+      in: header
+      name: X-Parley-Token
+      required: true
+      schema:
+        type: string
+    Epoch:
+      in: header
+      name: X-Parley-Epoch
+      required: true
+      schema:
+        type: string
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 100
+  responses:
+    Error:
+      description: Stable error envelope.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
   schemas:
-    ResourceInput:
+    Health:
       type: object
-      required: [kind, title, body]
+      required:
+      - status
+      - model
       properties:
-        kind: { type: string, enum: [gift, proof, artifact] }
-        title: { type: string, maxLength: 500 }
-        body: { type: object }
+        status:
+          type: string
+          const: ready
+        model:
+          type: string
+          const: not-probed
+      additionalProperties: false
+    BootstrapRequest:
+      type: object
+      required:
+      - secret
+      properties:
+        secret:
+          type: string
+          minLength: 64
+          maxLength: 64
+      additionalProperties: false
+    Session:
+      type: object
+      required:
+      - workspace_id
+      - epoch
+      - wire_major
+      - wire_minor
+      - capabilities
+      - mutation_token
+      - cursor
+      properties:
+        workspace_id:
+          type: string
+        epoch:
+          type: string
+        wire_major:
+          type: integer
+        wire_minor:
+          type: integer
+        capabilities:
+          type: array
+          items:
+            type: string
+        mutation_token:
+          type: string
+        cursor:
+          type: string
       additionalProperties: false
     Resource:
-      allOf:
-        - $ref: '#/components/schemas/ResourceInput'
-        - type: object
-          required: [id, readiness, revision]
-          properties:
-            id: { type: string }
-            readiness: { type: string, enum: [draft, ready, retired] }
-            revision: { type: integer, minimum: 1 }
-    CaptureInput:
       type: object
-      required: [text]
+      required:
+      - id
+      - kind
+      - title
+      - body
+      - readiness
+      - revision
+      - etag
       properties:
-        text: { type: string, minLength: 1, maxLength: 2000000 }
-        title: { type: [string, 'null'] }
-        url: { type: [string, 'null'] }
+        id:
+          type: string
+        kind:
+          enum:
+          - gift
+          - proof
+          - artifact
+        title:
+          type: string
+        body:
+          type: object
+          additionalProperties: true
+        readiness:
+          enum:
+          - draft
+          - ready
+          - retired
+        revision:
+          type: integer
+          minimum: 1
+        etag:
+          type: string
+      additionalProperties: false
+    GraphEntity:
+      type: object
+      required:
+      - id
+      - kind
+      - name
+      - revision
+      properties:
+        id:
+          type: string
+        kind:
+          enum:
+          - person
+          - org
+          - project
+          - resource
+        name:
+          type: string
+        revision:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    Entity:
+      oneOf:
+      - $ref: '#/components/schemas/Resource'
+      - $ref: '#/components/schemas/GraphEntity'
+    EntityList:
+      type: object
+      required:
+      - data
+      - cursor
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Entity'
+        cursor:
+          type: string
+      additionalProperties: false
+    ResourceEnvelope:
+      type: object
+      required:
+      - data
+      properties:
+        data:
+          $ref: '#/components/schemas/Resource'
+      additionalProperties: false
+    Event:
+      type: object
+      required:
+      - cursor
+      - event_id
+      - entity_type
+      - entity_id
+      - revision
+      - event_type
+      - payload
+      properties:
+        cursor:
+          type: string
+        event_id:
+          type: string
+        entity_type:
+          type: string
+        entity_id:
+          type: string
+        revision:
+          type: integer
+        event_type:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+    EventPage:
+      type: object
+      required:
+      - items
+      - next_cursor
+      - observed_cursor
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Event'
+        next_cursor:
+          type: string
+        observed_cursor:
+          type: string
+      additionalProperties: false
+    CreateResource:
+      type: object
+      required:
+      - kind
+      - title
+      - body
+      properties:
+        kind:
+          enum:
+          - gift
+          - proof
+          - artifact
+        title:
+          type: string
+          maxLength: 240
+        body:
+          type: object
+          additionalProperties: true
+      additionalProperties: false
+    UpdateResource:
+      type: object
+      required:
+      - title
+      - body
+      properties:
+        title:
+          type: string
+          maxLength: 240
+        body:
+          type: object
+          additionalProperties: true
       additionalProperties: false
     EntityInput:
       type: object
-      required: [kind, name]
+      required:
+      - kind
+      - name
       properties:
-        kind: { type: string, enum: [person, org, project, resource] }
-        name: { type: string, minLength: 1, maxLength: 500 }
+        kind:
+          enum:
+          - person
+          - org
+          - project
+          - resource
+        name:
+          type: string
+          minLength: 1
+          maxLength: 500
+      additionalProperties: false
+    CaptureInput:
+      type: object
+      required:
+      - text
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 2000000
+        title:
+          type:
+          - string
+          - 'null'
+        url:
+          type:
+          - string
+          - 'null'
+      additionalProperties: false
+    SavedSource:
+      type: object
+      required:
+      - content_id
+      - variant_id
+      - occurrence_id
+      - normalized_sha256
+      - raw_sha256
+      properties:
+        content_id:
+          type: string
+        variant_id:
+          type: string
+        occurrence_id:
+          type: string
+        normalized_sha256:
+          type: string
+        raw_sha256:
+          type: string
       additionalProperties: false
     RelatedEntityInput:
       type: object
-      required: [kind, name, related_entity_id, verb, occurrence_id, quote, view_scope, view_id, x, y]
+      required:
+      - kind
+      - name
+      - related_entity_id
+      - verb
+      - occurrence_id
+      - quote
+      - view_scope
+      - view_id
+      - x
+      - y
       properties:
-        kind: { type: string, enum: [person, org, project, resource] }
-        name: { type: string }
-        related_entity_id: { type: string }
-        verb: { type: string }
-        occurrence_id: { type: string }
-        quote: { type: string }
-        view_scope: { type: string }
-        view_id: { type: string }
-        x: { type: number }
-        y: { type: number }
+        kind:
+          enum:
+          - person
+          - org
+          - project
+          - resource
+        name:
+          type: string
+        related_entity_id:
+          type: string
+        verb:
+          type: string
+        occurrence_id:
+          type: string
+        quote:
+          type: string
+        view_scope:
+          type: string
+        view_id:
+          type: string
+        x:
+          type: number
+        y:
+          type: number
+      additionalProperties: false
+    Error:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          type: object
+          required:
+          - code
+          - message
+          - details
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              type: array
+              items:
+                type: object
+          additionalProperties: false
+      additionalProperties: false
+    ResourceInput:
+      type: object
+      required:
+      - kind
+      - title
+      - body
+      properties:
+        kind:
+          type: string
+          enum:
+          - gift
+          - proof
+          - artifact
+        title:
+          type: string
+          maxLength: 500
+        body:
+          type: object
       additionalProperties: false
     OpportunityInput:
       type: object
-      required: [title, primary_party_id]
+      required:
+      - title
+      - primary_party_id
       properties:
-        title: { type: string, minLength: 1, maxLength: 500 }
-        primary_party_id: { type: string }
+        title:
+          type: string
+          minLength: 1
+          maxLength: 500
+        primary_party_id:
+          type: string
       additionalProperties: false
     ParticipantInput:
       type: object
-      required: [party_id, role]
+      required:
+      - party_id
+      - role
       properties:
-        party_id: { type: string }
-        role: { type: string, enum: [primary, participant] }
+        party_id:
+          type: string
+        role:
+          type: string
+          enum:
+          - primary
+          - participant
       additionalProperties: false
     InterestInput:
       type: object
-      required: [recipient_id, side, statement, knowledge_kind]
+      required:
+      - recipient_id
+      - side
+      - statement
+      - knowledge_kind
       properties:
-        recipient_id: { type: string }
-        side: { type: string, enum: [them, me] }
-        statement: { type: string, minLength: 1, maxLength: 3000 }
-        knowledge_kind: { type: string, enum: [observation, hypothesis, owner_report] }
-        claim_id: { type: [string, 'null'] }
-        claim_revision: { type: [integer, 'null'] }
+        recipient_id:
+          type: string
+        side:
+          type: string
+          enum:
+          - them
+          - me
+        statement:
+          type: string
+          minLength: 1
+          maxLength: 3000
+        knowledge_kind:
+          type: string
+          enum:
+          - observation
+          - hypothesis
+          - owner_report
+        claim_id:
+          type:
+          - string
+          - 'null'
+        claim_revision:
+          type:
+          - integer
+          - 'null'
       additionalProperties: false
     ExchangeInput:
       type: object
-      required: [recipient_id, they_get, i_get, interest_ids]
+      required:
+      - recipient_id
+      - they_get
+      - i_get
+      - interest_ids
       properties:
-        recipient_id: { type: string }
-        they_get: { type: string, maxLength: 3000 }
-        i_get: { type: string, maxLength: 3000 }
-        interest_ids: { type: array, items: { type: string } }
+        recipient_id:
+          type: string
+        they_get:
+          type: string
+          maxLength: 3000
+        i_get:
+          type: string
+          maxLength: 3000
+        interest_ids:
+          type: array
+          items:
+            type: string
       additionalProperties: false
     TemplateInput:
       type: object
-      required: [name, body]
+      required:
+      - name
+      - body
       properties:
-        name: { type: string, minLength: 1, maxLength: 200 }
-        body: { type: string, minLength: 1 }
-        proof_fallback: { type: [string, 'null'], enum: [omit_sentence, use_alternative_template, null] }
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        body:
+          type: string
+          minLength: 1
+        proof_fallback:
+          type:
+          - string
+          - 'null'
+          enum:
+          - omit_sentence
+          - use_alternative_template
+          - null
       additionalProperties: false
     ReadyResourceInput:
       type: object
       properties:
-        body: { type: [object, 'null'] }
+        body:
+          type:
+          - object
+          - 'null'
       additionalProperties: false
     SlotFill:
       type: object
-      required: [slot, value]
+      required:
+      - slot
+      - value
       properties:
-        slot: { type: string }
-        value: { type: string }
-        resource_id: { type: [string, 'null'] }
+        slot:
+          type: string
+        value:
+          type: string
+        resource_id:
+          type:
+          - string
+          - 'null'
       additionalProperties: false
     SentenceBinding:
       type: object
-      required: [sentence_index, claim_type]
+      required:
+      - sentence_index
+      - claim_type
       properties:
-        sentence_index: { type: integer, minimum: 0 }
-        claim_type: { type: string, enum: [generic, offer, self_fact, other_fact, question, ask, identity, hook] }
-        ref_kind: { type: [string, 'null'] }
-        ref_id: { type: [string, 'null'] }
-        ref_revision: { type: [integer, 'null'] }
-        approved_wording: { type: [string, 'null'] }
-        ask_rung: { type: [integer, 'null'], minimum: 0, maximum: 5 }
+        sentence_index:
+          type: integer
+          minimum: 0
+        claim_type:
+          type: string
+          enum:
+          - generic
+          - offer
+          - self_fact
+          - other_fact
+          - question
+          - ask
+          - identity
+          - hook
+        ref_kind:
+          type:
+          - string
+          - 'null'
+        ref_id:
+          type:
+          - string
+          - 'null'
+        ref_revision:
+          type:
+          - integer
+          - 'null'
+        approved_wording:
+          type:
+          - string
+          - 'null'
+        ask_rung:
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+          maximum: 5
       additionalProperties: false
     MaterialInput:
       type: object
-      required: [recipient_id, kind, template_version_id, body, slot_fills, sentence_bindings, exchange_version]
+      required:
+      - recipient_id
+      - kind
+      - template_version_id
+      - body
+      - slot_fills
+      - sentence_bindings
+      - exchange_version
       properties:
-        recipient_id: { type: string }
-        kind: { type: string, enum: [outreach, followup, handoff] }
-        template_version_id: { type: string }
-        body: { type: string, minLength: 1, maxLength: 20000 }
-        slot_fills: { type: array, items: { $ref: '#/components/schemas/SlotFill' } }
-        sentence_bindings: { type: array, items: { $ref: '#/components/schemas/SentenceBinding' } }
-        exchange_version: { type: integer, minimum: 1 }
+        recipient_id:
+          type: string
+        kind:
+          type: string
+          enum:
+          - outreach
+          - followup
+          - handoff
+        template_version_id:
+          type: string
+        body:
+          type: string
+          minLength: 1
+          maxLength: 20000
+        slot_fills:
+          type: array
+          items:
+            $ref: '#/components/schemas/SlotFill'
+        sentence_bindings:
+          type: array
+          items:
+            $ref: '#/components/schemas/SentenceBinding'
+        exchange_version:
+          type: integer
+          minimum: 1
       additionalProperties: false
     ApprovalInput:
       type: object
-      required: [override_reasons]
+      required:
+      - override_reasons
       properties:
-        override_reasons: { type: object, additionalProperties: { type: string, minLength: 10 } }
+        override_reasons:
+          type: object
+          additionalProperties:
+            type: string
+            minLength: 10
       additionalProperties: false
     ReleaseAckInput:
       type: object
-      required: [succeeded]
+      required:
+      - succeeded
       properties:
-        succeeded: { type: boolean }
+        succeeded:
+          type: boolean
       additionalProperties: false
+    Opportunity:
+      type: object
+      required:
+      - id
+      - title
+      - state
+      - revision
+      - participant_ids
+      - source_variant_ids
+      - material_ids
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        state:
+          type: string
+        revision:
+          type: integer
+          minimum: 1
+        participant_ids:
+          type: array
+          items:
+            type: string
+        source_variant_ids:
+          type: array
+          items:
+            type: string
+        material_ids:
+          type: array
+          items:
+            type: string
+      additionalProperties: false
+    MaterialRecord:
+      type: object
+      required:
+      - id
+      - opportunity_id
+      - recipient_id
+      - recipient_name
+      - kind
+      - version
+      - body
+      - content_sha256
+      - status
+      - gate
+      properties:
+        id:
+          type: string
+        opportunity_id:
+          type: string
+        recipient_id:
+          type: string
+        recipient_name:
+          type: string
+        kind:
+          type: string
+        version:
+          type: integer
+          minimum: 1
+        body:
+          type: string
+        content_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        status:
+          type: string
+          enum:
+          - draft
+          - approved
+          - released
+        gate:
+          type:
+          - object
+          - 'null'
+      additionalProperties: false
+    ReleasedMaterial:
+      type: object
+      required:
+      - release_id
+      - material_id
+      - version
+      - recipient_id
+      - body
+      - content_sha256
+      - issued_at
+      properties:
+        release_id:
+          type: string
+        material_id:
+          type: string
+        version:
+          type: integer
+          minimum: 1
+        recipient_id:
+          type: string
+        body:
+          type: string
+        content_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        issued_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    OpportunityList:
+      type: array
+      items:
+        $ref: '#/components/schemas/Opportunity'
+    MaterialList:
+      type: array
+      items:
+        $ref: '#/components/schemas/MaterialRecord'

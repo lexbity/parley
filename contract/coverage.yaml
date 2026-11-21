@@ -19,26 +19,82 @@
 slices:
   s01:
     - requirement: BE-02
-      operationId: listResources
+      operationId: createEntity
       test_id: s01_lost_ack_retry_returns_one_durable_resource
-      fixture_id: listresources
+      fixture_id: resources
       owner_role: owner
       package_target: rust
-      evidence_path: contract/fixtures/s01/listresources/evidence.md
+      evidence_path: evidence/s01.md
     - requirement: B-FR-1
-      operationId: createResource
+      operationId: createEntity
       test_id: s01_lost_ack_retry_returns_one_durable_resource
-      fixture_id: createresource
+      fixture_id: resources
       owner_role: owner
       package_target: rust
-      evidence_path: contract/fixtures/s01/createresource/evidence.md
+      evidence_path: evidence/s01.md
     - requirement: BE-12
-      operationId: createResource
+      operationId: getEntity
       test_id: s01_unauthenticated_read_discloses_no_resource_fields
-      fixture_id: createresource
+      fixture_id: resources
       owner_role: owner
       package_target: rust
-      evidence_path: contract/fixtures/s01/createresource/evidence.md
+      evidence_path: evidence/s01.md
+    - requirement: INT-01
+      operationId: getHealth
+      test_id: s01_health_no_model_probe
+      fixture_id: resources
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s01.md
+    - requirement: INT-01
+      operationId: redeemBootstrap
+      test_id: s01_bootstrap_is_single_use
+      fixture_id: resources
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s01.md
+    - requirement: FE-01
+      operationId: getSession
+      test_id: s01_bootstrap_is_single_use_and_session_is_private
+      fixture_id: resources
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s01.md
+    - requirement: APP-05
+      operationId: listEntities
+      test_id: s01_resource_create_receipt_atomic
+      fixture_id: resources
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s01.md
+    - requirement: APP-05
+      operationId: createEntity
+      test_id: s01_resource_create_receipt_atomic
+      fixture_id: resources
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s01.md
+    - requirement: FQ1
+      operationId: updateEntity
+      test_id: s01_resource_create_receipt_atomic
+      fixture_id: resources
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s01.md
+    - requirement: FE-01
+      operationId: getEntity
+      test_id: s01_resource_create_receipt_atomic
+      fixture_id: resources
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s01.md
+    - requirement: INT-03
+      operationId: getEvents
+      test_id: s01_resource_create_receipt_atomic
+      fixture_id: resources
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s01.md
   s02:
     - requirement: B-FR-2
       operationId: saveCapture

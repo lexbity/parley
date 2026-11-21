@@ -8,11 +8,10 @@ untracked per `AGENTS.md`.
 ## Status
 
 Toolchain, lint and verification harness (RFC-0004 S01 build infrastructure):
-**complete**. Feature slices S01–S12: **not started** — `scripts/check-slice s01`
-correctly reports the missing slice artifacts (contract fixtures, migration
-`0001_workspace.sql`, coverage rows, `tests/s01.rs`, `e2e/s01.spec.ts`) until
-slice S01 lands. There are no stubs in between: gates fail loudly, toolchain
-steps pass.
+**complete**. RFC-0003 S01 is implemented and its component, service, contract,
+migration, mock, and browser gates pass (`scripts/check-slice s01` and
+`scripts/prove s01`). It is one product slice, not a conformance claim for the
+complete application; S02–S12 remain unimplemented.
 
 ## Toolchain pins (RFC-0002 BE-01, RFC-0004 S01)
 

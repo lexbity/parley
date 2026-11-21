@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/Error","body":{"error":{"code":"TOKEN_INVALID","message":"Mutation token is invalid","details":[]}}}

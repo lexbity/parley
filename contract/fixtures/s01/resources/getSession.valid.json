@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/Session","body":{"workspace_id":"00112233445566778899aabbccddeeff","epoch":"ffeeddccbbaa99887766554433221100","wire_major":1,"wire_minor":0,"capabilities":["resources.read","resources.write"],"mutation_token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","cursor":"0"}}

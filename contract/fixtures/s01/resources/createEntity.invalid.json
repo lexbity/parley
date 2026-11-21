@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/Error","body":{"error":{"code":"RESOURCE_INVALID","message":"Resource type or name is invalid","details":[]}}}
