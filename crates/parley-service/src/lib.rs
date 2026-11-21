@@ -46,6 +46,8 @@ mod board;
 mod assistant;
 mod jobs;
 mod materials;
+mod writing;
+mod writing_jobs;
 mod web_assets {
     include!(concat!(env!("OUT_DIR"), "/web_assets.rs"));
 }
@@ -890,6 +892,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         .merge(materials::routes())
         .merge(jobs::routes())
         .merge(assistant::routes())
+        .merge(writing::routes())
         .with_state(state)
         .layer(axum::extract::DefaultBodyLimit::max(2_100_000));
     let (shutdown, receiver) = tokio::sync::oneshot::channel();

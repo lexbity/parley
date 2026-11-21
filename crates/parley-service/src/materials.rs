@@ -507,7 +507,7 @@ fn error_response(status: StatusCode, code: &str, message: &str) -> axum::respon
         .into_response()
 }
 
-fn workspace_error(error: WorkspaceError) -> axum::response::Response {
+pub(super) fn workspace_error(error: WorkspaceError) -> axum::response::Response {
     let (status, code) = match &error {
         WorkspaceError::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, "storage_error"),
         WorkspaceError::Invalid(_) => (StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"),
