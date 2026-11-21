@@ -1,13 +1,8 @@
-import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { expect } from '@playwright/test';
+import { test } from './fixtures';
 
-test('s02_source_only_capture_keeps_two_occurrences_without_identity_merge', async ({ page }, testInfo) => {
-  const token = testInfo.project.name === 'mock'
-    ? 'mock-token'
-    : readFileSync(join(String(testInfo.project.metadata.e2eWorkspace), 'mutation.token'), 'utf8');
-  await page.addInitScript((value: string) => { window.__PARLEY_TOKEN__ = value; }, token.trim());
+test('s02_source_only_capture_keeps_two_occurrences_without_identity_merge', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Leads' }).click();
   const suffix = randomUUID();

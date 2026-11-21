@@ -12,28 +12,34 @@ if [ "$#" -ne 1 ]; then
   exit 2
 fi
 slice=$1
+if [[ ! "$slice" =~ ^s(0[1-9]|1[0-2])$ ]]; then
+  echo "invalid slice ID: $slice (expected s01..s12)" >&2
+  exit 2
+fi
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 artifacts="$root/artifacts"
 mkdir -p "$artifacts"
-
-printf '\n=== prove %s: build the pinned frontend bundle for the installed Rust shell ===\n' "$slice"
-pnpm --dir web exec vite build
+proof_dir=$(mktemp -d "$artifacts/prove-$slice.XXXXXX")
+printf '\n=== prove %s: reports in %s ===\n' "$slice" "$proof_dir"
 
 printf '\n=== prove %s: cargo test -p parley-service --test %s ===\n' "$slice" "$slice"
 cargo test --locked -p parley-service --test "$slice" 2>&1 |
-  tee "$artifacts/cargo-test-$slice.log"
+  tee "$proof_dir/cargo-test.log"
 
+# The rust project builds the Vite bundle and release binary once as a
+# Playwright setup dependency. The mock project has no build dependency.
 printf '\n=== prove %s: playwright e2e/%s.spec.ts (mock + rust) ===\n' "$slice" "$slice"
 (
   cd web
-  PARLEY_PLAYWRIGHT_JSON="$artifacts/playwright-$slice.json" \
+  PARLEY_PLAYWRIGHT_JSON="$proof_dir/playwright.json" \
+    PARLEY_PLAYWRIGHT_OUTPUT="$proof_dir/browser" \
     pnpm exec playwright test "e2e/$slice.spec.ts" --project=mock --project=rust
 )
 
 printf '\n=== prove %s: trace --require-executed ===\n' "$slice"
 python3 ci/trace.py --slice "$slice" --require-executed \
-  --cargo-log "$artifacts/cargo-test-$slice.log" \
-  --playwright-json "$artifacts/playwright-$slice.json"
+  --cargo-log "$proof_dir/cargo-test.log" \
+  --playwright-json "$proof_dir/playwright.json"
 
 printf '\nprove %s: complete.\n' "$slice"

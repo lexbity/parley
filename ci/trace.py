@@ -47,8 +47,6 @@ from common import (
 
 ARTIFACTS_DIR = REPO_ROOT / "artifacts"
 DIST_DIR = REPO_ROOT / "web" / "dist"
-CARGO_LOG_PATH = ARTIFACTS_DIR / "cargo-test-{slice}.log"
-PLAYWRIGHT_JSON_PATH = ARTIFACTS_DIR / "playwright-{slice}.json"
 
 # Import gates (RFC-0004). Patterns are exact regexes over the named scopes;
 # behavioral correctness is owned by the test suites, these catch regressions.
@@ -286,6 +284,8 @@ def main() -> None:
         parser.error("either --through SLICE or --slice SLICE is required")
     if args.slice and not args.require_executed:
         parser.error("--slice requires --require-executed")
+    if args.slice and (not args.cargo_log or not args.playwright_json):
+        parser.error("--slice requires --cargo-log and --playwright-json from the same proof run")
 
     try:
         if args.through:
@@ -294,14 +294,7 @@ def main() -> None:
             if args.check_manifest:
                 check_vite_manifest()
         if args.slice:
-            slice_id = args.slice
-            cargo_log = args.cargo_log or CARGO_LOG_PATH.with_name(
-                CARGO_LOG_PATH.name.format(slice=slice_id)
-            )
-            playwright_json = args.playwright_json or PLAYWRIGHT_JSON_PATH.with_name(
-                PLAYWRIGHT_JSON_PATH.name.format(slice=slice_id)
-            )
-            check_require_executed(slice_id, cargo_log, playwright_json)
+            check_require_executed(args.slice, args.cargo_log, args.playwright_json)
             check_import_gates()
     except VerificationError as exc:
         fail([str(exc)])
