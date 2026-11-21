@@ -43,6 +43,7 @@ use tokio::sync::Mutex;
 static IDS: AtomicU64 = AtomicU64::new(0);
 
 mod board;
+mod assistant;
 mod jobs;
 mod materials;
 mod web_assets {
@@ -197,6 +198,7 @@ impl Workspace {
             .run(&pool)
             .await
             .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
+        assistant::initialize_defaults(&pool).await?;
         let (epoch, workspace_id): (String, String) =
             sqlx::query_as("SELECT epoch, workspace_id FROM workspace_meta WHERE singleton=1")
                 .fetch_one(&pool)
@@ -843,7 +845,7 @@ pub(crate) struct AppState {
     authority: String,
     bootstrap: Arc<Mutex<HashMap<String, Instant>>>,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
-    jobs: jobs::Queue,
+    pub(crate) jobs: jobs::Queue,
 }
 
 /// Initialize (or open) a private SQLite workspace and bind only to IPv4
@@ -887,6 +889,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         .merge(board::routes())
         .merge(materials::routes())
         .merge(jobs::routes())
+        .merge(assistant::routes())
         .with_state(state)
         .layer(axum::extract::DefaultBodyLimit::max(2_100_000));
     let (shutdown, receiver) = tokio::sync::oneshot::channel();
