@@ -16,4 +16,55 @@
 #   owner_role:    acting role in the fixture (e.g. owner)
 #   package_target: rust | mock | rust+mock
 #   evidence_path: repo-relative path to the slice evidence artifact
-slices: {}
+slices:
+  s01:
+    - requirement: BE-02
+      operationId: listResources
+      test_id: s01_lost_ack_retry_returns_one_durable_resource
+      fixture_id: listresources
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s01/listresources/evidence.md
+    - requirement: B-FR-1
+      operationId: createResource
+      test_id: s01_lost_ack_retry_returns_one_durable_resource
+      fixture_id: createresource
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s01/createresource/evidence.md
+    - requirement: BE-12
+      operationId: createResource
+      test_id: s01_unauthenticated_read_discloses_no_resource_fields
+      fixture_id: createresource
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s01/createresource/evidence.md
+  s02:
+    - requirement: B-FR-2
+      operationId: saveCapture
+      test_id: s02_source_only_capture_keeps_two_occurrences_without_identity_merge
+      fixture_id: savecapture
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s02/savecapture/evidence.md
+    - requirement: BQ3
+      operationId: saveCapture
+      test_id: s02_two_speakers_and_raw_variants_survive_normalized_deduplication
+      fixture_id: savecapture
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s02/savecapture/evidence.md
+    - requirement: BE-05
+      operationId: createRelatedEntity
+      test_id: s02_related_node_edge_and_quote_commit_together
+      fixture_id: createrelatedentity
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s02/createrelatedentity/evidence.md
+    - requirement: APP-07
+      operationId: createEntity
+      test_id: s02_same_name_entities_are_distinct
+      fixture_id: createentity
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s02/createentity/evidence.md

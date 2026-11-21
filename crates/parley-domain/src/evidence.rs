@@ -41,6 +41,8 @@ pub fn normalize(text: &str) -> String {
             '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}' | '\u{2032}' => output.push('\''),
             '\u{201c}' | '\u{201d}' | '\u{201e}' | '\u{201f}' | '\u{2033}' => output.push('"'),
             '\u{2010}'..='\u{2015}' | '\u{2212}' => output.push('-'),
+            'ß' | 'ẞ' => output.push_str("ss"),
+            'ς' => output.push('σ'),
             _ => output.extend(ch.to_lowercase()),
         }
     }
@@ -59,11 +61,22 @@ pub fn verify_quote(
     if normalized_quote.is_empty() {
         return Err(QuoteError::Empty);
     }
-    let mut matches = normalized_source.match_indices(&normalized_quote);
-    let found: Vec<(usize, usize)> = matches
-        .by_ref()
-        .map(|(start, value)| (start, start + value.len()))
-        .collect();
+    let mut found = Vec::new();
+    let mut search_from = 0;
+    while search_from < normalized_source.len() {
+        let Some(relative) = normalized_source[search_from..].find(&normalized_quote) else {
+            break;
+        };
+        let start = search_from + relative;
+        let end = start + normalized_quote.len();
+        found.push((start, end));
+        search_from = start
+            + normalized_source[start..]
+                .chars()
+                .next()
+                .expect("match starts at a character boundary")
+                .len_utf8();
+    }
     if found.is_empty() {
         return Err(QuoteError::NotFound);
     }
@@ -73,19 +86,60 @@ pub fn verify_quote(
         None if found.len() > 1 => return Err(QuoteError::Ambiguous(found.len())),
         None => 0,
     };
+    let source_matches = source_quote_spans(source, &normalized_quote);
+    if source_matches.len() <= index {
+        return Err(QuoteError::NotFound);
+    }
+    let (source_start, source_end) = source_matches[index];
     let (normalized_start, normalized_end) = found[index];
-    // Mapping arbitrary NFKC expansions back to source bytes requires retaining
-    // an occurrence map. Until that map is available, only accept identity-width
-    // source normalization where the verified normalized quote can be recovered
-    // at unambiguous UTF-8 boundaries.
-    let source_start = source.find(quote).ok_or(QuoteError::NotFound)?;
-    let source_end = source_start + quote.len();
+    if normalize(&source[source_start..source_end]) != normalized_quote {
+        return Err(QuoteError::NotFound);
+    }
     Ok(QuoteMatch {
         source_start,
         source_end,
         normalized_start,
         normalized_end,
     })
+}
+
+fn source_quote_spans(source: &str, quote: &str) -> Vec<(usize, usize)> {
+    let boundaries: Vec<usize> = source
+        .char_indices()
+        .map(|(offset, _)| offset)
+        .chain([source.len()])
+        .collect();
+    let mut spans = Vec::new();
+    for (start_index, &start) in boundaries
+        .iter()
+        .enumerate()
+        .take(boundaries.len().saturating_sub(1))
+    {
+        for &end in boundaries.iter().skip(start_index + 1) {
+            let candidate = normalize(&source[start..end]);
+            if candidate == quote {
+                let trimmed_start = start
+                    + source[start..end]
+                        .char_indices()
+                        .find(|(_, ch)| !ch.is_whitespace())
+                        .map_or(0, |(offset, _)| offset);
+                let trimmed_end = start
+                    + source[start..end]
+                        .char_indices()
+                        .rev()
+                        .find(|(_, ch)| !ch.is_whitespace())
+                        .map_or(0, |(offset, ch)| offset + ch.len_utf8());
+                spans.push((trimmed_start, trimmed_end));
+                break;
+            }
+            if candidate.len() > quote.len().saturating_add(8) {
+                break;
+            }
+        }
+    }
+    spans.sort_unstable();
+    spans.dedup();
+    spans
 }
 
 #[cfg(test)]
@@ -103,7 +157,12 @@ mod tests {
             verify_quote("Alpha alpha", "alpha", None),
             Err(QuoteError::Ambiguous(2))
         ));
-        assert!(verify_quote("Alpha alpha", "alpha", Some(1)).is_err());
+        assert_eq!(
+            verify_quote("Alpha alpha", "alpha", Some(1))
+                .unwrap()
+                .source_start,
+            6
+        );
         assert_eq!(
             verify_quote("Alpha alpha", "alpha", Some(0))
                 .unwrap()
@@ -114,5 +173,30 @@ mod tests {
             verify_quote("a cat", "a car", None),
             Err(QuoteError::NotFound)
         );
+    }
+
+    #[test]
+    fn quote_span_maps_unicode_variant_to_original_utf8_bytes() {
+        let source = "Hiring: “Ａda” joined—today";
+        let found = verify_quote(source, "\"ada\" joined-today", None).unwrap();
+        assert_eq!(
+            &source[found.source_start..found.source_end],
+            "“Ａda” joined—today"
+        );
+        assert_eq!(
+            normalize(&source[found.source_start..found.source_end]),
+            "\"ada\" joined-today"
+        );
+    }
+
+    #[test]
+    fn casefolding_and_overlapping_quote_occurrences_are_exact() {
+        assert_eq!(normalize("Straße"), "strasse");
+        assert!(matches!(
+            verify_quote("aaa", "aa", None),
+            Err(QuoteError::Ambiguous(2))
+        ));
+        let second = verify_quote("aaa", "aa", Some(1)).unwrap();
+        assert_eq!((second.source_start, second.source_end), (1, 3));
     }
 }

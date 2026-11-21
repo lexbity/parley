@@ -1,0 +1,15 @@
+{
+  "case": "valid",
+  "body": {
+    "kind": "person",
+    "name": "Dana Lee",
+    "related_entity_id": "org-1",
+    "verb": "member_of",
+    "occurrence_id": "occ-1",
+    "quote": "Dana Lee will join",
+    "view_scope": "party",
+    "view_id": "org-1",
+    "x": 10,
+    "y": 20
+  }
+}

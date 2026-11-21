@@ -1,0 +1,10 @@
+{
+  "case": "valid",
+  "body": {
+    "kind": "gift",
+    "title": "Walkthrough",
+    "body": {
+      "what": "Guided review"
+    }
+  }
+}

@@ -1,0 +1,98 @@
+openapi: 3.1.0
+info:
+  title: Parley local workspace API
+  version: 1.0.0
+servers:
+  - url: http://127.0.0.1:8989/api/v1
+paths:
+  /resources:
+    get:
+      operationId: listResources
+      security: [{ WorkspaceToken: [] }]
+      responses:
+        '200': { description: Resource drafts, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Resource' } } } } }
+    post:
+      operationId: createResource
+      security: [{ WorkspaceToken: [] }]
+      parameters: [{ in: header, name: Idempotency-Key, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ResourceInput' } } } }
+      responses:
+        '201': { description: Saved draft, content: { application/json: { schema: { $ref: '#/components/schemas/Resource' } } } }
+        '409': { description: Idempotency conflict }
+  /captures:
+    get:
+      operationId: listCaptures
+      security: [{ WorkspaceToken: [] }]
+      responses: { '200': { description: Independent capture occurrences } }
+    post:
+      operationId: saveCapture
+      security: [{ WorkspaceToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CaptureInput' } } } }
+      responses: { '201': { description: Source saved without inferred identity } }
+  /entities:
+    get:
+      operationId: listEntities
+      security: [{ WorkspaceToken: [] }]
+      responses: { '200': { description: Directory entities } }
+    post:
+      operationId: createEntity
+      security: [{ WorkspaceToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/EntityInput' } } } }
+      responses: { '201': { description: New independent entity } }
+  /graph/related:
+    post:
+      operationId: createRelatedEntity
+      security: [{ WorkspaceToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RelatedEntityInput' } } } }
+      responses: { '201': { description: Atomically created entity, attributed edge and layout }, '422': { description: Evidence or endpoint rejected } }
+components:
+  securitySchemes:
+    WorkspaceToken: { type: apiKey, in: header, name: X-Parley-Token }
+  schemas:
+    ResourceInput:
+      type: object
+      required: [kind, title, body]
+      properties:
+        kind: { type: string, enum: [gift, proof, artifact] }
+        title: { type: string, maxLength: 500 }
+        body: { type: object }
+      additionalProperties: false
+    Resource:
+      allOf:
+        - $ref: '#/components/schemas/ResourceInput'
+        - type: object
+          required: [id, readiness, revision]
+          properties:
+            id: { type: string }
+            readiness: { type: string, enum: [draft, ready, retired] }
+            revision: { type: integer, minimum: 1 }
+    CaptureInput:
+      type: object
+      required: [text]
+      properties:
+        text: { type: string, minLength: 1, maxLength: 2000000 }
+        title: { type: [string, 'null'] }
+        url: { type: [string, 'null'] }
+      additionalProperties: false
+    EntityInput:
+      type: object
+      required: [kind, name]
+      properties:
+        kind: { type: string, enum: [person, org, project, resource] }
+        name: { type: string, minLength: 1, maxLength: 500 }
+      additionalProperties: false
+    RelatedEntityInput:
+      type: object
+      required: [kind, name, related_entity_id, verb, occurrence_id, quote, view_scope, view_id, x, y]
+      properties:
+        kind: { type: string, enum: [person, org, project, resource] }
+        name: { type: string }
+        related_entity_id: { type: string }
+        verb: { type: string }
+        occurrence_id: { type: string }
+        quote: { type: string }
+        view_scope: { type: string }
+        view_id: { type: string }
+        x: { type: number }
+        y: { type: number }
+      additionalProperties: false

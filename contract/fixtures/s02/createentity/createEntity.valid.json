@@ -1,0 +1,7 @@
+{
+  "case": "valid",
+  "body": {
+    "kind": "person",
+    "name": "Dana Lee"
+  }
+}

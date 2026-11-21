@@ -17,6 +17,9 @@ cd "$root"
 artifacts="$root/artifacts"
 mkdir -p "$artifacts"
 
+printf '\n=== prove %s: build the pinned frontend bundle for the installed Rust shell ===\n' "$slice"
+pnpm --dir web exec vite build
+
 printf '\n=== prove %s: cargo test -p parley-service --test %s ===\n' "$slice" "$slice"
 cargo test --locked -p parley-service --test "$slice" 2>&1 |
   tee "$artifacts/cargo-test-$slice.log"

@@ -1,0 +1,8 @@
+{
+  "case": "invalid",
+  "body": {
+    "kind": "wrong",
+    "title": "",
+    "body": {}
+  }
+}

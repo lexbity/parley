@@ -1,0 +1,15 @@
+{
+  "case": "invalid",
+  "body": {
+    "kind": "person",
+    "name": "",
+    "related_entity_id": "missing",
+    "verb": "member_of",
+    "occurrence_id": "occ-1",
+    "quote": "invented quote",
+    "view_scope": "party",
+    "view_id": "org-1",
+    "x": null,
+    "y": 20
+  }
+}

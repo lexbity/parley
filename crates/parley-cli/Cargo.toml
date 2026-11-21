@@ -10,3 +10,6 @@ path = "src/main.rs"
 
 [dependencies]
 parley-service.workspace = true
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "net", "time"] }
+libc = "0.2.186"
+getrandom = "0.3.4"

@@ -24,6 +24,13 @@ CREATE TABLE resource (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE board_list (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0,1)),
+  revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0)
+);
 CREATE TABLE idempotency_receipt (
   owner_id INTEGER NOT NULL DEFAULT 1 REFERENCES owner_profile(id),
   epoch TEXT NOT NULL,
@@ -49,3 +56,8 @@ CREATE TRIGGER event_no_update BEFORE UPDATE ON event
 BEGIN SELECT RAISE(ABORT, 'event log is append-only'); END;
 CREATE TRIGGER event_no_delete BEFORE DELETE ON event
 BEGIN SELECT RAISE(ABORT, 'event log is append-only'); END;
+INSERT INTO workspace_meta(singleton,schema_version,epoch,revision,created_at)
+VALUES(1,1,'initial',0,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+INSERT INTO owner_profile(id,display_name,timezone,pack_id,pack_version,settings_json)
+VALUES(1,'Owner','UTC','job_search','1.0.0','{}');
+INSERT INTO board_list(id,title,position) VALUES('inbox','Inbox',1024);

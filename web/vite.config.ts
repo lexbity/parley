@@ -9,6 +9,9 @@ export default defineConfig({
   build: {
     manifest: true,
   },
+  server: {
+    proxy: process.env.PARLEY_API_TARGET ? { '/api': { target: process.env.PARLEY_API_TARGET, changeOrigin: true } } : undefined,
+  },
   test: {
     environment: 'jsdom',
     include: ['src/**/*.{test,spec}.ts'],
