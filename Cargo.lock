@@ -886,7 +886,9 @@ dependencies = [
 name = "parley-domain"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "serde",
+ "sha2 0.10.9",
  "unicode-normalization",
 ]
 

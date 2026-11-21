@@ -9,4 +9,5 @@
 //!
 pub mod evidence;
 pub mod gate;
+pub mod notes;
 pub mod template;

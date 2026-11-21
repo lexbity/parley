@@ -42,6 +42,7 @@ use tokio::sync::Mutex;
 
 static IDS: AtomicU64 = AtomicU64::new(0);
 
+mod board;
 mod jobs;
 mod materials;
 mod web_assets {
@@ -883,6 +884,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         .route("/api/v1/events", get(get_events))
         .route("/api/v1/captures", get(list_captures).post(save_capture))
         .route("/api/v1/graph/related", post(create_related_entity))
+        .merge(board::routes())
         .merge(materials::routes())
         .merge(jobs::routes())
         .with_state(state)

@@ -7,3 +7,5 @@ publish.workspace = true
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
 unicode-normalization = "0.1.25"
+sha2 = "0.10.9"
+hex = "0.4.3"

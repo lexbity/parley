@@ -545,6 +545,37 @@ impl Workspace {
             .bind(&id).bind(input.title.trim()).bind(&now).bind(&now).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO opportunity_party(opportunity_id,party_id,role,added_at) VALUES(?,?,'primary',?)")
             .bind(&id).bind(&input.primary_party_id).bind(&now).execute(&mut *tx).await?;
+        let home_list: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM board_list WHERE archived=0 ORDER BY position,id LIMIT 1",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        let home_list = home_list.ok_or_else(|| {
+            WorkspaceError::Invalid("workspace must retain an active board list".into())
+        })?;
+        let position: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(position),0)+1024 FROM board_placement WHERE list_id=?",
+        )
+        .bind(&home_list)
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO board_placement(opportunity_id,list_id,position,revision) VALUES(?,?,?,1)",
+        )
+        .bind(&id)
+        .bind(&home_list)
+        .bind(position)
+        .execute(&mut *tx)
+        .await?;
+        event(
+            &mut tx,
+            "board_placement",
+            &id,
+            1,
+            "board.card_created",
+            json!({"list_id":home_list,"position":position}),
+        )
+        .await?;
         ensure_party_policy(&mut tx, &input.primary_party_id).await?;
         event(
             &mut tx,
