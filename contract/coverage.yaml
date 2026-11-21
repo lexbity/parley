@@ -124,3 +124,52 @@ slices:
       owner_role: owner
       package_target: rust
       evidence_path: contract/fixtures/s02/createentity/evidence.md
+    - requirement: FE-03
+      operationId: searchDirectory
+      test_id: s02_independent_source_same_name_parties_graph_evidence_and_correction
+      fixture_id: directory
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s02.md
+    - requirement: FE-04
+      operationId: getNeighborhood
+      test_id: s02_independent_source_same_name_parties_graph_evidence_and_correction
+      fixture_id: directory
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s02.md
+    - requirement: FE-05
+      operationId: getCaptureOccurrence
+      test_id: s02_directory_source_graph_correction_and_view_layout_are_revisioned
+      fixture_id: directory
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s02.md
+    - requirement: FE-05
+      operationId: correctClaimWording
+      test_id: s02_directory_source_graph_correction_and_view_layout_are_revisioned
+      fixture_id: directory
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s02.md
+    - requirement: FE-04
+      operationId: updateViewPosition
+      test_id: s02_directory_source_graph_correction_and_view_layout_are_revisioned
+      fixture_id: directory
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/s02.md
+    - requirement: APP-04
+      operationId: linkExistingEntity
+      test_id: s02_link_existing_records_is_atomic_attributed_and_idempotent
+      fixture_id: directory
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/s02.md
+    - requirement: FE-03
+      operationId: updateDirectoryProfile
+      test_id: s02_directory_source_graph_correction_and_view_layout_are_revisioned
+      fixture_id: directory
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/s02.md

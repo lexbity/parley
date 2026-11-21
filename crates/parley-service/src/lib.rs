@@ -95,6 +95,96 @@ pub struct EntityRecord {
     pub revision: i64,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct DirectoryRecord {
+    pub id: String,
+    pub kind: String,
+    pub name: String,
+    pub descriptor: String,
+    pub aliases: Vec<String>,
+    pub tags: Vec<String>,
+    pub revision: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SourceRecord {
+    pub content_id: String,
+    pub variant_id: String,
+    pub occurrence_id: String,
+    pub text: String,
+    pub title: Option<String>,
+    pub url: Option<String>,
+    pub captured_at: String,
+    pub actor_kind: String,
+    pub actor_entity_id: Option<String>,
+    pub normalized_sha256: String,
+    pub raw_sha256: String,
+    pub normalization_version: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GraphEdge {
+    pub id: String,
+    pub from_id: String,
+    pub to_id: String,
+    pub verb: String,
+    pub revision: i64,
+    pub claim_id: String,
+    pub claim_revision: i64,
+    pub wording: String,
+    pub approved_wording: Option<String>,
+    pub tier: i64,
+    pub speaker_kind: String,
+    pub speaker_entity_id: Option<String>,
+    pub occurrence_id: Option<String>,
+    pub source_start: Option<i64>,
+    pub source_end: Option<i64>,
+    pub normalization_version: Option<i64>,
+    pub source_title: Option<String>,
+    pub source_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct GraphPosition {
+    pub entity_id: String,
+    pub x: f64,
+    pub y: f64,
+    pub pinned: bool,
+    pub revision: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Neighborhood {
+    pub focus_id: String,
+    pub nodes: Vec<DirectoryRecord>,
+    pub edges: Vec<GraphEdge>,
+    pub positions: Vec<GraphPosition>,
+    pub omitted_nodes: usize,
+    pub omitted_edges: usize,
+}
+
+#[derive(sqlx::FromRow)]
+struct GraphEdgeRow {
+    id: String,
+    from_id: String,
+    to_id: String,
+    verb: String,
+    revision: i64,
+    claim_id: String,
+    claim_revision: i64,
+    wording: String,
+    approved_wording: Option<String>,
+    tier: i64,
+    speaker_kind: String,
+    speaker_entity_id: Option<String>,
+    occurrence_id: Option<String>,
+    source_start: Option<i64>,
+    source_end: Option<i64>,
+    normalization_version: Option<i64>,
+    source_title: Option<String>,
+    source_url: Option<String>,
+}
+
 /// A running local service. The bootstrap fragment is short lived at the
 /// application boundary; callers must remove it from browser history at once.
 pub struct RunningService {
@@ -477,6 +567,395 @@ impl Workspace {
             .collect())
     }
 
+    pub async fn directory(
+        &self,
+        query: &str,
+        kind: &str,
+        tag: &str,
+    ) -> Result<Vec<DirectoryRecord>, WorkspaceError> {
+        let rows = sqlx::query_as::<_, (String,String,String,String,i64)>(
+            "SELECT e.id,e.kind,e.name,COALESCE(d.descriptor,''),e.revision FROM entity e LEFT JOIN entity_detail d ON d.entity_id=e.id WHERE e.kind IN ('person','org','project') ORDER BY e.name COLLATE NOCASE,e.id")
+            .fetch_all(&self.pool).await?;
+        let query = query.trim().to_lowercase();
+        let kind = kind.trim();
+        let tag = tag.trim().to_lowercase();
+        let mut out = Vec::new();
+        for (id, kind_value, name, descriptor, revision) in rows {
+            if !kind.is_empty() && kind != kind_value {
+                continue;
+            }
+            let aliases = sqlx::query_scalar::<_, String>(
+                "SELECT alias FROM entity_alias WHERE entity_id=? ORDER BY normalized_alias",
+            )
+            .bind(&id)
+            .fetch_all(&self.pool)
+            .await?;
+            let tags = sqlx::query_scalar::<_, String>(
+                "SELECT tag FROM entity_tag WHERE entity_id=? ORDER BY normalized_tag",
+            )
+            .bind(&id)
+            .fetch_all(&self.pool)
+            .await?;
+            if !query.is_empty()
+                && !name.to_lowercase().contains(&query)
+                && !descriptor.to_lowercase().contains(&query)
+                && !aliases.iter().any(|a| a.to_lowercase().contains(&query))
+            {
+                continue;
+            }
+            if !tag.is_empty() && !tags.iter().any(|t| t.to_lowercase() == tag) {
+                continue;
+            }
+            out.push(DirectoryRecord {
+                id,
+                kind: kind_value,
+                name,
+                descriptor,
+                aliases,
+                tags,
+                revision,
+            });
+        }
+        Ok(out)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the profile update commits one revisioned set of directory fields and its owner command receipt"
+    )]
+    pub async fn update_directory_profile(
+        &self,
+        key: &str,
+        id: &str,
+        expected: i64,
+        name: &str,
+        descriptor: &str,
+        aliases: &[String],
+        tags: &[String],
+    ) -> Result<DirectoryRecord, WorkspaceError> {
+        if key.trim().is_empty() || key.len() > 200 {
+            return Err(WorkspaceError::Invalid(
+                "idempotency key must contain 1–200 bytes".into(),
+            ));
+        }
+        if name.trim().is_empty()
+            || name.len() > 500
+            || descriptor.len() > 1000
+            || aliases.len() > 32
+            || tags.len() > 32
+            || aliases.iter().any(|v| v.trim().is_empty() || v.len() > 200)
+            || tags.iter().any(|v| v.trim().is_empty() || v.len() > 100)
+        {
+            return Err(WorkspaceError::Invalid(
+                "profile fields exceed their limits or are empty".into(),
+            ));
+        }
+        let canonical = digest(
+            json!([id, expected, name, descriptor, aliases, tags])
+                .to_string()
+                .as_bytes(),
+        );
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some((old_digest,result))=sqlx::query_as::<_,(String,String)>("SELECT canonical_digest,result_json FROM idempotency_receipt WHERE owner_id=1 AND epoch=? AND key=?").bind(&self.epoch).bind(key).fetch_optional(&mut *tx).await?{if old_digest!=canonical{return Err(WorkspaceError::IdempotencyConflict);}let record=serde_json::from_str(&result).map_err(|e|WorkspaceError::Invalid(e.to_string()))?;tx.commit().await?;return Ok(record);}
+        let row=sqlx::query_as::<_,(String,String,i64)>("SELECT kind,name,revision FROM entity WHERE id=? AND kind IN ('person','org','project')").bind(id).fetch_optional(&mut *tx).await?.ok_or(WorkspaceError::NotFound)?;
+        if row.2 != expected {
+            return Err(WorkspaceError::StaleRevision);
+        }
+        let revision = expected + 1;
+        let now = now_utc();
+        sqlx::query("UPDATE entity SET name=?,revision=?,updated_at=? WHERE id=? AND revision=?")
+            .bind(name.trim())
+            .bind(revision)
+            .bind(&now)
+            .bind(id)
+            .bind(expected)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO entity_detail(entity_id,descriptor,revision) VALUES(?,?,1) ON CONFLICT(entity_id) DO UPDATE SET descriptor=excluded.descriptor,revision=entity_detail.revision+1").bind(id).bind(descriptor.trim()).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM entity_alias WHERE entity_id=?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM entity_tag WHERE entity_id=?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        let mut alias_seen = std::collections::HashSet::new();
+        for alias in aliases {
+            let value = alias.trim();
+            let normalized = value.to_lowercase();
+            if alias_seen.insert(normalized.clone()) {
+                sqlx::query(
+                    "INSERT INTO entity_alias(entity_id,alias,normalized_alias) VALUES(?,?,?)",
+                )
+                .bind(id)
+                .bind(value)
+                .bind(normalized)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+        let mut tag_seen = std::collections::HashSet::new();
+        for tag in tags {
+            let value = tag.trim();
+            let normalized = value.to_lowercase();
+            if tag_seen.insert(normalized.clone()) {
+                sqlx::query("INSERT INTO entity_tag(entity_id,tag,normalized_tag) VALUES(?,?,?)")
+                    .bind(id)
+                    .bind(value)
+                    .bind(normalized)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
+        sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'entity',?,?, 'entity.updated',?)").bind(new_id(id)).bind(&now).bind(id).bind(revision).bind(json!({"previous_name":row.1}).to_string()).execute(&mut *tx).await?;
+        let aliases = sqlx::query_scalar::<_, String>(
+            "SELECT alias FROM entity_alias WHERE entity_id=? ORDER BY normalized_alias",
+        )
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let tags = sqlx::query_scalar::<_, String>(
+            "SELECT tag FROM entity_tag WHERE entity_id=? ORDER BY normalized_tag",
+        )
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let result = DirectoryRecord {
+            id: id.into(),
+            kind: row.0,
+            name: name.trim().into(),
+            descriptor: descriptor.trim().into(),
+            aliases,
+            tags,
+            revision,
+        };
+        let result_json =
+            serde_json::to_string(&result).map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
+        sqlx::query("INSERT INTO idempotency_receipt(owner_id,epoch,key,canonical_digest,status_code,result_json,last_event_cursor,created_at) VALUES(1,?,?,?,200,?,(SELECT COALESCE(MAX(cursor),0) FROM event),?)").bind(&self.epoch).bind(key).bind(canonical).bind(result_json).bind(now).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    pub async fn source_record(&self, occurrence_id: &str) -> Result<SourceRecord, WorkspaceError> {
+        let row = sqlx::query_as::<_,(String,String,String,String,Option<String>,Option<String>,String,String,Option<String>,String,String,i64)>(
+            "SELECT c.id,v.id,o.id,v.raw_text,v.title,v.url,o.captured_at,o.actor_kind,o.actor_entity_id,c.normalized_sha256,v.raw_sha256,c.normalization_version FROM source_occurrence o JOIN source_variant v ON v.id=o.source_variant_id JOIN source_content c ON c.id=v.content_id WHERE o.id=?")
+            .bind(occurrence_id).fetch_optional(&self.pool).await?.ok_or(WorkspaceError::NotFound)?;
+        Ok(SourceRecord {
+            content_id: row.0,
+            variant_id: row.1,
+            occurrence_id: row.2,
+            text: row.3,
+            title: row.4,
+            url: row.5,
+            captured_at: row.6,
+            actor_kind: row.7,
+            actor_entity_id: row.8,
+            normalized_sha256: row.9,
+            raw_sha256: row.10,
+            normalization_version: row.11,
+        })
+    }
+
+    pub async fn neighborhood(
+        &self,
+        focus_id: &str,
+        view_scope: &str,
+        view_id: &str,
+    ) -> Result<Neighborhood, WorkspaceError> {
+        let focus: Option<String> = sqlx::query_scalar("SELECT id FROM entity WHERE id=?")
+            .bind(focus_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        if focus.is_none() {
+            return Err(WorkspaceError::NotFound);
+        }
+        let total_edges: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM edge WHERE state='active' AND (from_id=? OR to_id=?)",
+        )
+        .bind(focus_id)
+        .bind(focus_id)
+        .fetch_one(&self.pool)
+        .await?;
+        let edges = sqlx::query_as::<_,GraphEdgeRow>(
+            "SELECT e.id,e.from_id,e.to_id,e.verb,e.revision,c.id AS claim_id,r.revision AS claim_revision,r.wording,r.approved_wording,r.tier,r.speaker_kind,r.speaker_entity_id,r.occurrence_id,r.source_start,r.source_end,r.normalization_version,v.title AS source_title,v.url AS source_url FROM edge e JOIN edge_evidence ee ON ee.edge_id=e.id AND ee.claim_revision=(SELECT current_revision FROM claim WHERE id=ee.claim_id) JOIN claim c ON c.id=ee.claim_id AND ee.claim_revision=c.current_revision JOIN claim_revision r ON r.claim_id=c.id AND r.revision=c.current_revision LEFT JOIN source_variant v ON v.id=r.source_variant_id WHERE e.state='active' AND (e.from_id=? OR e.to_id=?) ORDER BY e.from_id,e.verb,e.to_id,e.id LIMIT 400")
+            .bind(focus_id).bind(focus_id).fetch_all(&self.pool).await?;
+        let mut ids = vec![focus_id.to_owned()];
+        let edges: Vec<GraphEdge> = edges
+            .into_iter()
+            .map(|r| {
+                ids.push(r.from_id.clone());
+                ids.push(r.to_id.clone());
+                GraphEdge {
+                    id: r.id,
+                    from_id: r.from_id,
+                    to_id: r.to_id,
+                    verb: r.verb,
+                    revision: r.revision,
+                    claim_id: r.claim_id,
+                    claim_revision: r.claim_revision,
+                    wording: r.wording,
+                    approved_wording: r.approved_wording,
+                    tier: r.tier,
+                    speaker_kind: r.speaker_kind,
+                    speaker_entity_id: r.speaker_entity_id,
+                    occurrence_id: r.occurrence_id,
+                    source_start: r.source_start,
+                    source_end: r.source_end,
+                    normalization_version: r.normalization_version,
+                    source_title: r.source_title,
+                    source_url: r.source_url,
+                }
+            })
+            .collect();
+        ids.sort();
+        ids.dedup();
+        let omitted_nodes = ids.len().saturating_sub(200);
+        if ids.len() > 200 {
+            let mut others = edges
+                .iter()
+                .flat_map(|edge| [edge.from_id.clone(), edge.to_id.clone()])
+                .filter(|id| id != focus_id)
+                .collect::<Vec<_>>();
+            others.sort();
+            others.dedup();
+            ids = vec![focus_id.to_owned()];
+            ids.extend(others.into_iter().take(199));
+        }
+        let edges: Vec<GraphEdge> = edges
+            .into_iter()
+            .filter(|edge| ids.contains(&edge.from_id) && ids.contains(&edge.to_id))
+            .collect();
+        let omitted_edges = (total_edges.max(0) as usize).saturating_sub(edges.len());
+        let mut nodes = Vec::new();
+        let mut positions = Vec::new();
+        for id in ids {
+            let row = sqlx::query_as::<_,(String,String,String,String,i64)>("SELECT e.id,e.kind,e.name,COALESCE(d.descriptor,''),e.revision FROM entity e LEFT JOIN entity_detail d ON d.entity_id=e.id WHERE e.id=?").bind(&id).fetch_one(&self.pool).await?;
+            let aliases = sqlx::query_scalar::<_, String>(
+                "SELECT alias FROM entity_alias WHERE entity_id=? ORDER BY normalized_alias",
+            )
+            .bind(&id)
+            .fetch_all(&self.pool)
+            .await?;
+            let tags = sqlx::query_scalar::<_, String>(
+                "SELECT tag FROM entity_tag WHERE entity_id=? ORDER BY normalized_tag",
+            )
+            .bind(&id)
+            .fetch_all(&self.pool)
+            .await?;
+            nodes.push(DirectoryRecord {
+                id: row.0,
+                kind: row.1,
+                name: row.2,
+                descriptor: row.3,
+                revision: row.4,
+                aliases,
+                tags,
+            });
+            if let Some(p)=sqlx::query_as::<_,(f64,f64,i64,i64)>("SELECT x,y,pinned,revision FROM view_position WHERE view_scope=? AND view_id=? AND entity_id=?").bind(view_scope).bind(view_id).bind(&id).fetch_optional(&self.pool).await? { positions.push(GraphPosition{entity_id:id,x:p.0,y:p.1,pinned:p.2 != 0,revision:p.3}); }
+        }
+        Ok(Neighborhood {
+            focus_id: focus_id.to_owned(),
+            nodes,
+            edges,
+            positions,
+            omitted_nodes,
+            omitted_edges,
+        })
+    }
+
+    pub async fn correct_claim(
+        &self,
+        key: &str,
+        claim_id: &str,
+        expected: i64,
+        wording: &str,
+    ) -> Result<i64, WorkspaceError> {
+        if key.trim().is_empty() || key.len() > 200 {
+            return Err(WorkspaceError::Invalid(
+                "idempotency key must contain 1–200 bytes".into(),
+            ));
+        }
+        if wording.trim().is_empty() || wording.len() > 2000 {
+            return Err(WorkspaceError::Invalid(
+                "corrected wording must contain 1–2000 bytes".into(),
+            ));
+        }
+        let canonical = digest(json!([claim_id, expected, wording]).to_string().as_bytes());
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some((old_digest,result))=sqlx::query_as::<_,(String,String)>("SELECT canonical_digest,result_json FROM idempotency_receipt WHERE owner_id=1 AND epoch=? AND key=?").bind(&self.epoch).bind(key).fetch_optional(&mut *tx).await?{if old_digest!=canonical{return Err(WorkspaceError::IdempotencyConflict);}let revision:i64=serde_json::from_str(&result).map_err(|e|WorkspaceError::Invalid(e.to_string()))?;tx.commit().await?;return Ok(revision);}
+        let row=sqlx::query_as::<_,(i64,String,String)>("SELECT c.current_revision,c.subject_id,r.wording FROM claim c JOIN claim_revision r ON r.claim_id=c.id AND r.revision=c.current_revision WHERE c.id=?").bind(claim_id).fetch_optional(&mut *tx).await?.ok_or(WorkspaceError::NotFound)?;
+        if row.0 != expected {
+            return Err(WorkspaceError::StaleRevision);
+        }
+        let revision = expected + 1;
+        let now = now_utc();
+        sqlx::query("INSERT INTO claim_revision(claim_id,revision,wording,knowledge_kind,tier,speaker_kind,speaker_entity_id,occurrence_id,source_variant_id,source_start,source_end,normalized_start,normalized_end,normalization_version,approved_wording,confirmed_by_owner,created_at) SELECT ?,?,wording,'owner_report',3,speaker_kind,speaker_entity_id,occurrence_id,source_variant_id,source_start,source_end,normalized_start,normalized_end,normalization_version,?,1,? FROM claim_revision WHERE claim_id=? AND revision=?").bind(claim_id).bind(revision).bind(wording).bind(&now).bind(claim_id).bind(row.0).execute(&mut *tx).await?;
+        sqlx::query("UPDATE claim SET current_revision=? WHERE id=? AND current_revision=?")
+            .bind(revision)
+            .bind(claim_id)
+            .bind(expected)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO edge_evidence(edge_id,claim_id,claim_revision) SELECT edge_id,claim_id,? FROM edge_evidence WHERE claim_id=? GROUP BY edge_id,claim_id").bind(revision).bind(claim_id).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'claim',?,?, 'claim.corrected',?)").bind(new_id(claim_id)).bind(&now).bind(claim_id).bind(revision).bind(json!({"subject_id":row.1}).to_string()).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO idempotency_receipt(owner_id,epoch,key,canonical_digest,status_code,result_json,last_event_cursor,created_at) VALUES(1,?,?,?,200,?,(SELECT COALESCE(MAX(cursor),0) FROM event),?)").bind(&self.epoch).bind(key).bind(canonical).bind(revision.to_string()).bind(&now).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(revision)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the view position command is bound to a view key, entity revision and coordinate pair"
+    )]
+    pub async fn update_layout(
+        &self,
+        key: &str,
+        scope: &str,
+        view: &str,
+        entity_id: &str,
+        expected: i64,
+        x: f64,
+        y: f64,
+    ) -> Result<i64, WorkspaceError> {
+        if key.trim().is_empty() || key.len() > 200 {
+            return Err(WorkspaceError::Invalid(
+                "idempotency key must contain 1–200 bytes".into(),
+            ));
+        }
+        if !x.is_finite() || !y.is_finite() {
+            return Err(WorkspaceError::Invalid(
+                "layout coordinates must be finite".into(),
+            ));
+        }
+        let canonical = digest(
+            json!([scope, view, entity_id, expected, x, y])
+                .to_string()
+                .as_bytes(),
+        );
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some((old_digest,result))=sqlx::query_as::<_,(String,String)>("SELECT canonical_digest,result_json FROM idempotency_receipt WHERE owner_id=1 AND epoch=? AND key=?").bind(&self.epoch).bind(key).fetch_optional(&mut *tx).await?{if old_digest!=canonical{return Err(WorkspaceError::IdempotencyConflict);}let revision:i64=serde_json::from_str(&result).map_err(|e|WorkspaceError::Invalid(e.to_string()))?;tx.commit().await?;return Ok(revision);}
+        let row = sqlx::query_as::<_, (i64,)>(
+            "SELECT revision FROM view_position WHERE view_scope=? AND view_id=? AND entity_id=?",
+        )
+        .bind(scope)
+        .bind(view)
+        .bind(entity_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let next = match row {
+            Some((revision,)) if revision == expected => revision + 1,
+            Some(_) => return Err(WorkspaceError::StaleRevision),
+            None if expected == 0 => 1,
+            None => return Err(WorkspaceError::StaleRevision),
+        };
+        sqlx::query("INSERT INTO view_position(view_scope,view_id,entity_id,x,y,pinned,revision) VALUES(?,?,?,?,?,1,?) ON CONFLICT(view_scope,view_id,entity_id) DO UPDATE SET x=excluded.x,y=excluded.y,pinned=1,revision=excluded.revision").bind(scope).bind(view).bind(entity_id).bind(x).bind(y).bind(next).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'layout',?,?, 'layout.changed',?)").bind(new_id(entity_id)).bind(now_utc()).bind(entity_id).bind(next).bind(json!({"view_scope":scope,"view_id":view}).to_string()).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO idempotency_receipt(owner_id,epoch,key,canonical_digest,status_code,result_json,last_event_cursor,created_at) VALUES(1,?,?,?,200,?,(SELECT COALESCE(MAX(cursor),0) FROM event),?)").bind(&self.epoch).bind(key).bind(canonical).bind(next.to_string()).bind(now_utc()).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(next)
+    }
+
     pub async fn list_resources(&self) -> Result<Vec<ResourceRecord>, WorkspaceError> {
         let rows=sqlx::query_as::<_,(String,String,String,String,String,i64)>("SELECT id,kind,title,body_json,readiness,revision FROM resource WHERE readiness <> 'retired' ORDER BY created_at,id").fetch_all(&self.pool).await?;
         rows.into_iter()
@@ -677,6 +1156,7 @@ impl Workspace {
     )]
     pub async fn create_related_entity(
         &self,
+        idempotency_key: &str,
         kind: &str,
         name: &str,
         from_id: &str,
@@ -688,12 +1168,37 @@ impl Workspace {
         x: f64,
         y: f64,
     ) -> Result<EntityRecord, WorkspaceError> {
+        if idempotency_key.trim().is_empty() || idempotency_key.len() > 200 {
+            return Err(WorkspaceError::Invalid(
+                "idempotency key must contain 1–200 bytes".into(),
+            ));
+        }
         if !x.is_finite() || !y.is_finite() {
             return Err(WorkspaceError::Invalid(
                 "layout coordinates must be finite".into(),
             ));
         }
+        let canonical = digest(
+            json!([
+                kind,
+                name,
+                from_id,
+                verb,
+                occurrence_id,
+                quote,
+                view_scope,
+                view_id,
+                x,
+                y
+            ])
+            .to_string()
+            .as_bytes(),
+        );
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some((old_digest,result))=sqlx::query_as::<_,(String,String)>("SELECT canonical_digest,result_json FROM idempotency_receipt WHERE owner_id=1 AND epoch=? AND key=?").bind(&self.epoch).bind(idempotency_key).fetch_optional(&mut *tx).await? {
+            if old_digest!=canonical{return Err(WorkspaceError::IdempotencyConflict);}
+            let record:EntityRecord=serde_json::from_str(&result).map_err(|e|WorkspaceError::Invalid(e.to_string()))?;tx.commit().await?;return Ok(record);
+        }
         let source=sqlx::query_as::<_,(String,String,String,Option<String>)>("SELECT v.raw_text,o.source_variant_id,o.actor_kind,o.actor_entity_id FROM source_occurrence o JOIN source_variant v ON v.id=o.source_variant_id WHERE o.id=?")
             .bind(occurrence_id).fetch_optional(&mut *tx).await?.ok_or_else(|| WorkspaceError::Invalid("source occurrence does not exist".into()))?;
         let matched =
@@ -758,13 +1263,82 @@ impl Workspace {
         ] {
             sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?,?, ?,1,?,'{}')").bind(new_id(entity_id)).bind(&now).bind(entity_type).bind(entity_id).bind(event_type).execute(&mut *tx).await?;
         }
-        tx.commit().await?;
-        Ok(EntityRecord {
+        let record = EntityRecord {
             id,
             kind: kind.into(),
             name: name.into(),
             revision: 1,
-        })
+        };
+        let result_json =
+            serde_json::to_string(&record).map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
+        sqlx::query("INSERT INTO idempotency_receipt(owner_id,epoch,key,canonical_digest,status_code,result_json,last_event_cursor,created_at) VALUES(1,?,?,?,201,?,(SELECT COALESCE(MAX(cursor),0) FROM event),?)").bind(&self.epoch).bind(idempotency_key).bind(canonical).bind(result_json).bind(now).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(record)
+    }
+
+    pub async fn link_existing_entity(
+        &self,
+        key: &str,
+        from_id: &str,
+        to_id: &str,
+        verb: &str,
+        occurrence_id: &str,
+        quote: &str,
+    ) -> Result<String, WorkspaceError> {
+        if key.trim().is_empty() || key.len() > 200 {
+            return Err(WorkspaceError::Invalid(
+                "idempotency key must contain 1–200 bytes".into(),
+            ));
+        }
+        let canonical = digest(
+            json!([from_id, to_id, verb, occurrence_id, quote])
+                .to_string()
+                .as_bytes(),
+        );
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some((old_digest,result))=sqlx::query_as::<_,(String,String)>("SELECT canonical_digest,result_json FROM idempotency_receipt WHERE owner_id=1 AND epoch=? AND key=?").bind(&self.epoch).bind(key).fetch_optional(&mut *tx).await?{if old_digest!=canonical{return Err(WorkspaceError::IdempotencyConflict);}let id=serde_json::from_str(&result).map_err(|e|WorkspaceError::Invalid(e.to_string()))?;tx.commit().await?;return Ok(id);}
+        let kinds = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            "SELECT (SELECT kind FROM entity WHERE id=?),(SELECT kind FROM entity WHERE id=?)",
+        )
+        .bind(from_id)
+        .bind(to_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let (Some(from_kind), Some(to_kind)) = kinds else {
+            return Err(WorkspaceError::NotFound);
+        };
+        if !matches!(
+            (from_kind.as_str(), to_kind.as_str(), verb),
+            ("person", "org", "member_of")
+                | ("project", "org", "works_with")
+                | ("resource", "person", "offers_to")
+        ) {
+            return Err(WorkspaceError::Invalid(
+                "relationship endpoint types and direction are not allowed".into(),
+            ));
+        }
+        let source=sqlx::query_as::<_,(String,String,String,Option<String>)>("SELECT v.raw_text,o.source_variant_id,o.actor_kind,o.actor_entity_id FROM source_occurrence o JOIN source_variant v ON v.id=o.source_variant_id WHERE o.id=?").bind(occurrence_id).fetch_optional(&mut *tx).await?.ok_or_else(||WorkspaceError::Invalid("source occurrence does not exist".into()))?;
+        let matched =
+            parley_domain::evidence::verify_quote(&source.0, quote, None).map_err(|_| {
+                WorkspaceError::Invalid("quote is absent or ambiguous in the cited source".into())
+            })?;
+        let now = now_utc();
+        let claim_id = new_id(from_id);
+        sqlx::query("INSERT INTO claim(id,subject_id,predicate,current_revision,created_at) VALUES(?,?,?,1,?)").bind(&claim_id).bind(from_id).bind(verb).bind(&now).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO claim_revision(claim_id,revision,wording,knowledge_kind,tier,speaker_kind,speaker_entity_id,occurrence_id,source_variant_id,source_start,source_end,normalized_start,normalized_end,normalization_version,created_at) VALUES(?,1,?,'observation',1,?,?,?,?,?,?,?,?,?,?)").bind(&claim_id).bind(quote).bind(&source.2).bind(source.3.as_deref()).bind(occurrence_id).bind(&source.1).bind(matched.source_start as i64).bind(matched.source_end as i64).bind(matched.normalized_start as i64).bind(matched.normalized_end as i64).bind(parley_domain::evidence::NORMALIZATION_VERSION as i64).bind(&now).execute(&mut *tx).await?;
+        let edge_id = new_id(&claim_id);
+        sqlx::query("INSERT INTO edge(id,from_id,verb,to_id,state,revision,created_at) VALUES(?,?,?,?,'active',1,?)").bind(&edge_id).bind(from_id).bind(verb).bind(to_id).bind(&now).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO edge_evidence(edge_id,claim_id,claim_revision) VALUES(?,?,1)")
+            .bind(&edge_id)
+            .bind(&claim_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'edge',?,1,'edge.created',?)").bind(new_id(&edge_id)).bind(&now).bind(&edge_id).bind(json!({"from_id":from_id,"to_id":to_id,"claim_id":claim_id}).to_string()).execute(&mut *tx).await?;
+        let result =
+            serde_json::to_string(&edge_id).map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
+        sqlx::query("INSERT INTO idempotency_receipt(owner_id,epoch,key,canonical_digest,status_code,result_json,last_event_cursor,created_at) VALUES(1,?,?,?,201,?,(SELECT COALESCE(MAX(cursor),0) FROM event),?)").bind(&self.epoch).bind(key).bind(canonical).bind(result).bind(&now).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(edge_id)
     }
 
     /// Last committed workspace event sequence, used as the read cursor.
@@ -876,7 +1450,17 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         )
         .route("/api/v1/events", get(get_events))
         .route("/api/v1/captures", get(list_captures).post(save_capture))
+        .route("/api/v1/captures/{id}", get(get_capture))
+        .route("/api/v1/directory", get(get_directory))
+        .route(
+            "/api/v1/directory/{id}",
+            axum::routing::patch(update_directory),
+        )
+        .route("/api/v1/graph/{id}", get(get_neighborhood))
+        .route("/api/v1/claims/{id}/correction", post(correct_claim))
+        .route("/api/v1/layout", post(save_layout))
         .route("/api/v1/graph/related", post(create_related_entity))
+        .route("/api/v1/graph/edges", post(link_existing_entity))
         .with_state(state)
         .layer(axum::extract::DefaultBodyLimit::max(2_100_000));
     let (shutdown, receiver) = tokio::sync::oneshot::channel();
@@ -1727,6 +2311,8 @@ struct CaptureRequest {
     text: String,
     title: Option<String>,
     url: Option<String>,
+    actor_kind: Option<String>,
+    actor_entity_id: Option<String>,
 }
 
 async fn save_capture(
@@ -1739,7 +2325,13 @@ async fn save_capture(
     }
     match state
         .workspace
-        .save_source(&input.text, input.title.as_deref(), input.url.as_deref())
+        .save_source_attributed(
+            &input.text,
+            input.title.as_deref(),
+            input.url.as_deref(),
+            input.actor_kind.as_deref().unwrap_or("unknown"),
+            input.actor_entity_id.as_deref(),
+        )
         .await
     {
         Ok(source) => {
@@ -1772,6 +2364,294 @@ async fn list_captures(State(state): State<AppState>, headers: HeaderMap) -> Res
     }
 }
 
+async fn get_capture(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Err(response) = authenticate(&headers, &state).await {
+        return response.into_response();
+    }
+    match state.workspace.source_record(&id).await {
+        Ok(record) => {
+            let mut response = Json(record).into_response();
+            private_headers(&mut response, state.workspace.epoch());
+            response
+        }
+        Err(WorkspaceError::NotFound) => error(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            "Source occurrence does not exist",
+        ),
+        Err(_) => error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "READ_FAILED",
+            "Could not read source",
+        ),
+    }
+}
+
+async fn get_directory(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    if let Err(response) = authenticate(&headers, &state).await {
+        return response.into_response();
+    }
+    let page = query
+        .get("page")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1);
+    let page_size = query
+        .get("page_size")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(50);
+    if page == 0 || page_size == 0 || page_size > 200 {
+        return error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "INVALID_PAGE",
+            "Page must be positive and page_size must be 1–200",
+        );
+    }
+    match state
+        .workspace
+        .directory(
+            query.get("q").map(String::as_str).unwrap_or(""),
+            query.get("kind").map(String::as_str).unwrap_or(""),
+            query.get("tag").map(String::as_str).unwrap_or(""),
+        )
+        .await
+    {
+        Ok(items) => {
+            let total = items.len();
+            let start = (page - 1).saturating_mul(page_size);
+            let has_more = start.saturating_add(page_size) < total;
+            let data = items
+                .into_iter()
+                .skip(start)
+                .take(page_size)
+                .collect::<Vec<_>>();
+            let mut response=Json(json!({"data":data,"total":total,"page":page,"page_size":page_size,"has_more":has_more,"cursor":state.workspace.current_cursor().await.unwrap_or(0).to_string()})).into_response();
+            private_headers(&mut response, state.workspace.epoch());
+            response
+        }
+        Err(_) => error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "READ_FAILED",
+            "Could not read directory",
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+struct DirectoryUpdateInput {
+    expected_revision: i64,
+    name: String,
+    descriptor: String,
+    aliases: Vec<String>,
+    tags: Vec<String>,
+}
+async fn update_directory(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<DirectoryUpdateInput>,
+) -> Response {
+    if let Err(response) = authenticate(&headers, &state).await {
+        return response.into_response();
+    }
+    let Some(key) = headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "IDEMPOTENCY_KEY_REQUIRED",
+            "Idempotency-Key is required",
+        );
+    };
+    match state
+        .workspace
+        .update_directory_profile(
+            key,
+            &id,
+            input.expected_revision,
+            &input.name,
+            &input.descriptor,
+            &input.aliases,
+            &input.tags,
+        )
+        .await
+    {
+        Ok(row) => {
+            let mut response = Json(row).into_response();
+            private_headers(&mut response, state.workspace.epoch());
+            response
+        }
+        Err(WorkspaceError::StaleRevision) => error(
+            StatusCode::PRECONDITION_FAILED,
+            "STALE_REVISION",
+            "Directory entry changed in another session",
+        ),
+        Err(WorkspaceError::NotFound) => error(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            "Directory entry does not exist",
+        ),
+        Err(WorkspaceError::Invalid(message)) => {
+            error(StatusCode::UNPROCESSABLE_ENTITY, "INVALID_PROFILE", message)
+        }
+        Err(err) => command_error(err),
+    }
+}
+
+async fn get_neighborhood(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    if let Err(response) = authenticate(&headers, &state).await {
+        return response.into_response();
+    }
+    let scope = query
+        .get("view_scope")
+        .map(String::as_str)
+        .unwrap_or("party");
+    let view = query.get("view_id").map(String::as_str).unwrap_or(&id);
+    match state.workspace.neighborhood(&id, scope, view).await {
+        Ok(graph) => {
+            let mut response = Json(graph).into_response();
+            private_headers(&mut response, state.workspace.epoch());
+            response
+        }
+        Err(WorkspaceError::NotFound) => error(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            "Directory entity does not exist",
+        ),
+        Err(_) => error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "READ_FAILED",
+            "Could not read neighborhood",
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+struct ClaimCorrectionInput {
+    expected_revision: i64,
+    wording: String,
+}
+async fn correct_claim(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<ClaimCorrectionInput>,
+) -> Response {
+    if let Err(response) = authenticate(&headers, &state).await {
+        return response.into_response();
+    }
+    let Some(key) = headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "IDEMPOTENCY_KEY_REQUIRED",
+            "Idempotency-Key is required",
+        );
+    };
+    match state
+        .workspace
+        .correct_claim(key, &id, input.expected_revision, &input.wording)
+        .await
+    {
+        Ok(revision) => {
+            let mut response =
+                Json(json!({"claim_id":id,"revision":revision,"approved_wording":input.wording}))
+                    .into_response();
+            private_headers(&mut response, state.workspace.epoch());
+            response
+        }
+        Err(WorkspaceError::StaleRevision) => error(
+            StatusCode::PRECONDITION_FAILED,
+            "STALE_REVISION",
+            "Claim changed in another session",
+        ),
+        Err(WorkspaceError::NotFound) => {
+            error(StatusCode::NOT_FOUND, "NOT_FOUND", "Claim does not exist")
+        }
+        Err(WorkspaceError::Invalid(message)) => error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "INVALID_CORRECTION",
+            message,
+        ),
+        Err(err) => command_error(err),
+    }
+}
+
+#[derive(Deserialize)]
+struct LayoutInput {
+    view_scope: String,
+    view_id: String,
+    entity_id: String,
+    expected_revision: i64,
+    x: f64,
+    y: f64,
+}
+async fn save_layout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<LayoutInput>,
+) -> Response {
+    if let Err(response) = authenticate(&headers, &state).await {
+        return response.into_response();
+    }
+    let Some(key) = headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "IDEMPOTENCY_KEY_REQUIRED",
+            "Idempotency-Key is required",
+        );
+    };
+    match state
+        .workspace
+        .update_layout(
+            key,
+            &input.view_scope,
+            &input.view_id,
+            &input.entity_id,
+            input.expected_revision,
+            input.x,
+            input.y,
+        )
+        .await
+    {
+        Ok(revision) => {
+            let mut response = Json(
+                json!({"entity_id":input.entity_id,"revision":revision,"x":input.x,"y":input.y}),
+            )
+            .into_response();
+            private_headers(&mut response, state.workspace.epoch());
+            response
+        }
+        Err(WorkspaceError::StaleRevision) => error(
+            StatusCode::PRECONDITION_FAILED,
+            "STALE_LAYOUT",
+            "View layout changed in another session",
+        ),
+        Err(WorkspaceError::Invalid(message)) => {
+            error(StatusCode::UNPROCESSABLE_ENTITY, "INVALID_LAYOUT", message)
+        }
+        Err(err) => command_error(err),
+    }
+}
+
 #[derive(Deserialize)]
 struct RelatedEntityRequest {
     kind: String,
@@ -1794,9 +2674,20 @@ async fn create_related_entity(
     if let Err(response) = authenticate(&headers, &state).await {
         return response.into_response();
     }
+    let Some(key) = headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "IDEMPOTENCY_KEY_REQUIRED",
+            "Idempotency-Key is required",
+        );
+    };
     match state
         .workspace
         .create_related_entity(
+            key,
             &input.kind,
             &input.name,
             &input.related_entity_id,
@@ -1816,6 +2707,59 @@ async fn create_related_entity(
                 Json(json!({"id": entity.id, "kind": entity.kind, "name": entity.name, "revision": entity.revision})),
             )
                 .into_response();
+            private_headers(&mut response, state.workspace.epoch());
+            response
+        }
+        Err(WorkspaceError::Invalid(message)) => error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "RELATIONSHIP_REJECTED",
+            message,
+        ),
+        Err(err) => command_error(err),
+    }
+}
+
+#[derive(Deserialize)]
+struct LinkExistingRequest {
+    from_id: String,
+    to_id: String,
+    verb: String,
+    occurrence_id: String,
+    quote: String,
+}
+async fn link_existing_entity(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<LinkExistingRequest>,
+) -> Response {
+    if let Err(response) = authenticate(&headers, &state).await {
+        return response.into_response();
+    }
+    let Some(key) = headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "IDEMPOTENCY_KEY_REQUIRED",
+            "Idempotency-Key is required",
+        );
+    };
+    match state
+        .workspace
+        .link_existing_entity(
+            key,
+            &input.from_id,
+            &input.to_id,
+            &input.verb,
+            &input.occurrence_id,
+            &input.quote,
+        )
+        .await
+    {
+        Ok(edge_id) => {
+            let mut response =
+                (StatusCode::CREATED, Json(json!({"edge_id":edge_id}))).into_response();
             private_headers(&mut response, state.workspace.epoch());
             response
         }

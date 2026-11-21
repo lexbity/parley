@@ -6,6 +6,11 @@ export type Entity = components['schemas']['Entity'];
 export type SavedSource = components['schemas']['SavedSource'];
 export type EntityInput = components['schemas']['EntityInput'];
 export type CaptureInput = components['schemas']['CaptureInput'];
+export type DirectoryEntity = { id:string; kind:'person'|'org'|'project'; name:string; descriptor:string; aliases:string[]; tags:string[]; revision:number };
+export type DirectoryPage = { items:DirectoryEntity[]; total:number; page:number; page_size:number; has_more:boolean };
+export type GraphEdge = { id:string; from_id:string; to_id:string; verb:string; revision:number; claim_id:string; claim_revision:number; wording:string; approved_wording:string|null; tier:number; speaker_kind:string; speaker_entity_id:string|null; occurrence_id:string|null; source_start:number|null; source_end:number|null; normalization_version:number|null; source_title:string|null; source_url:string|null };
+export type Neighborhood = { focus_id:string; nodes:DirectoryEntity[]; edges:GraphEdge[]; positions:Array<{entity_id:string;x:number;y:number;pinned:boolean;revision:number}>; omitted_nodes:number; omitted_edges:number };
+export type SourceDetail = SavedSource & { text:string; title:string|null; url:string|null; captured_at:string; actor_kind:string; actor_entity_id:string|null; normalization_version:number };
 type Session = components['schemas']['Session'];
 type EventPage = components['schemas']['EventPage'];
 type CreateResource = components['schemas']['CreateResource'];
@@ -210,6 +215,56 @@ export class ParleyClient {
     return data as GraphEntity[];
   }
 
+  async searchDirectory(filters: { q?:string; kind?:string; tag?:string } = {}, signal?:AbortSignal, page=1, pageSize=50): Promise<DirectoryPage> {
+    const query = new URLSearchParams();
+    if (filters.q) query.set('q', filters.q); if (filters.kind) query.set('kind', filters.kind); if (filters.tag) query.set('tag', filters.tag);query.set('page',String(page));query.set('page_size',String(pageSize));
+    const value = object(await this.request(`/directory${query.size ? `?${query}` : ''}`,{signal}));
+    if (!value || !Array.isArray(value.data)||!Number.isSafeInteger(value.total)||!Number.isSafeInteger(value.page)||!Number.isSafeInteger(value.page_size)||typeof value.has_more!=='boolean') throw new Error('Invalid response: directory is malformed');
+    const items=value.data.map((item) => {
+      const row=object(item); if (!row || !Array.isArray(row.aliases) || !Array.isArray(row.tags) || !Number.isSafeInteger(row.revision)) throw new Error('Invalid response: directory row is malformed');
+      return { id:requiredString(row.id,'directory.id'), kind:requiredString(row.kind,'directory.kind') as DirectoryEntity['kind'], name:requiredString(row.name,'directory.name'), descriptor:requiredString(row.descriptor,'directory.descriptor'), aliases:row.aliases.map((v)=>requiredString(v,'alias')), tags:row.tags.map((v)=>requiredString(v,'tag')), revision:Number(row.revision) };
+    });
+    return {items,total:Number(value.total),page:Number(value.page),page_size:Number(value.page_size),has_more:value.has_more};
+  }
+
+  async updateDirectory(entity:DirectoryEntity,input:{name:string;descriptor:string;aliases:string[];tags:string},key:string):Promise<DirectoryEntity>{
+    const response=object(await this.mutate(`/directory/${encodeURIComponent(entity.id)}`,'PATCH',{expected_revision:entity.revision,name:input.name,descriptor:input.descriptor,aliases:input.aliases,tags:input.tags.split(',').map(value=>value.trim()).filter(Boolean)},{'Idempotency-Key':key}));
+    if(!response||!Number.isSafeInteger(response.revision)||!Array.isArray(response.aliases)||!Array.isArray(response.tags))throw new Error('Invalid response: directory update is malformed');
+    return {id:requiredString(response.id,'directory.id'),kind:requiredString(response.kind,'directory.kind') as DirectoryEntity['kind'],name:requiredString(response.name,'directory.name'),descriptor:requiredString(response.descriptor,'directory.descriptor'),aliases:response.aliases.map(v=>requiredString(v,'alias')),tags:response.tags.map(v=>requiredString(v,'tag')),revision:Number(response.revision)};
+  }
+
+  async getNeighborhood(id:string, viewScope='party', viewId=id, signal?:AbortSignal): Promise<Neighborhood> {
+    const query=new URLSearchParams({view_scope:viewScope,view_id:viewId}); const value=object(await this.request(`/graph/${encodeURIComponent(id)}?${query}`,{signal}));
+    if (!value || !Array.isArray(value.nodes) || !Array.isArray(value.edges) || !Array.isArray(value.positions)) throw new Error('Invalid response: graph neighborhood is malformed');
+    if(!Number.isSafeInteger(value.omitted_nodes)||!Number.isSafeInteger(value.omitted_edges))throw new Error('Invalid response: graph counts are malformed');
+    return value as unknown as Neighborhood;
+  }
+
+  async getSource(occurrenceId:string): Promise<SourceDetail> {
+    const value=object(await this.request(`/captures/${encodeURIComponent(occurrenceId)}`));
+    if (!value || typeof value.text!=='string') throw new Error('Invalid response: source detail is malformed');
+    return { ...decodeSavedSource(value), text:value.text, title:typeof value.title==='string'?value.title:null, url:typeof value.url==='string'?value.url:null, captured_at:requiredString(value.captured_at,'source.captured_at'), actor_kind:requiredString(value.actor_kind,'source.actor_kind'), actor_entity_id:typeof value.actor_entity_id==='string'?value.actor_entity_id:null, normalization_version:Number(value.normalization_version) };
+  }
+
+  async correctClaim(claimId:string, expectedRevision:number, wording:string): Promise<{claim_id:string;revision:number;approved_wording:string}> {
+    const value=object(await this.mutate(`/claims/${encodeURIComponent(claimId)}/correction`,'POST',{expected_revision:expectedRevision,wording},{'Idempotency-Key':newOperationKey()}));
+    if (!value || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1) throw new Error('Invalid response: correction receipt is malformed');
+    return {claim_id:requiredString(value.claim_id,'claim_id'),revision:Number(value.revision),approved_wording:requiredString(value.approved_wording,'approved_wording')};
+  }
+
+  async saveLayout(input:{view_scope:string;view_id:string;entity_id:string;expected_revision:number;x:number;y:number}):Promise<void> {
+    await this.mutate('/layout','POST',input,{'Idempotency-Key':newOperationKey()});
+  }
+
+  async createRelated(input:{kind:string;name:string;related_entity_id:string;verb:string;occurrence_id:string;quote:string;view_scope:string;view_id:string;x:number;y:number}):Promise<GraphEntity> {
+    const data=await this.request('/graph/related',{method:'POST',body:JSON.stringify(input),headers:{'Idempotency-Key':newOperationKey()}});
+    return decodeGraphEntity(data);
+  }
+
+  async linkExisting(input:{from_id:string;to_id:string;verb:string;occurrence_id:string;quote:string}):Promise<string>{
+    const value=object(await this.mutate('/graph/edges','POST',input,{'Idempotency-Key':newOperationKey()}));if(!value)return Promise.reject(new Error('Invalid response: edge receipt is malformed'));return requiredString(value.edge_id,'edge_id');
+  }
+
   async getResource(id: string): Promise<Resource> {
     const { data } = decodeEnvelopeData(await this.request(`/entities/${encodeURIComponent(id)}`), decodeResource);
     return data as Resource;
@@ -264,6 +319,7 @@ export class ParleyClient {
   }
 
   private async request(path: string, init: RequestInit = {}, authenticated = true): Promise<unknown> {
+    const requestEpoch=authenticated?this.session?.epoch:undefined;
     const headers = new Headers(init.headers);
     headers.set('Accept', 'application/json');
     headers.set('Content-Type', 'application/json');
@@ -288,6 +344,8 @@ export class ParleyClient {
     } catch {
       throw new ApiError('The local service returned an unreadable response.', response.status, 'INVALID_RESPONSE');
     }
+    const responseEpoch=response.headers.get('x-parley-epoch');
+    if(responseEpoch&&requestEpoch&&responseEpoch!==requestEpoch)throw new ApiError('The workspace changed while this read was in progress.',409,'WORKSPACE_CHANGED');
     if (!response.ok) throw decodeApiError(payload, response.status);
     return payload;
   }

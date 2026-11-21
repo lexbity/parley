@@ -116,6 +116,118 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/captures/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getCaptureOccurrence"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/directory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["searchDirectory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/directory/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["updateDirectoryProfile"];
+        trace?: never;
+    };
+    "/graph/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getNeighborhood"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/graph/edges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["linkExistingEntity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/claims/{id}/correction": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["correctClaimWording"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/layout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["updateViewPosition"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/graph/related": {
         parameters: {
             query?: never;
@@ -174,6 +286,85 @@ export interface components {
             name: string;
             revision: number;
         };
+        DirectoryEntity: {
+            id: string;
+            /** @enum {unknown} */
+            kind: "person" | "org" | "project";
+            name: string;
+            descriptor: string;
+            aliases: string[];
+            tags: string[];
+            revision: number;
+        };
+        DirectoryEnvelope: {
+            data: components["schemas"]["DirectoryEntity"][];
+            cursor: string;
+            total: number;
+            page: number;
+            page_size: number;
+            has_more: boolean;
+        };
+        DirectoryProfileInput: {
+            expected_revision: number;
+            name: string;
+            descriptor: string;
+            aliases: string[];
+            tags: string[];
+        };
+        SourceDetail: components["schemas"]["SavedSource"] & {
+            text: string;
+            title: string | null;
+            url: string | null;
+            captured_at: string;
+            actor_kind: string;
+            actor_entity_id: string | null;
+            normalization_version: number;
+        };
+        Neighborhood: {
+            focus_id: string;
+            nodes: components["schemas"]["DirectoryEntity"][];
+            edges: {
+                [key: string]: unknown;
+            }[];
+            positions: {
+                [key: string]: unknown;
+            }[];
+            omitted_nodes: number;
+            omitted_edges: number;
+        };
+        ClaimCorrection: {
+            expected_revision: number;
+            wording: string;
+        };
+        ClaimCorrectionReceipt: {
+            claim_id: string;
+            revision: number;
+            approved_wording: string;
+        };
+        LayoutInput: {
+            view_scope: string;
+            view_id: string;
+            entity_id: string;
+            expected_revision: number;
+            x: number;
+            y: number;
+        };
+        LayoutReceipt: {
+            entity_id: string;
+            revision: number;
+            x: number;
+            y: number;
+        };
+        LinkExistingInput: {
+            from_id: string;
+            to_id: string;
+            verb: string;
+            occurrence_id: string;
+            quote: string;
+        };
+        EdgeReceipt: {
+            edge_id: string;
+        };
         Entity: components["schemas"]["Resource"] | components["schemas"]["GraphEntity"];
         EntityList: {
             data: components["schemas"]["Entity"][];
@@ -221,6 +412,9 @@ export interface components {
             text: string;
             title?: string | null;
             url?: string | null;
+            /** @enum {string} */
+            actor_kind?: "owner" | "party" | "unknown";
+            actor_entity_id?: string | null;
         };
         SavedSource: {
             content_id: string;
@@ -550,12 +744,217 @@ export interface operations {
             401: components["responses"]["Error"];
         };
     };
+    getCaptureOccurrence: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Raw captured occurrence and normalization provenance */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceDetail"];
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    searchDirectory: {
+        parameters: {
+            query?: {
+                q?: string;
+                kind?: "person" | "org" | "project";
+                tag?: string;
+                page?: number;
+                page_size?: number;
+            };
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stable */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DirectoryEnvelope"];
+                };
+            };
+        };
+    };
+    updateDirectoryProfile: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DirectoryProfileInput"];
+            };
+        };
+        responses: {
+            /** @description Directory profile and revision updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DirectoryEntity"];
+                };
+            };
+            412: components["responses"]["Error"];
+        };
+    };
+    getNeighborhood: {
+        parameters: {
+            query?: {
+                view_scope?: string;
+                view_id?: string;
+            };
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded neighborhood with attributed current evidence and view layout */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Neighborhood"];
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    linkExistingEntity: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LinkExistingInput"];
+            };
+        };
+        responses: {
+            /** @description Existing endpoint records linked with exact attributed evidence */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EdgeReceipt"];
+                };
+            };
+            422: components["responses"]["Error"];
+        };
+    };
+    correctClaimWording: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClaimCorrection"];
+            };
+        };
+        responses: {
+            /** @description Owner correction revision */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClaimCorrectionReceipt"];
+                };
+            };
+            412: components["responses"]["Error"];
+        };
+    };
+    updateViewPosition: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LayoutInput"];
+            };
+        };
+        responses: {
+            /** @description View-specific position saved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LayoutReceipt"];
+                };
+            };
+            412: components["responses"]["Error"];
+        };
+    };
     createRelatedEntity: {
         parameters: {
             query?: never;
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
                 "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
             cookie?: never;

@@ -1,0 +1,1 @@
+These request and response examples cover S02 directory, source occurrence, neighborhood, correction, and view layout operations. The browser journey exercises them with synthetic data against both service implementations.

@@ -22,7 +22,7 @@ type ResourceRecord = {
   updated_at: string;
 };
 
-type EntityRecord = { id: string; kind: string; name: string; revision: number };
+type EntityRecord = { id: string; kind: string; name: string; revision: number; descriptor?:string; aliases?:string[]; tags?:string[] };
 
 type SavedSource = {
   content_id: string;
@@ -58,6 +58,9 @@ export function createMockApi(): MockApi {
   const directory = new Map<string, EntityRecord>();
   const sourceGroups = new Map<string, { id: string; variants: Map<string, string> }>();
   const captures: SavedSource[] = [];
+  const sourceDetails = new Map<string, RecordData>();
+  const graphEdges: Array<RecordData> = [];
+  const positions = new Map<string, RecordData>();
   const receipts = new Map<string, { digest: string; result: RecordData }>();
   const events: EventRecord[] = [];
   let testClock = Date.UTC(2026, 0, 1);
@@ -275,6 +278,28 @@ export function createMockApi(): MockApi {
     if (url.pathname === '/api/v1/captures' && request.method === 'GET') {
       return json(response, 200, captures);
     }
+    const sourceMatch = url.pathname.match(/^\/api\/v1\/captures\/([^/]+)$/);
+    if (sourceMatch && request.method === 'GET') return sourceDetails.has(sourceMatch[1]!) ? json(response,200,sourceDetails.get(sourceMatch[1]!)!) : fail(response,404,'NOT_FOUND','Source occurrence does not exist');
+    if (url.pathname === '/api/v1/directory' && request.method === 'GET') {
+      const q=(url.searchParams.get('q')??'').toLocaleLowerCase(); const kind=url.searchParams.get('kind')??'';
+      const tag=(url.searchParams.get('tag')??'').toLocaleLowerCase();const matched=[...directory.values()].filter(row=>(!kind||row.kind===kind)&&(`${row.name} ${row.descriptor??''} ${(row.aliases??[]).join(' ')}`).toLocaleLowerCase().includes(q)&&(!tag||(row.tags??[]).some(value=>value.toLocaleLowerCase()===tag))).sort((a,b)=>a.name.localeCompare(b.name)||a.id.localeCompare(b.id));const page=Number(url.searchParams.get('page')??1);const pageSize=Number(url.searchParams.get('page_size')??50);const data=matched.slice((page-1)*pageSize,page*pageSize).map(row=>({ ...row,descriptor:row.descriptor??'',aliases:row.aliases??[],tags:row.tags??[] }));
+      return json(response,200,{data,total:matched.length,page,page_size:pageSize,has_more:page*pageSize<matched.length,cursor:String(events.length)});
+    }
+    const directoryUpdate=url.pathname.match(/^\/api\/v1\/directory\/([^/]+)$/);
+    if(directoryUpdate&&request.method==='PATCH'){
+      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}
+      const commandKey=request.headers['idempotency-key'];if(typeof commandKey!=='string'||!commandKey)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');const commandDigest=createHash('sha256').update(JSON.stringify([directoryUpdate[1],input])).digest('hex');const prior=receipts.get(commandKey);if(prior)return prior.digest===commandDigest?json(response,200,prior.result):fail(response,409,'KEY_REUSED','Idempotency key was used for a different command');
+      const entity=directory.get(decodeURIComponent(directoryUpdate[1]!));if(!entity)return fail(response,404,'NOT_FOUND','Directory entry does not exist');if(Number(input.expected_revision)!==entity.revision)return fail(response,412,'STALE_REVISION','Directory entry changed in another session');
+      const updated:EntityRecord={...entity,name:String(input.name),descriptor:String(input.descriptor),aliases:Array.isArray(input.aliases)?input.aliases.map(String):[],tags:Array.isArray(input.tags)?input.tags.map(String):[],revision:entity.revision+1};directory.set(entity.id,updated);pushEvent({event_id:randomHex(),entity_type:'entity',entity_id:entity.id,revision:updated.revision,event_type:'entity.updated',payload:{}});const result={...updated,descriptor:updated.descriptor,aliases:updated.aliases,tags:updated.tags};receipts.set(commandKey,{digest:commandDigest,result});return json(response,200,result);
+    }
+    const graphMatch=url.pathname.match(/^\/api\/v1\/graph\/([^/]+)$/);
+    if(graphMatch&&request.method==='GET'){
+      const focus=decodeURIComponent(graphMatch[1]!);if(!directory.has(focus))return fail(response,404,'NOT_FOUND','Directory entity does not exist');
+      const edges=graphEdges.filter(edge=>edge.from_id===focus||edge.to_id===focus);const ids=new Set([focus,...edges.flatMap(edge=>[String(edge.from_id),String(edge.to_id)])]);
+      const nodes=[...ids].map(id=>directory.get(id)).filter((value):value is EntityRecord=>Boolean(value)).map(row=>({...row,descriptor:'',aliases:[],tags:[]}));
+      const viewId=url.searchParams.get('view_id')??focus;
+      return json(response,200,{focus_id:focus,nodes,edges,positions:[...positions.values()].filter(position=>position.view_id===viewId),omitted_nodes:0,omitted_edges:0});
+    }
     if (url.pathname === '/api/v1/captures' && request.method === 'POST') {
       let input: RecordData;
       try {
@@ -300,7 +325,38 @@ export function createMockApi(): MockApi {
         raw_sha256: rawHash,
       };
       captures.unshift(result);
+      sourceDetails.set(result.occurrence_id,{...result,text:input.text,title:typeof input.title==='string'?input.title:null,url:typeof input.url==='string'?input.url:null,captured_at:now(),actor_kind:typeof input.actor_kind==='string'?input.actor_kind:'unknown',actor_entity_id:typeof input.actor_entity_id==='string'?input.actor_entity_id:null,normalization_version:1});
       return json(response, 201, result);
+    }
+    if(url.pathname==='/api/v1/graph/related'&&request.method==='POST'){
+      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}
+      const commandKey=request.headers['idempotency-key'];if(typeof commandKey!=='string'||!commandKey)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');
+      const commandDigest=createHash('sha256').update(JSON.stringify(input)).digest('hex');const prior=receipts.get(commandKey);if(prior)return prior.digest===commandDigest?json(response,201,prior.result):fail(response,409,'KEY_REUSED','Idempotency key was used for a different command');
+      const parent=directory.get(String(input.related_entity_id));const source=sourceDetails.get(String(input.occurrence_id));
+      const quote=String(input.quote??'');if(!parent||!source||typeof source.text!=='string'||!quote||!source.text.includes(quote))return fail(response,422,'RELATIONSHIP_REJECTED','The source and exact quote must exist.');
+      const personId=randomHex();const person:EntityRecord={id:personId,kind:String(input.kind),name:String(input.name),revision:1};directory.set(personId,person);
+      const edge={id:randomHex(),from_id:personId,to_id:parent.id,verb:String(input.verb),revision:1,claim_id:randomHex(),claim_revision:1,wording:quote,approved_wording:null,tier:1,speaker_kind:'unknown',speaker_entity_id:null,occurrence_id:String(input.occurrence_id),source_start:source.text.indexOf(quote),source_end:source.text.indexOf(quote)+quote.length,normalization_version:1,source_title:source.title,source_url:source.url};graphEdges.push(edge);
+      positions.set(`${input.view_scope}:${input.view_id}:${personId}`,{view_id:input.view_id,entity_id:personId,x:input.x,y:input.y,pinned:false,revision:1});
+      pushEvent({event_id:randomHex(),entity_type:'edge',entity_id:String(edge.id),revision:1,event_type:'edge.created',payload:{}});receipts.set(commandKey,{digest:commandDigest,result:person});return json(response,201,person);
+    }
+    if(url.pathname==='/api/v1/graph/edges'&&request.method==='POST'){
+      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}
+      const commandKey=request.headers['idempotency-key'];if(typeof commandKey!=='string'||!commandKey)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');const commandDigest=createHash('sha256').update(JSON.stringify(input)).digest('hex');const prior=receipts.get(commandKey);if(prior)return prior.digest===commandDigest?json(response,201,prior.result):fail(response,409,'KEY_REUSED','Idempotency key was used for a different command');
+      const from=directory.get(String(input.from_id));const to=directory.get(String(input.to_id));const source=sourceDetails.get(String(input.occurrence_id));const quote=String(input.quote??'');if(!from||!to||from.kind!=='person'||to.kind!=='org'||input.verb!=='member_of'||!source||typeof source.text!=='string'||!quote||!source.text.includes(quote))return fail(response,422,'RELATIONSHIP_REJECTED','The selected endpoints or exact source quote are invalid.');
+      if(graphEdges.some(edge=>edge.from_id===from.id&&edge.to_id===to.id&&edge.verb==='member_of'))return fail(response,409,'EDGE_EXISTS','This directed relationship already exists.');
+      const edgeId=randomHex();const edge={id:edgeId,from_id:from.id,to_id:to.id,verb:'member_of',revision:1,claim_id:randomHex(),claim_revision:1,wording:quote,approved_wording:null,tier:1,speaker_kind:source.actor_kind,speaker_entity_id:source.actor_entity_id,occurrence_id:String(input.occurrence_id),source_start:source.text.indexOf(quote),source_end:source.text.indexOf(quote)+quote.length,normalization_version:1,source_title:source.title,source_url:source.url};graphEdges.push(edge);pushEvent({event_id:randomHex(),entity_type:'edge',entity_id:edgeId,revision:1,event_type:'edge.created',payload:{from_id:from.id,to_id:to.id}});const result={edge_id:edgeId};receipts.set(commandKey,{digest:commandDigest,result});return json(response,201,result);
+    }
+    const correctionMatch=url.pathname.match(/^\/api\/v1\/claims\/([^/]+)\/correction$/);
+    if(correctionMatch&&request.method==='POST'){
+      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}
+      const commandKey=request.headers['idempotency-key'];if(typeof commandKey!=='string'||!commandKey)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');const commandDigest=createHash('sha256').update(JSON.stringify([correctionMatch[1],input])).digest('hex');const prior=receipts.get(commandKey);if(prior)return prior.digest===commandDigest?json(response,200,prior.result):fail(response,409,'KEY_REUSED','Idempotency key was used for a different command');
+      const edge=graphEdges.find(item=>item.claim_id===correctionMatch[1]);if(!edge)return fail(response,404,'NOT_FOUND','Claim does not exist');if(Number(input.expected_revision)!==Number(edge.claim_revision))return fail(response,412,'STALE_REVISION','Claim changed in another session');
+      edge.claim_revision=Number(edge.claim_revision)+1;edge.approved_wording=String(input.wording);edge.tier=3;edge.speaker_kind='owner';pushEvent({event_id:randomHex(),entity_type:'claim',entity_id:String(edge.claim_id),revision:Number(edge.claim_revision),event_type:'claim.corrected',payload:{}});const result={claim_id:edge.claim_id,revision:edge.claim_revision,approved_wording:input.wording};receipts.set(commandKey,{digest:commandDigest,result});return json(response,200,result);
+    }
+    if(url.pathname==='/api/v1/layout'&&request.method==='POST'){
+      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}
+      const commandKey=request.headers['idempotency-key'];if(typeof commandKey!=='string'||!commandKey)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');const commandDigest=createHash('sha256').update(JSON.stringify(input)).digest('hex');const prior=receipts.get(commandKey);if(prior)return prior.digest===commandDigest?json(response,200,prior.result):fail(response,409,'KEY_REUSED','Idempotency key was used for a different command');
+      const key=`${input.view_scope}:${input.view_id}:${input.entity_id}`;const old=positions.get(key);if(Number(input.expected_revision)!==(old?Number(old.revision):0))return fail(response,412,'STALE_LAYOUT','View layout changed in another session');const position={entity_id:input.entity_id,x:input.x,y:input.y,pinned:true,revision:(old?Number(old.revision):0)+1,view_id:input.view_id};positions.set(key,position);const result={entity_id:input.entity_id,revision:position.revision,x:input.x,y:input.y};receipts.set(commandKey,{digest:commandDigest,result});return json(response,200,result);
     }
     return fail(response, 404, 'NOT_FOUND', 'Endpoint does not exist');
   }
