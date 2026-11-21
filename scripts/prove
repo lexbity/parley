@@ -26,6 +26,14 @@ printf '\n=== prove %s: reports in %s ===\n' "$slice" "$proof_dir"
 printf '\n=== prove %s: cargo test -p parley-service --test %s ===\n' "$slice" "$slice"
 cargo test --locked -p parley-service --test "$slice" 2>&1 |
   tee "$proof_dir/cargo-test.log"
+if [[ "$slice" == "s04" ]]; then
+  # The offline Extractor evaluation is a CLI capability, not a service test.
+  # Include its unfiltered crate suite in the same fresh trace log so EV-4 is
+  # qualified by the actual machine-readable command test.
+  printf '\n=== prove %s: cargo test -p parley-cli (S04 offline eval) ===\n' "$slice"
+  cargo test --locked -p parley-cli 2>&1 |
+    tee -a "$proof_dir/cargo-test.log"
+fi
 
 # The rust project builds the Vite bundle and release binary once as a
 # Playwright setup dependency. The mock project has no build dependency.

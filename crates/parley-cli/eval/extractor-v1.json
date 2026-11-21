@@ -1,0 +1,29 @@
+{
+  "dataset_id": "extractor-v1",
+  "cases": [
+    {
+      "id": "professional-hiring-signal",
+      "source": "The next engineer will work with Dana Lee on onboarding.",
+      "quote": "The next engineer will work with Dana Lee on onboarding.",
+      "valid": true
+    },
+    {
+      "id": "normalization-curly-apostrophe",
+      "source": "We’re expanding the onboarding team.",
+      "quote": "We're expanding the onboarding team.",
+      "valid": true
+    },
+    {
+      "id": "reject-mutated-quote",
+      "source": "The team is expanding onboarding.",
+      "quote": "The team is expanding engineering.",
+      "valid": false
+    },
+    {
+      "id": "reject-empty-quote",
+      "source": "A professional update.",
+      "quote": "",
+      "valid": false
+    }
+  ]
+}

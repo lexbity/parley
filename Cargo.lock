@@ -876,7 +876,9 @@ dependencies = [
 name = "parley-cli"
 version = "0.1.0"
 dependencies = [
+ "parley-domain",
  "parley-service",
+ "serde_json",
  "tokio",
 ]
 

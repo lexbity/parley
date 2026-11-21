@@ -175,8 +175,25 @@ async fn main() {
     }
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!(
-            "Parley local workspace\n\nUSAGE:\n  parley [--workspace PATH] [--headless]\n\nThe default workspace is $XDG_DATA_HOME/parley/workspace.sqlite. Headless mode prints the one-time local bootstrap URL."
+            "Parley local workspace\n\nUSAGE:\n  parley [--workspace PATH] [--headless]\n  parley eval --role extractor\n\nThe default workspace is $XDG_DATA_HOME/parley/workspace.sqlite. Headless mode prints the one-time local bootstrap URL. Evaluations emit one machine-readable JSON document to stdout."
         );
+        return;
+    }
+    if args.first().is_some_and(|arg| arg == "eval") {
+        if args.get(1).is_none_or(|arg| arg != "--role")
+            || args.get(2).is_none_or(|arg| arg != "extractor")
+            || args.len() != 3
+        {
+            eprintln!("parley eval: expected `--role extractor`");
+            std::process::exit(2);
+        }
+        match evaluate_extractor() {
+            Ok(report) => println!("{}", report),
+            Err(error) => {
+                eprintln!("parley eval: {error}");
+                std::process::exit(1);
+            }
+        }
         return;
     }
     let headless = args.iter().any(|arg| arg == "--headless");
@@ -244,4 +261,60 @@ async fn main() {
         let _ = std::fs::remove_file(control_path);
     }
     drop(lock);
+}
+
+fn evaluate_extractor() -> Result<serde_json::Value, String> {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../eval/extractor-v1.json"))
+            .map_err(|error| format!("bundled Extractor fixture is invalid: {error}"))?;
+    let cases = fixture["cases"]
+        .as_array()
+        .ok_or("Extractor fixture has no cases")?;
+    let mut correct = 0usize;
+    let mut valid_quote = 0usize;
+    let mut results = Vec::with_capacity(cases.len());
+    for case in cases {
+        let id = case["id"]
+            .as_str()
+            .ok_or("Extractor fixture case has no id")?;
+        let source = case["source"]
+            .as_str()
+            .ok_or("Extractor fixture case has no source")?;
+        let quote = case["quote"]
+            .as_str()
+            .ok_or("Extractor fixture case has no quote")?;
+        let expected = case["valid"]
+            .as_bool()
+            .ok_or("Extractor fixture case has no expected result")?;
+        let actual = parley_domain::evidence::verify_quote(source, quote, None).is_ok();
+        valid_quote += usize::from(actual);
+        correct += usize::from(actual == expected);
+        results.push(serde_json::json!({"case_id":id,"expected_valid":expected,"actual_valid":actual,"pass":actual==expected}));
+    }
+    let total = cases.len();
+    Ok(serde_json::json!({
+        "role":"extractor",
+        "dataset_id":fixture["dataset_id"],
+        "evaluation_kind":"deterministic_quote_validation",
+        "provider_invoked":false,
+        "cases":total,
+        "correct":correct,
+        "quote_valid":valid_quote,
+        "accuracy":if total == 0 { 0.0 } else { correct as f64 / total as f64 },
+        "results":results
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn s04_extractor_eval_is_machine_readable() {
+        let report = super::evaluate_extractor().unwrap();
+        assert_eq!(report["role"], "extractor");
+        assert_eq!(report["dataset_id"], "extractor-v1");
+        assert_eq!(report["provider_invoked"], false);
+        assert_eq!(report["cases"], 4);
+        assert_eq!(report["correct"], 4);
+        assert_eq!(report["results"].as_array().unwrap().len(), 4);
+    }
 }

@@ -42,6 +42,7 @@ use tokio::sync::Mutex;
 
 static IDS: AtomicU64 = AtomicU64::new(0);
 
+mod jobs;
 mod materials;
 mod web_assets {
     include!(concat!(env!("OUT_DIR"), "/web_assets.rs"));
@@ -841,6 +842,7 @@ pub(crate) struct AppState {
     authority: String,
     bootstrap: Arc<Mutex<HashMap<String, Instant>>>,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
+    jobs: jobs::Queue,
 }
 
 /// Initialize (or open) a private SQLite workspace and bind only to IPv4
@@ -854,14 +856,17 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         .map_err(|error| format!("bind loopback: {error}"))?;
     let address = listener.local_addr().map_err(|error| error.to_string())?;
     let bootstrap_secret = random_hex(32);
+    let workspace = Arc::new(workspace);
+    let jobs = jobs::start(workspace.clone(), 32);
     let state = AppState {
-        workspace: Arc::new(workspace),
+        workspace,
         authority: address.to_string(),
         bootstrap: Arc::new(Mutex::new(HashMap::from([(
             bootstrap_secret.clone(),
             Instant::now() + Duration::from_secs(60),
         )]))),
         sessions: Arc::new(Mutex::new(HashMap::new())),
+        jobs,
     };
     let bootstrap_shared = state.bootstrap.clone();
     let app = Router::new()
@@ -879,6 +884,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         .route("/api/v1/captures", get(list_captures).post(save_capture))
         .route("/api/v1/graph/related", post(create_related_entity))
         .merge(materials::routes())
+        .merge(jobs::routes())
         .with_state(state)
         .layer(axum::extract::DefaultBodyLimit::max(2_100_000));
     let (shutdown, receiver) = tokio::sync::oneshot::channel();
@@ -1745,7 +1751,25 @@ async fn save_capture(
         .await
     {
         Ok(source) => {
-            let mut response = (StatusCode::CREATED, Json(source)).into_response();
+            let queued = jobs::enqueue(&state.workspace, &state.jobs, &source).await;
+            let (job_id, job_status) = match queued {
+                Ok(Some(id)) => (Some(id), "queued"),
+                Ok(None) => (None, "not_queued"),
+                Err(_) => (None, "not_queued"),
+            };
+            let mut response = (
+                StatusCode::CREATED,
+                Json(json!({
+                    "content_id": source.content_id,
+                    "variant_id": source.variant_id,
+                    "occurrence_id": source.occurrence_id,
+                    "normalized_sha256": source.normalized_sha256,
+                    "raw_sha256": source.raw_sha256,
+                    "job_id": job_id,
+                    "job_status": job_status,
+                })),
+            )
+                .into_response();
             private_headers(&mut response, state.workspace.epoch());
             response
         }

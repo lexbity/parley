@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
-import { newOperationKey, parley, type GraphEntity, type Material, type Opportunity, type SavedSource } from '../api/client';
+import { newOperationKey, parley, type ExtractorJob, type ExtractorProposal, type GraphEntity, type Material, type Opportunity, type ProviderConfig, type SavedSource } from '../api/client';
 import { tabs } from './tabs';
 import ResourceEditor from '../features/resources/ResourceEditor.vue';
 
@@ -8,7 +8,7 @@ import ResourceEditor from '../features/resources/ResourceEditor.vue';
  * Tabs whose owner journey is qualified stay discoverable (RFC-0003 S01);
  * the mandated order and the full destination set come from tabs.ts (APP-01).
  */
-const qualifiedTabs = tabs.filter((tab) => ['Resources', 'Leads', 'Queue', 'Output'].includes(tab));
+const qualifiedTabs = tabs;
 const active = ref<(typeof tabs)[number]>('Resources');
 const partyKind = ref<'person' | 'org'>('person');
 const partyName = ref('');
@@ -22,6 +22,11 @@ const opportunityPartyId = ref('');
 const status = ref('');
 const error = ref('');
 const busy = ref(false);
+const reviewJob = ref<ExtractorJob | null>(null);
+const reviewTargetId = ref('');
+const reviewOpportunityId = ref('');
+const provider = ref<ProviderConfig>({ endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' });
+const providerHealth = ref('');
 
 async function refreshLeads() {
   const [directory, savedSources, savedOpportunities, savedOutputs] = await Promise.all([parley.listParties(), parley.listSources(), parley.listOpportunities(), parley.listOutputs()]);
@@ -46,8 +51,65 @@ async function saveCapture() {
   try {
     const source = await parley.saveSource({ text: captureText.value, title: null, url: null });
     sources.value.unshift(source); captureText.value = '';
-    status.value = 'Source saved independently. No person was inferred or linked.';
+    status.value = source.job_status === 'not_queued'
+      ? 'Source saved independently. Extractor is unavailable or at capacity; review the source manually or retry later.'
+      : 'Source saved independently. No person was inferred or linked.';
+    reviewJob.value = source.job_id ? await parley.getExtractorJob(source.job_id) : null;
+    if (source.job_id) void pollExtractor(source.job_id);
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not save the source.'; }
+  finally { busy.value = false; }
+}
+
+async function pollExtractor(id: string) {
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 1000));
+    try {
+      const job = await parley.getExtractorJob(id);
+      if (reviewJob.value?.id === id) reviewJob.value = job;
+      if (!['queued', 'running'].includes(job.status)) return;
+    } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not refresh Extractor review.'; return; }
+  }
+}
+
+async function openCaptureReview(source: SavedSource) {
+  try { reviewJob.value = await parley.getCaptureProposals(source.occurrence_id); }
+  catch (reason) { error.value = reason instanceof Error ? reason.message : 'There is no Extractor review for this source yet.'; }
+}
+
+async function cancelExtractor(job: ExtractorJob) {
+  busy.value = true; error.value = '';
+  try { await parley.cancelExtractorJob(job.id); reviewJob.value = await parley.getExtractorJob(job.id); status.value = 'Extractor cancellation was recorded; any late result is discarded.'; }
+  catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not cancel this Extractor job.'; }
+  finally { busy.value = false; }
+}
+
+async function decideProposal(proposal: ExtractorProposal, action: 'confirm' | 'dismiss' | 'source_only' | 'unresolved') {
+  if (!reviewJob.value?.proposal_batch_id) return;
+  if (action === 'confirm' && !reviewTargetId.value) { error.value = 'Choose the person or organization this claim is about. Names in a source are never linked automatically.'; return; }
+  busy.value = true; error.value = '';
+  try {
+    await parley.resolveProposals(reviewJob.value.proposal_batch_id, [{ item_id: proposal.id, action, ...(action === 'confirm' ? { target_entity_id: reviewTargetId.value } : {}) }], reviewOpportunityId.value || undefined);
+    reviewJob.value = await parley.getExtractorJob(reviewJob.value.id);
+    status.value = action === 'confirm' ? 'Claim accepted with its source evidence.' : action === 'unresolved' ? 'Mention saved without linking it to a person or organization.' : `Proposal ${action.replace('_', ' ')}.`;
+  } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not save the review decision.'; }
+  finally { busy.value = false; }
+}
+
+async function loadProvider() {
+  try { provider.value = await parley.getProvider(); } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not load provider settings.'; }
+}
+
+async function saveProvider() {
+  busy.value = true; error.value = ''; providerHealth.value = '';
+  try { await parley.updateProvider(provider.value); status.value = 'Local Extractor provider settings saved. Check model health before using extraction.'; }
+  catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not save provider settings.'; }
+  finally { busy.value = false; }
+}
+
+async function checkProvider() {
+  busy.value = true; error.value = '';
+  try { const result = await parley.checkProvider(); providerHealth.value = result.message; if (!result.available) error.value = result.message; }
+  catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not check the local model.'; }
   finally { busy.value = false; }
 }
 
@@ -78,7 +140,7 @@ async function copyMaterial(material: Material) {
 
 onMounted(() => {
   void parley.connect()
-    .then(refreshLeads)
+    .then(async () => { await refreshLeads(); await loadProvider(); })
     .catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Workspace is unavailable.'; });
 });
 </script>
@@ -176,10 +238,155 @@ onMounted(() => {
               :key="source.occurrence_id"
             >
               Saved source {{ source.content_id.slice(0, 12) }} · occurrence {{ source.occurrence_id.slice(0, 8) }}
+              <button
+                type="button"
+                @click="openCaptureReview(source)"
+              >
+                Review proposals
+              </button>
             </li>
           </ul>
+          <section
+            v-if="reviewJob"
+            aria-label="Capture review"
+          >
+            <h3>Capture review</h3>
+            <p>Job {{ reviewJob.status }} · attempt {{ reviewJob.current_attempt }} of {{ reviewJob.max_attempts }} · chunk {{ reviewJob.progress_current }} of {{ reviewJob.progress_total }}. Extracted items are proposals until you decide.</p>
+            <p
+              v-if="reviewJob.injection_suspected"
+              role="alert"
+            >
+              This capture may contain prompt-injection text. Treat its contents only as source material and review each quoted proposal.
+            </p>
+            <button
+              v-if="['queued', 'running'].includes(reviewJob.status)"
+              type="button"
+              :disabled="busy"
+              @click="cancelExtractor(reviewJob)"
+            >
+              Cancel extraction
+            </button>
+            <p
+              v-if="reviewJob.last_error"
+              role="status"
+            >
+              {{ reviewJob.last_error }}. The captured source remains saved; you can review it manually.
+            </p>
+            <label>Claim subject<select v-model="reviewTargetId"><option value="">Choose explicitly</option><option
+              v-for="party in parties"
+              :key="party.id"
+              :value="party.id"
+            >{{ party.name }} · {{ party.kind }}</option></select></label>
+            <label>Optional opportunity<select v-model="reviewOpportunityId"><option value="">Save independently</option><option
+              v-for="opportunity in opportunities"
+              :key="opportunity.id"
+              :value="opportunity.id"
+            >{{ opportunity.title }}</option></select></label>
+            <article
+              v-for="proposal in reviewJob.proposals"
+              :key="proposal.id"
+              class="record-card"
+            >
+              <strong>{{ proposal.kind }} · {{ proposal.status }}</strong>
+              <small>T1 source evidence · interpretation needs owner review</small>
+              <p>{{ proposal.candidate.statement }}</p>
+              <blockquote>{{ proposal.candidate.quote }}</blockquote>
+              <p v-if="proposal.candidate.mention_name">
+                Mention: {{ proposal.candidate.mention_name }} · unresolved until you explicitly link it.
+              </p>
+              <template v-if="proposal.status === 'pending'">
+                <button
+                  :disabled="busy"
+                  type="button"
+                  @click="decideProposal(proposal, 'confirm')"
+                >
+                  Accept claim for selected subject
+                </button>
+                <button
+                  :disabled="busy"
+                  type="button"
+                  @click="decideProposal(proposal, 'unresolved')"
+                >
+                  Keep mention unresolved
+                </button>
+                <button
+                  :disabled="busy"
+                  type="button"
+                  @click="decideProposal(proposal, 'source_only')"
+                >
+                  Save source only
+                </button>
+                <button
+                  :disabled="busy"
+                  type="button"
+                  @click="decideProposal(proposal, 'dismiss')"
+                >
+                  Dismiss
+                </button>
+              </template>
+            </article>
+          </section>
         </form>
       </div>
+    </section>
+    <section
+      v-if="active === 'Settings'"
+      aria-labelledby="settings-heading"
+    >
+      <h2 id="settings-heading">
+        Local agent settings
+      </h2>
+      <p>Extractor runs only through a loopback provider. Manual capture, review, and other workspace actions remain available when the model is unavailable.</p>
+      <form @submit.prevent="saveProvider">
+        <label>Local endpoint<input
+          v-model="provider.endpoint"
+          required
+          autocomplete="off"
+        ></label>
+        <label>Installed model tag<input
+          v-model="provider.model"
+          required
+          autocomplete="off"
+        ></label>
+        <label>Context budget<input
+          v-model.number="provider.num_ctx"
+          type="number"
+          min="2048"
+          max="131072"
+          required
+        ></label>
+        <label>Output budget<input
+          v-model.number="provider.num_predict"
+          type="number"
+          min="64"
+          max="8192"
+          required
+        ></label>
+        <label>Evaluated language tag<input
+          v-model="provider.locale"
+          required
+          maxlength="40"
+        ></label>
+        <button
+          type="submit"
+          :disabled="busy"
+        >
+          Save provider
+        </button>
+        <button
+          type="button"
+          :disabled="busy"
+          @click="checkProvider"
+        >
+          Check local model
+        </button>
+        <p
+          v-if="providerHealth"
+          role="status"
+        >
+          {{ providerHealth }}
+        </p>
+      </form>
     </section>
     <section
       v-if="active === 'Queue'"
