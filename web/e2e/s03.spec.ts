@@ -6,9 +6,11 @@ test('s03_create_opportunity_for_selected_participant_without_creating_a_send', 
   await page.goto('/');
   const name = `Dana Lee ${randomUUID()}`;
   await page.getByRole('button', { name: 'Leads' }).click();
-  await page.locator('section[aria-labelledby="leads-heading"] input').fill(name);
-  await page.getByRole('button', { name: 'Add lead' }).click();
-  await expect(page.getByRole('status')).toContainText('No opportunity or outreach was created');
+  const leads = page.locator('section[aria-labelledby="leads-heading"]');
+  const addLead = page.getByRole('heading', { name: 'Add lead' }).locator('..');
+  await addLead.getByLabel('Name').fill(name);
+  await addLead.getByRole('button', { name: 'Add lead' }).click();
+  await expect(leads.getByRole('status')).toContainText('No opportunity or outreach was created');
 
   await page.getByRole('button', { name: 'Queue' }).click();
   await page.getByLabel('Opportunity title').fill('Onboarding exchange');

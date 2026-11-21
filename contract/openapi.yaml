@@ -287,6 +287,94 @@ paths:
           $ref: '#/components/responses/Error'
         '401':
           $ref: '#/components/responses/Error'
+  /captures/{id}:
+    get:
+      operationId: getCaptureOccurrence
+      security: [{sessionCookie: []}]
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/MutationToken'}
+        - {$ref: '#/components/parameters/Epoch'}
+      responses:
+        '200': {description: Raw captured occurrence and normalization provenance, content: {application/json: {schema: {$ref: '#/components/schemas/SourceDetail'}}}}
+        '404': {$ref: '#/components/responses/Error'}
+  /directory:
+    get:
+      operationId: searchDirectory
+      security: [{sessionCookie: []}]
+      parameters:
+        - {in: query, name: q, schema: {type: string}}
+        - {in: query, name: kind, schema: {type: string, enum: [person, org, project]}}
+        - {in: query, name: tag, schema: {type: string}}
+        - {in: query, name: page, schema: {type: integer, minimum: 1, default: 1}}
+        - {in: query, name: page_size, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+        - {$ref: '#/components/parameters/MutationToken'}
+        - {$ref: '#/components/parameters/Epoch'}
+      responses:
+        '200': {description: Stable, filtered directory order, content: {application/json: {schema: {$ref: '#/components/schemas/DirectoryEnvelope'}}}}
+  /directory/{id}:
+    patch:
+      operationId: updateDirectoryProfile
+      security: [{sessionCookie: []}]
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/MutationToken'}
+        - {$ref: '#/components/parameters/Epoch'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DirectoryProfileInput'}}}}
+      responses:
+        '200': {description: Directory profile and revision updated, content: {application/json: {schema: {$ref: '#/components/schemas/DirectoryEntity'}}}}
+        '412': {$ref: '#/components/responses/Error'}
+  /graph/{id}:
+    get:
+      operationId: getNeighborhood
+      security: [{sessionCookie: []}]
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string}}
+        - {in: query, name: view_scope, schema: {type: string}}
+        - {in: query, name: view_id, schema: {type: string}}
+        - {$ref: '#/components/parameters/MutationToken'}
+        - {$ref: '#/components/parameters/Epoch'}
+      responses:
+        '200': {description: Bounded neighborhood with attributed current evidence and view layout, content: {application/json: {schema: {$ref: '#/components/schemas/Neighborhood'}}}}
+        '404': {$ref: '#/components/responses/Error'}
+  /graph/edges:
+    post:
+      operationId: linkExistingEntity
+      security: [{sessionCookie: []}]
+      parameters:
+        - {$ref: '#/components/parameters/MutationToken'}
+        - {$ref: '#/components/parameters/Epoch'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/LinkExistingInput'}}}}
+      responses:
+        '201': {description: Existing endpoint records linked with exact attributed evidence, content: {application/json: {schema: {$ref: '#/components/schemas/EdgeReceipt'}}}}
+        '422': {$ref: '#/components/responses/Error'}
+  /claims/{id}/correction:
+    post:
+      operationId: correctClaimWording
+      security: [{sessionCookie: []}]
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/MutationToken'}
+        - {$ref: '#/components/parameters/Epoch'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ClaimCorrection'}}}}
+      responses:
+        '200': {description: Owner correction revision, content: {application/json: {schema: {$ref: '#/components/schemas/ClaimCorrectionReceipt'}}}}
+        '412': {$ref: '#/components/responses/Error'}
+  /layout:
+    post:
+      operationId: updateViewPosition
+      security: [{sessionCookie: []}]
+      parameters:
+        - {$ref: '#/components/parameters/MutationToken'}
+        - {$ref: '#/components/parameters/Epoch'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/LayoutInput'}}}}
+      responses:
+        '200': {description: View-specific position saved, content: {application/json: {schema: {$ref: '#/components/schemas/LayoutReceipt'}}}}
+        '412': {$ref: '#/components/responses/Error'}
   /graph/related:
     post:
       operationId: createRelatedEntity
@@ -295,6 +383,7 @@ paths:
       parameters:
       - $ref: '#/components/parameters/MutationToken'
       - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -935,6 +1024,87 @@ components:
           type: integer
           minimum: 1
       additionalProperties: false
+    DirectoryEntity:
+      type: object
+      required: [id, kind, name, descriptor, aliases, tags, revision]
+      properties:
+        id: {type: string}
+        kind: {enum: [person, org, project]}
+        name: {type: string}
+        descriptor: {type: string}
+        aliases: {type: array, items: {type: string}}
+        tags: {type: array, items: {type: string}}
+        revision: {type: integer, minimum: 1}
+      additionalProperties: false
+    DirectoryEnvelope:
+      type: object
+      required: [data, cursor, total, page, page_size, has_more]
+      properties: {data: {type: array, items: {$ref: '#/components/schemas/DirectoryEntity'}}, cursor: {type: string}, total: {type: integer, minimum: 0}, page: {type: integer, minimum: 1}, page_size: {type: integer, minimum: 1}, has_more: {type: boolean}}
+      additionalProperties: false
+    DirectoryProfileInput:
+      type: object
+      required: [expected_revision, name, descriptor, aliases, tags]
+      properties:
+        expected_revision: {type: integer, minimum: 1}
+        name: {type: string, minLength: 1, maxLength: 500}
+        descriptor: {type: string, maxLength: 1000}
+        aliases: {type: array, maxItems: 32, items: {type: string, minLength: 1, maxLength: 200}}
+        tags: {type: array, maxItems: 32, items: {type: string, minLength: 1, maxLength: 100}}
+      additionalProperties: false
+    SourceDetail:
+      allOf:
+        - {$ref: '#/components/schemas/SavedSource'}
+        - type: object
+          required: [text, title, url, captured_at, actor_kind, actor_entity_id, normalization_version]
+          properties:
+            text: {type: string}
+            title: {type: [string, 'null']}
+            url: {type: [string, 'null']}
+            captured_at: {type: string}
+            actor_kind: {type: string}
+            actor_entity_id: {type: [string, 'null']}
+            normalization_version: {type: integer}
+    Neighborhood:
+      type: object
+      required: [focus_id, nodes, edges, positions, omitted_nodes, omitted_edges]
+      properties:
+        focus_id: {type: string}
+        nodes: {type: array, items: {$ref: '#/components/schemas/DirectoryEntity'}}
+        edges: {type: array, items: {type: object, additionalProperties: true}}
+        positions: {type: array, items: {type: object, additionalProperties: true}}
+        omitted_nodes: {type: integer, minimum: 0}
+        omitted_edges: {type: integer, minimum: 0}
+      additionalProperties: false
+    ClaimCorrection:
+      type: object
+      required: [expected_revision, wording]
+      properties: {expected_revision: {type: integer, minimum: 1}, wording: {type: string, minLength: 1, maxLength: 2000}}
+      additionalProperties: false
+    ClaimCorrectionReceipt:
+      type: object
+      required: [claim_id, revision, approved_wording]
+      properties: {claim_id: {type: string}, revision: {type: integer}, approved_wording: {type: string}}
+      additionalProperties: false
+    LayoutInput:
+      type: object
+      required: [view_scope, view_id, entity_id, expected_revision, x, y]
+      properties: {view_scope: {type: string}, view_id: {type: string}, entity_id: {type: string}, expected_revision: {type: integer, minimum: 0}, x: {type: number}, y: {type: number}}
+      additionalProperties: false
+    LayoutReceipt:
+      type: object
+      required: [entity_id, revision, x, y]
+      properties: {entity_id: {type: string}, revision: {type: integer}, x: {type: number}, y: {type: number}}
+      additionalProperties: false
+    LinkExistingInput:
+      type: object
+      required: [from_id, to_id, verb, occurrence_id, quote]
+      properties: {from_id: {type: string}, to_id: {type: string}, verb: {type: string}, occurrence_id: {type: string}, quote: {type: string, minLength: 1}}
+      additionalProperties: false
+    EdgeReceipt:
+      type: object
+      required: [edge_id]
+      properties: {edge_id: {type: string}}
+      additionalProperties: false
     Entity:
       oneOf:
       - $ref: '#/components/schemas/Resource'
@@ -1066,6 +1236,13 @@ components:
           - string
           - 'null'
         url:
+          type:
+          - string
+          - 'null'
+        actor_kind:
+          type: string
+          enum: [owner, party, unknown]
+        actor_entity_id:
           type:
           - string
           - 'null'

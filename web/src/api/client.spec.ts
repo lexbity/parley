@@ -74,6 +74,60 @@ describe('ParleyClient S03 opportunity and release commands', () => {
 });
 
 describe('ParleyClient', () => {
+  it('decodes and validates the S02 directory, graph, source, correction and layout operations', async () => {
+    const directoryRow = {
+      id: 'directory-1', kind: 'person', name: 'Dana Lee', descriptor: 'Northline',
+      aliases: ['D. Lee'], tags: ['onboarding'], revision: 2,
+    };
+    const graph = { focus_id: directoryRow.id, nodes: [directoryRow], edges: [], positions: [], omitted_nodes: 0, omitted_edges: 0 };
+    const detail = { ...source, text: 'A cited source.', title: null, url: null, captured_at: '2026-01-01T00:00:00Z', actor_kind: 'party', actor_entity_id: directoryRow.id, normalization_version: 1 };
+    const client = new ParleyClient();
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(sessionResponse())
+      .mockResolvedValueOnce(response({ data: [directoryRow], total: 1, page: 1, page_size: 25, has_more: false }))
+      .mockResolvedValueOnce(response({ ...directoryRow, revision: 3 }))
+      .mockResolvedValueOnce(response(graph))
+      .mockResolvedValueOnce(response(detail))
+      .mockResolvedValueOnce(response({ claim_id: 'claim-1', revision: 2, approved_wording: 'Owner wording.' }))
+      .mockResolvedValueOnce(response({ entity_id: directoryRow.id, revision: 2, x: 25, y: 50 }))
+      .mockResolvedValueOnce(response({ id: 'related-1', kind: 'person', name: 'Sam Lee', revision: 1 }, 201))
+      .mockResolvedValueOnce(response({ edge_id: 'edge-1' }, 201));
+    await client.connect();
+
+    expect(await client.searchDirectory({ q: 'Dana', kind: 'person', tag: 'onboarding' }, undefined, 1, 25)).toEqual({
+      items: [{ ...directoryRow, kind: 'person' }], total: 1, page: 1, page_size: 25, has_more: false,
+    });
+    expect(await client.updateDirectory({ ...directoryRow, kind: 'person' }, {
+      name: 'Dana Lee', descriptor: 'Northline', aliases: ['D. Lee'], tags: 'onboarding, research',
+    }, 'profile-key')).toMatchObject({ id: directoryRow.id, revision: 3 });
+    expect(await client.getNeighborhood(directoryRow.id)).toEqual(graph);
+    expect(await client.getSource(source.occurrence_id)).toEqual(detail);
+    expect(await client.correctClaim('claim-1', 1, 'Owner wording.')).toMatchObject({ revision: 2, approved_wording: 'Owner wording.' });
+    await client.saveLayout({ view_scope: 'party', view_id: directoryRow.id, entity_id: directoryRow.id, expected_revision: 1, x: 25, y: 50 });
+    expect(await client.createRelated({ kind: 'person', name: 'Sam Lee', related_entity_id: directoryRow.id, verb: 'member_of', occurrence_id: source.occurrence_id, quote: 'A cited source.', view_scope: 'party', view_id: directoryRow.id, x: 1, y: 2 })).toMatchObject({ id: 'related-1' });
+    expect(await client.linkExisting({ from_id: 'related-1', to_id: directoryRow.id, verb: 'member_of', occurrence_id: source.occurrence_id, quote: 'A cited source.' })).toBe('edge-1');
+    expect(fetchMock.mock.calls[1]?.[0]).toContain('q=Dana&kind=person&tag=onboarding');
+    expect(new Headers(fetchMock.mock.calls[2]?.[1]?.headers).get('Idempotency-Key')).toBe('profile-key');
+  });
+
+  it('rejects malformed S02 directory, graph, source and correction payloads', async () => {
+    const malformedCases: Array<{ run: (client: ParleyClient) => Promise<unknown>; body: unknown; message: RegExp }> = [
+      { run: (client) => client.searchDirectory(), body: { data: [], total: 0, page: 1, page_size: 25, has_more: 'no' }, message: /directory is malformed/ },
+      { run: (client) => client.searchDirectory(), body: { data: [{ id: 'x' }], total: 1, page: 1, page_size: 25, has_more: false }, message: /directory row is malformed/ },
+      { run: (client) => client.getNeighborhood('x'), body: { nodes: [], edges: [], positions: [], omitted_nodes: null, omitted_edges: 0 }, message: /graph counts are malformed/ },
+      { run: (client) => client.getSource('x'), body: { ...source, text: 1 }, message: /source detail is malformed/ },
+      { run: (client) => client.correctClaim('x', 1, 'copy'), body: { claim_id: 'x', revision: 0, approved_wording: 'copy' }, message: /correction receipt is malformed/ },
+      { run: (client) => client.linkExisting({ from_id: 'a', to_id: 'b', verb: 'member_of', occurrence_id: 'o', quote: 'q' }), body: null, message: /edge receipt is malformed/ },
+    ];
+    for (const testCase of malformedCases) {
+      const client = new ParleyClient();
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(sessionResponse()).mockResolvedValueOnce(response(testCase.body));
+      await client.connect();
+      await expect(testCase.run(client)).rejects.toThrow(testCase.message);
+      vi.restoreAllMocks();
+    }
+  });
+
   it('redeems and removes a bootstrap fragment before loading session', async () => {
     history.replaceState(null, '', '/#bootstrap=secret-1');
     const fetchMock = vi.spyOn(globalThis, 'fetch')

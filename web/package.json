@@ -17,6 +17,7 @@
     "e2e:integrated": "playwright test --project=rust"
   },
   "dependencies": {
+    "@xyflow/vue": "2.0.2",
     "vue": "3.5.46"
   },
   "devDependencies": {
