@@ -1,14 +1,9 @@
-import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
-import { launchMock, launchRust, openOwnerPage, stopLaunchedServices } from './launch';
+import { expect } from '@playwright/test';
+import { test } from './fixtures';
 
-test.afterEach(async () => {
-  await stopLaunchedServices();
-});
-
-test('s02_source_only_capture_keeps_two_occurrences_without_identity_merge', async ({ page }, testInfo) => {
-  const [link] = testInfo.project.name === 'mock' ? await launchMock() : await launchRust();
-  await openOwnerPage(page, link);
+test('s02_source_only_capture_keeps_two_occurrences_without_identity_merge', async ({ page }) => {
+  await page.goto('/');
   await page.getByRole('button', { name: 'Leads' }).click();
   const leads = page.getByRole('region', { name: 'Lead directory and sources' });
   const suffix = randomUUID();

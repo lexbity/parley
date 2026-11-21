@@ -63,6 +63,13 @@ pnpm --dir web run e2e:mock       # playwright against the dev mock (S01+)
 pnpm --dir web run e2e:integrated # playwright against the Rust service (S01+)
 ```
 
+For the edit loop, run `pnpm --dir web exec vitest --watch` or the active
+Rust target, for example `cargo test --locked -p parley-service --test s02`.
+The mock browser project starts only Vite with an in-process HTTP mock. The
+Rust browser project builds the Vite bundle and release binary once, then
+opens the embedded UI directly. Each browser test binds its own loopback
+port, and each Rust browser test gets a fresh temporary SQLite workspace.
+
 ## Quality gates
 
 **Coverage ratchet** (`ci/coverage.py`, state in `ci/coverage-baseline.toml`):
@@ -91,12 +98,12 @@ unused. A new crate fails until its policy entry is reviewed and committed.
 Development and testing must not grow disk usage unboundedly. The guarantee
 has two halves:
 
-**Bounded by construction.** Test workspaces and scratch databases are created
-in OS temp directories, never in the repo. Per-slice prove artifacts
-(`artifacts/cargo-test-*.log`, `artifacts/playwright-*.json`) are overwritten
-on every run, and Playwright cleans its output dir at the start of each run —
-so artifacts stay bounded by slice count and per-run size. The only vector
-expected to reach multiple GiB is Rust's `target/` build cache.
+Test workspaces and scratch databases live in OS temp directories. The browser
+fixtures dispose of their server and workspace after each test. Each
+`scripts/prove` invocation prints its own `artifacts/prove-<slice>.*` report
+directory. Standalone browser runs write under `web/artifacts/playwright-*`.
+The disk gate counts these reports, and `scripts/prune` clears local evidence
+when it is no longer needed.
 
 **Bounded by gate.** `ci/disk.py --check` runs inside `scripts/check-slice`
 (placed before the slice-gated verifiers, so it executes even while slice work

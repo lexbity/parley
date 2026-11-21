@@ -1,38 +1,42 @@
-import { expect, test } from '@playwright/test';
-import { launchMock, launchRust, openOwnerPage, stopLaunchedServices } from './launch';
+import { randomUUID } from 'node:crypto';
+import { expect } from '@playwright/test';
+import { openOwnerPage, test } from './fixtures';
 
-test.afterEach(async () => {
-  await stopLaunchedServices();
-});
+test('s01_resource_first_launch_retry_and_cross_session_conflict', async ({ page, browser, ownerSession }, testInfo) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Resources', exact: true })).toBeVisible();
+  const title = `Onboarding checklist ${randomUUID()}`;
+  await page.getByLabel('Name').fill(title);
+  await page.getByLabel('What is it?').fill('A short review guide for onboarding teams.');
+  await page.getByRole('button', { name: 'Save draft' }).click();
+  await expect(page.getByRole('status')).toContainText('Draft saved to this workspace.');
 
-test('s01_resource_first_launch_retry_and_cross_session_conflict', async ({ browser }, testInfo) => {
-  const links = testInfo.project.name === 'mock' ? await launchMock() : await launchRust();
-  const first = await browser.newPage();
+  await page.reload();
+  const card = page.getByRole('button', { name: new RegExp(title) });
+  await expect(card).toBeVisible();
+  if (testInfo.project.name === 'rust') {
+    // The packaged binary serves the embedded Vite bundle from hashed assets.
+    const script = page.locator('script[type="module"]');
+    await expect(script).toHaveAttribute('src', /^\/assets\//);
+    const scriptUrl = await script.evaluate((element: HTMLScriptElement) => element.src);
+    await expect(await page.request.get(scriptUrl)).toBeOK();
+  }
+
+  // A second independent session on the same workspace edits the resource.
   const second = await browser.newPage();
-
-  await openOwnerPage(first, links[0]);
-  await first.getByRole('button', { name: 'Add resource' }).focus();
-  await first.keyboard.press('Enter');
-  await first.getByLabel('Name').pressSequentially('Onboarding checklist');
-  await first.getByLabel('What is it?').pressSequentially('A short review guide for onboarding teams.');
-  await first.getByRole('button', { name: 'Save draft' }).focus();
-  await first.keyboard.press('Enter');
-  await expect(first.getByRole('status')).toContainText('Draft saved to this workspace.');
-
-  await first.reload();
-  await expect(first.getByRole('button', { name: /Onboarding checklist/ })).toBeVisible();
-  await openOwnerPage(second, links[1]);
-  await second.getByRole('button', { name: /Onboarding checklist/ }).click();
-  await second.getByLabel('Name').fill('Shared onboarding checklist');
+  await openOwnerPage(second, await ownerSession.secondBootstrapUrl());
+  await second.getByRole('button', { name: new RegExp(title) }).click();
+  await second.getByLabel('Name').fill(`Shared ${title}`);
   await second.getByRole('button', { name: 'Save draft' }).click();
   await expect(second.getByRole('status')).toContainText('Draft saved to this workspace.');
 
-  await first.getByRole('button', { name: /Onboarding checklist/ }).click();
-  await first.getByLabel('Name').fill('My onboarding checklist');
-  await first.getByRole('button', { name: 'Save draft' }).click();
-  await expect(first.getByRole('alert')).toContainText('Review the conflict');
-  await expect(first.getByRole('alert')).toContainText('Shared onboarding checklist');
-  await expect(first.getByRole('alert')).toContainText('My onboarding checklist');
-  expect(await first.evaluate(() => Object.keys(localStorage))).toEqual([]);
+  // The first session still holds the stale revision and gets the comparison.
+  await page.getByRole('button', { name: new RegExp(title) }).click();
+  await page.getByLabel('Name').fill(`Mine ${title}`);
+  await page.getByRole('button', { name: 'Save draft' }).click();
+  await expect(page.getByRole('alert')).toContainText('Review the conflict');
+  await expect(page.getByRole('alert')).toContainText(`Shared ${title}`);
+  await expect(page.getByRole('alert')).toContainText(`Mine ${title}`);
+  expect(await page.evaluate(() => Object.keys(localStorage))).toEqual([]);
   expect(await second.evaluate(() => Object.keys(localStorage))).toEqual([]);
 });

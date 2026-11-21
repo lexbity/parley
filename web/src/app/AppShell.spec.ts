@@ -73,6 +73,20 @@ describe('AppShell', () => {
     wrapper.unmount();
   });
 
+  it('reports a failed workspace connection instead of fetching directory data', async () => {
+    const connect = vi.spyOn(parley, 'connect').mockRejectedValue(new Error('session refused'));
+    const listParties = vi.spyOn(parley, 'listParties');
+    vi.spyOn(parley, 'listResources').mockResolvedValue([]);
+    vi.spyOn(parley, 'listParties').mockResolvedValue([]);
+    vi.spyOn(parley, 'listSources').mockResolvedValue([]);
+    const wrapper = mount(AppShell);
+    await flushPromises();
+    expect(connect).toHaveBeenCalled();
+    expect(wrapper.text()).toContain('session refused');
+    expect(listParties).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
   it('reports directory and capture failures without losing the other destinations', async () => {
     stubWorkspace([], []);
     vi.spyOn(parley, 'createEntity').mockRejectedValueOnce(new Error('write denied'));
