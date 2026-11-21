@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Exact-pattern absence gate (RFC-0004 "scripts/absent"). Checks every named
+# path exists, runs `rg -n -- PATTERN PATHS...` with argument arrays (no eval),
+# and exits 0 only for rg exit 1 (no matches). A match or an execution error
+# fails the gate.
+#
+# Usage: scripts/absent PATTERN PATH...
+set -u
+
+if [ "$#" -lt 2 ]; then
+  echo "usage: scripts/absent PATTERN PATH..." >&2
+  exit 2
+fi
+pattern=$1
+shift
+
+for path in "$@"; do
+  if [ ! -e "$path" ]; then
+    echo "absent: path does not exist: $path" >&2
+    exit 1
+  fi
+done
+
+status=0
+rg -n -- "$pattern" "$@" || status=$?
+case "$status" in
+  1)
+    exit 0
+    ;;
+  0)
+    echo "absent: forbidden pattern present: $pattern" >&2
+    exit 1
+    ;;
+  *)
+    echo "absent: rg exited with status $status" >&2
+    exit "$status"
+    ;;
+esac

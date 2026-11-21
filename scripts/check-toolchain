@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Verifies the installed toolchain matches ci/toolchain-versions.yaml
+# (RFC-0002 BE-01: pinned toolchain, committed Cargo.lock, SQLx CLI matching
+# the sqlx library). Fails on any drift with a precise diff.
+set -euo pipefail
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$root"
+exec python3 ci/toolchain.py --check

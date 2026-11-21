@@ -1,0 +1,17 @@
+floor_target = 70.0
+
+[rust.floors]
+parley-domain = 0.0
+parley-service = 0.0
+parley-cli = 0.0
+
+[rust.baseline]
+parley-domain = 0.0
+parley-service = 0.0
+parley-cli = 0.0
+
+[web.floors]
+lines = 0.0
+
+[web.baseline]
+lines = 100.0

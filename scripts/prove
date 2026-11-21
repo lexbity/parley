@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Per-slice proof runner (RFC-0004 "scripts/prove"). Runs the slice's Rust
+# integration tests and its Playwright spec on both the mock and rust
+# projects, then requires fresh machine-readable reports with positive
+# executed counts via ci/trace.py.
+#
+# Usage: scripts/prove SLICE_ID    (lowercase s01..s12)
+set -euo pipefail
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: scripts/prove SLICE_ID" >&2
+  exit 2
+fi
+slice=$1
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$root"
+artifacts="$root/artifacts"
+mkdir -p "$artifacts"
+
+printf '\n=== prove %s: cargo test -p parley-service --test %s ===\n' "$slice" "$slice"
+cargo test --locked -p parley-service --test "$slice" 2>&1 |
+  tee "$artifacts/cargo-test-$slice.log"
+
+printf '\n=== prove %s: playwright e2e/%s.spec.ts (mock + rust) ===\n' "$slice" "$slice"
+(
+  cd web
+  PARLEY_PLAYWRIGHT_JSON="$artifacts/playwright-$slice.json" \
+    pnpm exec playwright test "e2e/$slice.spec.ts" --project=mock --project=rust
+)
+
+printf '\n=== prove %s: trace --require-executed ===\n' "$slice"
+python3 ci/trace.py --slice "$slice" --require-executed \
+  --cargo-log "$artifacts/cargo-test-$slice.log" \
+  --playwright-json "$artifacts/playwright-$slice.json"
+
+printf '\nprove %s: complete.\n' "$slice"

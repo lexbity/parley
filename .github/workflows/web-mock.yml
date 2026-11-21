@@ -1,0 +1,67 @@
+# Mock-only PR lane (RFC-0004): Node, lockfile and fixture data — no Rust, no
+# model, no Tauri. A frontend developer can run everything here without the
+# backend. All installs are frozen; all tool versions are pinned by files.
+#
+# The Playwright mock project runs e2e specs against the development mock once
+# slice work adds them; until then the step fails on zero executed tests, per
+# the RFC rule that missing tests must never succeed vacuously.
+name: web-mock
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: web-mock-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PARLEY_THROUGH: s01
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install CI verifier tooling (pinned)
+        run: python3 -m pip install -r ci/requirements.txt
+
+      - name: pnpm install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: vue-tsc
+        run: pnpm --dir web exec vue-tsc --noEmit
+
+      - name: eslint (zero warnings)
+        run: pnpm --dir web exec eslint . --max-warnings 0
+
+      - name: vitest
+        run: pnpm --dir web exec vitest run
+
+      - name: vite build
+        run: pnpm --dir web exec vite build
+
+      - name: Coverage ratchet (no regression; floors rise to 70%)
+        run: python3 ci/coverage.py --check --web
+
+      - name: Disk hygiene (no DB artifacts in the working tree, bounded caches)
+        run: python3 ci/disk.py --check
+
+      - name: Contract and coverage verification
+        run: |
+          python3 ci/contract.py --through "$PARLEY_THROUGH" --check-generated
+          python3 ci/trace.py --through "$PARLEY_THROUGH" --check-manifest
+
+      - name: Playwright (mock project)
+        run: |
+          pnpm --dir web exec playwright install chromium --with-deps
+          pnpm --dir web exec playwright test --project=mock

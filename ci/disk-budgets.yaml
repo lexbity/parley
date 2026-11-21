@@ -1,0 +1,16 @@
+# Disk budgets for Parley development and testing (enforced by ci/disk.py
+# --check, which runs as part of scripts/check-slice). Fail = hard gate
+# failure; warn = prominent notice. Sizes accept B, KiB, MiB, GiB.
+# Tune to your machine; keep the defaults defensible for a laptop SSD.
+#
+# The budgets exist so no growth vector is unbounded: target/ is the only
+# vector expected to reach multiple GiB, and everything else must stay small.
+target_dir:
+  warn: "6 GiB"
+  fail: "12 GiB"
+artifacts:        # artifacts/ + web/artifacts/ (test logs, playwright reports)
+  warn: "64 MiB"
+  fail: "256 MiB"
+repo_tree:        # everything except target/, node_modules/, .git, dist, artifacts
+  warn: "128 MiB"
+  fail: "512 MiB"

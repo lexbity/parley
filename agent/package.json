@@ -1,0 +1,13 @@
+{
+  "name": "parley-agent",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Pinned agent-runner dependencies for the Parley agent worker (RFC-0002 BE-09). pi is the first supported runner; its adapter lands in RFC-0004 slice S04 behind the typed run/cancel/health port.",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.6.0"
+  }
+}

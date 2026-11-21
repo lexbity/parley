@@ -1,0 +1,67 @@
+# Rust-only PR lane (RFC-0004: "PR CI has independent Rust-only and mock-only
+# lanes"). Environment is pinned: the Linux CI container is pinned by digest,
+# the Rust toolchain by rust-toolchain.toml, and sqlx-cli by exact version so
+# it matches the sqlx library resolved in Cargo.lock (checked by
+# ci/migrations.py).
+#
+# PARLEY_THROUGH advances with the RFC-0004 implementation plan as slices land.
+name: rust
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PARLEY_THROUGH: s01
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:24.04@sha256:9c7f200c07e3d4a03e7249d2c16bf66a51120fb876aa2242cf31451412543289
+    steps:
+      - name: Install build prerequisites
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential curl ca-certificates git
+
+      - uses: actions/checkout@v5
+
+      - name: Install pinned Rust toolchain (rustup honors rust-toolchain.toml)
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+            sh -s -- -y --profile minimal --component rustfmt,clippy,llvm-tools-preview
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install sqlx-cli (pinned prebuilt, version matched to the sqlx crate)
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-install.sh |
+            bash
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          cargo binstall -y sqlx-cli@0.9.1
+
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy (-D warnings)
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --locked --workspace
+
+      - name: Disk hygiene (no DB artifacts in the working tree, bounded caches)
+        run: python3 ci/disk.py --check
+
+      - name: Architecture gate (crate dependency graph vs ci/architecture.toml)
+        run: python3 ci/architecture.py --check
+
+      - name: Coverage ratchet (no regression; floors rise to 70%)
+        run: python3 ci/coverage.py --check --rust
+
+      - name: Migrations and query metadata (real private SQLite files)
+        run: python3 ci/migrations.py --through "$PARLEY_THROUGH"

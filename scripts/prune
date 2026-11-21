@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Free regenerable disk space consumed by development and testing
+# (RFC-0004 harness). Repo-local by default: cargo clean, test artifacts,
+# stale /tmp/parley-* scratch dirs, pnpm store prune. Machine-global caches
+# need explicit opt-in: --playwright-cache (builds unused by the pinned
+# Playwright; other projects may need `playwright install` again) and
+# --registry (cargo registry caches; re-fetched on demand).
+#
+# Usage: scripts/prune [--dry-run] [--playwright-cache] [--registry]
+set -euo pipefail
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$root"
+exec python3 ci/disk.py --prune "$@"

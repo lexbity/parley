@@ -1,0 +1,19 @@
+# Requirement/operation traceability manifest (RFC-0004: "Every slice adds
+# contract/fixtures/ID/ ... plus a row in contract/coverage.yaml per operation
+# and requirement. Fields are requirement, operationId, test ID, fixture ID,
+# owner role, package target and evidence path.")
+#
+# Rows are added by the slice that implements them. ci/contract.py and
+# ci/trace.py fail for any slice up to the --through ID that declares no rows,
+# and for any row whose fixture, evidence artifact or test ID does not check
+# out against the executed test reports.
+#
+# Schema per row:
+#   requirement:   APP-xx / BE-xx / FE-xx / INT-xx or a retained Part II ID
+#   operationId:   OpenAPI operationId covered by the row, or "n/a"
+#   test_id:       case ID reported by the cargo test or Playwright case
+#   fixture_id:    contract/fixtures/<slice>/<fixture_id>/
+#   owner_role:    acting role in the fixture (e.g. owner)
+#   package_target: rust | mock | rust+mock
+#   evidence_path: repo-relative path to the slice evidence artifact
+slices: {}

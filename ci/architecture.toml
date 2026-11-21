@@ -1,0 +1,42 @@
+# Crate dependency-graph policy — the architecture gate (ci/architecture.py).
+#
+# RFC-0002's module ownership table governs code organization: policy lives in
+# parley-domain, commands/transport/persistence in parley-service, and the
+# launcher binary in parley-cli. This file encodes that as an allowlist over
+# the *declared* Cargo dependency graph (cargo metadata), which catches
+# violations the source-level import gate (ci/trace.py) cannot see: a crate
+# that declares sqlx without ever using it still breaks this gate.
+#
+# Rules enforced by `python3 ci/architecture.py --check`:
+#   1. every workspace member must have an [edges.<crate>] entry — a new crate
+#      fails until its policy is added here;
+#   2. a member's internal dependencies (normal, dev and build) must be a
+#      subset of its allowed list — anything not listed is a violation, which
+#      also makes depending *into* parley-cli impossible;
+#   3. crates under [forbidden_external] must not declare any listed external
+#      crate in any dependency kind — parley-domain stays a pure decision core
+#      (no HTTP, SQL, async runtime, CLI parsing or logging substrate).
+# Dev-dependencies follow the same rules: property tests and injected clocks
+# keep domain tests pure too.
+
+[edges.parley-cli]
+allowed = ["parley-service", "parley-domain"]
+
+[edges.parley-service]
+allowed = ["parley-domain"]
+
+[edges.parley-domain]
+allowed = []
+
+[forbidden_external.parley-domain]
+crates = [
+    "sqlx",
+    "axum",
+    "tokio",
+    "hyper",
+    "reqwest",
+    "ureq",
+    "async-std",
+    "smol",
+    "clap",
+]

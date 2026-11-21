@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Cumulative slice verification (RFC-0004, "Build, verification and lint
+# infrastructure"). Runs the mandated command list cumulatively for the
+# supplied slice ID and propagates every nonzero exit. Never hides missing
+# tests with a filter that succeeds on zero matches — the slice-gated
+# verifiers (contract, migrations, trace) report exactly what is absent.
+#
+# Usage: scripts/check-slice SLICE_ID    (lowercase s01..s12)
+set -euo pipefail
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: scripts/check-slice SLICE_ID" >&2
+  exit 2
+fi
+slice=$1
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$root"
+
+step() {
+  printf '\n=== check-slice %s: %s ===\n' "$slice" "$*"
+  "$@"
+}
+
+# Rust policy, tests and lint (RFC-0002 BE-01).
+step cargo fmt --all -- --check
+step cargo clippy --locked --workspace --all-targets -- -D warnings
+step cargo test --locked --workspace
+
+# Frontend: frozen install, type check, lint, component tests.
+step pnpm install --frozen-lockfile
+step pnpm --dir web exec vue-tsc --noEmit
+step pnpm --dir web exec eslint . --max-warnings 0
+step pnpm --dir web exec vitest run
+
+# Frontend assets are built before the packaged binary that embeds them,
+# followed by a package smoke test (RFC-0004).
+step pnpm --dir web exec vite build
+step cargo build --locked --release --bin parley
+step ./target/release/parley --version
+
+# Project-owned operational gate, placed before the slice-gated verifiers so
+# it runs on every invocation even while slice work is red: development and
+# testing must not grow disk usage unboundedly (no database artifacts in the
+# working tree; size budgets for target/, artifacts and the repo tree).
+step python3 ci/disk.py --check
+
+# Architecture gate: the declared Cargo dependency graph must match the
+# RFC-0002 module-ownership policy in ci/architecture.toml (complements the
+# source-level import gates in ci/trace.py).
+step python3 ci/architecture.py --check
+
+# Coverage ratchet: no regression against ci/coverage-baseline.toml; the
+# committed floors rise toward the 70% minimum as slice code lands.
+step python3 ci/coverage.py --check --rust
+step python3 ci/coverage.py --check --web
+
+# Slice-gated contract, migration and trace verifiers.
+step python3 ci/contract.py --through "$slice" --check-generated
+step python3 ci/migrations.py --through "$slice"
+step python3 ci/trace.py --through "$slice" --check-manifest
+
+printf '\ncheck-slice %s: all steps passed.\n' "$slice"

@@ -1,0 +1,4 @@
+# Pinned tooling for Parley's ci/ verifiers (matches the local environment;
+# installed by the web/mock CI lane). The rust lane's migrations.py is stdlib-only.
+pyyaml==6.0.3
+jsonschema==4.26.0
