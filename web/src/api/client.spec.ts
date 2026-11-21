@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { captureSource, createEntity, createResource, listEntities, listResources, listSources } from './client';
+import { captureSource, createEntity, createOpportunity, createResource, listEntities, listOpportunities, listOutputs, listResources, listSources } from './client';
 
 const response = (payload: unknown, ok = true, status = 200) => ({ ok, status, json: async () => payload }) as Response;
 
@@ -22,10 +22,22 @@ describe('local API client', () => {
     await listSources();
     await listEntities();
     await createEntity('person', 'Dana');
-    expect(fetch).toHaveBeenCalledTimes(6);
+    await createOpportunity('Onboarding', 'party-1');
+    await listOpportunities(); await listOutputs();
+    expect(fetch).toHaveBeenCalledTimes(9);
     const [url, init] = vi.mocked(fetch).mock.calls[0]!;
     expect(url).toBe('/api/v1/resources');
     expect(init?.headers).toMatchObject({ 'X-Parley-Token': 'owner-token', 'Idempotency-Key': 'request-key' });
+  });
+
+  it('binds an opportunity to an explicit participant ID', async () => {
+    vi.stubGlobal('__PARLEY_TOKEN__', 'owner-token');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ id: 'opp-1' })));
+    await createOpportunity('Onboarding', 'party-7');
+    expect(fetch).toHaveBeenCalledWith('/api/v1/opportunities', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ title: 'Onboarding', primary_party_id: 'party-7' }),
+    }));
   });
 
   it('uses the API error message, code, and status fallback in that order', async () => {

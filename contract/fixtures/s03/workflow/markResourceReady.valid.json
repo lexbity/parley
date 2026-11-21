@@ -1,0 +1,8 @@
+{
+  "$schema": "#/components/schemas/ReadyResourceInput",
+  "body": {
+    "body": {
+      "what": "A useful resource"
+    }
+  }
+}

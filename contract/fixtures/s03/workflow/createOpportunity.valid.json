@@ -1,0 +1,7 @@
+{
+  "$schema": "#/components/schemas/OpportunityInput",
+  "body": {
+    "title": "Onboarding exchange",
+    "primary_party_id": "party-fixture"
+  }
+}

@@ -14,6 +14,8 @@ export function mockApi(): Plugin {
   const entities = new Map<string, RecordData>();
   const groups = new Map<string, { id: string; variants: Map<string, string> }>();
   const occurrences: RecordData[] = [];
+  const opportunities = new Map<string, RecordData>();
+  const outputs = new Map<string, RecordData>();
   const receipts = new Map<string, { canonical: string; result: RecordData }>();
   const token = 'mock-token';
 
@@ -70,6 +72,21 @@ export function mockApi(): Plugin {
       const result = { ...input, id: randomUUID(), revision: 1 };
       entities.set(result.id, result);
       return json(response, 201, result);
+    }
+    if (url.pathname === '/api/v1/opportunities' && request.method === 'GET') {
+      return json(response, 200, [...opportunities.values()]);
+    }
+    if (url.pathname === '/api/v1/opportunities' && request.method === 'POST') {
+      const party = entities.get(String(input.primary_party_id));
+      if (!party || !['person', 'org'].includes(String(party.kind)) || !String(input.title ?? '').trim()) {
+        return json(response, 422, { error: { code: 'invalid_request', message: 'A title and existing participant are required.' } });
+      }
+      const result = { id: randomUUID(), title: String(input.title), state: 'open', revision: 1, participant_ids: [party.id], source_variant_ids: [], material_ids: [] };
+      opportunities.set(result.id, result);
+      return json(response, 201, result);
+    }
+    if (url.pathname === '/api/v1/outputs' && request.method === 'GET') {
+      return json(response, 200, [...outputs.values()]);
     }
     if (url.pathname === '/api/v1/captures' && request.method === 'GET') {
       return json(response, 200, occurrences);

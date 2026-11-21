@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
-import { captureSource, createEntity, createResource, listEntities, listResources, listSources, type Entity, type Resource, type SavedSource } from '../api/client';
+import { acknowledgeRelease, captureSource, createEntity, createOpportunity, createResource, listEntities, listOpportunities, listOutputs, listResources, listSources, releaseMaterial, type Entity, type Material, type Opportunity, type Resource, type SavedSource } from '../api/client';
 import { tabs } from './tabs';
 
 const active = ref<(typeof tabs)[number]>('Resources');
@@ -10,18 +10,24 @@ const what = ref('');
 const captureText = ref('');
 const partyName = ref('');
 const partyKind = ref<'person'|'org'>('person');
+const opportunityTitle = ref('');
+const opportunityPartyId = ref('');
 const resources = ref<Resource[]>([]);
 const parties = ref<Entity[]>([]);
 const sources = ref<SavedSource[]>([]);
+const opportunities = ref<Opportunity[]>([]);
+const outputs = ref<Material[]>([]);
 const status = ref('');
 const error = ref('');
 const busy = ref(false);
 
 async function refreshEntities() {
-  const [entities, savedResources, savedSources] = await Promise.all([listEntities(), listResources(), listSources()]);
+  const [entities, savedResources, savedSources, savedOpportunities, savedOutputs] = await Promise.all([listEntities(), listResources(), listSources(), listOpportunities(), listOutputs()]);
   resources.value = savedResources;
   sources.value = savedSources;
   parties.value = entities.filter((entity) => entity.kind === 'person' || entity.kind === 'org');
+  opportunities.value = savedOpportunities;
+  outputs.value = savedOutputs;
 }
 async function saveResource() {
   busy.value = true; error.value = ''; status.value = '';
@@ -50,6 +56,29 @@ async function saveParty() {
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not save the lead.'; }
   finally { busy.value = false; }
 }
+async function saveOpportunity() {
+  busy.value = true; error.value = ''; status.value = '';
+  try {
+    const opportunity = await createOpportunity(opportunityTitle.value.trim(), opportunityPartyId.value);
+    opportunities.value.unshift(opportunity); opportunityTitle.value = '';
+    status.value = 'Opportunity created with the selected participant. No message was created or sent.';
+  } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not create the opportunity.'; }
+  finally { busy.value = false; }
+}
+async function copyMaterial(material: Material) {
+  busy.value = true; error.value = ''; status.value = '';
+  let releaseId: string | undefined;
+  try {
+    const release = await releaseMaterial(material.id);
+    releaseId = release.release_id;
+    await navigator.clipboard.writeText(release.body);
+    await acknowledgeRelease(release.release_id, true);
+    status.value = `Approved version ${release.version} copied for ${material.recipient_name}. Marking it sent is a separate action.`;
+  } catch (reason) {
+    if (releaseId) await acknowledgeRelease(releaseId, false).catch(() => undefined);
+    error.value = reason instanceof Error ? reason.message : 'Could not copy this material.';
+  } finally { busy.value = false; }
+}
 onMounted(() => { void refreshEntities().catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Workspace is unavailable.'; }); });
 </script>
 
@@ -61,7 +90,7 @@ onMounted(() => { void refreshEntities().catch((reason: unknown) => { error.valu
         v-for="tab in tabs"
         :key="tab"
         type="button"
-        :disabled="tab !== 'Resources' && tab !== 'Leads'"
+        :disabled="tab === 'Settings'"
         :aria-current="active === tab ? 'page' : undefined"
         @click="active = tab"
       >
@@ -194,6 +223,39 @@ onMounted(() => { void refreshEntities().catch((reason: unknown) => { error.valu
         </form>
       </div>
     </section>
+    <section v-else-if="active === 'Queue'" aria-labelledby="queue-heading">
+      <h1 id="queue-heading">Queue</h1>
+      <div class="workspace-grid">
+        <form @submit.prevent="saveOpportunity">
+          <h2>Create an opportunity</h2>
+          <label>Opportunity title<input v-model="opportunityTitle" required maxlength="500" autocomplete="off"></label>
+          <label>Participant<select v-model="opportunityPartyId" required><option disabled value="">Choose a person or organization</option><option v-for="party in parties" :key="party.id" :value="party.id">{{ party.name }} · {{ party.kind }}</option></select></label>
+          <button :disabled="busy || !parties.length" type="submit">Create opportunity</button>
+          <p>A lead alone creates no opportunity. The selected participant is visible on this card.</p>
+        </form>
+        <section aria-labelledby="opportunity-list-heading">
+          <h2 id="opportunity-list-heading">Opportunities</h2>
+          <p v-if="!opportunities.length">No opportunities yet. Choose a lead and create one to bring the records together.</p>
+          <article v-for="opportunity in opportunities" :key="opportunity.id" class="record-card">
+            <h3>{{ opportunity.title }}</h3>
+            <p>Participant IDs: {{ opportunity.participant_ids.join(', ') }}</p>
+            <p>{{ opportunity.state }} · {{ opportunity.material_ids.length }} material(s)</p>
+            <ul><li v-for="output in outputs.filter((item) => item.opportunity_id === opportunity.id)" :key="output.id">{{ output.recipient_name }} · version {{ output.version }} · {{ output.status }}</li></ul>
+          </article>
+        </section>
+      </div>
+    </section>
+    <section v-else-if="active === 'Output'" aria-labelledby="output-heading">
+      <h1 id="output-heading">Output</h1>
+      <p>Materials remain bound to one opportunity, recipient, and immutable version. Copy is available only after approval and current gate checks.</p>
+      <p v-if="!outputs.length">No materials yet. Create an opportunity, prepare its exchange, then author a material for a named participant.</p>
+      <ul class="output-list"><li v-for="material in outputs" :key="material.id" class="record-card">
+        <strong>{{ material.recipient_name }}</strong> · {{ material.kind }} · {{ material.status }} · version {{ material.version }}
+        <p>{{ material.body }}</p>
+        <button v-if="material.status === 'approved'" :disabled="busy" type="button" @click="copyMaterial(material)">Copy approved version</button>
+        <small>Opportunity {{ material.opportunity_id }} · SHA-256 {{ material.content_sha256 }}</small>
+      </li></ul>
+    </section>
   </main>
 </template>
 
@@ -205,5 +267,5 @@ button[aria-current="page"] { background: #173e32; color: white; } main { max-wi
 .workspace-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(300px,1fr)); gap: 1.5rem; align-items: start; }
 form, section section { background: white; border: 1px solid #d7dfd9; border-radius: .5rem; padding: 1rem; }
 label { display: grid; gap: .3rem; margin: .8rem 0; } input, select, textarea { width: 100%; box-sizing: border-box; padding: .5rem; border: 1px solid #82918a; border-radius: .25rem; }
-small { color: #58665f; } .capture { grid-column: 1 / -1; } @media(max-width:650px) { header { align-items: start; flex-direction: column; gap: .5rem; padding: 1rem; } nav { flex-wrap: wrap; } }
+small { color: #58665f; } .capture { grid-column: 1 / -1; } .record-card { background: white; border: 1px solid #d7dfd9; border-radius: .5rem; margin: .75rem 0; padding: 1rem; } .output-list { padding: 0; list-style: none; } @media(max-width:650px) { header { align-items: start; flex-direction: column; gap: .5rem; padding: 1rem; } nav { flex-wrap: wrap; } }
 </style>

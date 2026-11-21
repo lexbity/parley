@@ -5,7 +5,8 @@ import { tabs } from './tabs';
 
 const api = vi.hoisted(() => ({
   captureSource: vi.fn(), createEntity: vi.fn(), createResource: vi.fn(),
-  listEntities: vi.fn(), listResources: vi.fn(), listSources: vi.fn(),
+  createOpportunity: vi.fn(), listEntities: vi.fn(), listResources: vi.fn(), listSources: vi.fn(),
+  listOpportunities: vi.fn(), listOutputs: vi.fn(), releaseMaterial: vi.fn(), acknowledgeRelease: vi.fn(),
 }));
 vi.mock('../api/client', () => api);
 
@@ -19,6 +20,7 @@ describe('App shell', () => {
     api.listEntities.mockResolvedValue([entity]);
     api.listResources.mockResolvedValue([resource]);
     api.listSources.mockResolvedValue([]);
+    api.listOpportunities.mockResolvedValue([]); api.listOutputs.mockResolvedValue([]);
     const wrapper = mount(AppShell);
     await flushPromises();
     await wrapper.get('select').setValue('proof');
@@ -30,6 +32,7 @@ describe('App shell', () => {
 
   it('creates an incomplete resource draft and reports a failed save', async () => {
     api.listEntities.mockResolvedValue([]); api.listResources.mockResolvedValue([]); api.listSources.mockResolvedValue([]);
+    api.listOpportunities.mockResolvedValue([]); api.listOutputs.mockResolvedValue([]);
     api.createResource.mockResolvedValue(resource);
     const wrapper = mount(AppShell); await flushPromises();
     await wrapper.get('input[placeholder*="onboarding"]').setValue('Walkthrough');
@@ -44,6 +47,7 @@ describe('App shell', () => {
 
   it('creates a lead without an opportunity and saves source-only captures', async () => {
     api.listEntities.mockResolvedValue([]); api.listResources.mockResolvedValue([]); api.listSources.mockResolvedValue([]);
+    api.listOpportunities.mockResolvedValue([]); api.listOutputs.mockResolvedValue([]);
     api.createEntity.mockResolvedValue(entity);
     api.captureSource.mockResolvedValue({ content_id: 'c1', variant_id: 'v1', occurrence_id: 'o1', normalized_sha256: 'a', raw_sha256: 'b' });
     const wrapper = mount(AppShell); await flushPromises();
@@ -64,6 +68,7 @@ describe('App shell', () => {
   it('shows source and lead failures and retains the other tab destinations', async () => {
     api.listEntities.mockRejectedValue(new Error('workspace offline'));
     api.listResources.mockResolvedValue([]); api.listSources.mockResolvedValue([]);
+    api.listOpportunities.mockResolvedValue([]); api.listOutputs.mockResolvedValue([]);
     const wrapper = mount(AppShell); await flushPromises();
     expect(wrapper.text()).toContain('workspace offline');
     await wrapper.get('nav button:nth-child(2)').trigger('click');
@@ -75,14 +80,32 @@ describe('App shell', () => {
     await wrapper.findAll('textarea')[0]!.setValue('A source');
     await wrapper.findAll('form')[1]!.trigger('submit'); await flushPromises();
     expect(wrapper.text()).toContain('capture denied');
-    for (const tab of ['Queue', 'Output', 'Settings']) {
+    for (const tab of ['Queue', 'Output']) {
       const button = wrapper.findAll('nav button').find((candidate) => candidate.text() === tab);
-      expect(button?.attributes('disabled')).toBeDefined();
+      expect(button?.attributes('disabled')).toBeUndefined();
     }
+    expect(wrapper.findAll('nav button').find((candidate) => candidate.text() === 'Settings')?.attributes('disabled')).toBeDefined();
     expect(wrapper.get('h1').text()).toBe('Leads');
   });
 
   it('declares exactly the five top-level destinations from APP-01', () => {
     expect([...tabs]).toEqual(['Resources', 'Leads', 'Queue', 'Output', 'Settings']);
+  });
+
+  it('creates a selected-participant opportunity and keeps Queue and Output material IDs aligned', async () => {
+    api.listEntities.mockResolvedValue([entity]); api.listResources.mockResolvedValue([]); api.listSources.mockResolvedValue([]);
+    api.listOpportunities.mockResolvedValue([]); api.listOutputs.mockResolvedValue([]);
+    api.createOpportunity.mockResolvedValue({ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: [] });
+    const wrapper = mount(AppShell); await flushPromises();
+    await wrapper.get('nav button:nth-child(3)').trigger('click');
+    await wrapper.get('input[required]').setValue('Onboarding');
+    await wrapper.get('select[required]').setValue('p1');
+    await wrapper.get('form').trigger('submit'); await flushPromises();
+    expect(api.createOpportunity).toHaveBeenCalledWith('Onboarding', 'p1');
+    expect(wrapper.text()).toContain('No message was created or sent');
+    expect(wrapper.text()).toContain('Onboarding');
+    await wrapper.get('nav button:nth-child(4)').trigger('click');
+    expect(wrapper.get('h1').text()).toBe('Output');
+    expect(wrapper.text()).toContain('No materials yet');
   });
 });

@@ -8,3 +8,5 @@
 //! every run.
 //!
 pub mod evidence;
+pub mod gate;
+pub mod template;

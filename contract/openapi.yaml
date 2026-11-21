@@ -45,6 +45,142 @@ paths:
       security: [{ WorkspaceToken: [] }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RelatedEntityInput' } } } }
       responses: { '201': { description: Atomically created entity, attributed edge and layout }, '422': { description: Evidence or endpoint rejected } }
+  /opportunities:
+    get:
+      operationId: listOpportunities
+      security: [{ WorkspaceToken: [] }]
+      responses: { '200': { description: Opportunity records and their shared material IDs } }
+    post:
+      operationId: createOpportunity
+      security: [{ WorkspaceToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/OpportunityInput' } } } }
+      responses: { '201': { description: Opportunity and explicit primary participant committed together } }
+  /opportunities/{id}:
+    get:
+      operationId: getOpportunity
+      security: [{ WorkspaceToken: [] }]
+      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
+      responses: { '200': { description: Opportunity detail }, '404': { description: Missing opportunity } }
+  /opportunities/{id}/sources/{source_id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string } }
+      - { in: path, name: source_id, required: true, schema: { type: string } }
+    post:
+      operationId: linkOpportunitySource
+      security: [{ WorkspaceToken: [] }]
+      responses: { '204': { description: Link to the existing source variant } }
+    delete:
+      operationId: unlinkOpportunitySource
+      security: [{ WorkspaceToken: [] }]
+      responses: { '204': { description: Remove only this opportunity association } }
+  /opportunities/{id}/participants:
+    post:
+      operationId: addOpportunityParticipant
+      security: [{ WorkspaceToken: [] }]
+      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ParticipantInput' } } } }
+      responses: { '200': { description: Updated explicit membership } }
+  /opportunities/{id}/interests:
+    post:
+      operationId: addOpportunityInterest
+      security: [{ WorkspaceToken: [] }]
+      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/InterestInput' } } } }
+      responses: { '201': { description: Recipient-scoped interest with stated knowledge type } }
+  /opportunities/{id}/exchange:
+    post:
+      operationId: saveOpportunityExchange
+      security: [{ WorkspaceToken: [] }]
+      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ExchangeInput' } } } }
+      responses: { '201': { description: New immutable exchange version with attestation reset } }
+  /opportunities/{id}/exchange/{recipient_id}/attest:
+    post:
+      operationId: attestOpportunityExchange
+      security: [{ WorkspaceToken: [] }]
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: path, name: recipient_id, required: true, schema: { type: string } }
+      responses: { '200': { description: Explicit attestation bound to the current exchange and interest digest } }
+  /templates:
+    get:
+      operationId: listTemplates
+      security: [{ WorkspaceToken: [] }]
+      responses: { '200': { description: Immutable template versions and lifecycle state } }
+    post:
+      operationId: createTemplate
+      security: [{ WorkspaceToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TemplateInput' } } } }
+      responses: { '201': { description: Validated immutable template candidate }, '422': { description: Invalid slots or fixed text } }
+  /templates/{id}/approve:
+    post:
+      operationId: approveTemplate
+      security: [{ WorkspaceToken: [] }]
+      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
+      responses: { '204': { description: Owner approved this template version } }
+  /templates/{id}/activate:
+    post:
+      operationId: activateTemplate
+      security: [{ WorkspaceToken: [] }]
+      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
+      responses: { '204': { description: Revalidated active template version } }
+  /resources/{id}/ready:
+    post:
+      operationId: markResourceReady
+      security: [{ WorkspaceToken: [] }]
+      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReadyResourceInput' } } } }
+      responses: { '204': { description: Resource passed its kind-specific readiness validator }, '422': { description: Missing or invalid required evidence } }
+  /opportunities/{id}/materials:
+    get:
+      operationId: listOpportunityMaterials
+      security: [{ WorkspaceToken: [] }]
+      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
+      responses: { '200': { description: Same immutable material heads shown in Output } }
+    post:
+      operationId: createMaterial
+      security: [{ WorkspaceToken: [] }]
+      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/MaterialInput' } } } }
+      responses: { '201': { description: New immutable material version bound to a participant and exchange }, '422': { description: Invalid resolver, recipient, or sentence binding } }
+  /materials/{id}:
+    get:
+      operationId: getMaterial
+      security: [{ WorkspaceToken: [] }]
+      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
+      responses: { '200': { description: Current immutable material head } }
+  /materials/{id}/versions:
+    post:
+      operationId: editMaterial
+      security: [{ WorkspaceToken: [] }]
+      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/MaterialInput' } } } }
+      responses: { '201': { description: New version; prior approved and released bytes remain immutable } }
+  /materials/{id}/approve:
+    post:
+      operationId: approveMaterial
+      security: [{ WorkspaceToken: [] }]
+      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ApprovalInput' } } } }
+      responses: { '200': { description: Version-bound approval and complete gate snapshot }, '422': { description: Hard gate or unoverridden soft gate blocks approval } }
+  /materials/{id}/release:
+    post:
+      operationId: releaseMaterial
+      security: [{ WorkspaceToken: [] }]
+      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
+      responses: { '200': { description: Exact approved bytes plus committed issuance record }, '422': { description: Current dependency or gate check blocks release } }
+  /releases/{id}/ack:
+    post:
+      operationId: acknowledgeRelease
+      security: [{ WorkspaceToken: [] }]
+      parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReleaseAckInput' } } } }
+      responses: { '204': { description: Clipboard success or failure recorded independently of approval } }
+  /outputs:
+    get:
+      operationId: listOutputs
+      security: [{ WorkspaceToken: [] }]
+      responses: { '200': { description: Searchable material index sharing opportunity and material IDs } }
 components:
   securitySchemes:
     WorkspaceToken: { type: apiKey, in: header, name: X-Parley-Token }
@@ -95,4 +231,95 @@ components:
         view_id: { type: string }
         x: { type: number }
         y: { type: number }
+      additionalProperties: false
+    OpportunityInput:
+      type: object
+      required: [title, primary_party_id]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 500 }
+        primary_party_id: { type: string }
+      additionalProperties: false
+    ParticipantInput:
+      type: object
+      required: [party_id, role]
+      properties:
+        party_id: { type: string }
+        role: { type: string, enum: [primary, participant] }
+      additionalProperties: false
+    InterestInput:
+      type: object
+      required: [recipient_id, side, statement, knowledge_kind]
+      properties:
+        recipient_id: { type: string }
+        side: { type: string, enum: [them, me] }
+        statement: { type: string, minLength: 1, maxLength: 3000 }
+        knowledge_kind: { type: string, enum: [observation, hypothesis, owner_report] }
+        claim_id: { type: [string, 'null'] }
+        claim_revision: { type: [integer, 'null'] }
+      additionalProperties: false
+    ExchangeInput:
+      type: object
+      required: [recipient_id, they_get, i_get, interest_ids]
+      properties:
+        recipient_id: { type: string }
+        they_get: { type: string, maxLength: 3000 }
+        i_get: { type: string, maxLength: 3000 }
+        interest_ids: { type: array, items: { type: string } }
+      additionalProperties: false
+    TemplateInput:
+      type: object
+      required: [name, body]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        body: { type: string, minLength: 1 }
+        proof_fallback: { type: [string, 'null'], enum: [omit_sentence, use_alternative_template, null] }
+      additionalProperties: false
+    ReadyResourceInput:
+      type: object
+      properties:
+        body: { type: [object, 'null'] }
+      additionalProperties: false
+    SlotFill:
+      type: object
+      required: [slot, value]
+      properties:
+        slot: { type: string }
+        value: { type: string }
+        resource_id: { type: [string, 'null'] }
+      additionalProperties: false
+    SentenceBinding:
+      type: object
+      required: [sentence_index, claim_type]
+      properties:
+        sentence_index: { type: integer, minimum: 0 }
+        claim_type: { type: string, enum: [generic, offer, self_fact, other_fact, question, ask, identity, hook] }
+        ref_kind: { type: [string, 'null'] }
+        ref_id: { type: [string, 'null'] }
+        ref_revision: { type: [integer, 'null'] }
+        approved_wording: { type: [string, 'null'] }
+        ask_rung: { type: [integer, 'null'], minimum: 0, maximum: 5 }
+      additionalProperties: false
+    MaterialInput:
+      type: object
+      required: [recipient_id, kind, template_version_id, body, slot_fills, sentence_bindings, exchange_version]
+      properties:
+        recipient_id: { type: string }
+        kind: { type: string, enum: [outreach, followup, handoff] }
+        template_version_id: { type: string }
+        body: { type: string, minLength: 1, maxLength: 20000 }
+        slot_fills: { type: array, items: { $ref: '#/components/schemas/SlotFill' } }
+        sentence_bindings: { type: array, items: { $ref: '#/components/schemas/SentenceBinding' } }
+        exchange_version: { type: integer, minimum: 1 }
+      additionalProperties: false
+    ApprovalInput:
+      type: object
+      required: [override_reasons]
+      properties:
+        override_reasons: { type: object, additionalProperties: { type: string, minLength: 10 } }
+      additionalProperties: false
+    ReleaseAckInput:
+      type: object
+      required: [succeeded]
+      properties:
+        succeeded: { type: boolean }
       additionalProperties: false

@@ -1,0 +1,7 @@
+{
+  "$schema": "#/components/schemas/ParticipantInput",
+  "body": {
+    "party_id": "party-fixture-2",
+    "role": "participant"
+  }
+}

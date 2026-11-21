@@ -24,6 +24,7 @@ use thiserror::Error;
 
 static IDS: AtomicU64 = AtomicU64::new(0);
 
+mod materials;
 mod web_assets {
     include!(concat!(env!("OUT_DIR"), "/web_assets.rs"));
 }
@@ -79,10 +80,10 @@ pub struct EntityRecord {
 }
 
 #[derive(Clone)]
-struct ApiState {
-    workspace: Workspace,
-    token: String,
-    port: u16,
+pub(crate) struct ApiState {
+    pub(crate) workspace: Workspace,
+    pub(crate) token: String,
+    pub(crate) port: u16,
 }
 
 #[derive(Deserialize)]
@@ -111,6 +112,7 @@ pub fn api(workspace: Workspace, token: String, port: u16) -> Router {
         .route("/api/v1/captures", get(list_captures).post(save_capture))
         .route("/api/v1/entities", get(list_entities).post(create_entity))
         .route("/api/v1/graph/related", post(create_related_entity))
+        .merge(materials::routes())
         .with_state(state)
         .layer(axum::extract::DefaultBodyLimit::max(2_100_000))
 }
@@ -177,7 +179,10 @@ async fn health() -> &'static str {
     "ok"
 }
 
-fn authorized(headers: &HeaderMap, state: &ApiState) -> Result<(), (StatusCode, &'static str)> {
+pub(crate) fn authorized(
+    headers: &HeaderMap,
+    state: &ApiState,
+) -> Result<(), (StatusCode, &'static str)> {
     if !host_allowed(headers, state) {
         return Err((StatusCode::BAD_REQUEST, "invalid Host"));
     }
@@ -691,6 +696,14 @@ impl Workspace {
         .bind(&now)
         .execute(&mut *tx)
         .await?;
+        if matches!(kind, "person" | "org") {
+            sqlx::query(
+                "INSERT INTO party_policy(party_id) VALUES(?) ON CONFLICT(party_id) DO NOTHING",
+            )
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+        }
         sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'entity',?,1,'entity.created','{}')")
             .bind(new_id(&id)).bind(&now).bind(&id).execute(&mut *tx).await?;
         tx.commit().await?;
@@ -769,6 +782,14 @@ impl Workspace {
         .bind(&now)
         .execute(&mut *tx)
         .await?;
+        if matches!(kind, "person" | "org") {
+            sqlx::query(
+                "INSERT INTO party_policy(party_id) VALUES(?) ON CONFLICT(party_id) DO NOTHING",
+            )
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+        }
         let claim_id = new_id(&id);
         sqlx::query("INSERT INTO claim(id,subject_id,predicate,current_revision,created_at) VALUES(?,?,?,1,?)").bind(&claim_id).bind(&id).bind(verb).bind(&now).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO claim_revision(claim_id,revision,wording,knowledge_kind,tier,speaker_kind,speaker_entity_id,occurrence_id,source_variant_id,source_start,source_end,normalized_start,normalized_end,normalization_version,created_at) VALUES(?,1,?,'observation',1,?,?,?,?,?,?,?,?,?,?)")
@@ -802,13 +823,13 @@ impl Workspace {
     }
 }
 
-fn digest(bytes: &[u8]) -> String {
+pub(crate) fn digest(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
 }
-fn new_id(seed: &str) -> String {
+pub(crate) fn new_id(seed: &str) -> String {
     let nonce = IDS.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -816,7 +837,7 @@ fn new_id(seed: &str) -> String {
         .as_nanos();
     digest(format!("{seed}:{nanos}:{nonce}").as_bytes())[..32].to_owned()
 }
-fn now_utc() -> String {
+pub(crate) fn now_utc() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();

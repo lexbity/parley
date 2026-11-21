@@ -68,3 +68,151 @@ slices:
       owner_role: owner
       package_target: rust
       evidence_path: contract/fixtures/s02/createentity/evidence.md
+  s03:
+    - requirement: APP-10
+      operationId: createOpportunity
+      test_id: s03_create_opportunity_for_selected_participant_without_creating_a_send
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
+    - requirement: APP-02
+      operationId: getOpportunity
+      test_id: s03_one_source_can_link_to_two_opportunities_and_unlink_independently
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
+    - requirement: APP-10
+      operationId: addOpportunityParticipant
+      test_id: s03_one_source_can_link_to_two_opportunities_and_unlink_independently
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
+    - requirement: APP-08
+      operationId: linkOpportunitySource
+      test_id: s03_one_source_can_link_to_two_opportunities_and_unlink_independently
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
+    - requirement: APP-08
+      operationId: unlinkOpportunitySource
+      test_id: s03_one_source_can_link_to_two_opportunities_and_unlink_independently
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
+    - requirement: EXCH-1
+      operationId: addOpportunityInterest
+      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
+    - requirement: EXCH-1
+      operationId: saveOpportunityExchange
+      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
+    - requirement: EXCH-3
+      operationId: attestOpportunityExchange
+      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
+    - requirement: TPL-1
+      operationId: createTemplate
+      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
+    - requirement: TPL-3
+      operationId: listTemplates
+      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
+    - requirement: TPL-3
+      operationId: approveTemplate
+      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
+    - requirement: TPL-3
+      operationId: activateTemplate
+      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
+    - requirement: ASSET-1
+      operationId: markResourceReady
+      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
+    - requirement: APP-12
+      operationId: createMaterial
+      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
+    - requirement: APP-12
+      operationId: listOpportunityMaterials
+      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
+    - requirement: APP-12
+      operationId: getMaterial
+      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
+    - requirement: APP-12
+      operationId: editMaterial
+      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
+    - requirement: APP-13
+      operationId: approveMaterial
+      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
+    - requirement: APP-13
+      operationId: releaseMaterial
+      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
+    - requirement: APP-13
+      operationId: acknowledgeRelease
+      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
+    - requirement: APP-12
+      operationId: listOutputs
+      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s03/workflow/evidence.md
