@@ -47,6 +47,39 @@ pub fn normalize(text: &str) -> String {
     output
 }
 
+fn ascii_source_span(
+    source: &str,
+    normalized_start: usize,
+    normalized_end: usize,
+) -> Option<(usize, usize)> {
+    if !source.is_ascii() || normalized_start >= normalized_end {
+        return None;
+    }
+    let mut starts = Vec::new();
+    let mut ends = Vec::new();
+    let mut pending_space: Option<(usize, usize)> = None;
+    for (index, byte) in source.bytes().enumerate() {
+        if byte.is_ascii_whitespace() {
+            if !starts.is_empty() {
+                pending_space = Some(match pending_space {
+                    Some((start, _)) => (start, index + 1),
+                    None => (index, index + 1),
+                });
+            }
+            continue;
+        }
+        if let Some((start, end)) = pending_space.take() {
+            starts.push(start);
+            ends.push(end);
+        }
+        starts.push(index);
+        ends.push(index + 1);
+    }
+    let start = *starts.get(normalized_start)?;
+    let end = *ends.get(normalized_end - 1)?;
+    Some((start, end))
+}
+
 /// Match a quote exactly after normalization. Repeated occurrences require an
 /// explicit zero-based occurrence index; fuzzy matching is never attempted.
 pub fn verify_quote(
@@ -78,8 +111,9 @@ pub fn verify_quote(
     // an occurrence map. Until that map is available, only accept identity-width
     // source normalization where the verified normalized quote can be recovered
     // at unambiguous UTF-8 boundaries.
-    let source_start = source.find(quote).ok_or(QuoteError::NotFound)?;
-    let source_end = source_start + quote.len();
+    let (source_start, source_end) = ascii_source_span(source, normalized_start, normalized_end)
+        .or_else(|| source.find(quote).map(|start| (start, start + quote.len())))
+        .ok_or(QuoteError::NotFound)?;
     Ok(QuoteMatch {
         source_start,
         source_end,
@@ -103,7 +137,12 @@ mod tests {
             verify_quote("Alpha alpha", "alpha", None),
             Err(QuoteError::Ambiguous(2))
         ));
-        assert!(verify_quote("Alpha alpha", "alpha", Some(1)).is_err());
+        assert_eq!(
+            verify_quote("Alpha alpha", "alpha", Some(1))
+                .unwrap()
+                .source_start,
+            6
+        );
         assert_eq!(
             verify_quote("Alpha alpha", "alpha", Some(0))
                 .unwrap()

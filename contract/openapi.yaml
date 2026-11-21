@@ -1,0 +1,256 @@
+openapi: 3.1.0
+info:
+  title: Parley local owner API
+  version: 1.0.0
+servers:
+  - url: /api/v1
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      responses:
+        '200':
+          description: Local service readiness. Does not probe a model.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Health'}
+        '503': {$ref: '#/components/responses/Error'}
+  /session/bootstrap:
+    post:
+      operationId: redeemBootstrap
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BootstrapRequest'}
+      responses:
+        '200': {description: One-time bootstrap redeemed; sets an HttpOnly session cookie.}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /session:
+    get:
+      operationId: getSession
+      security: [{sessionCookie: []}]
+      responses:
+        '200':
+          description: Private workspace session and mutation token.
+          headers:
+            X-Parley-Epoch: {schema: {type: string}}
+            Cache-Control: {schema: {type: string, const: no-store}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Session'}
+        '401': {$ref: '#/components/responses/Error'}
+  /entities:
+    get:
+      operationId: listEntities
+      security: [{sessionCookie: []}]
+      parameters:
+        - in: query
+          name: kind
+          schema: {type: string, const: resource}
+      responses:
+        '200':
+          description: Saved owner resources.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResourceList'}
+        '401': {$ref: '#/components/responses/Error'}
+    post:
+      operationId: createEntity
+      security: [{sessionCookie: []}]
+      parameters:
+        - {$ref: '#/components/parameters/MutationToken'}
+        - {$ref: '#/components/parameters/Epoch'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateResource'}
+      responses:
+        '201':
+          description: Draft resource and receipt committed atomically.
+          headers: {ETag: {schema: {type: string}}}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties: {data: {$ref: '#/components/schemas/Resource'}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /entities/{id}:
+    get:
+      operationId: getEntity
+      security: [{sessionCookie: []}]
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/MutationToken'}
+        - {$ref: '#/components/parameters/Epoch'}
+      responses:
+        '200':
+          description: One saved resource with its current strong ETag.
+          headers: {ETag: {schema: {type: string}}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResourceEnvelope'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    patch:
+      operationId: updateEntity
+      security: [{sessionCookie: []}]
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/MutationToken'}
+        - {$ref: '#/components/parameters/Epoch'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {in: header, name: If-Match, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateResource'}
+      responses:
+        '200':
+          description: Updated draft and receipt committed atomically.
+          headers: {ETag: {schema: {type: string}}}
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/Resource'}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '412': {$ref: '#/components/responses/Error'}
+        '428': {$ref: '#/components/responses/Error'}
+  /events:
+    get:
+      operationId: getEvents
+      security: [{sessionCookie: []}]
+      parameters:
+        - {in: query, name: after, schema: {type: string, pattern: '^[0-9]+$'}, required: false}
+        - {$ref: '#/components/parameters/MutationToken'}
+        - {$ref: '#/components/parameters/Epoch'}
+      responses:
+        '200':
+          description: Ordered committed events after the supplied cursor.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EventPage'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    sessionCookie: {type: apiKey, in: cookie, name: parley_session}
+  parameters:
+    MutationToken: {in: header, name: X-Parley-Token, required: true, schema: {type: string}}
+    Epoch: {in: header, name: X-Parley-Epoch, required: true, schema: {type: string}}
+    IdempotencyKey: {in: header, name: Idempotency-Key, required: true, schema: {type: string, minLength: 1, maxLength: 100}}
+  responses:
+    Error:
+      description: Stable error envelope.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+  schemas:
+    Health:
+      type: object
+      required: [status, model]
+      properties:
+        status: {type: string, const: ready}
+        model: {type: string, const: not-probed}
+      additionalProperties: false
+    BootstrapRequest:
+      type: object
+      required: [secret]
+      properties: {secret: {type: string, minLength: 64, maxLength: 64}}
+      additionalProperties: false
+    Session:
+      type: object
+      required: [workspace_id, epoch, wire_major, wire_minor, capabilities, mutation_token, cursor]
+      properties:
+        workspace_id: {type: string}
+        epoch: {type: string}
+        wire_major: {type: integer}
+        wire_minor: {type: integer}
+        capabilities: {type: array, items: {type: string}}
+        mutation_token: {type: string}
+        cursor: {type: string}
+      additionalProperties: false
+    Resource:
+      type: object
+      required: [id, kind, title, body, readiness, revision, etag]
+      properties:
+        id: {type: string}
+        kind: {enum: [gift, proof, artifact]}
+        title: {type: string}
+        body: {type: object, additionalProperties: true}
+        readiness: {enum: [draft, ready, retired]}
+        revision: {type: integer, minimum: 1}
+        etag: {type: string}
+      additionalProperties: false
+    ResourceList:
+      type: object
+      required: [data, cursor]
+      properties:
+        data: {type: array, items: {$ref: '#/components/schemas/Resource'}}
+        cursor: {type: string}
+      additionalProperties: false
+    ResourceEnvelope:
+      type: object
+      required: [data]
+      properties: {data: {$ref: '#/components/schemas/Resource'}}
+      additionalProperties: false
+    Event:
+      type: object
+      required: [cursor, event_id, entity_type, entity_id, revision, event_type, payload]
+      properties:
+        cursor: {type: string}
+        event_id: {type: string}
+        entity_type: {type: string}
+        entity_id: {type: string}
+        revision: {type: integer}
+        event_type: {type: string}
+        payload: {type: object, additionalProperties: true}
+      additionalProperties: false
+    EventPage:
+      type: object
+      required: [items, next_cursor, observed_cursor]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Event'}}
+        next_cursor: {type: string}
+        observed_cursor: {type: string}
+      additionalProperties: false
+    CreateResource:
+      type: object
+      required: [kind, title, body]
+      properties:
+        kind: {enum: [gift, proof, artifact]}
+        title: {type: string, maxLength: 240}
+        body: {type: object, additionalProperties: true}
+      additionalProperties: false
+    UpdateResource:
+      type: object
+      required: [title, body]
+      properties:
+        title: {type: string, maxLength: 240}
+        body: {type: object, additionalProperties: true}
+      additionalProperties: false
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, details]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            details: {type: array, items: {type: object}}
+          additionalProperties: false
+      additionalProperties: false

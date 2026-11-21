@@ -1,18 +1,21 @@
-import { describe, expect, it } from 'vitest';
 import { mount } from '@vue/test-utils';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { parley } from '../api/client';
 import AppShell from './AppShell.vue';
 import { tabs } from './tabs';
 
-describe('App shell', () => {
-  it('renders the five owner tabs in the mandated APP-01 order', () => {
-    const wrapper = mount(AppShell);
-    const labels = wrapper
-      .findAll('nav[aria-label="Main navigation"] button')
-      .map((button) => button.text());
-    expect(labels).toEqual([...tabs]);
-  });
+afterEach(() => vi.restoreAllMocks());
 
-  it('declares exactly the five top-level destinations from APP-01', () => {
-    expect([...tabs]).toEqual(['Resources', 'Leads', 'Queue', 'Output', 'Settings']);
+describe('AppShell', () => {
+  it('opens the working Resources journey without exposing unfinished destinations', async () => {
+    vi.spyOn(parley, 'connect').mockResolvedValue();
+    vi.spyOn(parley, 'listResources').mockResolvedValue([]);
+    const wrapper = mount(AppShell);
+    expect(tabs).toEqual(['Resources', 'Leads', 'Queue', 'Output', 'Settings']);
+    expect(wrapper.get('h1').text()).toBe('Resources');
+    await wrapper.get('input').setValue('unsent resource title');
+    expect(wrapper.find('nav').exists()).toBe(false);
+    expect((wrapper.get('input').element as HTMLInputElement).value).toBe('unsent resource title');
+    wrapper.unmount();
   });
 });

@@ -2,6 +2,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE workspace_meta (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   schema_version INTEGER NOT NULL,
+  workspace_id TEXT NOT NULL,
   epoch TEXT NOT NULL,
   revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
   created_at TEXT NOT NULL
@@ -16,6 +17,7 @@ CREATE TABLE owner_profile (
 );
 CREATE TABLE resource (
   id TEXT PRIMARY KEY,
+  owner_id INTEGER NOT NULL DEFAULT 1 REFERENCES owner_profile(id),
   kind TEXT NOT NULL CHECK (kind IN ('gift','proof','artifact')),
   title TEXT NOT NULL,
   body_json TEXT NOT NULL,
@@ -23,6 +25,13 @@ CREATE TABLE resource (
   revision INTEGER NOT NULL CHECK (revision > 0),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+CREATE TABLE board_list (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  archived INTEGER NOT NULL CHECK (archived IN (0,1)),
+  revision INTEGER NOT NULL CHECK (revision > 0)
 );
 CREATE TABLE idempotency_receipt (
   owner_id INTEGER NOT NULL DEFAULT 1 REFERENCES owner_profile(id),

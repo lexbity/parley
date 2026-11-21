@@ -10,3 +10,4 @@ path = "src/main.rs"
 
 [dependencies]
 parley-service.workspace = true
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "signal"] }

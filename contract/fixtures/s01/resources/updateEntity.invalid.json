@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/Error","body":{"error":{"code":"STALE_REVISION","message":"Resource changed in another session","details":[]}}}

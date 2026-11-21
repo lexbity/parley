@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/CreateResource","body":{"kind":"gift","title":"Onboarding checklist","body":{"description":"A short checklist for teams reviewing onboarding","delivery":"on_request"}}}

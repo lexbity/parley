@@ -16,4 +16,61 @@
 #   owner_role:    acting role in the fixture (e.g. owner)
 #   package_target: rust | mock | rust+mock
 #   evidence_path: repo-relative path to the slice evidence artifact
-slices: {}
+slices:
+  s01:
+    - requirement: INT-01
+      operationId: getHealth
+      test_id: s01_health_no_model_probe
+      fixture_id: resources
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s01.md
+    - requirement: INT-01
+      operationId: redeemBootstrap
+      test_id: s01_bootstrap_is_single_use
+      fixture_id: resources
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s01.md
+    - requirement: FE-01
+      operationId: getSession
+      test_id: s01_bootstrap_is_single_use_and_session_is_private
+      fixture_id: resources
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s01.md
+    - requirement: APP-05
+      operationId: listEntities
+      test_id: s01_resource_create_receipt_atomic
+      fixture_id: resources
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s01.md
+    - requirement: APP-05
+      operationId: createEntity
+      test_id: s01_resource_create_receipt_atomic
+      fixture_id: resources
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s01.md
+    - requirement: FQ1
+      operationId: updateEntity
+      test_id: s01_resource_create_receipt_atomic
+      fixture_id: resources
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s01.md
+    - requirement: FE-01
+      operationId: getEntity
+      test_id: s01_resource_create_receipt_atomic
+      fixture_id: resources
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s01.md
+    - requirement: INT-03
+      operationId: getEvents
+      test_id: s01_resource_create_receipt_atomic
+      fixture_id: resources
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s01.md

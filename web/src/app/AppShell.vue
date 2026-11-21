@@ -1,19 +1,13 @@
 <script setup lang="ts">
-import { tabs } from './tabs';
+import ResourceEditor from '../features/resources/ResourceEditor.vue';
 </script>
 
 <template>
   <header>
     <strong>Parley</strong>
-    <nav aria-label="Main navigation">
-      <button
-        v-for="tab in tabs"
-        :key="tab"
-        type="button"
-      >
-        {{ tab }}
-      </button>
-    </nav>
   </header>
-  <main />
+  <main>
+    <h1>Resources</h1>
+    <ResourceEditor />
+  </main>
 </template>

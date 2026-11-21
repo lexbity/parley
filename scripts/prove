@@ -21,6 +21,9 @@ printf '\n=== prove %s: cargo test -p parley-service --test %s ===\n' "$slice" "
 cargo test --locked -p parley-service --test "$slice" 2>&1 |
   tee "$artifacts/cargo-test-$slice.log"
 
+printf '\n=== prove %s: build local launcher for the integrated browser journey ===\n' "$slice"
+cargo build --locked --bin parley
+
 printf '\n=== prove %s: playwright e2e/%s.spec.ts (mock + rust) ===\n' "$slice" "$slice"
 (
   cd web

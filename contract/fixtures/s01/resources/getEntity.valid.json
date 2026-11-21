@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/ResourceEnvelope","body":{"data":{"id":"00112233445566778899aabbccddeeff","kind":"gift","title":"Checklist","body":{"description":"Review onboarding","delivery":"on_request"},"readiness":"draft","revision":1,"etag":"\"p1.ffeeddcc.resource.00112233445566778899aabbccddeeff.1\""}}}
