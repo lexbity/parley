@@ -321,3 +321,95 @@ slices:
       owner_role: owner
       package_target: rust
       evidence_path: contract/fixtures/s03/workflow/evidence.md
+  s04:
+    - requirement: BE-09
+      operationId: getAgentProvider
+      test_id: s04_stages_proposals_and_commits_only_the_selected_review_closure
+      fixture_id: extractor_review
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s04/extractor_review/evidence.md
+    - requirement: BE-09
+      operationId: updateAgentProvider
+      test_id: s04_stages_proposals_and_commits_only_the_selected_review_closure
+      fixture_id: extractor_review
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s04/extractor_review/evidence.md
+    - requirement: JOB-8
+      operationId: checkAgentProvider
+      test_id: s04_stages_proposals_and_commits_only_the_selected_review_closure
+      fixture_id: extractor_review
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s04/extractor_review/evidence.md
+    - requirement: JOB-1
+      operationId: saveCapture
+      test_id: s04_stages_proposals_and_commits_only_the_selected_review_closure
+      fixture_id: extractor_review
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s04/extractor_review/evidence.md
+    - requirement: JOB-2
+      operationId: getJob
+      test_id: s04_stages_proposals_and_commits_only_the_selected_review_closure
+      fixture_id: extractor_review
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s04/extractor_review/evidence.md
+    - requirement: APP-08
+      operationId: getCaptureProposals
+      test_id: s04_stages_proposals_and_commits_only_the_selected_review_closure
+      fixture_id: extractor_review
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s04/extractor_review/evidence.md
+    - requirement: EXT-1
+      operationId: resolveProposals
+      test_id: s04_stages_proposals_and_commits_only_the_selected_review_closure
+      fixture_id: extractor_review
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s04/extractor_review/evidence.md
+    - requirement: EXT-6
+      operationId: resolveProposals
+      test_id: s04_stages_proposals_and_commits_only_the_selected_review_closure
+      fixture_id: extractor_review
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s04/extractor_review/evidence.md
+    - requirement: B-FR-5
+      operationId: cancelJob
+      test_id: s04_cancelled_attempt_cannot_install_a_late_result
+      fixture_id: cancellation
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s04/cancellation/evidence.md
+    - requirement: JOB-2
+      operationId: cancelJob
+      test_id: s04_cancelled_attempt_cannot_install_a_late_result
+      fixture_id: cancellation
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s04/cancellation/evidence.md
+    - requirement: JOB-2
+      operationId: getJob
+      test_id: s04_schema_repair_budget_is_two_retries_after_the_first_attempt
+      fixture_id: extractor_review
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s04/extractor_review/evidence.md
+    - requirement: EV-4
+      operationId: n/a
+      test_id: s04_extractor_eval_is_machine_readable
+      fixture_id: eval
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s04/eval/evidence.md
+    - requirement: FM-1
+      operationId: saveCapture
+      test_id: s04_capture_remains_saved_when_provider_is_unavailable
+      fixture_id: provider_unavailable
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s04/provider_unavailable/evidence.md

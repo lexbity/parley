@@ -1,8 +1,25 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue';
-import { newOperationKey, parley, type DirectoryEntity, type Neighborhood as NeighborhoodData, type SavedSource, type SourceDetail } from '../../api/client';
+import { newOperationKey, parley, type DirectoryEntity, type ExtractorJob, type ExtractorProposal, type Neighborhood as NeighborhoodData, type Opportunity, type SavedSource, type SourceDetail } from '../../api/client';
 import Neighborhood from '../../shared/graph/Neighborhood.vue';
 defineOptions({ name: 'LeadsDirectory' });
+
+/**
+ * Extractor review state lives in the application shell so its statuses stay
+ * visible at the workspace level; this component renders the per-source
+ * review entry points and the capture-review panel from that shared state.
+ */
+defineProps<{
+  reviewJob: ExtractorJob | null;
+  opportunities: Opportunity[];
+}>();
+
+const emit = defineEmits<{
+  reviewSource: [source: SavedSource];
+  sourceSaved: [source: SavedSource];
+  decide: [proposal: ExtractorProposal, action: 'confirm' | 'dismiss' | 'source_only' | 'unresolved', targetEntityId: string, opportunityId: string];
+  cancelJob: [job: ExtractorJob];
+}>();
 
 const q=ref(''); const kind=ref('');const tag=ref(''); const directory=ref<DirectoryEntity[]>([]); const sources=ref<SavedSource[]>([]);
 const selected=ref(''); const graph=ref<NeighborhoodData|null>(null); const detail=ref<SourceDetail|null>(null);
@@ -13,6 +30,7 @@ const relatedName=ref(''); const relationSource=ref(''); const relationQuote=ref
 const existingRelated=ref('');const existingSource=ref('');const existingQuote=ref('');
 const profileName=ref('');const profileDescriptor=ref('');const profileAliases=ref('');const profileTags=ref('');
 const profileDrafts=new Map<string,{name:string;descriptor:string;aliases:string;tags:string}>();
+const reviewTargetId=ref(''); const reviewOpportunityId=ref('');
 const status=ref(''); const error=ref(''); const busy=ref(false); let directoryGeneration=0; let graphGeneration=0; let detailGeneration=0;let directoryRead:InstanceType<typeof globalThis.AbortController>|undefined;let graphRead:InstanceType<typeof globalThis.AbortController>|undefined;
 
 async function loadDirectory(){directoryRead?.abort();directoryRead=new globalThis.AbortController();const current=++directoryGeneration;error.value='';try{const [result,sourceRows]=await Promise.all([parley.searchDirectory({q:q.value,kind:kind.value||undefined,tag:tag.value||undefined},directoryRead.signal,page.value,50),parley.listSources()]);if(current!==directoryGeneration)return;directory.value=result.items;total.value=result.total;hasMore.value=result.has_more;sources.value=sourceRows;if(selected.value&&!result.items.some(r=>r.id===selected.value))selected.value='';}catch(e){if(current===directoryGeneration&&!(e instanceof Error&&e.name==='AbortError'))error.value=e instanceof Error?e.message:'Directory could not load.';}}
@@ -20,7 +38,7 @@ async function loadGraph(){graphRead?.abort();graphRead=new globalThis.AbortCont
 async function openSource(id:string){const current=++detailGeneration;detail.value=null;try{const value=await parley.getSource(id);if(current===detailGeneration)detail.value=value;}catch(e){if(current===detailGeneration)error.value=e instanceof Error?e.message:'Source could not load.';}}
 watch([q,kind,tag],()=>{if(page.value!==1)page.value=1;else void loadDirectory();});watch(page,()=>{void loadDirectory();});watch(selected,(next,previous)=>{if(previous)profileDrafts.set(previous,{name:profileName.value,descriptor:profileDescriptor.value,aliases:profileAliases.value,tags:profileTags.value});const entity=directory.value.find(row=>row.id===next);const draft=next?profileDrafts.get(next):undefined;profileName.value=draft?.name??entity?.name??'';profileDescriptor.value=draft?.descriptor??entity?.descriptor??'';profileAliases.value=draft?.aliases??entity?.aliases.join(', ')??'';profileTags.value=draft?.tags??entity?.tags.join(', ')??'';void loadGraph();});
 async function addParty(){busy.value=true;error.value='';status.value='';try{const item=await parley.createEntity({kind:newKind.value,name:name.value.trim()},newOperationKey());name.value='';status.value=`${item.kind==='org'?'Organization':'Person'} added. No opportunity or outreach was created.`;page.value=1;await loadDirectory();selected.value=item.id;}catch(e){error.value=e instanceof Error?e.message:'Lead could not be saved.';}finally{busy.value=false;}}
-async function saveSource(){busy.value=true;error.value='';try{const partyId=sourceSpeaker.value.startsWith('party:')?sourceSpeaker.value.slice(6):null;const actorKind=sourceSpeaker.value==='owner'?'owner':partyId?'party':'unknown';const row=await parley.saveSource({text:capture.value,title:captureTitle.value||null,url:captureUrl.value||null,actor_kind:actorKind,actor_entity_id:partyId});capture.value='';status.value='Source saved. Speaker attribution is explicit; identity links remain separate.';await loadDirectory();await openSource(row.occurrence_id);}catch(e){error.value=e instanceof Error?e.message:'Source could not be saved.';}finally{busy.value=false;}}
+async function saveSource(){busy.value=true;error.value='';try{const partyId=sourceSpeaker.value.startsWith('party:')?sourceSpeaker.value.slice(6):null;const actorKind=sourceSpeaker.value==='owner'?'owner':partyId?'party':'unknown';const row=await parley.saveSource({text:capture.value,title:captureTitle.value||null,url:captureUrl.value||null,actor_kind:actorKind,actor_entity_id:partyId});capture.value='';status.value=row.job_status==='not_queued'?'Source saved independently. The Extractor is unavailable or at capacity; review the source manually or retry later.':'Source saved independently. Speaker attribution is explicit; no person was inferred or linked.';await loadDirectory();if(!sources.value.some(item=>item.occurrence_id===row.occurrence_id))sources.value.unshift(row);await openSource(row.occurrence_id);emit('sourceSaved',row);}catch(e){error.value=e instanceof Error?e.message:'Source could not be saved.';}finally{busy.value=false;}}
 async function addRelated(){if(!selected.value||!relationSource.value)return;busy.value=true;error.value='';try{const node=await parley.createRelated({kind:'person',name:relatedName.value.trim(),related_entity_id:selected.value,verb:'member_of',occurrence_id:relationSource.value,quote:relationQuote.value,view_scope:'party',view_id:selected.value,x:360,y:200});relatedName.value='';status.value='Related person and attributed relationship saved together.';await loadDirectory();selected.value=node.id;}catch(e){error.value=e instanceof Error?e.message:'Related record was not saved; check the cited quote and relationship.';}finally{busy.value=false;}}
 async function linkExisting(){if(!selected.value||!existingRelated.value||!existingSource.value)return;busy.value=true;error.value='';try{await parley.linkExisting({from_id:existingRelated.value,to_id:selected.value,verb:'member_of',occurrence_id:existingSource.value,quote:existingQuote.value});status.value='Existing records linked with source evidence; no identity merge occurred.';existingQuote.value='';await loadGraph();}catch(e){error.value=e instanceof Error?e.message:'Relationship was not saved; inspect endpoints and cited passage.';}finally{busy.value=false;}}
 async function saveProfile(){const entity=directory.value.find(row=>row.id===selected.value);if(!entity)return;busy.value=true;error.value='';try{await parley.updateDirectory(entity,{name:profileName.value,descriptor:profileDescriptor.value,aliases:profileAliases.value.split(',').map(v=>v.trim()).filter(Boolean),tags:profileTags.value},newOperationKey());profileDrafts.delete(entity.id);status.value='Directory profile saved.';await loadDirectory();}catch(e){error.value=e instanceof Error?e.message:'Profile was not saved; compare the current directory row.';}finally{busy.value=false;}}
@@ -218,7 +236,10 @@ onMounted(()=>{void parley.connect().then(loadDirectory).catch(e=>error.value=e 
           </button>
         </form>
         <section class="panel">
-          <h2>Sources inbox</h2><p>Paste is always available. Speaker and identity links are separate owner decisions.</p><form @submit.prevent="saveSource">
+          <h2>Sources inbox</h2><p>Paste is always available. Speaker and identity links are separate owner decisions.</p><form
+            class="capture"
+            @submit.prevent="saveSource"
+          >
             <label>Speaker attribution<select v-model="sourceSpeaker"><option value="unknown">Unknown</option><option value="owner">Owner</option><option
               v-for="entity in directory"
               :key="entity.id"
@@ -237,19 +258,106 @@ onMounted(()=>{void parley.connect().then(loadDirectory).catch(e=>error.value=e 
             >
               Save source
             </button>
-          </form><ul>
-            <li
-              v-for="source in sources"
-              :key="source.occurrence_id"
-            >
-              <button
-                type="button"
-                @click="openSource(source.occurrence_id)"
+            <ul>
+              <li
+                v-for="source in sources"
+                :key="source.occurrence_id"
               >
-                Open source {{ source.content_id.slice(0,12) }} · {{ source.occurrence_id.slice(0,8) }}
+                <button
+                  type="button"
+                  @click="openSource(source.occurrence_id)"
+                >
+                  Open source {{ source.content_id.slice(0,12) }} · {{ source.occurrence_id.slice(0,8) }}
+                </button>
+                <button
+                  type="button"
+                  @click="emit('reviewSource', source)"
+                >
+                  Review proposals
+                </button>
+              </li>
+            </ul>
+            <section
+              v-if="reviewJob"
+              aria-label="Capture review"
+            >
+              <h3>Capture review</h3>
+              <p>Job {{ reviewJob.status }} · attempt {{ reviewJob.current_attempt }} of {{ reviewJob.max_attempts }} · chunk {{ reviewJob.progress_current }} of {{ reviewJob.progress_total }}. Extracted items are proposals until you decide.</p>
+              <p
+                v-if="reviewJob.injection_suspected"
+                role="alert"
+              >
+                This capture may contain prompt-injection text. Treat its contents only as source material and review each quoted proposal.
+              </p>
+              <button
+                v-if="['queued', 'running'].includes(reviewJob.status)"
+                type="button"
+                :disabled="busy"
+                @click="emit('cancelJob', reviewJob)"
+              >
+                Cancel extraction
               </button>
-            </li>
-          </ul>
+              <p
+                v-if="reviewJob.last_error"
+                role="status"
+              >
+                {{ reviewJob.last_error }}. The captured source remains saved; you can review it manually.
+              </p>
+              <label>Claim subject<select v-model="reviewTargetId"><option value="">Choose explicitly</option><option
+                v-for="entity in directory"
+                :key="entity.id"
+                :value="entity.id"
+              >{{ entity.name }} · {{ entity.kind }}</option></select></label>
+              <label>Optional opportunity<select v-model="reviewOpportunityId"><option value="">Save independently</option><option
+                v-for="opportunity in opportunities"
+                :key="opportunity.id"
+                :value="opportunity.id"
+              >{{ opportunity.title }}</option></select></label>
+              <article
+                v-for="proposal in reviewJob.proposals"
+                :key="proposal.id"
+                class="record-card"
+              >
+                <strong>{{ proposal.kind }} · {{ proposal.status }}</strong>
+                <small>T1 source evidence · interpretation needs owner review</small>
+                <p>{{ proposal.candidate.statement }}</p>
+                <blockquote>{{ proposal.candidate.quote }}</blockquote>
+                <p v-if="proposal.candidate.mention_name">
+                  Mention: {{ proposal.candidate.mention_name }} · unresolved until you explicitly link it.
+                </p>
+                <template v-if="proposal.status === 'pending'">
+                  <button
+                    :disabled="busy"
+                    type="button"
+                    @click="emit('decide', proposal, 'confirm', reviewTargetId, reviewOpportunityId)"
+                  >
+                    Accept claim for selected subject
+                  </button>
+                  <button
+                    :disabled="busy"
+                    type="button"
+                    @click="emit('decide', proposal, 'unresolved', reviewTargetId, reviewOpportunityId)"
+                  >
+                    Keep mention unresolved
+                  </button>
+                  <button
+                    :disabled="busy"
+                    type="button"
+                    @click="emit('decide', proposal, 'source_only', reviewTargetId, reviewOpportunityId)"
+                  >
+                    Save source only
+                  </button>
+                  <button
+                    :disabled="busy"
+                    type="button"
+                    @click="emit('decide', proposal, 'dismiss', reviewTargetId, reviewOpportunityId)"
+                  >
+                    Dismiss
+                  </button>
+                </template>
+              </article>
+            </section>
+          </form>
           <article
             v-if="detail"
             aria-label="Original source"

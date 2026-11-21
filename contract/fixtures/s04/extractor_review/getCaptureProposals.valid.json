@@ -1,0 +1,1 @@
+{"response":{"id":"job-1","role":"extractor","status":"succeeded","current_attempt":1,"max_attempts":3,"progress_current":1,"progress_total":1,"injection_suspected":false,"source_occurrence_id":"occ-1","proposal_batch_id":"batch-1","proposals":[]}}

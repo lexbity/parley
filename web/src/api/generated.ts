@@ -228,6 +228,88 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/agent/provider": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getAgentProvider"];
+        put: operations["updateAgentProvider"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/captures/{occurrence_id}/proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getCaptureProposals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/provider/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["checkAgentProvider"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/jobs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get: operations["getJob"];
+        put?: never;
+        post: operations["cancelJob"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/proposals/{batch_id}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["resolveProposals"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/graph/related": {
         parameters: {
             query?: never;
@@ -729,6 +811,54 @@ export interface components {
             occurrence_id: string;
             normalized_sha256: string;
             raw_sha256: string;
+            job_id?: string | null;
+            job_status?: string | null;
+        };
+        ProviderConfig: {
+            endpoint: string;
+            model: string;
+            num_ctx: number;
+            num_predict: number;
+            locale: string;
+        };
+        ProviderHealth: {
+            available: boolean;
+            model: string;
+            models: string[];
+            message: string;
+        };
+        ExtractorProposal: {
+            id: string;
+            kind: string;
+            candidate: {
+                [key: string]: unknown;
+            };
+            status: string;
+        };
+        ExtractorJob: {
+            id: string;
+            role: string;
+            status: string;
+            current_attempt: number;
+            max_attempts: number;
+            progress_current: number;
+            progress_total: number;
+            injection_suspected: boolean;
+            last_error_code?: string | null;
+            last_error?: string | null;
+            source_occurrence_id: string;
+            proposal_batch_id?: string | null;
+            proposals: components["schemas"]["ExtractorProposal"][];
+        };
+        ProposalResolution: {
+            decisions: {
+                item_id: string;
+                /** @enum {unknown} */
+                action: "confirm" | "correct" | "dismiss" | "source_only" | "unresolved";
+                target_entity_id?: string;
+                corrected_statement?: string;
+            }[];
+            opportunity_id?: string | null;
         };
         RelatedEntityInput: {
             /** @enum {unknown} */
@@ -1145,7 +1275,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Source saved without inferred identity or link. */
+            /** @description Source saved independently and Extractor job queued when capacity permits. */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -1360,6 +1490,187 @@ export interface operations {
                 };
             };
             412: components["responses"]["Error"];
+        };
+    };
+    getAgentProvider: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Local Extractor provider configuration. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderConfig"];
+                };
+            };
+            401: components["responses"]["Error"];
+        };
+    };
+    updateAgentProvider: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProviderConfig"];
+            };
+        };
+        responses: {
+            /** @description Provider configuration saved; health must be checked explicitly. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: components["responses"]["Error"];
+        };
+    };
+    getCaptureProposals: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                occurrence_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Durable Extractor job and its staged proposals for this source occurrence. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExtractorJob"];
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    checkAgentProvider: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Local model availability and installed tags. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderHealth"];
+                };
+            };
+        };
+    };
+    getJob: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Durable job and staged proposals. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExtractorJob"];
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    cancelJob: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cancellation fenced against any late worker completion. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: components["responses"]["Error"];
+        };
+    };
+    resolveProposals: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                batch_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProposalResolution"];
+            };
+        };
+        responses: {
+            /** @description Selected proposal decisions committed atomically. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            422: components["responses"]["Error"];
         };
     };
     createRelatedEntity: {

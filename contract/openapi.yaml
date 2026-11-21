@@ -278,7 +278,7 @@ paths:
               $ref: '#/components/schemas/CaptureInput'
       responses:
         '201':
-          description: Source saved without inferred identity or link.
+          description: Source saved independently and Extractor job queued when capacity permits.
           content:
             application/json:
               schema:
@@ -375,6 +375,141 @@ paths:
       responses:
         '200': {description: View-specific position saved, content: {application/json: {schema: {$ref: '#/components/schemas/LayoutReceipt'}}}}
         '412': {$ref: '#/components/responses/Error'}
+  /agent/provider:
+    get:
+      operationId: getAgentProvider
+      security:
+      - sessionCookie: []
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Local Extractor provider configuration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderConfig'
+        '401':
+          $ref: '#/components/responses/Error'
+    put:
+      operationId: updateAgentProvider
+      security:
+      - sessionCookie: []
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderConfig'
+      responses:
+        '204':
+          description: Provider configuration saved; health must be checked explicitly.
+        '422':
+          $ref: '#/components/responses/Error'
+  /captures/{occurrence_id}/proposals:
+    get:
+      operationId: getCaptureProposals
+      security:
+      - sessionCookie: []
+      parameters:
+      - name: occurrence_id
+        in: path
+        required: true
+        schema: {type: string}
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Durable Extractor job and its staged proposals for this source occurrence.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtractorJob'
+        '404':
+          $ref: '#/components/responses/Error'
+  /agent/provider/health:
+    post:
+      operationId: checkAgentProvider
+      security:
+      - sessionCookie: []
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Local model availability and installed tags.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderHealth'
+  /jobs/{id}:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    get:
+      operationId: getJob
+      security:
+      - sessionCookie: []
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Durable job and staged proposals.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtractorJob'
+        '404':
+          $ref: '#/components/responses/Error'
+    post:
+      operationId: cancelJob
+      security:
+      - sessionCookie: []
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '204':
+          description: Cancellation fenced against any late worker completion.
+        '409':
+          $ref: '#/components/responses/Error'
+  /proposals/{batch_id}/resolve:
+    post:
+      operationId: resolveProposals
+      security:
+      - sessionCookie: []
+      parameters:
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProposalResolution'
+      responses:
+        '200':
+          description: Selected proposal decisions committed atomically.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '422':
+          $ref: '#/components/responses/Error'
   /graph/related:
     post:
       operationId: createRelatedEntity
@@ -1266,6 +1401,83 @@ components:
           type: string
         raw_sha256:
           type: string
+        job_id:
+          type: string
+          nullable: true
+        job_status:
+          type: string
+          nullable: true
+      additionalProperties: false
+    ProviderConfig:
+      type: object
+      required: [endpoint, model, num_ctx, num_predict, locale]
+      properties:
+        endpoint: {type: string}
+        model: {type: string}
+        num_ctx: {type: integer, minimum: 1024, maximum: 131072}
+        num_predict: {type: integer, minimum: 64, maximum: 8192}
+        locale: {type: string}
+      additionalProperties: false
+    ProviderHealth:
+      type: object
+      required: [available, model, models, message]
+      properties:
+        available: {type: boolean}
+        model: {type: string}
+        models:
+          type: array
+          items: {type: string}
+        message: {type: string}
+      additionalProperties: false
+    ExtractorProposal:
+      type: object
+      required: [id, kind, candidate, status]
+      properties:
+        id: {type: string}
+        kind: {type: string}
+        candidate:
+          type: object
+          additionalProperties: true
+        status: {type: string}
+      additionalProperties: false
+    ExtractorJob:
+      type: object
+      required: [id, role, status, current_attempt, max_attempts, progress_current, progress_total, injection_suspected, source_occurrence_id, proposals]
+      properties:
+        id: {type: string}
+        role: {type: string}
+        status: {type: string}
+        current_attempt: {type: integer}
+        max_attempts: {type: integer}
+        progress_current: {type: integer}
+        progress_total: {type: integer}
+        injection_suspected: {type: boolean}
+        last_error_code: {type: string, nullable: true}
+        last_error: {type: string, nullable: true}
+        source_occurrence_id: {type: string}
+        proposal_batch_id: {type: string, nullable: true}
+        proposals:
+          type: array
+          items: {$ref: '#/components/schemas/ExtractorProposal'}
+      additionalProperties: false
+    ProposalResolution:
+      type: object
+      required: [decisions]
+      properties:
+        decisions:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            type: object
+            required: [item_id, action]
+            properties:
+              item_id: {type: string}
+              action: {enum: [confirm, correct, dismiss, source_only, unresolved]}
+              target_entity_id: {type: string}
+              corrected_statement: {type: string}
+            additionalProperties: false
+        opportunity_id: {type: string, nullable: true}
       additionalProperties: false
     RelatedEntityInput:
       type: object

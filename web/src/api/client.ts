@@ -19,6 +19,11 @@ type EventPage = components['schemas']['EventPage'];
 type CreateResource = components['schemas']['CreateResource'];
 type UpdateResource = components['schemas']['UpdateResource'];
 
+export type ProviderConfig = { endpoint: string; model: string; num_ctx: number; num_predict: number; locale: string };
+export type ExtractorProposal = { id: string; kind: string; candidate: { statement: string; quote: string; mention_name: string | null; mention_kind: string | null }; status: string };
+export type ExtractorJob = { id: string; role: string; status: string; current_attempt: number; max_attempts: number; progress_current: number; progress_total: number; injection_suspected: boolean; last_error_code: string | null; last_error: string | null; source_occurrence_id: string; proposal_batch_id: string | null; proposals: ExtractorProposal[] };
+export type ProposalDecision = { item_id: string; action: 'confirm' | 'correct' | 'dismiss' | 'source_only' | 'unresolved'; target_entity_id?: string; corrected_statement?: string };
+
 export function newOperationKey(): string {
   const timestamp = Date.now().toString(16).padStart(12, '0').slice(-12);
   const bytes = globalThis.crypto.getRandomValues(new Uint8Array(10));
@@ -179,7 +184,32 @@ function decodeSavedSource(value: unknown): SavedSource {
     occurrence_id: requiredString(source.occurrence_id, 'source.occurrence_id'),
     normalized_sha256: requiredString(source.normalized_sha256, 'source.normalized_sha256'),
     raw_sha256: requiredString(source.raw_sha256, 'source.raw_sha256'),
+    ...(typeof source.job_id === 'string' ? { job_id: source.job_id } : {}),
+    ...(typeof source.job_status === 'string' ? { job_status: source.job_status } : {}),
   };
+}
+
+function decodeProvider(value: unknown): ProviderConfig {
+  const row = object(value);
+  if (!row || !Number.isSafeInteger(row.num_ctx) || !Number.isSafeInteger(row.num_predict)) throw new Error('Invalid response: provider settings are malformed');
+  return { endpoint: requiredString(row.endpoint, 'provider.endpoint'), model: requiredString(row.model, 'provider.model'), num_ctx: Number(row.num_ctx), num_predict: Number(row.num_predict), locale: requiredString(row.locale, 'provider.locale') };
+}
+
+function decodeExtractorJob(value: unknown): ExtractorJob {
+  const row = object(value);
+  if (!row || !Array.isArray(row.proposals)) throw new Error('Invalid response: Extractor job is malformed');
+  const proposals = row.proposals.map((entry): ExtractorProposal => {
+    const item = object(entry); const candidate = item ? object(item.candidate) : null;
+    if (!item || !candidate) throw new Error('Invalid response: Extractor proposal is malformed');
+    return { id: requiredString(item.id, 'proposal.id'), kind: requiredString(item.kind, 'proposal.kind'), status: requiredString(item.status, 'proposal.status'), candidate: { statement: requiredString(candidate.statement, 'candidate.statement'), quote: requiredString(candidate.quote, 'candidate.quote'), mention_name: typeof candidate.mention_name === 'string' ? candidate.mention_name : null, mention_kind: typeof candidate.mention_kind === 'string' ? candidate.mention_kind : null } };
+  });
+  return { id: requiredString(row.id, 'job.id'), role: requiredString(row.role, 'job.role'), status: requiredString(row.status, 'job.status'), current_attempt: Number(row.current_attempt), max_attempts: Number(row.max_attempts), progress_current: Number(row.progress_current), progress_total: Number(row.progress_total), injection_suspected: row.injection_suspected === true, last_error_code: typeof row.last_error_code === 'string' ? row.last_error_code : null, last_error: typeof row.last_error === 'string' ? row.last_error : null, source_occurrence_id: requiredString(row.source_occurrence_id, 'job.source_occurrence_id'), proposal_batch_id: typeof row.proposal_batch_id === 'string' ? row.proposal_batch_id : null, proposals };
+}
+
+function decodeProviderHealth(value: unknown): { available: boolean; model: string; models: string[]; message: string } {
+  const row = object(value);
+  if (!row || typeof row.available !== 'boolean') throw new Error('Invalid response: provider health is malformed');
+  return { available: row.available, model: requiredString(row.model, 'health.model'), models: stringArray(row.models, 'health.models'), message: requiredString(row.message, 'health.message') };
 }
 
 function decodeSavedSourceList(value: unknown): SavedSource[] {
@@ -378,6 +408,39 @@ export class ParleyClient {
 
   async listSources(): Promise<SavedSource[]> {
     return decodeSavedSourceList(await this.request('/captures'));
+  }
+
+  async getExtractorJob(id: string): Promise<ExtractorJob> {
+    return decodeExtractorJob(await this.request(`/jobs/${encodeURIComponent(id)}`));
+  }
+
+  async cancelExtractorJob(id: string): Promise<void> {
+    await this.request(`/jobs/${encodeURIComponent(id)}`, { method: 'POST', body: '{}' });
+  }
+
+  async getCaptureProposals(occurrenceId: string): Promise<ExtractorJob> {
+    return decodeExtractorJob(await this.request(`/captures/${encodeURIComponent(occurrenceId)}/proposals`));
+  }
+
+  async resolveProposals(batchId: string, decisions: ProposalDecision[], opportunityId?: string): Promise<{ status: string }> {
+    const value = object(await this.mutate(`/proposals/${encodeURIComponent(batchId)}/resolve`, 'POST', {
+      decisions,
+      ...(opportunityId ? { opportunity_id: opportunityId } : {}),
+    }, { 'Idempotency-Key': newOperationKey() }));
+    if (!value || typeof value.status !== 'string') throw new Error('Invalid response: review result is malformed');
+    return { status: value.status };
+  }
+
+  async getProvider(): Promise<ProviderConfig> {
+    return decodeProvider(await this.request('/agent/provider'));
+  }
+
+  async updateProvider(config: ProviderConfig): Promise<void> {
+    await this.mutate('/agent/provider', 'PUT', config, { 'Idempotency-Key': newOperationKey() });
+  }
+
+  async checkProvider(): Promise<{ available: boolean; model: string; models: string[]; message: string }> {
+    return decodeProviderHealth(await this.request('/agent/provider/health', { method: 'POST', body: '{}' }));
   }
 
   async createOpportunity(title: string, primary_party_id: string): Promise<Opportunity> {

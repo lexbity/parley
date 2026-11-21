@@ -30,6 +30,8 @@ type SavedSource = {
   occurrence_id: string;
   normalized_sha256: string;
   raw_sha256: string;
+  job_id?: string | null;
+  job_status?: string;
 };
 
 type EventRecord = {
@@ -58,11 +60,14 @@ export function createMockApi(): MockApi {
   const directory = new Map<string, EntityRecord>();
   const sourceGroups = new Map<string, { id: string; variants: Map<string, string> }>();
   const captures: SavedSource[] = [];
+  const extractorJobs = new Map<string, RecordData>();
+  const jobsByOccurrence = new Map<string, string>();
   const opportunities = new Map<string, RecordData>();
   const outputs = new Map<string, RecordData>();
   const sourceDetails = new Map<string, RecordData>();
   const graphEdges: Array<RecordData> = [];
   const positions = new Map<string, RecordData>();
+  let provider = { endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' };
   const receipts = new Map<string, { digest: string; result: RecordData }>();
   const events: EventRecord[] = [];
   let testClock = Date.UTC(2026, 0, 1);
@@ -342,7 +347,43 @@ export function createMockApi(): MockApi {
         occurrence_id: randomHex(),
         normalized_sha256: normalizedHash,
         raw_sha256: rawHash,
+        job_status: 'queued',
       };
+      // The mock uses a fixed deterministic proposal so browser tests exercise
+      // review semantics without invoking a model. The Rust project remains
+      // the authority for unavailable-provider persistence and real jobs.
+      const jobId = randomHex();
+      const batchId = randomHex();
+      const proposalId = randomHex();
+      result.job_id = jobId;
+      const proposal = {
+        id: proposalId,
+        kind: 'signal',
+        status: 'pending',
+        candidate: {
+          statement: input.text,
+          quote: input.text,
+          mention_name: input.text.includes('Dana Lee') ? 'Dana Lee' : null,
+          mention_kind: input.text.includes('Dana Lee') ? 'person' : null,
+        },
+      };
+      const job = {
+        id: jobId,
+        role: 'extractor',
+        status: 'succeeded',
+        current_attempt: 1,
+        max_attempts: 3,
+        progress_current: 1,
+        progress_total: 1,
+        injection_suspected: false,
+        last_error_code: null,
+        last_error: null,
+        source_occurrence_id: result.occurrence_id,
+        proposal_batch_id: batchId,
+        proposals: [proposal],
+      };
+      extractorJobs.set(jobId, job);
+      jobsByOccurrence.set(result.occurrence_id, jobId);
       captures.unshift(result);
       sourceDetails.set(result.occurrence_id,{...result,text:input.text,title:typeof input.title==='string'?input.title:null,url:typeof input.url==='string'?input.url:null,captured_at:now(),actor_kind:typeof input.actor_kind==='string'?input.actor_kind:'unknown',actor_entity_id:typeof input.actor_entity_id==='string'?input.actor_entity_id:null,normalization_version:1});
       return json(response, 201, result);
@@ -376,6 +417,49 @@ export function createMockApi(): MockApi {
       let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}
       const commandKey=request.headers['idempotency-key'];if(typeof commandKey!=='string'||!commandKey)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');const commandDigest=createHash('sha256').update(JSON.stringify(input)).digest('hex');const prior=receipts.get(commandKey);if(prior)return prior.digest===commandDigest?json(response,200,prior.result):fail(response,409,'KEY_REUSED','Idempotency key was used for a different command');
       const key=`${input.view_scope}:${input.view_id}:${input.entity_id}`;const old=positions.get(key);if(Number(input.expected_revision)!==(old?Number(old.revision):0))return fail(response,412,'STALE_LAYOUT','View layout changed in another session');const position={entity_id:input.entity_id,x:input.x,y:input.y,pinned:true,revision:(old?Number(old.revision):0)+1,view_id:input.view_id};positions.set(key,position);const result={entity_id:input.entity_id,revision:position.revision,x:input.x,y:input.y};receipts.set(commandKey,{digest:commandDigest,result});return json(response,200,result);
+    }
+
+    const captureProposalMatch = /^\/api\/v1\/captures\/([^/]+)\/proposals$/.exec(url.pathname);
+    if (captureProposalMatch && request.method === 'GET') {
+      const jobId = jobsByOccurrence.get(captureProposalMatch[1]!);
+      const job = jobId && extractorJobs.get(jobId);
+      return job ? json(response, 200, job) : fail(response, 404, 'NOT_FOUND', 'No Extractor review exists for this source');
+    }
+
+    const jobMatch = /^\/api\/v1\/jobs\/([^/]+)$/.exec(url.pathname);
+    if (jobMatch && request.method === 'GET') {
+      const job = extractorJobs.get(jobMatch[1]!);
+      return job ? json(response, 200, job) : fail(response, 404, 'NOT_FOUND', 'Extractor job does not exist');
+    }
+    if (jobMatch && request.method === 'POST') {
+      const job = extractorJobs.get(jobMatch[1]!);
+      if (!job) return fail(response, 404, 'NOT_FOUND', 'Extractor job does not exist');
+      job.status = 'cancelled';
+      job.last_error = 'Cancelled by owner';
+      return json(response, 204, null);
+    }
+    const resolveMatch = /^\/api\/v1\/proposals\/([^/]+)\/resolve$/.exec(url.pathname);
+    if (resolveMatch && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const job = [...extractorJobs.values()].find((candidate) => candidate.proposal_batch_id === resolveMatch[1]);
+      if (!job || !Array.isArray(input.decisions)) return fail(response, 404, 'NOT_FOUND', 'Proposal batch does not exist');
+      const proposals = job.proposals as Array<RecordData>;
+      for (const decision of input.decisions as Array<RecordData>) {
+        const proposal = proposals.find((candidate) => candidate.id === decision.item_id);
+        if (!proposal) return fail(response, 422, 'PROPOSAL_INVALID', 'A selected proposal does not exist');
+        proposal.status = decision.action === 'confirm' ? 'accepted' : String(decision.action);
+      }
+      return json(response, 200, { status: 'partially_applied' });
+    }
+
+    if (url.pathname === '/api/v1/agent/provider' && request.method === 'GET') return json(response, 200, provider);
+    if (url.pathname === '/api/v1/agent/provider' && request.method === 'PUT') {
+      provider = await readBody(request) as typeof provider;
+      return json(response, 204, null);
+    }
+    if (url.pathname === '/api/v1/agent/provider/health' && request.method === 'POST') {
+      return json(response, 200, { available: false, model: provider.model, models: [], message: 'Local provider is unavailable in the mock workspace.' });
     }
     return fail(response, 404, 'NOT_FOUND', 'Endpoint does not exist');
   }
