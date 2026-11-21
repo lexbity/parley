@@ -4,32 +4,48 @@
  */
 
 export interface paths {
-    "/resources": {
+    "/health": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["listResources"];
+        get: operations["getHealth"];
         put?: never;
-        post: operations["createResource"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/captures": {
+    "/session/bootstrap": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["listCaptures"];
+        get?: never;
         put?: never;
-        post: operations["saveCapture"];
+        post: operations["redeemBootstrap"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSession"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -46,6 +62,54 @@ export interface paths {
         get: operations["listEntities"];
         put?: never;
         post: operations["createEntity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/entities/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getEntity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["updateEntity"];
+        trace?: never;
+    };
+    "/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/captures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listCaptures"];
+        put?: never;
+        post: operations["saveCapture"];
         delete?: never;
         options?: never;
         head?: never;
@@ -72,30 +136,101 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        ResourceInput: {
-            /** @enum {string} */
+        Health: {
+            /** @constant */
+            status: "ready";
+            /** @constant */
+            model: "not-probed";
+        };
+        BootstrapRequest: {
+            secret: string;
+        };
+        Session: {
+            workspace_id: string;
+            epoch: string;
+            wire_major: number;
+            wire_minor: number;
+            capabilities: string[];
+            mutation_token: string;
+            cursor: string;
+        };
+        Resource: {
+            id: string;
+            /** @enum {unknown} */
             kind: "gift" | "proof" | "artifact";
             title: string;
-            body: Record<string, never>;
-        };
-        Resource: components["schemas"]["ResourceInput"] & {
-            id: string;
-            /** @enum {string} */
+            body: {
+                [key: string]: unknown;
+            };
+            /** @enum {unknown} */
             readiness: "draft" | "ready" | "retired";
             revision: number;
+            etag: string;
+        };
+        GraphEntity: {
+            id: string;
+            /** @enum {unknown} */
+            kind: "person" | "org" | "project" | "resource";
+            name: string;
+            revision: number;
+        };
+        Entity: components["schemas"]["Resource"] | components["schemas"]["GraphEntity"];
+        EntityList: {
+            data: components["schemas"]["Entity"][];
+            cursor: string;
+        };
+        ResourceEnvelope: {
+            data: components["schemas"]["Resource"];
+        };
+        Event: {
+            cursor: string;
+            event_id: string;
+            entity_type: string;
+            entity_id: string;
+            revision: number;
+            event_type: string;
+            payload: {
+                [key: string]: unknown;
+            };
+        };
+        EventPage: {
+            items: components["schemas"]["Event"][];
+            next_cursor: string;
+            observed_cursor: string;
+        };
+        CreateResource: {
+            /** @enum {unknown} */
+            kind: "gift" | "proof" | "artifact";
+            title: string;
+            body: {
+                [key: string]: unknown;
+            };
+        };
+        UpdateResource: {
+            title: string;
+            body: {
+                [key: string]: unknown;
+            };
+        };
+        EntityInput: {
+            /** @enum {unknown} */
+            kind: "person" | "org" | "project" | "resource";
+            name: string;
         };
         CaptureInput: {
             text: string;
             title?: string | null;
             url?: string | null;
         };
-        EntityInput: {
-            /** @enum {string} */
-            kind: "person" | "org" | "project" | "resource";
-            name: string;
+        SavedSource: {
+            content_id: string;
+            variant_id: string;
+            occurrence_id: string;
+            normalized_sha256: string;
+            raw_sha256: string;
         };
         RelatedEntityInput: {
-            /** @enum {string} */
+            /** @enum {unknown} */
             kind: "person" | "org" | "project" | "resource";
             name: string;
             related_entity_id: string;
@@ -107,16 +242,37 @@ export interface components {
             x: number;
             y: number;
         };
+        Error: {
+            error: {
+                code: string;
+                message: string;
+                details: Record<string, never>[];
+            };
+        };
     };
-    responses: never;
-    parameters: never;
+    responses: {
+        /** @description Stable error envelope. */
+        Error: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+    };
+    parameters: {
+        MutationToken: string;
+        Epoch: string;
+        IdempotencyKey: string;
+    };
     requestBodies: never;
     headers: never;
     pathItems: never;
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    listResources: {
+    getHealth: {
         parameters: {
             query?: never;
             header?: never;
@@ -125,72 +281,253 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Resource drafts */
+            /** @description Local service readiness. Does not probe a model. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Resource"][];
+                    "application/json": components["schemas"]["Health"];
                 };
             };
+            503: components["responses"]["Error"];
         };
     };
-    createResource: {
+    redeemBootstrap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BootstrapRequest"];
+            };
+        };
+        responses: {
+            /** @description One-time bootstrap redeemed; sets an HttpOnly session cookie. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+        };
+    };
+    getSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Private workspace session and mutation token. */
+            200: {
+                headers: {
+                    "X-Parley-Epoch"?: string;
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Session"];
+                };
+            };
+            401: components["responses"]["Error"];
+        };
+    };
+    listEntities: {
+        parameters: {
+            query?: {
+                /** @description Repeated values OR together (RFC-0004 §4.3). Owner-resource kinds are gift, proof, artifact and the aggregate resource; directory kinds are person, org and project. Without the filter both entity families are returned. */
+                kind?: ("gift" | "proof" | "artifact" | "resource" | "person" | "org" | "project")[];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Saved workspace entities, newest resources first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityList"];
+                };
+            };
+            401: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    createEntity: {
         parameters: {
             query?: never;
             header: {
-                "Idempotency-Key": string;
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ResourceInput"];
+                "application/json": components["schemas"]["CreateResource"] | components["schemas"]["EntityInput"];
             };
         };
         responses: {
-            /** @description Saved draft */
+            /** @description New entity and receipt committed atomically. */
             201: {
                 headers: {
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Resource"];
+                    "application/json": {
+                        data: components["schemas"]["Entity"];
+                    };
                 };
             };
-            /** @description Idempotency conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            503: components["responses"]["Error"];
         };
     };
-    listCaptures: {
+    getEntity: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One saved resource with its current strong ETag. */
+            200: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResourceEnvelope"];
+                };
+            };
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+        };
+    };
+    updateEntity: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                "If-Match": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateResource"];
+            };
+        };
+        responses: {
+            /** @description Updated draft and receipt committed atomically. */
+            200: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["Resource"];
+                    };
+                };
+            };
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            412: components["responses"]["Error"];
+            428: components["responses"]["Error"];
+        };
+    };
+    getEvents: {
+        parameters: {
+            query?: {
+                after?: string;
+            };
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Independent capture occurrences */
+            /** @description Ordered committed events after the supplied cursor. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["EventPage"];
+                };
             };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    listCaptures: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Independent source occurrences, newest first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedSource"][];
+                };
+            };
+            401: components["responses"]["Error"];
         };
     };
     saveCapture: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -200,59 +537,26 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Source saved without inferred identity */
+            /** @description Source saved without inferred identity or link. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
-            };
-        };
-    };
-    listEntities: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Directory entities */
-            200: {
-                headers: {
-                    [name: string]: unknown;
+                content: {
+                    "application/json": components["schemas"]["SavedSource"];
                 };
-                content?: never;
             };
-        };
-    };
-    createEntity: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["EntityInput"];
-            };
-        };
-        responses: {
-            /** @description New independent entity */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
         };
     };
     createRelatedEntity: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -262,20 +566,17 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Atomically created entity */
+            /** @description Atomically created entity, attributed edge and layout. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
-            };
-            /** @description Evidence or endpoint rejected */
-            422: {
-                headers: {
-                    [name: string]: unknown;
+                content: {
+                    "application/json": components["schemas"]["GraphEntity"];
                 };
-                content?: never;
             };
+            401: components["responses"]["Error"];
+            422: components["responses"]["Error"];
         };
     };
 }

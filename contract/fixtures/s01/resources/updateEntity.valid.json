@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/UpdateResource","body":{"title":"Onboarding checklist v2","body":{"description":"Updated checklist","delivery":"on_request"}}}

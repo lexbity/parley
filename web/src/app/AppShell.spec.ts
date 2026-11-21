@@ -1,88 +1,96 @@
+import { mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { flushPromises, mount } from '@vue/test-utils';
+import { flushPromises } from '@vue/test-utils';
+import { parley, type GraphEntity, type SavedSource } from '../api/client';
 import AppShell from './AppShell.vue';
 import { tabs } from './tabs';
 
-const api = vi.hoisted(() => ({
-  captureSource: vi.fn(), createEntity: vi.fn(), createResource: vi.fn(),
-  listEntities: vi.fn(), listResources: vi.fn(), listSources: vi.fn(),
-}));
-vi.mock('../api/client', () => api);
+afterEach(() => vi.restoreAllMocks());
 
-const entity = { id: 'p1', name: 'Dana Lee', kind: 'person', revision: 1 };
-const resource = { id: 'r1', title: 'Walkthrough', kind: 'gift', readiness: 'draft', revision: 1 };
+function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = []): void {
+  vi.spyOn(parley, 'connect').mockResolvedValue();
+  vi.spyOn(parley, 'listResources').mockResolvedValue([]);
+  vi.spyOn(parley, 'listParties').mockResolvedValue(parties);
+  vi.spyOn(parley, 'listSources').mockResolvedValue(sources);
+}
 
-describe('App shell', () => {
-  afterEach(() => vi.resetAllMocks());
+function leadsSection(wrapper: ReturnType<typeof mount>) {
+  return wrapper.get('section[aria-labelledby="leads-heading"]');
+}
 
-  it('renders the five owner tabs in the mandated APP-01 order', async () => {
-    api.listEntities.mockResolvedValue([entity]);
-    api.listResources.mockResolvedValue([resource]);
-    api.listSources.mockResolvedValue([]);
+describe('AppShell', () => {
+  it('renders the mandated destination set and only the qualified tabs', () => {
+    expect([...tabs]).toEqual(['Resources', 'Leads', 'Queue', 'Output', 'Settings']);
+    stubWorkspace();
     const wrapper = mount(AppShell);
-    await flushPromises();
-    await wrapper.get('select').setValue('proof');
-    await wrapper.get('select').setValue('artifact');
     const labels = wrapper.findAll('nav[aria-label="Main navigation"] button').map((button) => button.text());
-    expect(labels).toEqual([...tabs]);
-    expect(wrapper.text()).toContain('Walkthrough');
+    expect(labels).toEqual(['Resources', 'Leads']);
+    for (const destination of ['Queue', 'Output', 'Settings']) {
+      expect(labels).not.toContain(destination);
+    }
+    expect(wrapper.get('h1').text()).toBe('Resources');
+    wrapper.unmount();
   });
 
-  it('creates an incomplete resource draft and reports a failed save', async () => {
-    api.listEntities.mockResolvedValue([]); api.listResources.mockResolvedValue([]); api.listSources.mockResolvedValue([]);
-    api.createResource.mockResolvedValue(resource);
-    const wrapper = mount(AppShell); await flushPromises();
-    await wrapper.get('input[placeholder*="onboarding"]').setValue('Walkthrough');
-    await wrapper.get('textarea').setValue('A real walkthrough offer');
-    await wrapper.find('form').trigger('submit'); await flushPromises();
-    expect(api.createResource).toHaveBeenCalledWith(expect.objectContaining({ kind: 'gift', title: 'Walkthrough' }));
-    expect(wrapper.text()).toContain('Draft saved');
-    api.createResource.mockRejectedValueOnce(new Error('disk full'));
-    await wrapper.find('form').trigger('submit'); await flushPromises();
-    expect(wrapper.text()).toContain('disk full');
+  it('keeps the resource editor mounted with its unsent buffer across tab switches', async () => {
+    stubWorkspace();
+    const wrapper = mount(AppShell);
+    await flushPromises();
+    const editorInput = wrapper.get('section[aria-label="Resources workspace"] input');
+    await editorInput.setValue('unsent resource title');
+    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(2)').trigger('click');
+    expect(wrapper.get('h1').text()).toBe('Leads');
+    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(1)').trigger('click');
+    expect((wrapper.get('section[aria-label="Resources workspace"] input').element as HTMLInputElement).value)
+      .toBe('unsent resource title');
+    wrapper.unmount();
   });
 
   it('creates a lead without an opportunity and saves source-only captures', async () => {
-    api.listEntities.mockResolvedValue([]); api.listResources.mockResolvedValue([]); api.listSources.mockResolvedValue([]);
-    api.createEntity.mockResolvedValue(entity);
-    api.captureSource.mockResolvedValue({ content_id: 'c1', variant_id: 'v1', occurrence_id: 'o1', normalized_sha256: 'a', raw_sha256: 'b' });
-    const wrapper = mount(AppShell); await flushPromises();
-    await wrapper.get('nav button:nth-child(2)').trigger('click');
-    await wrapper.get('select').setValue('org');
-    await wrapper.get('select').setValue('person');
-    await wrapper.get('input[required]').setValue('Dana Lee');
-    await wrapper.findAll('form')[0]!.trigger('submit'); await flushPromises();
-    expect(api.createEntity).toHaveBeenCalledWith('person', 'Dana Lee');
+    stubWorkspace([], []);
+    const createEntity = vi.spyOn(parley, 'createEntity')
+      .mockResolvedValue({ id: 'p1', kind: 'person', name: 'Dana Lee', revision: 1 });
+    const saveSource = vi.spyOn(parley, 'saveSource').mockResolvedValue({
+      content_id: 'c1', variant_id: 'v1', occurrence_id: 'o1', normalized_sha256: 'a', raw_sha256: 'b',
+    });
+    const wrapper = mount(AppShell);
+    await flushPromises();
+    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(2)').trigger('click');
+    const leads = leadsSection(wrapper);
+    await leads.get('select').setValue('org');
+    await leads.get('select').setValue('person');
+    await leads.get('input[required]').setValue('Dana Lee');
+    await leads.findAll('form')[0]!.trigger('submit');
+    await flushPromises();
+    expect(createEntity).toHaveBeenCalledWith({ kind: 'person', name: 'Dana Lee' }, expect.any(String));
     expect(wrapper.text()).toContain('No opportunity or outreach was created');
-    const areas = wrapper.findAll('textarea');
+    const areas = leads.findAll('textarea');
     await areas[0]!.setValue('Hiring update with an unresolved Dana mention.');
-    await wrapper.findAll('form')[1]!.trigger('submit'); await flushPromises();
-    expect(api.captureSource).toHaveBeenCalledWith('Hiring update with an unresolved Dana mention.');
+    await leads.findAll('form')[1]!.trigger('submit');
+    await flushPromises();
+    expect(saveSource).toHaveBeenCalledWith({ text: 'Hiring update with an unresolved Dana mention.', title: null, url: null });
     expect(wrapper.text()).toContain('No person was inferred or linked');
+    wrapper.unmount();
   });
 
-  it('shows source and lead failures and retains the other tab destinations', async () => {
-    api.listEntities.mockRejectedValue(new Error('workspace offline'));
-    api.listResources.mockResolvedValue([]); api.listSources.mockResolvedValue([]);
-    const wrapper = mount(AppShell); await flushPromises();
-    expect(wrapper.text()).toContain('workspace offline');
-    await wrapper.get('nav button:nth-child(2)').trigger('click');
-    api.createEntity.mockRejectedValueOnce(new Error('write denied'));
-    await wrapper.get('input[required]').setValue('Noah');
-    await wrapper.findAll('form')[0]!.trigger('submit'); await flushPromises();
+  it('reports directory and capture failures without losing the other destinations', async () => {
+    stubWorkspace([], []);
+    vi.spyOn(parley, 'createEntity').mockRejectedValueOnce(new Error('write denied'));
+    vi.spyOn(parley, 'saveSource').mockRejectedValueOnce(new Error('capture denied'));
+    const wrapper = mount(AppShell);
+    await flushPromises();
+    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(2)').trigger('click');
+    const leads = leadsSection(wrapper);
+    await leads.get('input[required]').setValue('Noah');
+    await leads.findAll('form')[0]!.trigger('submit');
+    await flushPromises();
     expect(wrapper.text()).toContain('write denied');
-    api.captureSource.mockRejectedValueOnce(new Error('capture denied'));
-    await wrapper.findAll('textarea')[0]!.setValue('A source');
-    await wrapper.findAll('form')[1]!.trigger('submit'); await flushPromises();
+    await leads.findAll('textarea')[0]!.setValue('A source');
+    await leads.findAll('form')[1]!.trigger('submit');
+    await flushPromises();
     expect(wrapper.text()).toContain('capture denied');
-    for (const tab of ['Queue', 'Output', 'Settings']) {
-      const button = wrapper.findAll('nav button').find((candidate) => candidate.text() === tab);
-      expect(button?.attributes('disabled')).toBeDefined();
-    }
-    expect(wrapper.get('h1').text()).toBe('Leads');
-  });
-
-  it('declares exactly the five top-level destinations from APP-01', () => {
-    expect([...tabs]).toEqual(['Resources', 'Leads', 'Queue', 'Output', 'Settings']);
+    const labels = wrapper.findAll('nav[aria-label="Main navigation"] button').map((button) => button.text());
+    expect(labels).toEqual(['Resources', 'Leads']);
+    wrapper.unmount();
   });
 });

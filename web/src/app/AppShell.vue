@@ -1,56 +1,55 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
-import { captureSource, createEntity, createResource, listEntities, listResources, listSources, type Entity, type Resource, type SavedSource } from '../api/client';
+import { newOperationKey, parley, type GraphEntity, type SavedSource } from '../api/client';
 import { tabs } from './tabs';
+import ResourceEditor from '../features/resources/ResourceEditor.vue';
 
+/**
+ * Tabs whose owner journey is qualified stay discoverable (RFC-0003 S01);
+ * the mandated order and the full destination set come from tabs.ts (APP-01).
+ */
+const qualifiedTabs = tabs.filter((tab) => tab === 'Resources' || tab === 'Leads');
 const active = ref<(typeof tabs)[number]>('Resources');
-const kind = ref<'gift'|'proof'|'artifact'>('gift');
-const title = ref('');
-const what = ref('');
-const captureText = ref('');
+const partyKind = ref<'person' | 'org'>('person');
 const partyName = ref('');
-const partyKind = ref<'person'|'org'>('person');
-const resources = ref<Resource[]>([]);
-const parties = ref<Entity[]>([]);
+const captureText = ref('');
+const parties = ref<GraphEntity[]>([]);
 const sources = ref<SavedSource[]>([]);
 const status = ref('');
 const error = ref('');
 const busy = ref(false);
 
-async function refreshEntities() {
-  const [entities, savedResources, savedSources] = await Promise.all([listEntities(), listResources(), listSources()]);
-  resources.value = savedResources;
+async function refreshLeads() {
+  const [directory, savedSources] = await Promise.all([parley.listParties(), parley.listSources()]);
+  parties.value = directory;
   sources.value = savedSources;
-  parties.value = entities.filter((entity) => entity.kind === 'person' || entity.kind === 'org');
 }
-async function saveResource() {
-  busy.value = true; error.value = ''; status.value = '';
-  try {
-    const saved = await createResource({ kind: kind.value, title: title.value.trim() || `${kind.value} draft`, body: { what: what.value.trim() } });
-    resources.value.unshift(saved); title.value = ''; what.value = '';
-    status.value = 'Draft saved. Add the remaining fields when you have them.';
-  } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not save the resource.'; }
-  finally { busy.value = false; }
-}
-async function saveCapture() {
-  busy.value = true; error.value = ''; status.value = '';
-  try {
-    const source = await captureSource(captureText.value);
-    sources.value.unshift(source); captureText.value = '';
-    status.value = 'Source saved independently. No person was inferred or linked.';
-  } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not save the source.'; }
-  finally { busy.value = false; }
-}
+
 async function saveParty() {
   busy.value = true; error.value = ''; status.value = '';
   try {
-    const party = await createEntity(partyKind.value, partyName.value.trim());
+    const party = await parley.createEntity({ kind: partyKind.value, name: partyName.value.trim() }, newOperationKey());
     parties.value.push(party); partyName.value = '';
     status.value = 'Lead created. No opportunity or outreach was created.';
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not save the lead.'; }
   finally { busy.value = false; }
 }
-onMounted(() => { void refreshEntities().catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Workspace is unavailable.'; }); });
+
+async function saveCapture() {
+  busy.value = true; error.value = ''; status.value = '';
+  try {
+    const source = await parley.saveSource({ text: captureText.value, title: null, url: null });
+    sources.value.unshift(source); captureText.value = '';
+    status.value = 'Source saved independently. No person was inferred or linked.';
+  } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not save the source.'; }
+  finally { busy.value = false; }
+}
+
+onMounted(() => {
+  void parley.connect()
+    .then(refreshLeads)
+    .catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Workspace is unavailable.'; });
+});
 </script>
 
 <template>
@@ -58,10 +57,9 @@ onMounted(() => { void refreshEntities().catch((reason: unknown) => { error.valu
     <strong>Parley</strong>
     <nav aria-label="Main navigation">
       <button
-        v-for="tab in tabs"
+        v-for="tab in qualifiedTabs"
         :key="tab"
         type="button"
-        :disabled="tab !== 'Resources' && tab !== 'Leads'"
         :aria-current="active === tab ? 'page' : undefined"
         @click="active = tab"
       >
@@ -70,6 +68,7 @@ onMounted(() => { void refreshEntities().catch((reason: unknown) => { error.valu
     </nav>
   </header>
   <main>
+    <h1>{{ active }}</h1>
     <p
       v-if="status"
       role="status"
@@ -82,63 +81,19 @@ onMounted(() => { void refreshEntities().catch((reason: unknown) => { error.valu
     >
       {{ error }}
     </p>
+    <div v-show="active === 'Resources'">
+      <ResourceEditor />
+    </div>
     <section
-      v-if="active === 'Resources'"
-      aria-labelledby="resources-heading"
-    >
-      <h1 id="resources-heading">
-        Resources
-      </h1>
-      <div class="workspace-grid">
-        <form @submit.prevent="saveResource">
-          <h2>Add a resource</h2>
-          <label>Type<select v-model="kind"><option value="gift">Gift</option><option value="proof">Proof</option><option value="artifact">Artifact</option></select></label>
-          <label>Name<input
-            v-model="title"
-            autocomplete="off"
-            placeholder="For example, onboarding walkthrough"
-          ></label>
-          <label>What can you offer?<textarea
-            v-model="what"
-            rows="4"
-            placeholder="An incomplete draft is fine"
-          /></label>
-          <button
-            :disabled="busy"
-            type="submit"
-          >
-            Save draft
-          </button>
-          <p>Drafts stay editable and are not eligible for matching until required evidence is complete.</p>
-        </form>
-        <section aria-labelledby="saved-resources">
-          <h2 id="saved-resources">
-            Saved resources
-          </h2>
-          <p v-if="!resources.length">
-            No resources yet. Add a draft to record something you can offer.
-          </p>
-          <ul>
-            <li
-              v-for="resource in resources"
-              :key="resource.id"
-            >
-              {{ resource.title }} <small>{{ resource.readiness }} · {{ resource.kind }}</small>
-            </li>
-          </ul>
-        </section>
-      </div>
-    </section>
-    <section
-      v-else-if="active === 'Leads'"
+      v-if="active === 'Leads'"
       aria-labelledby="leads-heading"
     >
-      <h1 id="leads-heading">
-        Leads
-      </h1>
+      <h2 id="leads-heading">
+        Lead directory and sources
+      </h2>
       <div class="workspace-grid">
         <form @submit.prevent="saveParty">
-          <h2>Add a lead</h2>
+          <h3>Add a lead</h3>
           <label>Type<select v-model="partyKind"><option value="person">Person</option><option value="org">Organization</option></select></label>
           <label>Name<input
             v-model="partyName"
@@ -151,9 +106,10 @@ onMounted(() => { void refreshEntities().catch((reason: unknown) => { error.valu
           >
             Add lead
           </button>
+          <p>No opportunity or outreach is created by saving a lead.</p>
         </form>
         <section>
-          <h2>Directory</h2><p v-if="!parties.length">
+          <h3>Directory</h3><p v-if="!parties.length">
             No leads yet. Add a person or organization. People do not need an organization.
           </p>
           <ul>
@@ -169,7 +125,7 @@ onMounted(() => { void refreshEntities().catch((reason: unknown) => { error.valu
           class="capture"
           @submit.prevent="saveCapture"
         >
-          <h2>Sources inbox</h2>
+          <h3>Sources inbox</h3>
           <p>Paste captured text. Saving a source does not decide who it is about or create outreach.</p>
           <label>Captured text<textarea
             v-model="captureText"

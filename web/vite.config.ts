@@ -17,7 +17,7 @@ export default defineConfig({
     include: ['src/**/*.{test,spec}.ts'],
     coverage: {
       provider: 'v8',
-      reporter: ['text', 'json-summary'],
+      reporter: ['text', 'json-summary', 'lcov'],
       include: ['src/**'],
       // Entry wiring (createApp mount) is exercised by Playwright e2e, not
       // unit tests; counting it would distort the coverage ratchet.

@@ -1,5 +1,5 @@
-use parley_service::{Workspace, serve};
-use serde_json::Value;
+use parley_service::{RunningService, Workspace};
+use serde_json::{Value, json};
 use sqlx::sqlite::SqlitePoolOptions;
 use std::{
     fs,
@@ -8,7 +8,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::TcpStream,
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -19,10 +19,57 @@ fn path() -> PathBuf {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ))
 }
-async fn post(port: u16, text: &str) -> String {
-    let body=serde_json::json!({"text":text,"title":"Hiring update","url":"https://example.invalid/update"}).to_string();
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    stream.write_all(format!("POST /api/v1/captures HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\nX-Parley-Token: capture-token\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+
+type Session = (String, String, String);
+
+/// Redeem the launcher bootstrap and return the owner session headers used by
+/// private commands.
+async fn owner_session(service: &RunningService) -> Session {
+    let address = service.address;
+    let body = json!({"secret": service.bootstrap_secret}).to_string();
+    let mut stream = TcpStream::connect(address).await.unwrap();
+    stream
+        .write_all(format!("POST /api/v1/session/bootstrap HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes())
+        .await
+        .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let cookie = response
+        .lines()
+        .find(|line| line.to_ascii_lowercase().starts_with("set-cookie:"))
+        .and_then(|line| {
+            line.split_once(':').map(|(_, value)| {
+                value
+                    .trim()
+                    .split(';')
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+        })
+        .expect("session cookie");
+    let mut stream = TcpStream::connect(address).await.unwrap();
+    stream
+        .write_all(format!("GET /api/v1/session HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nCookie: {cookie}\r\nContent-Length: 0\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let payload: Value = serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    (
+        cookie,
+        payload["mutation_token"].as_str().unwrap().to_owned(),
+        payload["epoch"].as_str().unwrap().to_owned(),
+    )
+}
+
+async fn post(service: &RunningService, session: &Session, text: &str) -> String {
+    let address = service.address;
+    let body = serde_json::json!({"text":text,"title":"Hiring update","url":"https://example.invalid/update"}).to_string();
+    let mut stream = TcpStream::connect(address).await.unwrap();
+    stream.write_all(format!("POST /api/v1/captures HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nCookie: {}\r\nX-Parley-Token: {}\r\nX-Parley-Epoch: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", session.0, session.1, session.2, body.len()).as_bytes()).await.unwrap();
     let mut result = String::new();
     stream.read_to_string(&mut result).await.unwrap();
     result
@@ -31,18 +78,17 @@ async fn post(port: u16, text: &str) -> String {
 #[tokio::test]
 async fn s02_source_only_capture_keeps_two_occurrences_without_identity_merge() {
     let db = path();
-    let workspace = Workspace::open(&db).await.unwrap();
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = tokio::spawn(serve(
-        listener,
-        workspace.clone(),
-        "capture-token".into(),
-        port,
-    ));
-    let first = post(port, "The next engineer will work with Dana on onboarding.").await;
+    let service = parley_service::start_workspace(&db).await.unwrap();
+    let session = owner_session(&service).await;
+    let first = post(
+        &service,
+        &session,
+        "The next engineer will work with Dana on onboarding.",
+    )
+    .await;
     let second = post(
-        port,
+        &service,
+        &session,
         "  THE NEXT ENGINEER WILL WORK WITH DANA ON ONBOARDING.  ",
     )
     .await;
@@ -65,7 +111,7 @@ async fn s02_source_only_capture_keeps_two_occurrences_without_identity_merge() 
         .unwrap();
     assert_eq!((entities, sources), (0, 2));
     independent.close().await;
-    server.abort();
+    service.shutdown().await;
     let _ = fs::remove_file(db);
 }
 
@@ -73,8 +119,14 @@ async fn s02_source_only_capture_keeps_two_occurrences_without_identity_merge() 
 async fn s02_same_name_entities_are_distinct() {
     let db = path();
     let workspace = Workspace::open(&db).await.unwrap();
-    let dana_a = workspace.create_entity("person", "Dana Lee").await.unwrap();
-    let dana_b = workspace.create_entity("person", "Dana Lee").await.unwrap();
+    let dana_a = workspace
+        .create_entity("dana-first", "person", "Dana Lee")
+        .await
+        .unwrap();
+    let dana_b = workspace
+        .create_entity("dana-second", "person", "Dana Lee")
+        .await
+        .unwrap();
     assert_ne!(dana_a.id, dana_b.id);
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM entity WHERE name='Dana Lee'")
         .fetch_one(workspace.pool())
@@ -91,7 +143,10 @@ async fn s02_related_node_edge_and_quote_commit_together() {
     let workspace = Workspace::open(&db).await.unwrap();
     let raw = "Northline announced that Dana Lee will work with the onboarding team.";
     let source = workspace.save_source(raw, None, None).await.unwrap();
-    let organization = workspace.create_entity("org", "Northline").await.unwrap();
+    let organization = workspace
+        .create_entity("northline", "org", "Northline")
+        .await
+        .unwrap();
     let rejected = workspace
         .create_related_entity(
             "person",
@@ -139,6 +194,7 @@ async fn s02_related_node_edge_and_quote_commit_together() {
             .unwrap();
     assert_eq!(&raw[span.1 as usize..span.2 as usize], span.0);
     pool.close().await;
+    workspace.pool().close().await;
     let _ = fs::remove_file(db);
 }
 
@@ -147,10 +203,13 @@ async fn s02_two_speakers_and_raw_variants_survive_normalized_deduplication() {
     let db = path();
     let workspace = Workspace::open(&db).await.unwrap();
     let alice = workspace
-        .create_entity("person", "Alice Lee")
+        .create_entity("alice-lee", "person", "Alice Lee")
         .await
         .unwrap();
-    let dana = workspace.create_entity("person", "Dana Lee").await.unwrap();
+    let dana = workspace
+        .create_entity("dana-lee", "person", "Dana Lee")
+        .await
+        .unwrap();
     let first = workspace
         .save_source_attributed("“Dana joined”", Some("A"), None, "party", Some(&alice.id))
         .await

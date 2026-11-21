@@ -1,98 +1,376 @@
 openapi: 3.1.0
 info:
-  title: Parley local workspace API
+  title: Parley local owner API
   version: 1.0.0
 servers:
-  - url: http://127.0.0.1:8989/api/v1
+  - url: /api/v1
 paths:
-  /resources:
+  /health:
     get:
-      operationId: listResources
-      security: [{ WorkspaceToken: [] }]
+      operationId: getHealth
       responses:
-        '200': { description: Resource drafts, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Resource' } } } } }
+        '200':
+          description: Local service readiness. Does not probe a model.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Health'}
+        '503': {$ref: '#/components/responses/Error'}
+  /session/bootstrap:
     post:
-      operationId: createResource
-      security: [{ WorkspaceToken: [] }]
-      parameters: [{ in: header, name: Idempotency-Key, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ResourceInput' } } } }
+      operationId: redeemBootstrap
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BootstrapRequest'}
       responses:
-        '201': { description: Saved draft, content: { application/json: { schema: { $ref: '#/components/schemas/Resource' } } } }
-        '409': { description: Idempotency conflict }
-  /captures:
+        '200': {description: One-time bootstrap redeemed; sets an HttpOnly session cookie.}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /session:
     get:
-      operationId: listCaptures
-      security: [{ WorkspaceToken: [] }]
-      responses: { '200': { description: Independent capture occurrences } }
-    post:
-      operationId: saveCapture
-      security: [{ WorkspaceToken: [] }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CaptureInput' } } } }
-      responses: { '201': { description: Source saved without inferred identity } }
+      operationId: getSession
+      security: [{sessionCookie: []}]
+      responses:
+        '200':
+          description: Private workspace session and mutation token.
+          headers:
+            X-Parley-Epoch: {schema: {type: string}}
+            Cache-Control: {schema: {type: string, const: no-store}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Session'}
+        '401': {$ref: '#/components/responses/Error'}
   /entities:
     get:
       operationId: listEntities
-      security: [{ WorkspaceToken: [] }]
-      responses: { '200': { description: Directory entities } }
+      security: [{sessionCookie: []}]
+      parameters:
+        - in: query
+          name: kind
+          required: false
+          description: >
+            Repeated values OR together (RFC-0004 §4.3). Owner-resource kinds
+            are gift, proof, artifact and the aggregate resource; directory
+            kinds are person, org and project. Without the filter both entity
+            families are returned.
+          style: form
+          explode: true
+          schema:
+            type: array
+            items: {type: string, enum: [gift, proof, artifact, resource, person, org, project]}
+      responses:
+        '200':
+          description: Saved workspace entities, newest resources first.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EntityList'}
+        '401': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
     post:
       operationId: createEntity
-      security: [{ WorkspaceToken: [] }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/EntityInput' } } } }
-      responses: { '201': { description: New independent entity } }
+      security: [{sessionCookie: []}]
+      parameters:
+        - {$ref: '#/components/parameters/MutationToken'}
+        - {$ref: '#/components/parameters/Epoch'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - {$ref: '#/components/schemas/CreateResource'}
+                - {$ref: '#/components/schemas/EntityInput'}
+      responses:
+        '201':
+          description: New entity and receipt committed atomically.
+          headers: {ETag: {schema: {type: string}}}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties: {data: {$ref: '#/components/schemas/Entity'}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /entities/{id}:
+    get:
+      operationId: getEntity
+      security: [{sessionCookie: []}]
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/MutationToken'}
+        - {$ref: '#/components/parameters/Epoch'}
+      responses:
+        '200':
+          description: One saved resource with its current strong ETag.
+          headers: {ETag: {schema: {type: string}}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResourceEnvelope'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    patch:
+      operationId: updateEntity
+      security: [{sessionCookie: []}]
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/MutationToken'}
+        - {$ref: '#/components/parameters/Epoch'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {in: header, name: If-Match, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateResource'}
+      responses:
+        '200':
+          description: Updated draft and receipt committed atomically.
+          headers: {ETag: {schema: {type: string}}}
+          content:
+            application/json:
+              schema: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/Resource'}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '412': {$ref: '#/components/responses/Error'}
+        '428': {$ref: '#/components/responses/Error'}
+  /events:
+    get:
+      operationId: getEvents
+      security: [{sessionCookie: []}]
+      parameters:
+        - {in: query, name: after, schema: {type: string, pattern: '^[0-9]+$'}, required: false}
+        - {$ref: '#/components/parameters/MutationToken'}
+        - {$ref: '#/components/parameters/Epoch'}
+      responses:
+        '200':
+          description: Ordered committed events after the supplied cursor.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EventPage'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /captures:
+    get:
+      operationId: listCaptures
+      security: [{sessionCookie: []}]
+      parameters:
+        - {$ref: '#/components/parameters/MutationToken'}
+        - {$ref: '#/components/parameters/Epoch'}
+      responses:
+        '200':
+          description: Independent source occurrences, newest first.
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/SavedSource'}}
+        '401': {$ref: '#/components/responses/Error'}
+    post:
+      operationId: saveCapture
+      security: [{sessionCookie: []}]
+      parameters:
+        - {$ref: '#/components/parameters/MutationToken'}
+        - {$ref: '#/components/parameters/Epoch'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CaptureInput'}
+      responses:
+        '201':
+          description: Source saved without inferred identity or link.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SavedSource'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
   /graph/related:
     post:
       operationId: createRelatedEntity
-      security: [{ WorkspaceToken: [] }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RelatedEntityInput' } } } }
-      responses: { '201': { description: Atomically created entity, attributed edge and layout }, '422': { description: Evidence or endpoint rejected } }
+      security: [{sessionCookie: []}]
+      parameters:
+        - {$ref: '#/components/parameters/MutationToken'}
+        - {$ref: '#/components/parameters/Epoch'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RelatedEntityInput'}
+      responses:
+        '201':
+          description: Atomically created entity, attributed edge and layout.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GraphEntity'}
+        '401': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
 components:
   securitySchemes:
-    WorkspaceToken: { type: apiKey, in: header, name: X-Parley-Token }
+    sessionCookie: {type: apiKey, in: cookie, name: parley_session}
+  parameters:
+    MutationToken: {in: header, name: X-Parley-Token, required: true, schema: {type: string}}
+    Epoch: {in: header, name: X-Parley-Epoch, required: true, schema: {type: string}}
+    IdempotencyKey: {in: header, name: Idempotency-Key, required: true, schema: {type: string, minLength: 1, maxLength: 100}}
+  responses:
+    Error:
+      description: Stable error envelope.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
   schemas:
-    ResourceInput:
+    Health:
+      type: object
+      required: [status, model]
+      properties:
+        status: {type: string, const: ready}
+        model: {type: string, const: not-probed}
+      additionalProperties: false
+    BootstrapRequest:
+      type: object
+      required: [secret]
+      properties: {secret: {type: string, minLength: 64, maxLength: 64}}
+      additionalProperties: false
+    Session:
+      type: object
+      required: [workspace_id, epoch, wire_major, wire_minor, capabilities, mutation_token, cursor]
+      properties:
+        workspace_id: {type: string}
+        epoch: {type: string}
+        wire_major: {type: integer}
+        wire_minor: {type: integer}
+        capabilities: {type: array, items: {type: string}}
+        mutation_token: {type: string}
+        cursor: {type: string}
+      additionalProperties: false
+    Resource:
+      type: object
+      required: [id, kind, title, body, readiness, revision, etag]
+      properties:
+        id: {type: string}
+        kind: {enum: [gift, proof, artifact]}
+        title: {type: string}
+        body: {type: object, additionalProperties: true}
+        readiness: {enum: [draft, ready, retired]}
+        revision: {type: integer, minimum: 1}
+        etag: {type: string}
+      additionalProperties: false
+    GraphEntity:
+      type: object
+      required: [id, kind, name, revision]
+      properties:
+        id: {type: string}
+        kind: {enum: [person, org, project, resource]}
+        name: {type: string}
+        revision: {type: integer, minimum: 1}
+      additionalProperties: false
+    Entity:
+      oneOf:
+        - {$ref: '#/components/schemas/Resource'}
+        - {$ref: '#/components/schemas/GraphEntity'}
+    EntityList:
+      type: object
+      required: [data, cursor]
+      properties:
+        data: {type: array, items: {$ref: '#/components/schemas/Entity'}}
+        cursor: {type: string}
+      additionalProperties: false
+    ResourceEnvelope:
+      type: object
+      required: [data]
+      properties: {data: {$ref: '#/components/schemas/Resource'}}
+      additionalProperties: false
+    Event:
+      type: object
+      required: [cursor, event_id, entity_type, entity_id, revision, event_type, payload]
+      properties:
+        cursor: {type: string}
+        event_id: {type: string}
+        entity_type: {type: string}
+        entity_id: {type: string}
+        revision: {type: integer}
+        event_type: {type: string}
+        payload: {type: object, additionalProperties: true}
+      additionalProperties: false
+    EventPage:
+      type: object
+      required: [items, next_cursor, observed_cursor]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Event'}}
+        next_cursor: {type: string}
+        observed_cursor: {type: string}
+      additionalProperties: false
+    CreateResource:
       type: object
       required: [kind, title, body]
       properties:
-        kind: { type: string, enum: [gift, proof, artifact] }
-        title: { type: string, maxLength: 500 }
-        body: { type: object }
+        kind: {enum: [gift, proof, artifact]}
+        title: {type: string, maxLength: 240}
+        body: {type: object, additionalProperties: true}
       additionalProperties: false
-    Resource:
-      allOf:
-        - $ref: '#/components/schemas/ResourceInput'
-        - type: object
-          required: [id, readiness, revision]
-          properties:
-            id: { type: string }
-            readiness: { type: string, enum: [draft, ready, retired] }
-            revision: { type: integer, minimum: 1 }
-    CaptureInput:
+    UpdateResource:
       type: object
-      required: [text]
+      required: [title, body]
       properties:
-        text: { type: string, minLength: 1, maxLength: 2000000 }
-        title: { type: [string, 'null'] }
-        url: { type: [string, 'null'] }
+        title: {type: string, maxLength: 240}
+        body: {type: object, additionalProperties: true}
       additionalProperties: false
     EntityInput:
       type: object
       required: [kind, name]
       properties:
-        kind: { type: string, enum: [person, org, project, resource] }
-        name: { type: string, minLength: 1, maxLength: 500 }
+        kind: {enum: [person, org, project, resource]}
+        name: {type: string, minLength: 1, maxLength: 500}
+      additionalProperties: false
+    CaptureInput:
+      type: object
+      required: [text]
+      properties:
+        text: {type: string, minLength: 1, maxLength: 2000000}
+        title: {type: [string, 'null']}
+        url: {type: [string, 'null']}
+      additionalProperties: false
+    SavedSource:
+      type: object
+      required: [content_id, variant_id, occurrence_id, normalized_sha256, raw_sha256]
+      properties:
+        content_id: {type: string}
+        variant_id: {type: string}
+        occurrence_id: {type: string}
+        normalized_sha256: {type: string}
+        raw_sha256: {type: string}
       additionalProperties: false
     RelatedEntityInput:
       type: object
       required: [kind, name, related_entity_id, verb, occurrence_id, quote, view_scope, view_id, x, y]
       properties:
-        kind: { type: string, enum: [person, org, project, resource] }
-        name: { type: string }
-        related_entity_id: { type: string }
-        verb: { type: string }
-        occurrence_id: { type: string }
-        quote: { type: string }
-        view_scope: { type: string }
-        view_id: { type: string }
-        x: { type: number }
-        y: { type: number }
+        kind: {enum: [person, org, project, resource]}
+        name: {type: string}
+        related_entity_id: {type: string}
+        verb: {type: string}
+        occurrence_id: {type: string}
+        quote: {type: string}
+        view_scope: {type: string}
+        view_id: {type: string}
+        x: {type: number}
+        y: {type: number}
+      additionalProperties: false
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, details]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            details: {type: array, items: {type: object}}
+          additionalProperties: false
       additionalProperties: false

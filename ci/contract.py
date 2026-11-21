@@ -92,6 +92,40 @@ def resolve_schema_ref(doc: dict[str, Any], ref: str) -> dict[str, Any]:
     return node
 
 
+def expand_schema_refs(
+    schema: Any, doc: dict[str, Any], seen: frozenset[str] = frozenset()
+) -> Any:
+    """Expand local JSON Schema references while preserving sibling keywords.
+
+    Fixture schemas are stored under components in the OpenAPI document, but
+    jsonschema receives a detached component. Resolve those references against
+    the complete contract before validating the fixture.
+    """
+    if isinstance(schema, list):
+        return [expand_schema_refs(item, doc, seen) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    reference = schema.get("$ref")
+    if reference is not None:
+        reference = str(reference)
+        if not reference.startswith("#/") or reference in seen:
+            raise VerificationError(f"unsupported or recursive fixture schema reference: {reference}")
+        target = expand_schema_refs(
+            resolve_schema_ref(doc, reference), doc, seen | {reference}
+        )
+        siblings = {
+            key: expand_schema_refs(value, doc, seen)
+            for key, value in schema.items()
+            if key != "$ref"
+        }
+        if isinstance(target, dict):
+            return {**target, **siblings}
+        if siblings:
+            raise VerificationError(f"fixture schema reference {reference} has non-object siblings")
+        return target
+    return {key: expand_schema_refs(value, doc, seen) for key, value in schema.items()}
+
+
 def validate_coverage(through: str) -> list[str]:
     """Return the slice IDs that declare coverage rows up to `through`."""
     coverage = load_coverage()
@@ -167,7 +201,9 @@ def validate_fixtures(declared: list[str], operation_ids: set[str]) -> list[str]
                     continue
                 schema_ref = payload.get("$schema") if isinstance(payload, dict) else None
                 if schema_ref:
-                    schema = resolve_schema_ref(doc, str(schema_ref))
+                    schema = expand_schema_refs(
+                        resolve_schema_ref(doc, str(schema_ref)), doc
+                    )
                     try:
                         jsonschema.validate(payload.get("body", payload), schema)
                     except jsonschema.ValidationError as exc:
