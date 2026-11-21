@@ -4,7 +4,7 @@ use super::{AppState, Workspace, WorkspaceError, digest, new_id, now_utc};
 use crate::jobs::{self, Attempt};
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -53,6 +53,27 @@ struct ChatRecord {
     turns: Vec<ChatTurn>,
     questions: Vec<QuestionState>,
     candidates: Vec<CandidateRecord>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow)]
+struct ChatSummary {
+    id: String,
+    role: String,
+    scope_kind: String,
+    scope_id: Option<String>,
+    asset_kind: Option<String>,
+    revision: i64,
+    last_turn: Option<String>,
+    updated_at: String,
+    active_job_id: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct ChatListQuery {
+    role: Option<String>,
+    scope_kind: Option<String>,
+    scope_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -253,7 +274,7 @@ pub(super) async fn initialize_defaults(pool: &SqlitePool) -> Result<(), Workspa
 
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/v1/agent/chats", post(create_chat))
+        .route("/api/v1/agent/chats", get(list_chats).post(create_chat))
         .route("/api/v1/agent/chats/{id}", get(get_chat))
         .route("/api/v1/agent/chats/{id}/turns", post(add_turn))
         .route("/api/v1/agent/chats/{id}/questions", post(question_action))
@@ -1129,6 +1150,38 @@ async fn get_chat(
             "Chat does not exist",
         ),
         Err(error) => super::command_error(error),
+    }
+}
+
+async fn list_chats(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<ChatListQuery>,
+) -> Response {
+    if let Err(response) = super::authenticate(&headers, &state).await {
+        return response.into_response();
+    }
+    if query
+        .role
+        .as_deref()
+        .is_some_and(|role| !matches!(role, "interviewer" | "briefer"))
+        || query
+            .scope_kind
+            .as_deref()
+            .is_some_and(|scope| !matches!(scope, "owner" | "party" | "segment"))
+    {
+        return super::error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "CHAT_FILTER_INVALID",
+            "Chat filter is unsupported",
+        );
+    }
+    let rows:Result<Vec<ChatSummary>,_>=sqlx::query_as(
+        "SELECT c.id,c.role,c.scope_kind,c.scope_id,c.asset_kind,c.revision,(SELECT t.text FROM agent_turn t WHERE t.chat_id=c.id ORDER BY t.turn_no DESC LIMIT 1) AS last_turn,c.updated_at,(SELECT j.id FROM durable_job j WHERE j.status IN ('queued','running') AND ((c.role='interviewer' AND j.role='interviewer' AND j.scope_kind='owner' AND j.scope_id=c.id) OR (c.role='briefer' AND j.role='briefer' AND j.scope_kind=c.scope_kind AND j.scope_id=c.scope_id)) ORDER BY j.created_at DESC LIMIT 1) AS active_job_id FROM agent_chat c WHERE (? IS NULL OR c.role=?) AND (? IS NULL OR c.scope_kind=?) AND (? IS NULL OR c.scope_id=?) ORDER BY c.updated_at DESC,c.id",
+    ).bind(&query.role).bind(&query.role).bind(&query.scope_kind).bind(&query.scope_kind).bind(&query.scope_id).bind(&query.scope_id).fetch_all(state.workspace.pool()).await;
+    match rows {
+        Ok(rows) => response_json(StatusCode::OK, json!(rows), state.workspace.epoch()),
+        Err(error) => super::command_error(error.into()),
     }
 }
 

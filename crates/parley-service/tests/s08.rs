@@ -124,6 +124,10 @@ async fn s08_seeds_versioned_defaults_and_keeps_prompt_and_question_versions_imm
     assert_eq!(status, 200, "{chat:?}");
     assert_eq!(chat["role"], "interviewer");
     assert_eq!(chat["turns"], json!([]));
+    let (status, listed_chats) = request(port, "GET", "/api/v1/agent/chats", None).await;
+    assert_eq!(status, 200, "{listed_chats:?}");
+    assert_eq!(listed_chats.as_array().unwrap().len(), 1);
+    assert_eq!(listed_chats[0]["id"], chat_id);
 
     let (status, bank) = request(port, "GET", "/api/v1/agent/question-bank", None).await;
     assert_eq!(status, 200, "{bank:?}");
