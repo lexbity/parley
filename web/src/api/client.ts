@@ -2,12 +2,15 @@ import type { components } from './generated';
 
 export type Resource = components['schemas']['Resource'];
 export type GraphEntity = components['schemas']['GraphEntity'];
+export type GraphSnapshot = components['schemas']['GraphSnapshot'];
 export type Entity = components['schemas']['Entity'];
 export type SavedSource = components['schemas']['SavedSource'];
 export type EntityInput = components['schemas']['EntityInput'];
 export type CaptureInput = components['schemas']['CaptureInput'];
 export type Opportunity = components['schemas']['Opportunity'];
-export type Material = components['schemas']['MaterialRecord'];
+export type GateCheck = { id: string; severity: 'hard' | 'soft'; pass: boolean; detail: string; overridden: boolean };
+export type GateReport = { checks: GateCheck[]; copy_enabled: boolean };
+export type Material = Omit<components['schemas']['MaterialRecord'], 'gate'> & { gate: GateReport | null };
 export type ReleasedMaterial = components['schemas']['ReleasedMaterial'];
 export type BoardList = components['schemas']['BoardList'];
 export type BoardPlacement = { opportunity: Opportunity; opportunity_id: string; list_id: string; position: number; placement_revision: number; next_task: string | null };
@@ -109,6 +112,36 @@ function decodeGraphEntity(value: unknown): GraphEntity {
     name: requiredString(entity.name, 'entity.name'),
     revision: Number(entity.revision),
   };
+}
+
+function decodeGraphSnapshot(value: unknown): GraphSnapshot {
+  const snapshot = object(value);
+  if (!snapshot || !Array.isArray(snapshot.nodes) || !Array.isArray(snapshot.edges)
+    || !Number.isSafeInteger(snapshot.omitted_nodes) || Number(snapshot.omitted_nodes) < 0
+    || !Number.isSafeInteger(snapshot.omitted_edges) || Number(snapshot.omitted_edges) < 0
+    || snapshot.nodes.length > 200 || snapshot.edges.length > 400) {
+    throw new Error('Invalid response: graph snapshot is malformed');
+  }
+  const nodes = snapshot.nodes.map((raw) => {
+    const node = object(raw);
+    if (!node || !Number.isFinite(node.x) || !Number.isFinite(node.y)
+      || !Number.isSafeInteger(node.position_revision) || Number(node.position_revision) < 0) throw new Error('Invalid response: graph node is malformed');
+    return { ...decodeGraphEntity(node), x: Number(node.x), y: Number(node.y), position_revision: Number(node.position_revision) };
+  });
+  const edges = snapshot.edges.map((raw) => {
+    const edge = object(raw);
+    if (!edge || !Number.isSafeInteger(edge.revision) || ![1, 2, 3].includes(Number(edge.tier))
+      || !['owner', 'party', 'unknown'].includes(String(edge.speaker_kind))) throw new Error('Invalid response: graph edge is malformed');
+    return {
+      id: requiredString(edge.id, 'edge.id'), from_id: requiredString(edge.from_id, 'edge.from_id'),
+      to_id: requiredString(edge.to_id, 'edge.to_id'), verb: requiredString(edge.verb, 'edge.verb'), revision: Number(edge.revision),
+      occurrence_id: requiredString(edge.occurrence_id, 'edge.occurrence_id'), quote: requiredString(edge.quote, 'edge.quote'), tier: Number(edge.tier) as 1 | 2 | 3,
+      speaker_kind: requiredString(edge.speaker_kind, 'edge.speaker_kind') as 'owner' | 'party' | 'unknown', captured_at: requiredString(edge.captured_at, 'edge.captured_at'),
+      source_title: typeof edge.source_title === 'string' ? edge.source_title : null,
+      source_url: typeof edge.source_url === 'string' ? edge.source_url : null,
+    };
+  });
+  return { nodes, edges, omitted_nodes: Number(snapshot.omitted_nodes), omitted_edges: Number(snapshot.omitted_edges) };
 }
 
 function decodeEnvelopeData(value: unknown, decode: (item: unknown) => Resource | GraphEntity | SavedSource): { data: Resource | GraphEntity | SavedSource } {
@@ -280,6 +313,10 @@ function decodeMaterial(value: unknown): Material {
     || !(item.gate === null || object(item.gate))) {
     throw new Error('Invalid response: material is malformed');
   }
+  let gate: GateReport | null = null;
+  if (item.gate !== null) {
+    gate = decodeGateReport(item.gate);
+  }
   return {
     id: requiredString(item.id, 'material.id'),
     opportunity_id: requiredString(item.opportunity_id, 'material.opportunity_id'),
@@ -290,7 +327,20 @@ function decodeMaterial(value: unknown): Material {
     body: requiredString(item.body, 'material.body'),
     content_sha256: item.content_sha256 as string,
     status: item.status as Material['status'],
-    gate: item.gate as Material['gate'],
+    gate,
+  };
+}
+
+function decodeGateReport(value: unknown): GateReport {
+  const report = object(value);
+  if (!report || !Array.isArray(report.checks) || typeof report.copy_enabled !== 'boolean') throw new Error('Invalid response: gate report is malformed');
+  return {
+    checks: report.checks.map((raw) => {
+      const check = object(raw);
+      if (!check || !['hard', 'soft'].includes(String(check.severity)) || typeof check.pass !== 'boolean' || typeof check.overridden !== 'boolean') throw new Error('Invalid response: gate check is malformed');
+      return { id: requiredString(check.id, 'gate.id'), severity: check.severity as GateCheck['severity'], pass: check.pass, detail: requiredString(check.detail, 'gate.detail'), overridden: check.overridden };
+    }),
+    copy_enabled: report.copy_enabled,
   };
 }
 
@@ -456,6 +506,22 @@ export class ParleyClient {
     return data as GraphEntity[];
   }
 
+  async getGraph(options: { center_id?: string; view_scope?: string; view_id?: string } = {}): Promise<GraphSnapshot> {
+    const params = new URLSearchParams({ view_scope: options.view_scope ?? 'leads', view_id: options.view_id ?? 'all' });
+    if (options.center_id) params.set('center_id', options.center_id);
+    return decodeGraphSnapshot(await this.request(`/graph?${params.toString()}`));
+  }
+
+  async saveGraphLayout(input: components['schemas']['GraphLayoutInput'], key = newOperationKey()): Promise<components['schemas']['GraphLayoutResult']> {
+    const result = object(await this.mutate('/graph/layout', 'PUT', input, { 'Idempotency-Key': key }));
+    if (!result || !Array.isArray(result.positions)) throw new Error('Invalid response: graph layout receipt is malformed');
+    return { positions: result.positions.map((raw) => {
+      const position = object(raw);
+      if (!position || !Number.isFinite(position.x) || !Number.isFinite(position.y) || !Number.isSafeInteger(position.revision)) throw new Error('Invalid response: graph position receipt is malformed');
+      return { entity_id: requiredString(position.entity_id, 'position.entity_id'), x: Number(position.x), y: Number(position.y), revision: Number(position.revision) };
+    }) };
+  }
+
   async getResource(id: string): Promise<Resource> {
     const { data } = decodeEnvelopeData(await this.request(`/entities/${encodeURIComponent(id)}`), decodeResource);
     return data as Resource;
@@ -479,6 +545,10 @@ export class ParleyClient {
       decodeGraphEntity,
     );
     return data as GraphEntity;
+  }
+
+  async createRelatedEntity(input: components['schemas']['RelatedEntityInput'], key = newOperationKey()): Promise<GraphEntity> {
+    return decodeGraphEntity(await this.mutate('/graph/related', 'POST', input, { 'Idempotency-Key': key }));
   }
 
   async updateResource(resource: Resource, input: UpdateResource, key: string): Promise<Resource> {
@@ -738,6 +808,25 @@ export class ParleyClient {
 
   async releaseMaterial(id: string): Promise<ReleasedMaterial> {
     return decodeReleasedMaterial(await this.request(`/materials/${encodeURIComponent(id)}/release`, { method: 'POST', body: '{}' }));
+  }
+
+  async getMaterial(id: string): Promise<Material> {
+    return decodeMaterial(await this.request(`/materials/${encodeURIComponent(id)}`));
+  }
+
+  async approveMaterial(id: string, override_reasons: Record<string, string>): Promise<Material> {
+    const approval = object(await this.request(`/materials/${encodeURIComponent(id)}/approve`, {
+      method: 'POST', body: JSON.stringify({ override_reasons }),
+    }));
+    if (!approval) throw new Error('Invalid response: approval receipt is malformed');
+    const material = await this.getMaterial(id);
+    return { ...material, gate: decodeGateReport(approval.gate) };
+  }
+
+  async evaluateMaterialGate(id: string, override_reasons: Record<string, string> = {}): Promise<GateReport> {
+    return decodeGateReport(await this.request(`/materials/${encodeURIComponent(id)}/gate`, {
+      method: 'POST', body: JSON.stringify({ override_reasons }),
+    }));
   }
 
   async acknowledgeRelease(id: string, succeeded: boolean): Promise<void> {

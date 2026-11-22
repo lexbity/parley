@@ -58,6 +58,9 @@ export function createMockApi(): MockApi {
   const sessions = new Map<string, string>();
   const resources = new Map<string, ResourceRecord>();
   const directory = new Map<string, EntityRecord>();
+  const sourceTextByOccurrence = new Map<string, { text: string; title: string | null; url: string | null }>();
+  const graphEdges: RecordData[] = [];
+  const graphPositions = new Map<string, { x: number; y: number; revision: number }>();
   const sourceGroups = new Map<string, { id: string; variants: Map<string, string> }>();
   const captures: SavedSource[] = [];
   const extractorJobs = new Map<string, RecordData>();
@@ -346,6 +349,71 @@ export function createMockApi(): MockApi {
       let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
       for (const items of briefItems.values()) { const item = items.find((candidate) => candidate.id === briefDecision[1]); if (item) { item.status = String(input.decision === 'correct' ? 'corrected' : input.decision === 'confirm' ? 'confirmed' : 'dismissed'); item.revision = Number(item.revision) + 1; return json(response, 200, { id: item.id, decision: input.decision, revision: item.revision }); } }
       return fail(response, 404, 'BRIEF_ITEM_NOT_FOUND', 'Brief item does not exist');
+    }
+
+    if (url.pathname === '/api/v1/graph' && request.method === 'GET') {
+      const centerId = url.searchParams.get('center_id');
+      const viewScope = url.searchParams.get('view_scope') ?? 'leads';
+      const viewId = url.searchParams.get('view_id') ?? 'all';
+      const relatedIds = new Set<string>(centerId ? [centerId] : directory.keys());
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const edge of graphEdges) {
+          if (relatedIds.has(String(edge.from_id)) || relatedIds.has(String(edge.to_id))) {
+            const before = relatedIds.size;
+            relatedIds.add(String(edge.from_id)); relatedIds.add(String(edge.to_id));
+            changed ||= relatedIds.size !== before;
+          }
+        }
+      }
+      const selected = [...directory.values()].filter((entity) => relatedIds.has(entity.id)).slice(0, 200);
+      const nodes = selected.map((entity, index) => {
+        const key = `${viewScope}:${viewId}:${entity.id}`;
+        const position = graphPositions.get(key) ?? { x: (index % 8) * 240, y: Math.floor(index / 8) * 160, revision: 0 };
+        return { ...entity, x: position.x, y: position.y, position_revision: position.revision };
+      });
+      const visible = new Set(nodes.map((node) => node.id));
+      const edges = graphEdges.filter((edge) => visible.has(String(edge.from_id)) && visible.has(String(edge.to_id))).slice(0, 400);
+      return json(response, 200, { nodes, edges, omitted_nodes: Math.max(0, relatedIds.size - nodes.length), omitted_edges: Math.max(0, graphEdges.length - edges.length) });
+    }
+    if (url.pathname === '/api/v1/graph/layout' && request.method === 'PUT') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      if (!Array.isArray(input.positions) || !input.positions.length || input.positions.length > 200) return fail(response, 422, 'GRAPH_LAYOUT_INVALID', 'Position batch is outside its bounds');
+      const saved: RecordData[] = [];
+      for (const value of input.positions as RecordData[]) {
+        const entityId = String(value.entity_id); const scope = String(input.view_scope); const viewId = String(input.view_id);
+        const key = `${scope}:${viewId}:${entityId}`; const current = graphPositions.get(key) ?? { x: 0, y: 0, revision: 0 };
+        if (!directory.has(entityId) || Number(value.expected_revision) !== current.revision || !Number.isFinite(value.x) || !Number.isFinite(value.y)) return fail(response, 412, 'GRAPH_LAYOUT_STALE', 'Reload the graph before saving positions');
+        const next = { x: Number(value.x), y: Number(value.y), revision: current.revision + 1 }; graphPositions.set(key, next);
+        saved.push({ entity_id: entityId, ...next });
+      }
+      return json(response, 200, { positions: saved });
+    }
+    if (url.pathname === '/api/v1/graph/related' && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const commandKey = request.headers['idempotency-key'];
+      if (typeof commandKey !== 'string' || !commandKey || commandKey.length > 100) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+      const commandDigest = createHash('sha256').update(JSON.stringify(input)).digest('hex');
+      const prior = receipts.get(commandKey);
+      if (prior) return prior.digest === commandDigest ? json(response, 201, prior.result) : fail(response, 409, 'KEY_REUSED', 'Idempotency key was used for a different command');
+      const parent = directory.get(String(input.related_entity_id));
+      const source = sourceTextByOccurrence.get(String(input.occurrence_id));
+      const allowed = (input.kind === 'person' && parent?.kind === 'org' && input.verb === 'member_of')
+        || (input.kind === 'project' && parent?.kind === 'org' && input.verb === 'works_with')
+        || (input.kind === 'resource' && parent?.kind === 'person' && input.verb === 'offers_to');
+      if (!parent || !source || !allowed || typeof input.name !== 'string' || !input.name.trim() || typeof input.quote !== 'string' || !source.text.includes(input.quote)) return fail(response, 422, 'RELATIONSHIP_REJECTED', 'Entity, direction, source and exact quote must be valid');
+      const entity: EntityRecord = { id: randomHex(), kind: String(input.kind), name: input.name.trim(), revision: 1 };
+      directory.set(entity.id, entity);
+      const targetIsParent = input.kind === 'person';
+      graphEdges.push({ id: randomHex(), from_id: targetIsParent ? entity.id : parent.id, to_id: targetIsParent ? parent.id : entity.id, verb: String(input.verb), revision: 1, occurrence_id: String(input.occurrence_id), quote: input.quote, tier: 1, speaker_kind: 'unknown', captured_at: now(), source_title: source.title, source_url: source.url });
+      const key = `${String(input.view_scope)}:${String(input.view_id)}:${entity.id}`;
+      graphPositions.set(key, { x: Number(input.x), y: Number(input.y), revision: 1 });
+      pushEvent({ event_id: randomHex(), entity_type: 'edge', entity_id: entity.id, revision: 1, event_type: 'edge.created', payload: {} });
+      receipts.set(commandKey, { digest: commandDigest, result: entity });
+      return json(response, 201, entity);
     }
 
     if (url.pathname === '/api/v1/entities' && request.method === 'GET') {
@@ -638,6 +706,7 @@ export function createMockApi(): MockApi {
         raw_sha256: rawHash,
         job_status: 'queued',
       };
+      sourceTextByOccurrence.set(result.occurrence_id, { text: input.text, title: typeof input.title === 'string' ? input.title : null, url: typeof input.url === 'string' ? input.url : null });
       // The mock uses a fixed deterministic proposal so browser tests exercise
       // review semantics without invoking a model. The Rust project remains
       // the authority for unavailable-provider persistence and real jobs.

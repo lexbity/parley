@@ -105,6 +105,7 @@ pub(super) fn routes() -> Router<AppState> {
             post(create_material).get(list_materials),
         )
         .route("/api/v1/materials/{id}", get(get_material))
+        .route("/api/v1/materials/{id}/gate", post(evaluate_material_gate))
         .route("/api/v1/materials/{id}/versions", post(edit_material))
         .route("/api/v1/materials/{id}/approve", post(approve_material))
         .route("/api/v1/materials/{id}/release", post(release_material))
@@ -673,6 +674,25 @@ async fn approve_material(
     }
 }
 
+async fn evaluate_material_gate(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(input): Json<ApprovalInput>,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
+    }
+    match state
+        .workspace
+        .evaluate_material_gate(&id, &input.override_reasons)
+        .await
+    {
+        Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+        Err(error) => workspace_error(error),
+    }
+}
+
 async fn release_material(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -755,6 +775,19 @@ pub(super) fn workspace_error(error: WorkspaceError) -> axum::response::Response
 }
 
 impl Workspace {
+    async fn evaluate_material_gate(
+        &self,
+        id: &str,
+        overrides: &BTreeMap<String, String>,
+    ) -> Result<gate::GateResult, WorkspaceError> {
+        validate_override_reasons(overrides)?;
+        let mut tx = self.pool.begin().await?;
+        let material = load_head(&mut tx, id).await?;
+        let result = evaluate_material(&mut tx, &material, overrides).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
     async fn create_opportunity(
         &self,
         input: &OpportunityCreate,
@@ -1499,20 +1532,27 @@ impl Workspace {
         else {
             return Ok(None);
         };
-        let approved: Option<String> =
-            sqlx::query_scalar("SELECT id FROM approval WHERE material_id=? AND version_no=?")
-                .bind(&id)
-                .bind(version)
-                .fetch_optional(&self.pool)
-                .await?;
+        let approved_gate: Option<String> = sqlx::query_scalar(
+            "SELECT gate_snapshot_json FROM approval WHERE material_id=? AND version_no=?",
+        )
+        .bind(&id)
+        .bind(version)
+        .fetch_optional(&self.pool)
+        .await?;
         let released: Option<String> = sqlx::query_scalar("SELECT id FROM release_record WHERE material_id=? AND version_no=? ORDER BY issued_at DESC LIMIT 1").bind(&id).bind(version).fetch_optional(&self.pool).await?;
         let status = if released.is_some() {
             "released"
-        } else if approved.is_some() {
+        } else if approved_gate.is_some() {
             "approved"
         } else {
             "draft"
         };
+        let gate = approved_gate
+            .map(|json| {
+                serde_json::from_str(&json)
+                    .map_err(|error| WorkspaceError::Invalid(error.to_string()))
+            })
+            .transpose()?;
         Ok(Some(MaterialRecord {
             id,
             opportunity_id,
@@ -1523,7 +1563,7 @@ impl Workspace {
             body,
             content_sha256,
             status: status.into(),
-            gate: None,
+            gate,
         }))
     }
 
