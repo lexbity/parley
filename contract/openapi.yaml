@@ -1004,6 +1004,126 @@ paths:
       parameters:
       - $ref: '#/components/parameters/MutationToken'
       - $ref: '#/components/parameters/Epoch'
+  /uploads:
+    get:
+      operationId: listUploads
+      security:
+      - sessionCookie: []
+      responses:
+        '200':
+          description: Owner uploads with review and share permission state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadList'
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+    post:
+      operationId: createUpload
+      security:
+      - sessionCookie: []
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - in: header
+        name: X-Parley-Filename
+        required: false
+        description: URL-encoded suggested attachment filename.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '201':
+          description: Bytes verified, installed atomically and surfaced as a reviewable upload.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Upload'
+        '413':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+  /uploads/{id}/review:
+    post:
+      operationId: reviewUpload
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadReviewRequest'
+      responses:
+        '200':
+          description: Review binds digest, MIME, scope and share permission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Upload'
+        '422':
+          $ref: '#/components/responses/Error'
+  /materials/{id}/download:
+    get:
+      operationId: downloadMaterial
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - in: query
+        name: release_id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Exact approved attachment bytes streamed from the verified spool.
+          headers:
+            Content-Type:
+              schema:
+                type: string
+            Content-Disposition:
+              schema:
+                type: string
+            Content-Length:
+              schema:
+                type: integer
+            Cache-Control:
+              schema:
+                type: string
+            X-Parley-Epoch:
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '409':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
   /board:
     get:
       operationId: getBoard
@@ -2166,6 +2286,97 @@ components:
         exchange_version:
           type: integer
           minimum: 1
+        attachment:
+          type:
+          - object
+          - 'null'
+          $ref: '#/components/schemas/AttachmentRef'
+      additionalProperties: false
+    AttachmentRef:
+      type: object
+      required:
+      - upload_id
+      properties:
+        upload_id:
+          type: string
+      additionalProperties: false
+    AttachmentInfo:
+      type: object
+      required:
+      - upload_id
+      - sha256
+      - filename
+      - content_type
+      - size
+      properties:
+        upload_id:
+          type: string
+        sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        filename:
+          type: string
+        content_type:
+          type: string
+        size:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    Upload:
+      type: object
+      required:
+      - id
+      - sha256
+      - size
+      - filename
+      - mime
+      - share_permission
+      - reviewed
+      - revision
+      - created_at
+      properties:
+        id:
+          type: string
+        sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        size:
+          type: integer
+          minimum: 1
+        filename:
+          type: string
+        mime:
+          type: string
+        share_permission:
+          type: boolean
+        reviewed:
+          type: boolean
+        revision:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    UploadList:
+      type: array
+      items:
+        $ref: '#/components/schemas/Upload'
+    UploadReviewRequest:
+      type: object
+      required:
+      - share_permission
+      properties:
+        share_permission:
+          type: boolean
+      additionalProperties: false
+    DownloadQuery:
+      type: object
+      required:
+      - release_id
+      properties:
+        release_id:
+          type: string
       additionalProperties: false
     ApprovalInput:
       type: object
@@ -2428,6 +2639,7 @@ components:
       - content_sha256
       - status
       - gate
+      - attachment
       properties:
         id:
           type: string
@@ -2457,6 +2669,10 @@ components:
           type:
           - object
           - 'null'
+        attachment:
+          anyOf:
+          - $ref: '#/components/schemas/AttachmentInfo'
+          - type: "null"
       additionalProperties: false
     ReleasedMaterial:
       type: object
@@ -2468,6 +2684,7 @@ components:
       - body
       - content_sha256
       - issued_at
+      - attachment
       properties:
         release_id:
           type: string
@@ -2486,6 +2703,10 @@ components:
         issued_at:
           type: string
           format: date-time
+        attachment:
+          anyOf:
+          - $ref: '#/components/schemas/AttachmentInfo'
+          - type: "null"
       additionalProperties: false
     OpportunityList:
       type: array

@@ -3,6 +3,10 @@
 //! The public handlers do no policy work themselves: they authorize the local
 //! owner, then execute the corresponding transaction in the workspace.
 
+use super::release::{
+    AttachmentInfo, dependency_vector, evaluate_material, exchange_digest, exchange_interests,
+    load_head,
+};
 use super::{AppState, Workspace, WorkspaceError, authenticate, digest, new_id, now_utc};
 use axum::{
     Json, Router,
@@ -182,6 +186,11 @@ pub struct SentenceBinding {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+struct AttachmentInput {
+    upload_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct MaterialInput {
     recipient_id: String,
     kind: String,
@@ -190,6 +199,8 @@ struct MaterialInput {
     slot_fills: Vec<SlotFill>,
     sentence_bindings: Vec<SentenceBinding>,
     exchange_version: i64,
+    #[serde(default)]
+    attachment: Option<AttachmentInput>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -209,6 +220,7 @@ pub struct MaterialRecord {
     pub content_sha256: String,
     pub status: String,
     pub gate: Option<gate::GateResult>,
+    pub attachment: Option<AttachmentInfo>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1441,6 +1453,28 @@ impl Workspace {
                     "material must bind an exchange version for its selected recipient".into(),
                 ));
             }
+            let attachment = if let Some(attachment_input) = &input.attachment {
+                let row = sqlx::query_as::<_, (String, String, String, i64, i64)>(
+                    "SELECT u.blob_sha256,u.filename,u.mime,b.size,u.revision FROM blob_upload u JOIN blob b ON b.sha256=u.blob_sha256 WHERE u.id=? AND u.reviewed_by_owner=1 AND u.share_permission=1",
+                )
+                .bind(&attachment_input.upload_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+                let Some((sha256, filename, mime, size, _revision)) = row else {
+                    return Err(WorkspaceError::Invalid(
+                        "attachment requires a reviewed, shareable upload".into(),
+                    ));
+                };
+                Some(AttachmentInfo {
+                    upload_id: attachment_input.upload_id.clone(),
+                    sha256,
+                    filename,
+                    content_type: mime,
+                    size,
+                })
+            } else {
+                None
+            };
             if edit_id.is_none() {
                 sqlx::query("INSERT INTO material(id,opportunity_id,recipient_id,kind,head_version,created_at,updated_at) VALUES(?,?,?,?,1,?,?)").bind(&material_id).bind(&opportunity_id).bind(&input.recipient_id).bind(&input.kind).bind(now_utc()).bind(now_utc()).execute(&mut *tx).await?;
             } else {
@@ -1456,9 +1490,18 @@ impl Workspace {
                 .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
             let bindings_json = serde_json::to_string(&input.sentence_bindings)
                 .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
-            let hash = digest(input.body.as_bytes());
-            sqlx::query("INSERT INTO material_version(material_id,version_no,opportunity_id,recipient_id,template_version_id,exchange_version,body,slot_fills_json,sentence_bindings_json,content_sha256,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
-                .bind(&material_id).bind(version).bind(&opportunity_id).bind(&input.recipient_id).bind(&input.template_version_id).bind(input.exchange_version).bind(&input.body).bind(slot_json).bind(bindings_json).bind(&hash).bind(&version_now).execute(&mut *tx).await?;
+            let hash = attachment
+                .as_ref()
+                .map(|attachment| attachment.sha256.clone())
+                .unwrap_or_else(|| digest(input.body.as_bytes()));
+            sqlx::query("INSERT INTO material_version(material_id,version_no,opportunity_id,recipient_id,template_version_id,exchange_version,body,slot_fills_json,sentence_bindings_json,content_sha256,created_at,blob_upload_id,blob_sha256,filename,content_type,attachment_size) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+                .bind(&material_id).bind(version).bind(&opportunity_id).bind(&input.recipient_id).bind(&input.template_version_id).bind(input.exchange_version).bind(&input.body).bind(slot_json).bind(bindings_json).bind(&hash).bind(&version_now)
+                .bind(attachment.as_ref().map(|a| a.upload_id.as_str()))
+                .bind(attachment.as_ref().map(|a| a.sha256.as_str()))
+                .bind(attachment.as_ref().map(|a| a.filename.as_str()))
+                .bind(attachment.as_ref().map(|a| a.content_type.as_str()))
+                .bind(attachment.as_ref().map(|a| a.size))
+                .execute(&mut *tx).await?;
             persist_material_references(
                 &mut tx,
                 &material_id,
@@ -1467,6 +1510,7 @@ impl Workspace {
                 &input.sentence_bindings,
                 &input.body,
                 &input.recipient_id,
+                attachment.as_ref(),
             )
             .await?;
             let event_type = if edit_id.is_some() {
@@ -1484,7 +1528,7 @@ impl Workspace {
     }
 
     async fn get_material(&self, id: &str) -> Result<Option<MaterialRecord>, WorkspaceError> {
-        let row = sqlx::query_as::<_,(String,String,String,String,String,i64,String,String)>("SELECT m.id,m.opportunity_id,m.recipient_id,e.name,m.kind,mv.version_no,mv.body,mv.content_sha256 FROM material m JOIN entity e ON e.id=m.recipient_id JOIN material_version mv ON mv.material_id=m.id AND mv.version_no=m.head_version WHERE m.id=?")
+        let row = sqlx::query_as::<_,(String,String,String,String,String,i64,String,String,Option<String>,Option<String>,Option<String>,Option<String>,Option<i64>)>("SELECT m.id,m.opportunity_id,m.recipient_id,e.name,m.kind,mv.version_no,mv.body,mv.content_sha256,mv.blob_upload_id,mv.blob_sha256,mv.filename,mv.content_type,mv.attachment_size FROM material m JOIN entity e ON e.id=m.recipient_id JOIN material_version mv ON mv.material_id=m.id AND mv.version_no=m.head_version WHERE m.id=?")
             .bind(id).fetch_optional(&self.pool).await?;
         let Some((
             id,
@@ -1495,6 +1539,11 @@ impl Workspace {
             version,
             body,
             content_sha256,
+            blob_upload_id,
+            blob_sha256,
+            filename,
+            content_type,
+            attachment_size,
         )) = row
         else {
             return Ok(None);
@@ -1513,6 +1562,29 @@ impl Workspace {
         } else {
             "draft"
         };
+        let attachment = match (
+            blob_upload_id,
+            blob_sha256,
+            filename,
+            content_type,
+            attachment_size,
+        ) {
+            (Some(upload_id), Some(sha256), Some(filename), Some(content_type), Some(size)) => {
+                Some(AttachmentInfo {
+                    upload_id,
+                    sha256,
+                    filename,
+                    content_type,
+                    size,
+                })
+            }
+            (None, None, None, None, None) => None,
+            _ => {
+                return Err(WorkspaceError::Invalid(
+                    "material attachment metadata is incomplete".into(),
+                ));
+            }
+        };
         Ok(Some(MaterialRecord {
             id,
             opportunity_id,
@@ -1524,6 +1596,7 @@ impl Workspace {
             content_sha256,
             status: status.into(),
             gate: None,
+            attachment,
         }))
     }
 
@@ -1625,97 +1698,6 @@ impl Workspace {
         )
     }
 
-    async fn release_material(&self, id: &str) -> Result<Value, WorkspaceError> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let material = load_head(&mut tx, id).await?;
-        let (approval_id,hash,dependency_json,overrides_json):(String,String,String,String)=sqlx::query_as("SELECT id,content_sha256,dependency_vector_json,overrides_json FROM approval WHERE material_id=? AND version_no=?")
-            .bind(&material.id).bind(material.version).fetch_optional(&mut *tx).await?.ok_or_else(||WorkspaceError::Invalid("material version must be approved before release".into()))?;
-        if hash != material.hash {
-            return Err(WorkspaceError::Invalid(
-                "approved bytes do not match the immutable material version".into(),
-            ));
-        }
-        let current = dependency_vector(&mut tx, &material).await?;
-        let current_json =
-            serde_json::to_string(&current).map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
-        if dependency_json != current_json {
-            return Err(WorkspaceError::Invalid(
-                "material dependencies changed after approval; create and review a new version"
-                    .into(),
-            ));
-        }
-        let overrides: BTreeMap<String, String> = serde_json::from_str(&overrides_json)
-            .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
-        let checked = evaluate_material(&mut tx, &material, &overrides).await?;
-        if !checked.copy_enabled {
-            return Err(WorkspaceError::Invalid(
-                "current release gate blocks this material".into(),
-            ));
-        }
-        let release_id = new_id(&approval_id);
-        let now = now_utc();
-        sqlx::query("INSERT INTO release_record(id,approval_id,material_id,version_no,content_sha256,issued_at) VALUES(?,?,?,?,?,?)").bind(&release_id).bind(&approval_id).bind(&material.id).bind(material.version).bind(&material.hash).bind(&now).execute(&mut *tx).await?;
-        event(&mut tx,"material",&material.id,material.version,"material.release_issued",json!({"release_id":release_id,"approval_id":approval_id,"content_sha256":material.hash})).await?;
-        let result = json!({"release_id":release_id,"material_id":material.id,"version":material.version,"recipient_id":material.recipient_id,"body":material.body,"content_sha256":material.hash,"issued_at":now});
-        tx.commit().await?;
-        Ok(result)
-    }
-
-    async fn acknowledge_release(
-        &self,
-        release_id: &str,
-        succeeded: bool,
-    ) -> Result<(), WorkspaceError> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let exists: Option<String> =
-            sqlx::query_scalar("SELECT material_id FROM release_record WHERE id=?")
-                .bind(release_id)
-                .fetch_optional(&mut *tx)
-                .await?;
-        if exists.is_none() {
-            return Err(WorkspaceError::Invalid(
-                "release record does not exist".into(),
-            ));
-        }
-        let previous: Option<i64> =
-            sqlx::query_scalar("SELECT succeeded FROM release_ack WHERE release_id=?")
-                .bind(release_id)
-                .fetch_optional(&mut *tx)
-                .await?;
-        if let Some(previous) = previous {
-            if previous != i64::from(succeeded) {
-                return Err(WorkspaceError::Invalid(
-                    "release acknowledgement cannot be changed after it is recorded".into(),
-                ));
-            }
-            tx.commit().await?;
-            return Ok(());
-        }
-        let now = now_utc();
-        sqlx::query("INSERT INTO release_ack(release_id,succeeded,acknowledged_at) VALUES(?,?,?)")
-            .bind(release_id)
-            .bind(succeeded)
-            .bind(&now)
-            .execute(&mut *tx)
-            .await?;
-        let (material_id, version): (String, i64) =
-            sqlx::query_as("SELECT material_id,version_no FROM release_record WHERE id=?")
-                .bind(release_id)
-                .fetch_one(&mut *tx)
-                .await?;
-        event(
-            &mut tx,
-            "material",
-            &material_id,
-            version,
-            "material.release_acknowledged",
-            json!({"release_id":release_id,"succeeded":succeeded}),
-        )
-        .await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
     async fn mark_resource_ready(
         &self,
         id: &str,
@@ -1757,471 +1739,10 @@ impl Workspace {
     }
 }
 
-#[derive(Debug)]
-struct HeadMaterial {
-    id: String,
-    opportunity_id: String,
-    recipient_id: String,
-    recipient_name: String,
-    version: i64,
-    template_id: String,
-    exchange_version: i64,
-    body: String,
-    slot_fills: Vec<SlotFill>,
-    bindings: Vec<SentenceBinding>,
-    hash: String,
-}
-
-async fn load_head(
-    tx: &mut Transaction<'_, Sqlite>,
-    id: &str,
-) -> Result<HeadMaterial, WorkspaceError> {
-    let row=sqlx::query_as::<_,(String,String,String,String,i64,String,i64,String,String,String,String)>("SELECT m.id,m.opportunity_id,m.recipient_id,e.name,mv.version_no,mv.template_version_id,mv.exchange_version,mv.body,mv.slot_fills_json,mv.sentence_bindings_json,mv.content_sha256 FROM material m JOIN entity e ON e.id=m.recipient_id JOIN material_version mv ON mv.material_id=m.id AND mv.version_no=m.head_version WHERE m.id=?")
-        .bind(id).fetch_optional(&mut **tx).await?.ok_or_else(||WorkspaceError::Invalid("material does not exist".into()))?;
-    Ok(HeadMaterial {
-        id: row.0,
-        opportunity_id: row.1,
-        recipient_id: row.2,
-        recipient_name: row.3,
-        version: row.4,
-        template_id: row.5,
-        exchange_version: row.6,
-        body: row.7,
-        slot_fills: serde_json::from_str(&row.8)
-            .map_err(|e| WorkspaceError::Invalid(e.to_string()))?,
-        bindings: serde_json::from_str(&row.9)
-            .map_err(|e| WorkspaceError::Invalid(e.to_string()))?,
-        hash: row.10,
-    })
-}
-
-async fn dependency_vector(
-    tx: &mut Transaction<'_, Sqlite>,
-    material: &HeadMaterial,
-) -> Result<BTreeMap<String, String>, WorkspaceError> {
-    let mut result = BTreeMap::new();
-    result.insert(
-        format!("opportunity:{}", material.opportunity_id),
-        sqlx::query_scalar::<_, i64>("SELECT revision FROM opportunity WHERE id=?")
-            .bind(&material.opportunity_id)
-            .fetch_optional(&mut **tx)
-            .await?
-            .ok_or_else(|| WorkspaceError::Invalid("opportunity no longer exists".into()))?
-            .to_string(),
-    );
-    result.insert(
-        format!("party:{}", material.recipient_id),
-        sqlx::query_scalar::<_, i64>("SELECT revision FROM party_policy WHERE party_id=?")
-            .bind(&material.recipient_id)
-            .fetch_optional(&mut **tx)
-            .await?
-            .ok_or_else(|| WorkspaceError::Invalid("recipient policy no longer exists".into()))?
-            .to_string(),
-    );
-    result.insert(
-        format!("template:{}", material.template_id),
-        sqlx::query_scalar::<_, String>(
-            "SELECT content_sha256 FROM template_version WHERE id=? AND status='active'",
-        )
-        .bind(&material.template_id)
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or_else(|| WorkspaceError::Invalid("template is no longer active".into()))?,
-    );
-    let (exchange_digest, _, _, _) = current_exchange(
-        tx,
-        &material.opportunity_id,
-        &material.recipient_id,
-        material.exchange_version,
-    )
-    .await?;
-    result.insert(
-        format!(
-            "exchange:{}:{}:{}",
-            material.opportunity_id, material.recipient_id, material.exchange_version
-        ),
-        exchange_digest,
-    );
-    for fill in &material.slot_fills {
-        if let Some(resource_id) = &fill.resource_id {
-            let (revision, readiness): (i64, String) =
-                sqlx::query_as("SELECT revision,readiness FROM resource WHERE id=?")
-                    .bind(resource_id)
-                    .fetch_optional(&mut **tx)
-                    .await?
-                    .ok_or_else(|| {
-                        WorkspaceError::Invalid(format!("resource {resource_id} no longer exists"))
-                    })?;
-            if readiness != "ready" {
-                return Err(WorkspaceError::Invalid(format!(
-                    "resource {resource_id} is no longer ready"
-                )));
-            }
-            result.insert(format!("resource:{resource_id}"), revision.to_string());
-        }
-    }
-    for binding in &material.bindings {
-        if binding.claim_type == "other_fact" {
-            let revision: i64 = sqlx::query_scalar("SELECT current_revision FROM claim WHERE id=?")
-                .bind(binding.ref_id.as_deref().unwrap_or(""))
-                .fetch_optional(&mut **tx)
-                .await?
-                .ok_or_else(|| WorkspaceError::Invalid("claim reference is missing".into()))?;
-            if Some(revision) != binding.ref_revision || binding.approved_wording.is_none() {
-                return Err(WorkspaceError::Invalid(
-                    "claim was corrected or its owner-approved wording changed".into(),
-                ));
-            }
-            result.insert(
-                format!("claim:{}", binding.ref_id.as_deref().unwrap_or("")),
-                revision.to_string(),
-            );
-        }
-    }
-    Ok(result)
-}
-
-async fn evaluate_material(
-    tx: &mut Transaction<'_, Sqlite>,
-    material: &HeadMaterial,
-    overrides: &BTreeMap<String, String>,
-) -> Result<gate::GateResult, WorkspaceError> {
-    let (exchange_state,they_get,i_get,_,attested,digest_stored)=sqlx::query_as::<_,(String,String,String,i64,i64,Option<String>)>("SELECT o.state,x.they_get,x.i_get,x.version_no,x.fairness_attested,x.attestation_digest FROM opportunity o JOIN exchange_version x ON x.opportunity_id=o.id WHERE x.opportunity_id=? AND x.recipient_id=? AND x.version_no=?")
-        .bind(&material.opportunity_id).bind(&material.recipient_id).bind(material.exchange_version).fetch_optional(&mut **tx).await?.ok_or_else(||WorkspaceError::Invalid("exchange version is unavailable".into()))?;
-    let interests = exchange_interests(
-        tx,
-        &material.opportunity_id,
-        &material.recipient_id,
-        material.exchange_version,
-    )
-    .await?;
-    let current = exchange_digest(
-        &material.opportunity_id,
-        &material.recipient_id,
-        material.exchange_version,
-        &they_get,
-        &i_get,
-        &interests,
-    );
-    let exchange_complete = !they_get.trim().is_empty()
-        && !i_get.trim().is_empty()
-        && interests.iter().any(|(_, side, _, _)| side == "them")
-        && interests.iter().any(|(_, side, _, _)| side == "me");
-    let policy: Option<(String, i64, i64)> = sqlx::query_as(
-        "SELECT state,do_not_contact,highest_rung FROM party_policy WHERE party_id=?",
-    )
-    .bind(&material.recipient_id)
-    .fetch_optional(&mut **tx)
-    .await?;
-    let (party_state, dnc, highest_rung) =
-        policy.ok_or_else(|| WorkspaceError::Invalid("recipient has no policy row".into()))?;
-    let template_body: String = sqlx::query_scalar("SELECT body FROM template_version WHERE id=?")
-        .bind(&material.template_id)
-        .fetch_one(&mut **tx)
-        .await?;
-    let declared_slots = template::validate(&template_body, None).slots;
-    let slot_values: Vec<String> = material
-        .slot_fills
-        .iter()
-        .map(|fill| fill.value.clone())
-        .collect();
-    let sentence_list = split_sentences(&material.body);
-    validate_binding_shape(&sentence_list, &material.bindings)?;
-    let mut binding_valid = true;
-    let mut ask_count = 0usize;
-    let mut ask_rung = 0u32;
-    let mut used_rules = BTreeSet::new();
-    let mut gift = false;
-    let mut anchor = false;
-    let mut private_artifact = false;
-    let mut uses_hook = false;
-    let mut sensitive = false;
-    let mut identity_valid = true;
-    for binding in &material.bindings {
-        let sentence = &sentence_list[binding.sentence_index];
-        match binding.claim_type.as_str() {
-            "generic" => {
-                if binding.ref_kind.is_some()
-                    || binding.ref_id.is_some()
-                    || !generic_sentence_allowed(sentence, &material.recipient_name)
-                {
-                    binding_valid = false;
-                }
-            }
-            "offer" => {
-                let Some(resource_id) = binding
-                    .ref_id
-                    .as_deref()
-                    .filter(|_| binding.ref_kind.as_deref() == Some("resource"))
-                else {
-                    binding_valid = false;
-                    continue;
-                };
-                let row: Option<(String, String, String, String)> = sqlx::query_as(
-                    "SELECT kind,readiness,title,body_json FROM resource WHERE id=?",
-                )
-                .bind(resource_id)
-                .fetch_optional(&mut **tx)
-                .await?;
-                if let Some((kind, status, _title, body)) = row {
-                    let value: Value = serde_json::from_str(&body)
-                        .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
-                    let what = value.get("what").and_then(Value::as_str).unwrap_or("");
-                    if kind != "gift"
-                        || status != "ready"
-                        || what.is_empty()
-                        || !sentence.contains(what)
-                        || !tokens_contained(sentence, &body, &material.recipient_name)
-                    {
-                        binding_valid = false;
-                    }
-                    gift = true;
-                } else {
-                    binding_valid = false;
-                }
-                used_rules.insert("R1");
-            }
-            "self_fact" => {
-                let Some(resource_id) = binding
-                    .ref_id
-                    .as_deref()
-                    .filter(|_| binding.ref_kind.as_deref() == Some("resource"))
-                else {
-                    binding_valid = false;
-                    continue;
-                };
-                let row: Option<(String, String, String)> =
-                    sqlx::query_as("SELECT kind,readiness,body_json FROM resource WHERE id=?")
-                        .bind(resource_id)
-                        .fetch_optional(&mut **tx)
-                        .await?;
-                if let Some((kind, status, body)) = row {
-                    if status != "ready"
-                        || !matches!(kind.as_str(), "proof" | "artifact")
-                        || binding.approved_wording.as_deref() != Some(sentence)
-                        || !tokens_contained(sentence, &body, &material.recipient_name)
-                    {
-                        binding_valid = false;
-                    }
-                    anchor |= kind == "proof";
-                    if kind == "proof" {
-                        used_rules.insert("R3");
-                    }
-                    if kind == "artifact" {
-                        used_rules.insert("R4");
-                    }
-                } else {
-                    binding_valid = false;
-                }
-            }
-            "other_fact" => {
-                let Some(claim_id) = binding
-                    .ref_id
-                    .as_deref()
-                    .filter(|_| binding.ref_kind.as_deref() == Some("claim"))
-                else {
-                    binding_valid = false;
-                    continue;
-                };
-                let valid:Option<(i64,i64,String,String)>=sqlx::query_as("SELECT c.current_revision,r.tier,r.wording,coalesce(r.approved_wording,'') FROM claim c JOIN claim_revision r ON r.claim_id=c.id AND r.revision=? WHERE c.id=?").bind(binding.ref_revision.unwrap_or_default()).bind(claim_id).fetch_optional(&mut **tx).await?;
-                if let Some((current_rev, tier, wording, _approved)) = valid {
-                    if current_rev != binding.ref_revision.unwrap_or_default()
-                        || !matches!(tier, 1 | 3)
-                        || binding.approved_wording.as_deref() != Some(sentence)
-                        || !tokens_contained(sentence, &wording, &material.recipient_name)
-                    {
-                        binding_valid = false;
-                    }
-                } else {
-                    binding_valid = false;
-                }
-                anchor = true;
-                used_rules.insert("R5");
-            }
-            "question" => {
-                let Some(interest_id) = binding
-                    .ref_id
-                    .as_deref()
-                    .filter(|_| binding.ref_kind.as_deref() == Some("interest"))
-                else {
-                    binding_valid = false;
-                    continue;
-                };
-                let valid: Option<String> = sqlx::query_scalar("SELECT statement FROM opportunity_interest WHERE id=? AND opportunity_id=? AND party_id=? AND status='active'")
-                    .bind(interest_id).bind(&material.opportunity_id).bind(&material.recipient_id).fetch_optional(&mut **tx).await?;
-                if valid.is_none()
-                    || !sentence.trim_end().ends_with('?')
-                    || binding.approved_wording.as_deref() != Some(sentence)
-                {
-                    binding_valid = false;
-                }
-            }
-            "ask" => {
-                if binding.ref_kind.as_deref() != Some("ladder")
-                    || binding.ask_rung.is_none()
-                    || binding.ask_rung.unwrap_or(0) == 0
-                    || binding.ask_rung.unwrap_or(6) > 5
-                    || !sentence.trim_end().ends_with('?')
-                {
-                    binding_valid = false;
-                }
-                ask_count += 1;
-                ask_rung = ask_rung.max(binding.ask_rung.unwrap_or_default());
-                used_rules.insert("R2");
-            }
-            "identity" => {
-                identity_valid = false;
-                anchor = true;
-                used_rules.insert("R7");
-            }
-            "hook" => {
-                uses_hook = true;
-                anchor = true;
-                used_rules.insert("R5");
-            }
-            _ => binding_valid = false,
-        }
-        sensitive |= has_sensitive_content(sentence);
-    }
-    for fill in &material.slot_fills {
-        if let Some(resource_id) = &fill.resource_id {
-            let row: Option<(String, String)> = sqlx::query_as(
-                "SELECT kind,body_json FROM resource WHERE id=? AND readiness='ready'",
-            )
-            .bind(resource_id)
-            .fetch_optional(&mut **tx)
-            .await?;
-            let Some((kind, body)) = row else {
-                binding_valid = false;
-                continue;
-            };
-            if kind == "proof" || kind == "artifact" {
-                anchor = true;
-            }
-            if kind == "gift" {
-                gift = true;
-            }
-            if kind == "proof" {
-                used_rules.insert("R3");
-            }
-            if kind == "artifact" {
-                used_rules.insert("R4");
-            }
-            if kind == "gift" {
-                used_rules.insert("R1");
-            }
-            if kind == "artifact" {
-                let v: Value = serde_json::from_str(&body)
-                    .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
-                private_artifact |= v.get("public").and_then(Value::as_bool) == Some(false);
-            }
-            let expected_binding = material.bindings.iter().any(|binding| {
-                binding.ref_kind.as_deref() == Some("resource")
-                    && binding.ref_id.as_deref() == Some(resource_id.as_str())
-                    && match kind.as_str() {
-                        "gift" => binding.claim_type == "offer",
-                        "proof" | "artifact" => binding.claim_type == "self_fact",
-                        _ => false,
-                    }
-            });
-            if !expected_binding {
-                binding_valid = false;
-            }
-            sensitive |= has_sensitive_content(&fill.value);
-        } else {
-            sensitive |= has_sensitive_content(&fill.value);
-        }
-    }
-    let has_capacity_claim = has_capacity_content(&material.body);
-    let banned = [
-        "i hope this finds you well",
-        "synergy",
-        "circle back",
-        "touch base",
-        "leverage",
-    ];
-    let lint_error = banned
-        .iter()
-        .any(|phrase| material.body.to_lowercase().contains(phrase));
-    let char_limit = 1200usize;
-    let glossary: Vec<(String, String)> = sqlx::query_as("SELECT term,status FROM fluency")
-        .fetch_all(&mut **tx)
-        .await?;
-    let fluency_ok = glossary
-        .iter()
-        .all(|(term, status)| status == "fluent" || !contains_glossary_term(&material.body, term));
-    let mut input = gate::GateInput {
-        exchange_complete,
-        fairness_attested: attested == 1 && digest_stored.as_deref() == Some(current.as_str()),
-        factual_sentences_grounded: binding_valid,
-        sentence_count: sentence_list.len(),
-        bound_sentence_count: material.bindings.len(),
-        slot_fills: slot_values,
-        body: material.body.clone(),
-        scarcity_claim_valid: !has_capacity_claim,
-        identity_claims_valid: identity_valid,
-        ask_count,
-        ask_rung,
-        highest_rung: highest_rung.max(0) as u32,
-        has_sensitive_content: sensitive,
-        recipient_open: party_state == "open" && exchange_state == "open",
-        recipient_do_not_contact: dnc != 0,
-        references_private_artifact: private_artifact,
-        gift_in_body: gift,
-        gift_delivered_before: false,
-        anchor_used: anchor,
-        rule_count: used_rules.len(),
-        rule_limit: if sqlx::query_scalar::<_, i64>(
-            "SELECT touch_count FROM party_policy WHERE party_id=?",
-        )
-        .bind(&material.recipient_id)
-        .fetch_one(&mut **tx)
-        .await?
-            == 0
-        {
-            3
-        } else {
-            4
-        },
-        fluency_ok,
-        lint_error,
-        hook_fresh: !uses_hook,
-        cadence_ok: sqlx::query_scalar::<_, i64>(
-            "SELECT touch_count FROM party_policy WHERE party_id=?",
-        )
-        .bind(&material.recipient_id)
-        .fetch_one(&mut **tx)
-        .await?
-            < 3,
-        daily_cap_ok: true,
-        body_char_limit: char_limit,
-        brief_reviewed: true,
-        override_reasons: overrides.clone(),
-    };
-    if !declared_slots
-        .iter()
-        .all(|slot| material.slot_fills.iter().any(|fill| &fill.slot == slot))
-    {
-        input.factual_sentences_grounded = false;
-    }
-    Ok(gate::evaluate(&input))
-}
-
-fn contains_glossary_term(body: &str, term: &str) -> bool {
-    let body = body.to_lowercase();
-    let term = term.trim().to_lowercase();
-    if term.is_empty() {
-        return false;
-    }
-    body.match_indices(&term).any(|(start, matched)| {
-        let end = start + matched.len();
-        let before = body[..start].chars().next_back();
-        let after = body[end..].chars().next();
-        let word_edge = |ch: Option<char>| ch.is_none_or(|value| !value.is_alphanumeric());
-        word_edge(before) && word_edge(after)
-    })
-}
-
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the reference set covers slots, bindings, content and the attachment in one revision-bound command"
+)]
 async fn persist_material_references(
     tx: &mut Transaction<'_, Sqlite>,
     material_id: &str,
@@ -2230,6 +1751,7 @@ async fn persist_material_references(
     bindings: &[SentenceBinding],
     body: &str,
     recipient: &str,
+    attachment: Option<&AttachmentInfo>,
 ) -> Result<(), WorkspaceError> {
     for fill in fills {
         if let Some(resource_id) = &fill.resource_id {
@@ -2260,6 +1782,26 @@ async fn persist_material_references(
                 ));
             }
         }
+    }
+    if let Some(attachment) = attachment {
+        let revision: Option<i64> = sqlx::query_scalar(
+            "SELECT revision FROM blob_upload WHERE id=? AND reviewed_by_owner=1 AND share_permission=1",
+        )
+        .bind(&attachment.upload_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let Some(revision) = revision else {
+            return Err(WorkspaceError::Invalid(
+                "attachment upload must be reviewed and shareable".into(),
+            ));
+        };
+        sqlx::query("INSERT INTO version_dependency(material_id,version_no,kind,source_id,source_revision) VALUES(?,?,'blob',?,?)")
+            .bind(material_id)
+            .bind(version)
+            .bind(&attachment.upload_id)
+            .bind(revision.to_string())
+            .execute(&mut **tx)
+            .await?;
     }
     let _ = (body, recipient);
     Ok(())
@@ -2339,49 +1881,6 @@ async fn validate_slot_fills(
     Ok(())
 }
 
-async fn current_exchange(
-    tx: &mut Transaction<'_, Sqlite>,
-    opportunity: &str,
-    recipient: &str,
-    version: i64,
-) -> Result<(String, String, String, Vec<(String, String, String, i64)>), WorkspaceError> {
-    let (they_get,i_get):(String,String)=sqlx::query_as("SELECT they_get,i_get FROM exchange_version WHERE opportunity_id=? AND recipient_id=? AND version_no=?").bind(opportunity).bind(recipient).bind(version).fetch_optional(&mut **tx).await?.ok_or_else(||WorkspaceError::Invalid("exchange version does not exist".into()))?;
-    let interests = exchange_interests(tx, opportunity, recipient, version).await?;
-    let digest = exchange_digest(
-        opportunity,
-        recipient,
-        version,
-        &they_get,
-        &i_get,
-        &interests,
-    );
-    Ok((digest, they_get, i_get, interests))
-}
-
-async fn exchange_interests(
-    tx: &mut Transaction<'_, Sqlite>,
-    opportunity: &str,
-    recipient: &str,
-    version: i64,
-) -> Result<Vec<(String, String, String, i64)>, WorkspaceError> {
-    Ok(sqlx::query_as("SELECT i.id,i.side,i.statement,i.revision FROM exchange_interest_link l JOIN opportunity_interest i ON i.id=l.interest_id WHERE l.opportunity_id=? AND l.recipient_id=? AND l.exchange_version=? AND i.status='active' ORDER BY i.id")
-        .bind(opportunity).bind(recipient).bind(version).fetch_all(&mut **tx).await?)
-}
-
-fn exchange_digest(
-    opportunity: &str,
-    recipient: &str,
-    version: i64,
-    they_get: &str,
-    i_get: &str,
-    interests: &[(String, String, String, i64)],
-) -> String {
-    digest(
-        &serde_json::to_vec(&(opportunity, recipient, version, they_get, i_get, interests))
-            .unwrap_or_default(),
-    )
-}
-
 async fn ensure_party_policy(
     tx: &mut Transaction<'_, Sqlite>,
     party_id: &str,
@@ -2411,7 +1910,7 @@ async fn bump_opportunity(
     )
 }
 
-async fn event(
+pub(crate) async fn event(
     tx: &mut Transaction<'_, Sqlite>,
     entity_type: &str,
     entity_id: &str,
@@ -2424,7 +1923,7 @@ async fn event(
     Ok(())
 }
 
-fn validate_binding_shape(
+pub(crate) fn validate_binding_shape(
     sentences: &[String],
     bindings: &[SentenceBinding],
 ) -> Result<(), WorkspaceError> {
@@ -2465,7 +1964,7 @@ fn validate_binding_shape(
     Ok(())
 }
 
-fn split_sentences(body: &str) -> Vec<String> {
+pub(crate) fn split_sentences(body: &str) -> Vec<String> {
     let mut result = Vec::new();
     let mut start = 0;
     for (index, ch) in body.char_indices() {
@@ -2485,93 +1984,9 @@ fn split_sentences(body: &str) -> Vec<String> {
     result
 }
 
-fn generic_sentence_allowed(sentence: &str, recipient_name: &str) -> bool {
-    if sentence.chars().any(|ch| ch.is_ascii_digit()) {
-        return false;
-    }
-    let recipient_words: BTreeSet<String> = recipient_name
-        .split_whitespace()
-        .map(str::to_lowercase)
-        .collect();
-    let mut first = true;
-    for token in sentence.split_whitespace() {
-        let word = token.trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '\'');
-        if word.is_empty() {
-            continue;
-        }
-        let allowed = first || word == "I" || recipient_words.contains(&word.to_lowercase());
-        if !allowed && word.chars().next().is_some_and(char::is_uppercase) {
-            return false;
-        }
-        first = false;
-    }
-    true
-}
-
-fn tokens_contained(sentence: &str, source: &str, recipient_name: &str) -> bool {
-    let recipient_lower = recipient_name.to_lowercase();
-    let source_lower = source.to_lowercase();
-    for token in sentence.split_whitespace() {
-        let token = token
-            .trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '%' && ch != '$' && ch != '.');
-        if token.is_empty() {
-            continue;
-        }
-        let numeric = token.chars().any(|ch| ch.is_ascii_digit());
-        let named = token.chars().next().is_some_and(char::is_uppercase) && token.len() > 1;
-        if (numeric || named)
-            && !source_lower.contains(&token.to_lowercase())
-            && !recipient_lower.contains(&token.to_lowercase())
-        {
-            return false;
-        }
-    }
-    true
-}
-
-fn has_sensitive_content(text: &str) -> bool {
-    const TERMS: &[&str] = &[
-        "health",
-        "disability",
-        "medical",
-        "family",
-        "wife",
-        "husband",
-        "child",
-        "children",
-        "sexual orientation",
-        "religion",
-        "politics",
-        "political",
-        "race",
-        "ethnicity",
-        "immigration",
-        "union membership",
-        "financial hardship",
-        "home address",
-        "home location",
-        "pregnant",
-        "diagnosis",
-    ];
-    let normalized = text.to_lowercase();
-    TERMS.iter().any(|term| normalized.contains(term))
-}
-
-fn has_capacity_content(text: &str) -> bool {
-    let normalized = text.to_lowercase();
-    [
-        "capacity",
-        "remaining slots",
-        "available slots",
-        "only have",
-        "interview slots",
-        "project slots",
-    ]
-    .iter()
-    .any(|term| normalized.contains(term))
-}
-
-fn validate_override_reasons(reasons: &BTreeMap<String, String>) -> Result<(), WorkspaceError> {
+pub(crate) fn validate_override_reasons(
+    reasons: &BTreeMap<String, String>,
+) -> Result<(), WorkspaceError> {
     for (id, reason) in reasons {
         if !id.starts_with('S') || reason.trim().chars().count() < 10 {
             return Err(WorkspaceError::Invalid(format!(

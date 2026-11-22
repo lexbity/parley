@@ -9,7 +9,7 @@
 use std::{
     collections::HashMap,
     net::SocketAddr,
-    path::Path,
+    path::{Path, PathBuf},
     str::FromStr,
     sync::{
         Arc,
@@ -43,9 +43,11 @@ use tokio::sync::Mutex;
 static IDS: AtomicU64 = AtomicU64::new(0);
 
 mod assistant;
+mod blob;
 mod board;
 mod jobs;
 mod materials;
+mod release;
 mod writing;
 mod writing_jobs;
 mod web_assets {
@@ -161,6 +163,9 @@ pub struct Workspace {
     pool: SqlitePool,
     epoch: String,
     workspace_id: String,
+    pub(crate) blob_root: PathBuf,
+    pub(crate) maintenance_lock: Arc<Mutex<()>>,
+    pub(crate) spool: blob::ReleaseSpool,
 }
 
 impl Workspace {
@@ -205,11 +210,38 @@ impl Workspace {
             sqlx::query_as("SELECT epoch, workspace_id FROM workspace_meta WHERE singleton=1")
                 .fetch_one(&pool)
                 .await?;
+        let blob_root = PathBuf::from(format!("{}.blobs", path.display()));
+        std::fs::create_dir_all(&blob_root)
+            .map_err(|e| WorkspaceError::Invalid(format!("create blob store: {e}")))?;
+        std::fs::create_dir_all(blob_root.join(".staging"))
+            .map_err(|e| WorkspaceError::Invalid(format!("create blob staging: {e}")))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&blob_root, std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
+            std::fs::set_permissions(
+                blob_root.join(".staging"),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
+        }
         Ok(Self {
             pool,
             epoch,
             workspace_id,
+            blob_root,
+            maintenance_lock: Arc::new(Mutex::new(())),
+            spool: blob::ReleaseSpool::new(),
         })
+    }
+
+    pub fn blob_root(&self) -> &Path {
+        &self.blob_root
+    }
+
+    pub fn spool(&self) -> blob::ReleaseSpool {
+        self.spool.clone()
     }
 
     pub fn pool(&self) -> &SqlitePool {
@@ -890,6 +922,8 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         .route("/api/v1/graph/related", post(create_related_entity))
         .merge(board::routes())
         .merge(materials::routes())
+        .merge(release::routes())
+        .merge(blob::routes())
         .merge(jobs::routes())
         .merge(assistant::routes())
         .merge(writing::routes())

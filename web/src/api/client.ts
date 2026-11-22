@@ -272,6 +272,22 @@ function decodeBriefItem(value: unknown): BriefItem {
   return { id: requiredString(item.id, 'brief.id'), scope_kind: requiredString(item.scope_kind, 'brief.scope_kind') as BriefItem['scope_kind'], scope_id: requiredString(item.scope_id, 'brief.scope_id'), kind: requiredString(item.kind, 'brief.kind'), text: requiredString(item.text, 'brief.text'), detail: item.detail as Record<string, unknown>, tier: Number(item.tier) as BriefItem['tier'], quote: typeof item.quote === 'string' ? item.quote : null, check_suggestion: typeof item.check_suggestion === 'string' ? item.check_suggestion : null, speaker_kind: requiredString(item.speaker_kind, 'brief.speaker_kind'), status: requiredString(item.status, 'brief.status'), revision: Number(item.revision), supersedes_id: typeof item.supersedes_id === 'string' ? item.supersedes_id : null };
 }
 
+function decodeAttachment(value: unknown): components['schemas']['AttachmentInfo'] | null {
+  if (value === null || value === undefined) return null;
+  const item = object(value);
+  if (!item || !Number.isSafeInteger(item.size) || Number(item.size) < 1
+    || !/^[a-f0-9]{64}$/.test(String(item.sha256))) {
+    throw new Error('Invalid response: attachment info is malformed');
+  }
+  return {
+    upload_id: requiredString(item.upload_id, 'attachment.upload_id'),
+    sha256: String(item.sha256),
+    filename: requiredString(item.filename, 'attachment.filename'),
+    content_type: requiredString(item.content_type, 'attachment.content_type'),
+    size: Number(item.size),
+  };
+}
+
 function decodeMaterial(value: unknown): Material {
   const item = object(value);
   if (!item || !Number.isSafeInteger(item.version) || Number(item.version) < 1
@@ -291,6 +307,7 @@ function decodeMaterial(value: unknown): Material {
     content_sha256: item.content_sha256 as string,
     status: item.status as Material['status'],
     gate: item.gate as Material['gate'],
+    attachment: decodeAttachment(item.attachment),
   };
 }
 
@@ -308,6 +325,7 @@ function decodeReleasedMaterial(value: unknown): ReleasedMaterial {
     body: requiredString(item.body, 'release.body'),
     content_sha256: item.content_sha256 as string,
     issued_at: requiredString(item.issued_at, 'release.issued_at'),
+    attachment: decodeAttachment(item.attachment),
   };
 }
 

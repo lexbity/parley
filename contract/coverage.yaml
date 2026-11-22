@@ -428,3 +428,53 @@ slices:
       owner_role: owner
       package_target: rust
       evidence_path: contract/fixtures/s05/board/evidence.md
+  s06:
+    - requirement: BE-11
+      operationId: createUpload
+      test_id: s06_verified_file_release_download_returns_exact_bytes_and_one_grant
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s06/workflow/evidence.md
+    - requirement: B-FR-3
+      operationId: releaseMaterial
+      test_id: s06_verified_file_release_download_returns_exact_bytes_and_one_grant
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s06/workflow/evidence.md
+    - requirement: B-FR-3
+      operationId: downloadMaterial
+      test_id: s06_verified_file_release_download_returns_exact_bytes_and_one_grant
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s06/workflow/evidence.md
+    - requirement: APP-13
+      operationId: reviewUpload
+      test_id: s06_unreviewed_or_not_shareable_upload_cannot_bind
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s06/workflow/evidence.md
+    - requirement: BQ4
+      operationId: downloadMaterial
+      test_id: s06_corrupt_blob_file_issues_zero_bytes_until_restored
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s06/workflow/evidence.md
+    - requirement: BE-11
+      operationId: createMaterial
+      test_id: s06_duplicate_uploads_share_bytes_with_distinct_review_permission
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s06/workflow/evidence.md
+    - requirement: B-FR-6
+      operationId: n/a
+      test_id: s06_gc_respects_leases_and_pins_and_reclaims_orphans
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s06/workflow/evidence.md
