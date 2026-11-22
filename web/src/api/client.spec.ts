@@ -130,6 +130,130 @@ describe('ParleyClient S04 local Extractor commands', () => {
   });
 });
 
+describe('ParleyClient S09 recipient writing commands', () => {
+  it('binds exchange, templates, matching, composition, lint and voice versions to one session', async () => {
+    const interest = { id: 'interest-1', side: 'them', statement: 'Improve onboarding', knowledge_kind: 'hypothesis', check_suggestion: 'Verify with a source', claim_id: null, claim_revision: null, revision: 1, status: 'active' };
+    const template = { id: 'template-1', family_id: 'family-1', name: 'One ask', version: 1, status: 'draft', body: '{{their_name:name}}', sentence_rules: [[]], stage_class: 'identified', channel: 'email', parent_version_id: null };
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(sessionResponse())
+      .mockResolvedValueOnce(response({ opportunity_id: 'op-1', recipient_id: 'party-1', items: [interest] }))
+      .mockResolvedValueOnce(response({ current: { version: 1, they_get: 'A map', i_get: 'A conversation', fairness_attested: false }, versions: [] }))
+      .mockResolvedValueOnce(response(interest, 201))
+      .mockResolvedValueOnce(response({ version: 1 }))
+      .mockResolvedValueOnce(response({ version: 1, fairness_attested: true }))
+      .mockResolvedValueOnce(response([template]))
+      .mockResolvedValueOnce(response({ items: [{ id: 'family-1', name: 'One ask' }] }))
+      .mockResolvedValueOnce(response({ id: 'family-1', name: 'One ask' }, 201))
+      .mockResolvedValueOnce(response({ id: 'template-1', family_id: 'family-1', version: 1, status: 'draft', body: '{{their_name:name}}', rules: [[]], stage_class: 'identified', channel: 'email', parent_version_id: null }, 201))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(response({ model: 'embed-local', model_digest: 'digest-1', calibrated_kinds: ['gift'] }))
+      .mockResolvedValueOnce(response({ model: 'embed-local', model_digest: 'digest-1', calibration_required: true }))
+      .mockResolvedValueOnce(response({ job_id: 'match-job', role: 'matcher' }, 202))
+      .mockResolvedValueOnce(response({ id: 'match-1', opportunity_id: 'op-1', recipient_id: 'party-1', embed_model_digest: 'digest-1', calibration_json: '{}', shortlist_json: '[]', why_job_id: null }))
+      .mockResolvedValueOnce(response({ job_id: 'builder-job', role: 'template_builder' }, 202))
+      .mockResolvedValueOnce(response({ job_id: 'composer-job', role: 'composer' }, 202))
+      .mockResolvedValueOnce(response({ material_id: 'material-1', version: 1, status: 'draft' }, 201))
+      .mockResolvedValueOnce(response({ job_id: 'lint-job', role: 'linter' }, 202))
+      .mockResolvedValueOnce(response({ items: [{ id: 'voice-1', text: 'A sample', channel: 'email', revision: 1 }] }))
+      .mockResolvedValueOnce(response({ id: 'voice-2', text: 'Another sample', channel: null, revision: 1 }, 201))
+      .mockResolvedValueOnce(response({ id: 'voice-2', status: 'retired', revision: 2 }));
+    const client = new ParleyClient(); await client.connect();
+    expect(await client.getWritingInterests('op-1', 'party-1')).toEqual([interest]);
+    expect((await client.getWritingExchange('op-1', 'party-1')).current).toMatchObject({ version: 1 });
+    expect(await client.addWritingInterest('op-1', { recipient_id: 'party-1', side: 'them', statement: 'Improve onboarding', knowledge_kind: 'hypothesis', check_suggestion: 'Verify' }, 'interest-key')).toMatchObject({ id: 'interest-1' });
+    await client.saveWritingExchange('op-1', { recipient_id: 'party-1', they_get: 'A map', i_get: 'A conversation', interest_ids: ['interest-1'] }, 'exchange-key');
+    await client.attestWritingExchange('op-1', 'party-1', 'attest-key');
+    expect(await client.listWritingTemplates()).toEqual([expect.objectContaining({ id: 'template-1', name: 'One ask' })]);
+    expect(await client.listTemplateFamilies()).toEqual([{ id: 'family-1', name: 'One ask' }]);
+    await client.createTemplateFamily('One ask', 'family-key');
+    expect(await client.createWritingTemplateVersion('family-1', { name: 'One ask', body: '{{their_name:name}}', stage_class: 'identified', channel: 'email', sentence_rules: [[]] }, 'version-key')).toMatchObject({ id: 'template-1', name: 'One ask' });
+    await client.approveWritingTemplate('template-1', 'approve-key'); await client.activateWritingTemplate('template-1', 'activate-key');
+    expect(await client.getEmbeddingModel()).toMatchObject({ model_digest: 'digest-1', calibrated_kinds: ['gift'] }); await client.setEmbeddingModel('embed-local', 'model-key');
+    expect(await client.startMatching('op-1', 'party-1', 'match-key')).toEqual({ job_id: 'match-job', role: 'matcher' });
+    expect(await client.getWritingMatch('op-1', 'party-1')).toMatchObject({ id: 'match-1', shortlist_json: '[]' });
+    expect(await client.buildWritingTemplates({ stage_class: 'identified', rungs: [1], rules: ['R2'], channel: 'email', max_chars: 1200 }, 'builder-key')).toEqual({ job_id: 'builder-job', role: 'template_builder' });
+    expect(await client.composeWritingMaterial('op-1', { recipient_id: 'party-1', kind: 'outreach', template_version_id: 'template-1', exchange_version: 1, slot_fills: [] }, 'composer-key')).toEqual({ job_id: 'composer-job', role: 'composer' });
+    expect(await client.saveWritingDraft('op-1', 'composer-job', 'Hi Dana.', 'save-key')).toMatchObject({ material_id: 'material-1' });
+    expect(await client.lintWritingMaterial('material-1', 1, 'a'.repeat(64), 'lint-key')).toMatchObject({ job_id: 'lint-job' });
+    expect(await client.listVoiceSamples()).toHaveLength(1); await client.createVoiceSample('Another sample', undefined, 'voice-key'); await client.retireVoiceSample('voice-2', 'retire-key');
+    const calls = fetchMock.mock.calls.slice(1);
+    expect(calls.map(([url]) => url)).toEqual([
+      '/api/v1/opportunities/op-1/interests?recipient_id=party-1', '/api/v1/opportunities/op-1/exchange?recipient_id=party-1',
+      '/api/v1/opportunities/op-1/interests', '/api/v1/opportunities/op-1/exchange', '/api/v1/opportunities/op-1/exchange/party-1/attest',
+      '/api/v1/templates', '/api/v1/template-families', '/api/v1/template-families', '/api/v1/templates/family-1/versions',
+      '/api/v1/templates/template-1/approve', '/api/v1/templates/template-1/activate', '/api/v1/embedding-model', '/api/v1/embedding-model',
+      '/api/v1/opportunities/op-1/matches', '/api/v1/opportunities/op-1/matches?recipient_id=party-1', '/api/v1/templates/build',
+      '/api/v1/opportunities/op-1/materials/compose', '/api/v1/opportunities/op-1/materials/compose/composer-job/save',
+      '/api/v1/materials/material-1/lint', '/api/v1/voice-samples', '/api/v1/voice-samples', '/api/v1/voice-samples/voice-2/retire',
+    ]);
+    expect(new Headers(calls[2]?.[1]?.headers).get('Idempotency-Key')).toBe('interest-key');
+    expect(new Headers(calls[8]?.[1]?.headers).get('Idempotency-Key')).toBe('version-key');
+  });
+});
+
+describe('ParleyClient S05 board and canonical notes commands', () => {
+  const board = {
+    lists: [{ id: 'list-a', title: 'Today', position: 0, archived: false, revision: 2 }],
+    cards: [{ opportunity: { id: 'op-1', title: 'Onboarding', state: 'open', revision: 1, participant_ids: ['party 1'], source_variant_ids: [], material_ids: [] }, placement: { opportunity_id: 'op-1', list_id: 'list-a', position: 0, revision: 3, next_task: 'Review checklist' } }],
+  };
+  const notes = {
+    opportunity_id: 'op-1', markdown: '🧭\n- [ ] Review checklist\n', revision: 2, next_task: 'Review checklist',
+    tasks: [{ byte_start: 5, byte_end: 29, line_sha256: 'c'.repeat(64), checked: false, text: 'Review checklist' }],
+  };
+
+  it('uses session authority and idempotency keys for list, placement, and Markdown changes', async () => {
+    const movedList = { id: 'list-a', title: 'Today', position: 0, archived: false, revision: 3 };
+    const archive = { archived_list: { ...movedList, archived: true }, destination_list: { id: 'list-b', title: 'Later', position: 1, archived: false, revision: 4 }, moved: [] };
+    const placement = { opportunity_id: 'op-1', list_id: 'list-a', position: 0, placement_revision: 4, source_list_revision: 3, destination_list_revision: 3 };
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(sessionResponse())
+      .mockResolvedValueOnce(response(board))
+      .mockResolvedValueOnce(response({ list: movedList, board_revision: 2 }, 201))
+      .mockResolvedValueOnce(response({ lists: [movedList] }))
+      .mockResolvedValueOnce(response({ list: movedList }))
+      .mockResolvedValueOnce(response(archive))
+      .mockResolvedValueOnce(response(placement))
+      .mockResolvedValueOnce(response(notes))
+      .mockResolvedValueOnce(response(notes))
+      .mockResolvedValueOnce(response({ ...notes, markdown: '🧭\n- [x] Review checklist\n', revision: 3, next_task: null, tasks: [{ ...notes.tasks[0], checked: true }] }));
+    const client = new ParleyClient(); await client.connect();
+    expect(await client.getBoard()).toEqual({ lists: board.lists, cards: [{ opportunity: board.cards[0]!.opportunity, opportunity_id: 'op-1', list_id: 'list-a', position: 0, placement_revision: 3, next_task: 'Review checklist' }] });
+    expect(await client.createBoardList({ title: 'Today', before_list_id: null }, 'key-create')).toMatchObject({ list: movedList, board_revision: 2 });
+    expect(await client.reorderBoardLists({ ordered_ids: ['list-a'], expected_revisions: { 'list-a': 2 } }, 'key-order')).toEqual([movedList]);
+    expect(await client.renameBoardList('list-a', { title: 'Today', expected_revision: 2 }, 'key-rename')).toEqual(movedList);
+    expect(await client.archiveBoardList('list-a', { destination_list_id: 'list-b', expected_list_revision: 2, expected_destination_revision: 3 }, 'key-archive')).toEqual(archive);
+    expect(await client.moveOpportunityPlacement('op-1', { list_id: 'list-a', before_opportunity_id: null, expected_source_list_revision: 2, expected_list_revision: 2, expected_placement_revision: 3 }, 'key-move')).toEqual(placement);
+    expect(await client.getOpportunityNotes('op-1')).toEqual(notes);
+    expect(await client.updateOpportunityNotes('op-1', notes.markdown, 2, 'key-notes')).toEqual(notes);
+    expect((await client.toggleOpportunityTask('op-1', { notes_revision: 2, byte_start: 5, byte_end: 29, line_sha256: 'c'.repeat(64), checked: true }, 'key-toggle')).tasks[0]?.checked).toBe(true);
+    const urls = fetchMock.mock.calls.slice(1).map(([url]) => String(url));
+    expect(urls).toEqual([
+      '/api/v1/board', '/api/v1/board/lists', '/api/v1/board/lists/reorder', '/api/v1/board/lists/list-a',
+      '/api/v1/board/lists/list-a/archive', '/api/v1/opportunities/op-1/placement', '/api/v1/opportunities/op-1/notes',
+      '/api/v1/opportunities/op-1/notes', '/api/v1/opportunities/op-1/notes/tasks/toggle',
+    ]);
+    for (const [, init] of fetchMock.mock.calls.slice(1)) {
+      const headers = new Headers(init?.headers);
+      expect(headers.get('X-Parley-Token')).toBe(session.mutation_token);
+      expect(headers.get('X-Parley-Epoch')).toBe(session.epoch);
+    }
+    expect(new Headers(fetchMock.mock.calls[2]?.[1]?.headers).get('Idempotency-Key')).toBe('key-create');
+  });
+
+  it('rejects malformed board positions, task offsets, and hash spans', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(sessionResponse())
+      .mockResolvedValueOnce(response({ lists: [], cards: [{}] }))
+      .mockResolvedValueOnce(response({ ...notes, tasks: [{ ...notes.tasks[0], byte_end: -1 }] }))
+      .mockResolvedValueOnce(response({ ...notes, tasks: [{ ...notes.tasks[0], line_sha256: 'bad' }] }));
+    const client = new ParleyClient(); await client.connect();
+    await expect(client.getBoard()).rejects.toThrow('board placement is malformed');
+    await expect(client.getOpportunityNotes('op-1')).rejects.toThrow('opportunity task is malformed');
+    await expect(client.getOpportunityNotes('op-1')).rejects.toThrow('opportunity task is malformed');
+  });
+});
+
 describe('ParleyClient', () => {
   it('redeems and removes a bootstrap fragment before loading session', async () => {
     history.replaceState(null, '', '/#bootstrap=secret-1');

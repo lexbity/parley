@@ -364,3 +364,67 @@ slices:
       owner_role: owner
       package_target: rust
       evidence_path: contract/fixtures/s04/provider_unavailable/evidence.md
+  s05:
+    - requirement: APP-10
+      operationId: getBoard
+      test_id: s05_keyboard_board_list_card_order_and_archive
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: contract/fixtures/s05/board/evidence.md
+    - requirement: APP-10
+      operationId: createBoardList
+      test_id: s05_keyboard_board_list_card_order_and_archive
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: contract/fixtures/s05/board/evidence.md
+    - requirement: APP-10
+      operationId: reorderBoardLists
+      test_id: s05_list_reorder_requires_exact_set_and_revisions
+      fixture_id: board
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s05/board/evidence.md
+    - requirement: APP-10
+      operationId: renameBoardList
+      test_id: s05_keyboard_board_list_card_order_and_archive
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: contract/fixtures/s05/board/evidence.md
+    - requirement: APP-10
+      operationId: archiveBoardList
+      test_id: s05_board_placement_and_archive_are_atomic_and_independent
+      fixture_id: board
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s05/board/evidence.md
+    - requirement: B-FR-7
+      operationId: moveOpportunityPlacement
+      test_id: s05_board_placement_and_archive_are_atomic_and_independent
+      fixture_id: board
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s05/board/evidence.md
+    - requirement: BE-06
+      operationId: getOpportunityNotes
+      test_id: s05_notes_projection_and_task_toggle_preserve_unaddressed_bytes
+      fixture_id: board
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s05/board/evidence.md
+    - requirement: BE-06
+      operationId: updateOpportunityNotes
+      test_id: s05_notes_projection_and_task_toggle_preserve_unaddressed_bytes
+      fixture_id: board
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s05/board/evidence.md
+    - requirement: B-FR-7
+      operationId: toggleOpportunityTask
+      test_id: s05_notes_projection_and_task_toggle_preserve_unaddressed_bytes
+      fixture_id: board
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s05/board/evidence.md

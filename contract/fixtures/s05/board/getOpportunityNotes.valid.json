@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/OpportunityNotes","body":{"opportunity_id":"op-1","markdown":"- [ ] Review\n","revision":1,"next_task":"Review","tasks":[{"byte_start":0,"byte_end":14,"line_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","checked":false,"text":"Review"}]}}

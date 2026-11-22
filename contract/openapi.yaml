@@ -600,6 +600,11 @@ paths:
         '200':
           description: Updated explicit membership
   /opportunities/{id}/interests:
+    get:
+      operationId: listOpportunityInterests
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {in: query, name: recipient_id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}]
+      responses: {'200': {description: Current recipient-scoped interests and provenance}}
     post:
       operationId: addOpportunityInterest
       security:
@@ -612,6 +617,7 @@ paths:
           type: string
       - $ref: '#/components/parameters/MutationToken'
       - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -622,6 +628,11 @@ paths:
         '201':
           description: Recipient-scoped interest with stated knowledge type
   /opportunities/{id}/exchange:
+    get:
+      operationId: getOpportunityExchange
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {in: query, name: recipient_id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}]
+      responses: {'200': {description: Current immutable recipient exchange, linked interests and attestation state}}
     post:
       operationId: saveOpportunityExchange
       security:
@@ -634,6 +645,7 @@ paths:
           type: string
       - $ref: '#/components/parameters/MutationToken'
       - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -661,6 +673,7 @@ paths:
           type: string
       - $ref: '#/components/parameters/MutationToken'
       - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '200':
           description: Explicit attestation bound to the current exchange and interest
@@ -694,6 +707,69 @@ paths:
       parameters:
       - $ref: '#/components/parameters/MutationToken'
       - $ref: '#/components/parameters/Epoch'
+  /template-families:
+    get:
+      operationId: listTemplateFamilies
+      security: [{sessionCookie: []}]
+      responses: {'200': {description: Reusable template families and lineage}}
+    post:
+      operationId: createTemplateFamily
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false, required: [name], properties: {name: {type: string, minLength: 1, maxLength: 200}}}}}
+      responses: {'201': {description: New immutable template family}}
+  /voice-samples:
+    get:
+      operationId: listVoiceSamples
+      security: [{sessionCookie: []}]
+      responses: {'200': {description: Owner-curated voice examples with status}}
+    post:
+      operationId: createVoiceSample
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false, required: [text], properties: {text: {type: string, minLength: 1, maxLength: 12000}, channel: {type: [string, 'null']}}}}}
+      responses: {'201': {description: Curated sample saved}}
+  /voice-samples/{id}/retire:
+    post:
+      operationId: retireVoiceSample
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      responses: {'200': {description: Voice sample retired without deleting its history}}
+  /embedding-model:
+    get:
+      operationId: getEmbeddingModel
+      security: [{sessionCookie: []}]
+      responses: {'200': {description: Current local embedding model and digest-bound calibrations}}
+    put:
+      operationId: updateEmbeddingModel
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false, required: [model], properties: {model: {type: string, minLength: 1}}}}}
+      responses: {'200': {description: Local model selected; calibration invalidation is explicit}}
+  /matching/calibrations:
+    get:
+      operationId: listMatchingCalibrations
+      security: [{sessionCookie: []}]
+      responses: {'200': {description: Evaluated fixture thresholds for each current asset kind}}
+    post:
+      operationId: calibrateMatchingKind
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false, required: [asset_kind, fixture_id, samples], properties: {asset_kind: {type: string, enum: [gift, proof, artifact]}, fixture_id: {type: string}, samples: {type: array, minItems: 2, items: {type: object, additionalProperties: false, required: [score, relevant], properties: {score: {type: number, minimum: 0, maximum: 1}, relevant: {type: boolean}}}}}}
+      responses:
+        '403':
+          description: Client-supplied labels are not evaluation evidence; only the local versioned E-match evaluator can write trusted calibration.
+          content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
   /templates/{id}/approve:
     post:
       operationId: approveTemplate
@@ -928,6 +1004,508 @@ paths:
       parameters:
       - $ref: '#/components/parameters/MutationToken'
       - $ref: '#/components/parameters/Epoch'
+  /board:
+    get:
+      operationId: getBoard
+      security: [{sessionCookie: []}]
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Board lists and opportunity placements from one read snapshot.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BoardSnapshot'}
+  /board/lists:
+    post:
+      operationId: createBoardList
+      security: [{sessionCookie: []}]
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateBoardList'}
+      responses:
+        '201':
+          description: A custom list and its event commit atomically.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CreatedBoardList'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /board/lists/reorder:
+    post:
+      operationId: reorderBoardLists
+      security: [{sessionCookie: []}]
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReorderBoardLists'}
+      responses:
+        '200':
+          description: Exact active-list permutation committed atomically.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [lists]
+                properties:
+                  lists: {type: array, items: {$ref: '#/components/schemas/BoardList'}}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /board/lists/{list_id}:
+    patch:
+      operationId: renameBoardList
+      security: [{sessionCookie: []}]
+      parameters:
+      - {in: path, name: list_id, required: true, schema: {type: string}}
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RenameBoardList'}
+      responses:
+        '200':
+          description: Renamed list with its new revision.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [list]
+                properties:
+                  list: {$ref: '#/components/schemas/BoardList'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /board/lists/{list_id}/archive:
+    post:
+      operationId: archiveBoardList
+      security: [{sessionCookie: []}]
+      parameters:
+      - {in: path, name: list_id, required: true, schema: {type: string}}
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ArchiveBoardList'}
+      responses:
+        '200':
+          description: List archive and all placement moves commit atomically.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ArchivedBoardList'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /opportunities/{id}/placement:
+    post:
+      operationId: moveOpportunityPlacement
+      security: [{sessionCookie: []}]
+      parameters:
+      - {in: path, name: id, required: true, schema: {type: string}}
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MoveOpportunityPlacement'}
+      responses:
+        '200':
+          description: Card placement moved with no opportunity policy or contact-state change.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OpportunityPlacement'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /opportunities/{id}/notes:
+    get:
+      operationId: getOpportunityNotes
+      security: [{sessionCookie: []}]
+      parameters:
+      - {in: path, name: id, required: true, schema: {type: string}}
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Canonical Markdown and its independently versioned task projection.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OpportunityNotes'}
+        '404': {$ref: '#/components/responses/Error'}
+    patch:
+      operationId: updateOpportunityNotes
+      security: [{sessionCookie: []}]
+      parameters:
+      - {in: path, name: id, required: true, schema: {type: string}}
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateOpportunityNotes'}
+      responses:
+        '200':
+          description: Markdown saved with new note revision.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OpportunityNotes'}
+        '409': {$ref: '#/components/responses/Error'}
+  /opportunities/{id}/notes/tasks/toggle:
+    post:
+      operationId: toggleOpportunityTask
+      security: [{sessionCookie: []}]
+      parameters:
+      - {in: path, name: id, required: true, schema: {type: string}}
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ToggleOpportunityTask'}
+      responses:
+        '200':
+          description: Only the addressed checkbox marker changes.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OpportunityNotes'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /agent/chats:
+    get:
+      operationId: listAgentChats
+      security: [{sessionCookie: []}]
+      parameters:
+        - {in: query, name: role, required: false, schema: {type: string, enum: [interviewer, briefer]}}
+        - {in: query, name: scope_kind, required: false, schema: {type: string, enum: [owner, party, segment]}}
+        - {in: query, name: scope_id, required: false, schema: {type: string}}
+      responses: {'200': {description: Persistent scoped chat history}}
+    post:
+      operationId: createAgentChat
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateAgentChat'}
+      responses:
+        '201':
+          description: Scoped conversation created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AgentChat'}
+  /agent/chats/{id}:
+    get:
+      operationId: getAgentChat
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}]
+      responses:
+        '200':
+          description: Scoped transcript and review state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AgentChat'}
+  /agent/chats/{id}/turns:
+    post:
+      operationId: addAgentTurn
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [text]
+              properties: {text: {type: string, minLength: 1, maxLength: 16000}}
+      responses: {'202': {description: Owner turn committed and bounded role job queued}}
+  /agent/chats/{id}/questions:
+    post:
+      operationId: setInterviewerQuestionState
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [question_id, action]
+              properties:
+                question_id: {type: string}
+                action: {type: string, enum: [ask, skip, defer, unknown]}
+      responses: {'200': {description: Question disposition recorded}}
+  /agent/candidates/{id}/confirm:
+    post:
+      operationId: confirmInterviewerCandidate
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [title, fields, expected_chat_revision]
+              properties:
+                title: {type: string}
+                fields: {type: object}
+                expected_chat_revision: {type: integer, minimum: 1}
+      responses: {'201': {description: Owner confirmed resource candidate}}
+  /agent/candidates/{id}/dismiss:
+    post:
+      operationId: dismissInterviewerCandidate
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      responses: {'200': {description: Candidate dismissed}}
+  /agent/question-bank:
+    get:
+      operationId: getInterviewerQuestionBank
+      security: [{sessionCookie: []}]
+      responses: {'200': {description: Active immutable Interviewer question bank}}
+    put:
+      operationId: updateInterviewerQuestionBank
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expected_version_id, content]
+              properties: {expected_version_id: {type: string}, content: {type: object}}
+      responses: {'200': {description: New active question bank version}}
+  /agent/prompts/{role}:
+    get:
+      operationId: getAgentPrompt
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: role, required: true, schema: {type: string, enum: [interviewer, briefer]}}]
+      responses: {'200': {description: Active immutable role prompt}}
+    put:
+      operationId: updateAgentPrompt
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: role, required: true, schema: {type: string, enum: [interviewer, briefer]}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expected_version_id, content]
+              properties: {expected_version_id: {type: string}, content: {type: string, minLength: 1}}
+      responses: {'200': {description: New active prompt version}}
+  /fluency:
+    get:
+      operationId: listVocabularyFluency
+      security: [{sessionCookie: []}]
+      responses:
+        '200':
+          description: Owner vocabulary fluency states
+          content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/FluencyItem'}}}}
+  /fluency/{term}:
+    put:
+      operationId: updateVocabularyFluency
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: term, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [status, expected_revision]
+              properties: {status: {type: string, enum: [unknown, learning, fluent]}, expected_revision: {type: integer, minimum: 1}}
+      responses: {'200': {description: Versioned owner fluency state}}
+  /segments:
+    get:
+      operationId: listSegments
+      security: [{sessionCookie: []}]
+      responses: {'200': {description: Owner segments}}
+    post:
+      operationId: createSegment
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties: {name: {type: string, minLength: 1, maxLength: 200}, description: {type: [string, 'null'], maxLength: 4000}}
+      responses: {'201': {description: Segment created}}
+  /segments/{id}/parties:
+    post:
+      operationId: updateSegmentParty
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [party_id, action]
+              properties: {party_id: {type: string}, action: {type: string, enum: [add, remove]}}
+      responses: {'200': {description: Segment membership updated}}
+  /briefs/{scope_kind}/{scope_id}/items:
+    get:
+      operationId: listBriefItems
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: scope_kind, required: true, schema: {type: string, enum: [party, segment]}}, {in: path, name: scope_id, required: true, schema: {type: string}}]
+      responses:
+        '200':
+          description: Attributed brief items scoped to a party or segment
+          content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/BriefItem'}}}}
+    post:
+      operationId: generateBriefItems
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: scope_kind, required: true, schema: {type: string, enum: [party, segment]}}, {in: path, name: scope_id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false}}}
+      responses: {'202': {description: Durable Briefer job queued}}
+  /brief-items/{id}/decision:
+    post:
+      operationId: decideBriefItem
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision, expected_revision]
+              properties: {decision: {type: string, enum: [confirm, correct, dismiss]}, corrected_text: {type: string}, expected_revision: {type: integer, minimum: 1}}
+      responses: {'200': {description: Owner decision stored with attributable revision}}
+  /opportunities/{id}/matches:
+    post:
+      operationId: startOpportunityMatch
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false, required: [recipient_id], properties: {recipient_id: {type: string}}}}}
+      responses: {'202': {description: Deterministic exact matcher run queued}}
+    get:
+      operationId: getOpportunityMatch
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {in: query, name: recipient_id, required: true, schema: {type: string}}]
+      responses: {'200': {description: Persisted current shortlist with calibrated thresholds}}
+  /templates/build:
+    post:
+      operationId: buildTemplates
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [stage_class, rungs, rules, channel, max_chars]
+              properties:
+                segment_id: {type: [string, 'null']}
+                stage_class: {type: string}
+                rungs: {type: array, items: {type: integer, minimum: 1, maximum: 5}}
+                rules: {type: array, items: {type: string, enum: [R1, R2, R3, R4, R5, R6, R7]}}
+                channel: {type: string}
+                max_chars: {type: integer, minimum: 1}
+                voice_sample_ids: {type: array, items: {type: string}}
+      responses: {'202': {description: Validated Template Builder job queued}}
+  /templates/{family_id}/versions:
+    post:
+      operationId: createTemplateVersion
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: family_id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, body, stage_class, channel, sentence_rules]
+              properties:
+                name: {type: string}
+                body: {type: string}
+                proof_fallback: {type: [string, 'null']}
+                stage_class: {type: string}
+                channel: {type: string}
+                sentence_rules: {type: array, items: {type: array, items: {type: string}}}
+                parent_version_id: {type: [string, 'null']}
+      responses: {'201': {description: Immutable draft template version}}
+  /opportunities/{id}/materials/compose:
+    post:
+      operationId: composeOpportunityMaterial
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [recipient_id, kind, template_version_id, exchange_version, slot_fills]
+              properties:
+                recipient_id: {type: string}
+                kind: {type: string, enum: [outreach, followup, handoff]}
+                template_version_id: {type: string}
+                exchange_version: {type: integer, minimum: 1}
+                slot_fills: {type: array, items: {$ref: '#/components/schemas/SlotFill'}}
+                selected_match_ids: {type: array, items: {type: string}}
+      responses: {'202': {description: Owner-review-only composition job queued}}
+  /opportunities/{id}/materials/compose/{job_id}/save:
+    post:
+      operationId: saveComposerProposal
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {in: path, name: job_id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false, required: [body], properties: {body: {type: string, minLength: 1, maxLength: 20000}}}}}
+      responses: {'201': {description: Staged immutable material draft; unapproved and unreleased}}
+  /materials/{id}/lint:
+    post:
+      operationId: lintMaterial
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false, required: [version, content_sha256], properties: {version: {type: integer, minimum: 1}, content_sha256: {type: string, pattern: '^[a-f0-9]{64}$'}}}}}
+      responses: {'202': {description: Deterministic findings persisted and advisory lint queued}}
 components:
   securitySchemes:
     sessionCookie:
@@ -1607,6 +2185,202 @@ components:
       properties:
         succeeded:
           type: boolean
+      additionalProperties: false
+    CreateAgentChat:
+      type: object
+      required: [role, scope_kind]
+      properties:
+        role: {type: string, enum: [interviewer, briefer]}
+        scope_kind: {type: string, enum: [owner, party, segment]}
+        scope_id: {type: [string, 'null']}
+        asset_kind: {type: [string, 'null'], enum: [gift, proof, artifact, null]}
+      additionalProperties: false
+    AgentChat:
+      type: object
+      required: [id, role, scope_kind, scope_id, asset_kind, revision, active_job_id, turns, questions, candidates]
+      properties:
+        id: {type: string}
+        role: {type: string, enum: [interviewer, briefer]}
+        scope_kind: {type: string, enum: [owner, party, segment]}
+        scope_id: {type: [string, 'null']}
+        asset_kind: {type: [string, 'null'], enum: [gift, proof, artifact, null]}
+        revision: {type: integer, minimum: 1}
+        active_job_id: {type: [string, 'null']}
+        turns: {type: array, items: {type: object, required: [id, turn_no, speaker, text, job_id, created_at], properties: {id: {type: string}, turn_no: {type: integer}, speaker: {type: string, enum: [owner, agent]}, text: {type: string}, job_id: {type: [string, 'null']}, created_at: {type: string, format: date-time}}, additionalProperties: false}}
+        questions: {type: array, items: {type: object, required: [question_id, state], properties: {question_id: {type: string}, state: {type: string, enum: [asked, skipped, deferred, unknown, answered]}}, additionalProperties: false}}
+        candidates: {type: array, items: {type: object, required: [id, asset_kind, fields, owner_quotes, missing_fields, state, resource_id], properties: {id: {type: string}, asset_kind: {type: string}, fields: {type: object}, owner_quotes: {type: object}, missing_fields: {type: array, items: {type: string}}, state: {type: string, enum: [proposed, saved, dismissed]}, resource_id: {type: [string, 'null']}}, additionalProperties: false}}
+      additionalProperties: false
+    BriefItem:
+      type: object
+      required: [id, scope_kind, scope_id, kind, text, detail, tier, quote, check_suggestion, speaker_kind, status, revision, supersedes_id]
+      properties:
+        id: {type: string}
+        scope_kind: {type: string, enum: [party, segment]}
+        scope_id: {type: string}
+        kind: {type: string, enum: [jargon, norm, value, landmine, stakeholder, interest_hypothesis]}
+        text: {type: string}
+        detail: {type: object}
+        tier: {type: integer, enum: [1, 2, 3]}
+        quote: {type: [string, 'null']}
+        check_suggestion: {type: [string, 'null']}
+        speaker_kind: {type: string, enum: [owner, party, unknown, model_prior]}
+        status: {type: string, enum: [proposed, confirmed, corrected, dismissed]}
+        revision: {type: integer, minimum: 1}
+        supersedes_id: {type: [string, 'null']}
+      additionalProperties: false
+    FluencyItem:
+      type: object
+      required: [term, status, revision]
+      properties:
+        term: {type: string}
+        status: {type: string, enum: [unknown, learning, fluent]}
+        revision: {type: integer, minimum: 1}
+      additionalProperties: false
+    BoardList:
+      type: object
+      required: [id, title, position, archived, revision]
+      properties:
+        id: {type: string}
+        title: {type: string, minLength: 1, maxLength: 120}
+        position: {type: integer}
+        archived: {type: boolean}
+        revision: {type: integer, minimum: 1}
+      additionalProperties: false
+    BoardPlacement:
+      type: object
+      required: [opportunity_id, list_id, position, revision, next_task]
+      properties:
+        opportunity_id: {type: string}
+        list_id: {type: string}
+        position: {type: integer}
+        revision: {type: integer, minimum: 1}
+        next_task: {type: string, nullable: true}
+      additionalProperties: false
+    BoardCard:
+      type: object
+      required: [opportunity, placement]
+      properties:
+        opportunity: {$ref: '#/components/schemas/Opportunity'}
+        placement: {$ref: '#/components/schemas/BoardPlacement'}
+      additionalProperties: false
+    BoardSnapshot:
+      type: object
+      required: [lists, cards]
+      properties:
+        lists: {type: array, items: {$ref: '#/components/schemas/BoardList'}}
+        cards: {type: array, items: {$ref: '#/components/schemas/BoardCard'}}
+      additionalProperties: false
+    CreateBoardList:
+      type: object
+      required: [title]
+      properties:
+        title: {type: string, minLength: 1, maxLength: 120}
+        before_list_id: {type: [string, 'null']}
+      additionalProperties: false
+    CreatedBoardList:
+      type: object
+      required: [list, board_revision]
+      properties:
+        list: {$ref: '#/components/schemas/BoardList'}
+        board_revision: {type: integer, minimum: 1}
+      additionalProperties: false
+    ReorderBoardLists:
+      type: object
+      required: [ordered_ids, expected_revisions]
+      properties:
+        ordered_ids: {type: array, minItems: 1, items: {type: string}, uniqueItems: true}
+        expected_revisions: {type: object, additionalProperties: {type: integer, minimum: 1}}
+      additionalProperties: false
+    RenameBoardList:
+      type: object
+      required: [title, expected_revision]
+      properties:
+        title: {type: string, minLength: 1, maxLength: 120}
+        expected_revision: {type: integer, minimum: 1}
+      additionalProperties: false
+    ArchiveBoardList:
+      type: object
+      required: [destination_list_id, expected_list_revision, expected_destination_revision]
+      properties:
+        destination_list_id: {type: string}
+        expected_list_revision: {type: integer, minimum: 1}
+        expected_destination_revision: {type: integer, minimum: 1}
+      additionalProperties: false
+    ArchivedBoardList:
+      type: object
+      required: [archived_list, destination_list, moved]
+      properties:
+        archived_list: {$ref: '#/components/schemas/BoardList'}
+        destination_list: {$ref: '#/components/schemas/BoardList'}
+        moved:
+          type: array
+          items:
+            type: object
+            required: [opportunity_id, position, placement_revision]
+            properties:
+              opportunity_id: {type: string}
+              position: {type: integer}
+              placement_revision: {type: integer, minimum: 1}
+            additionalProperties: false
+      additionalProperties: false
+    MoveOpportunityPlacement:
+      type: object
+      required: [list_id, expected_source_list_revision, expected_list_revision, expected_placement_revision]
+      properties:
+        list_id: {type: string}
+        before_opportunity_id: {type: string, nullable: true}
+        expected_source_list_revision: {type: integer, minimum: 1}
+        expected_list_revision: {type: integer, minimum: 1}
+        expected_placement_revision: {type: integer, minimum: 1}
+      additionalProperties: false
+    OpportunityPlacement:
+      type: object
+      required: [opportunity_id, list_id, position, placement_revision, source_list_revision, destination_list_revision]
+      properties:
+        opportunity_id: {type: string}
+        list_id: {type: string}
+        position: {type: integer}
+        placement_revision: {type: integer, minimum: 1}
+        source_list_revision: {type: integer, minimum: 1}
+        destination_list_revision: {type: integer, minimum: 1}
+      additionalProperties: false
+    OpportunityNotes:
+      type: object
+      required: [opportunity_id, markdown, revision, next_task, tasks]
+      properties:
+        opportunity_id: {type: string}
+        markdown: {type: string}
+        revision: {type: integer, minimum: 1}
+        next_task: {type: string, nullable: true}
+        tasks:
+          type: array
+          items:
+            type: object
+            required: [byte_start, byte_end, line_sha256, checked, text]
+            properties:
+              byte_start: {type: integer, minimum: 0}
+              byte_end: {type: integer, minimum: 0}
+              line_sha256: {type: string, pattern: '^[a-f0-9]{64}$'}
+              checked: {type: boolean}
+              text: {type: string}
+            additionalProperties: false
+      additionalProperties: false
+    UpdateOpportunityNotes:
+      type: object
+      required: [markdown, expected_revision]
+      properties:
+        markdown: {type: string, maxLength: 1000000}
+        expected_revision: {type: integer, minimum: 1}
+      additionalProperties: false
+    ToggleOpportunityTask:
+      type: object
+      required: [notes_revision, byte_start, byte_end, line_sha256, checked]
+      properties:
+        notes_revision: {type: integer, minimum: 1}
+        byte_start: {type: integer, minimum: 0}
+        byte_end: {type: integer, minimum: 0}
+        line_sha256: {type: string, pattern: '^[a-f0-9]{64}$'}
+        checked: {type: boolean}
       additionalProperties: false
     Opportunity:
       type: object

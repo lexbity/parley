@@ -61,9 +61,28 @@ export function createMockApi(): MockApi {
   const sourceGroups = new Map<string, { id: string; variants: Map<string, string> }>();
   const captures: SavedSource[] = [];
   const extractorJobs = new Map<string, RecordData>();
+  const roleJobs = new Map<string, RecordData>();
+  const agentChats = new Map<string, RecordData>();
+  const briefItems = new Map<string, RecordData[]>();
+  const segments = new Map<string, RecordData>();
+  const segmentMembers = new Map<string, Set<string>>();
+  const fluency = new Map<string, { term: string; status: 'unknown' | 'learning' | 'fluent'; revision: number }>();
+  const writingInterests = new Map<string, RecordData[]>();
+  const writingExchanges = new Map<string, RecordData[]>();
+  const templateFamilies: Array<{ id: string; name: string }> = [];
+  const writingTemplates: RecordData[] = [];
+  const voiceSamples: RecordData[] = [];
+  let embeddingModel = '';
+  const questionBank = { version_id: 'question-bank-v1', content: { version: 1, questions: { proof: [{ id: 'result', text: 'What changed, and how did you measure the result?' }], gift: [{ id: 'offer', text: 'What useful thing could you offer?' }], artifact: [{ id: 'artifact', text: 'What have you made?' }] } } };
+  const prompts = new Map<string, RecordData>([['interviewer', { role: 'interviewer', version_id: 'interviewer-v1', version: 1, content: 'Bundled Interviewer policy', sha256: 'a'.repeat(64) }], ['briefer', { role: 'briefer', version_id: 'briefer-v1', version: 1, content: 'Bundled Briefer policy', sha256: 'b'.repeat(64) }]]);
   const jobsByOccurrence = new Map<string, string>();
   const opportunities = new Map<string, RecordData>();
   const outputs = new Map<string, RecordData>();
+  const boardLists: Array<{ id: string; title: string; position: number; archived: boolean; revision: number }> = [
+    { id: 'list-default', title: 'Inbox', position: 0, archived: false, revision: 1 },
+  ];
+  const placements = new Map<string, { list_id: string; position: number; placement_revision: number }>();
+  const notesByOpportunity = new Map<string, { markdown: string; revision: number }>();
   let provider = { endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' };
   const receipts = new Map<string, { digest: string; result: RecordData }>();
   const events: EventRecord[] = [];
@@ -73,6 +92,53 @@ export function createMockApi(): MockApi {
   const pushEvent = (event: Omit<EventRecord, 'cursor'>) => {
     events.push({ ...event, cursor: String(events.length + 1) });
   };
+
+  function tasks(markdown: string) {
+    const bytes = new TextEncoder().encode(markdown);
+    const decoder = new TextDecoder();
+    const text = decoder.decode(bytes);
+    const lines = text.split('\n');
+    const found: Array<{ byte_start: number; byte_end: number; line_sha256: string; checked: boolean; text: string }> = [];
+    let byteOffset = 0;
+    let fence: string | null = null;
+    for (const line of lines) {
+      const fenceMatch = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+      if (fenceMatch) {
+        const marker = fenceMatch[1]![0]!;
+        fence = fence === null ? marker : fence === marker ? null : fence;
+      } else if (fence === null && !/^\s*>/.test(line) && !/^(?: {4}|\t)/.test(line)) {
+        const match = /^(\s*(?:[-*+]|\d+[.)])\s+)\[([ xX])\]\s+(.*)$/.exec(line);
+        if (match) {
+          found.push({
+            byte_start: byteOffset,
+            byte_end: byteOffset + Buffer.byteLength(line, 'utf8'),
+            line_sha256: createHash('sha256').update(line).digest('hex'),
+            checked: match[2]!.toLowerCase() === 'x',
+            text: match[3]!,
+          });
+        }
+      }
+      byteOffset += Buffer.byteLength(line, 'utf8') + 1;
+    }
+    return found;
+  }
+
+  function boardSnapshot() {
+    return {
+      lists: boardLists.slice().sort((a, b) => a.position - b.position || a.id.localeCompare(b.id)),
+      cards: [...opportunities.values()].map((opportunity) => {
+        const placement = placements.get(String(opportunity.id))!;
+        const note = notesByOpportunity.get(String(opportunity.id)) ?? { markdown: '', revision: 1 };
+        const nextTask = tasks(note.markdown).find((task) => !task.checked)?.text ?? null;
+        return { opportunity, placement: { opportunity_id: opportunity.id, list_id: placement.list_id, position: placement.position, revision: placement.placement_revision, next_task: nextTask } };
+      }).sort((a, b) => a.placement.list_id.localeCompare(b.placement.list_id) || a.placement.position - b.placement.position || String(a.opportunity.id).localeCompare(String(b.opportunity.id))),
+    };
+  }
+
+  function notesRecord(id: string) {
+    const notes = notesByOpportunity.get(id) ?? { markdown: '', revision: 1 };
+    return { opportunity_id: id, markdown: notes.markdown, revision: notes.revision, next_task: tasks(notes.markdown).find((task) => !task.checked)?.text ?? null, tasks: tasks(notes.markdown) };
+  }
 
   function json(response: ServerResponse, status: number, body: unknown) {
     response.writeHead(status, {
@@ -154,6 +220,132 @@ export function createMockApi(): MockApi {
     }
     if (!authorize(request)) {
       return fail(response, cookie ? 403 : 401, cookie ? 'TOKEN_INVALID' : 'SESSION_REQUIRED', 'Sign in to the local workspace');
+    }
+
+    if (url.pathname === '/api/v1/template-families' && request.method === 'GET') return json(response, 200, { items: templateFamilies });
+    if (url.pathname === '/api/v1/template-families' && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const family = { id: randomHex(), name: String(input.name) }; templateFamilies.push(family); return json(response, 201, family);
+    }
+    if (url.pathname === '/api/v1/templates' && request.method === 'GET') return json(response, 200, writingTemplates);
+    const templateVersionMatch = /^\/api\/v1\/templates\/([^/]+)\/versions$/.exec(url.pathname);
+    if (templateVersionMatch && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const template = { id: randomHex(), family_id: templateVersionMatch[1], version: 1, status: 'draft', ...input, parent_version_id: input.parent_version_id ?? null }; writingTemplates.unshift(template); return json(response, 201, template);
+    }
+    const templateTransition = /^\/api\/v1\/templates\/([^/]+)\/(approve|activate)$/.exec(url.pathname);
+    if (templateTransition && request.method === 'POST') { const template = writingTemplates.find((item) => item.id === templateTransition[1]); if (!template) return fail(response, 404, 'TEMPLATE_NOT_FOUND', 'Template does not exist'); template.status = templateTransition[2] === 'approve' ? 'approved' : 'active'; response.writeHead(204); response.end(); return; }
+    if (url.pathname === '/api/v1/embedding-model' && request.method === 'GET') return json(response, 200, { model: embeddingModel, model_digest: null, calibrated_kinds: [] });
+    if (url.pathname === '/api/v1/embedding-model' && request.method === 'PUT') { let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); } embeddingModel = String(input.model); return json(response, 200, { model: embeddingModel, model_digest: null, calibration_required: true }); }
+    if (url.pathname === '/api/v1/voice-samples' && request.method === 'GET') return json(response, 200, { items: voiceSamples });
+    if (url.pathname === '/api/v1/voice-samples' && request.method === 'POST') { let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); } const sample = { id: randomHex(), ...input, revision: 1, status: 'active' }; voiceSamples.push(sample); return json(response, 201, sample); }
+    const voiceRetire = /^\/api\/v1\/voice-samples\/([^/]+)\/retire$/.exec(url.pathname);
+    if (voiceRetire && request.method === 'POST') { const sample = voiceSamples.find((item) => item.id === voiceRetire[1]); if (!sample) return fail(response, 404, 'VOICE_SAMPLE_NOT_FOUND', 'Voice sample does not exist'); sample.status = 'retired'; return json(response, 200, { id: sample.id, status: 'retired', revision: 2 }); }
+    if (url.pathname === '/api/v1/matching/calibrations' && request.method === 'GET') return json(response, 200, { model: embeddingModel, model_digest: null, scoring_config_digest: null, calibrations: [] });
+    const writingInterestsMatch = /^\/api\/v1\/opportunities\/([^/]+)\/interests$/.exec(url.pathname);
+    if (writingInterestsMatch && request.method === 'GET') return json(response, 200, { opportunity_id: writingInterestsMatch[1], recipient_id: url.searchParams.get('recipient_id'), items: writingInterests.get(`${writingInterestsMatch[1]}:${url.searchParams.get('recipient_id')}`) ?? [] });
+    if (writingInterestsMatch && request.method === 'POST') { let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); } const key = `${writingInterestsMatch[1]}:${String(input.recipient_id)}`; const item = { id: randomHex(), revision: 1, status: 'active', ...input, check_suggestion: input.check_suggestion ?? null, claim_id: null, claim_revision: null }; writingInterests.set(key, [...(writingInterests.get(key) ?? []), item]); return json(response, 201, item); }
+    const writingExchangeMatch = /^\/api\/v1\/opportunities\/([^/]+)\/exchange(?:\/([^/]+)\/attest)?$/.exec(url.pathname);
+    if (writingExchangeMatch && request.method === 'GET') { const versions = writingExchanges.get(`${writingExchangeMatch[1]}:${url.searchParams.get('recipient_id')}`) ?? []; return json(response, 200, { opportunity_id: writingExchangeMatch[1], recipient_id: url.searchParams.get('recipient_id'), current: versions.at(-1) ?? null, versions }); }
+    if (writingExchangeMatch && url.pathname.endsWith('/attest') && request.method === 'POST') { const recipient = writingExchangeMatch[2]!; const versions = writingExchanges.get(`${writingExchangeMatch[1]}:${recipient}`) ?? []; const current = versions.at(-1); if (!current) return fail(response, 404, 'EXCHANGE_MISSING', 'Exchange does not exist'); current.fairness_attested = true; return json(response, 200, { version: current.version, fairness_attested: true }); }
+    if (writingExchangeMatch && request.method === 'POST') { let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); } const key = `${writingExchangeMatch[1]}:${String(input.recipient_id)}`; const versions = writingExchanges.get(key) ?? []; const version = { version: versions.length + 1, they_get: input.they_get, i_get: input.i_get, fairness_attested: false, interest_ids: input.interest_ids, interests: [], attestation_digest: null, attested_at: null }; versions.push(version); writingExchanges.set(key, versions); return json(response, 201, version); }
+    const writingMatch = /^\/api\/v1\/opportunities\/([^/]+)\/matches$/.exec(url.pathname);
+    if (writingMatch && request.method === 'POST') return fail(response, 503, 'EMBED_MODEL_UNAVAILABLE', 'No local embedding provider is available. Manual resource selection remains available.');
+    if (writingMatch && request.method === 'GET') return fail(response, 404, 'MATCH_NOT_FOUND', 'No completed match exists for this opportunity and recipient.');
+    if (/^\/api\/v1\/templates\/build$/.test(url.pathname) && request.method === 'POST') return fail(response, 503, 'MODEL_UNAVAILABLE', 'Template Builder is unavailable; create a manual template version.');
+    if (/^\/api\/v1\/opportunities\/[^/]+\/materials\/compose$/.test(url.pathname) && request.method === 'POST') return fail(response, 503, 'MODEL_UNAVAILABLE', 'Composer is unavailable; save an owner-authored draft.');
+
+    if (url.pathname === '/api/v1/agent/question-bank' && request.method === 'GET') return json(response, 200, questionBank);
+    if (url.pathname === '/api/v1/agent/question-bank' && request.method === 'PUT') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      if (input.expected_version_id !== questionBank.version_id || !input.content || typeof input.content !== 'object') return fail(response, 409, 'QUESTION_BANK_STALE', 'Reload the active bank before editing');
+      questionBank.version_id = randomHex(); questionBank.content = input.content as typeof questionBank.content; return json(response, 200, { version_id: questionBank.version_id, sha256: 'c'.repeat(64) });
+    }
+    const promptMatch = /^\/api\/v1\/agent\/prompts\/(interviewer|briefer)$/.exec(url.pathname);
+    if (promptMatch && request.method === 'GET') return json(response, 200, prompts.get(promptMatch[1]!)!);
+    if (promptMatch && request.method === 'PUT') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const current = prompts.get(promptMatch[1]!)!; if (input.expected_version_id !== current.version_id) return fail(response, 409, 'PROMPT_STALE', 'Reload the active prompt before editing');
+      const next = { ...current, version: Number(current.version) + 1, version_id: randomHex(), content: String(input.content), sha256: 'd'.repeat(64) }; prompts.set(promptMatch[1]!, next); return json(response, 200, next);
+    }
+    if (url.pathname === '/api/v1/agent/chats' && request.method === 'GET') {
+      const role = url.searchParams.get('role'); const scopeKind = url.searchParams.get('scope_kind'); const scopeId = url.searchParams.get('scope_id');
+      return json(response, 200, [...agentChats.values()].filter((chat) => (!role || chat.role === role) && (!scopeKind || chat.scope_kind === scopeKind) && (!scopeId || chat.scope_id === scopeId)).map((chat) => ({ id: chat.id, role: chat.role, scope_kind: chat.scope_kind, scope_id: chat.scope_id, asset_kind: chat.asset_kind, revision: chat.revision, last_turn: (chat.turns as RecordData[]).at(-1)?.text ?? null, updated_at: now(), active_job_id: chat.active_job_id })));
+    }
+    if (url.pathname === '/api/v1/agent/chats' && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const id = randomHex(); const chat = { id, role: input.role, scope_kind: input.scope_kind, scope_id: input.scope_id ?? null, asset_kind: input.asset_kind ?? null, revision: 1, active_job_id: null, turns: [], questions: [], candidates: [] };
+      agentChats.set(id, chat); return json(response, 201, chat);
+    }
+    if (url.pathname === '/api/v1/segments' && request.method === 'GET') return json(response, 200, [...segments.values()].sort((a, b) => String(a.name).localeCompare(String(b.name))));
+    if (url.pathname === '/api/v1/segments' && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      if (typeof input.name !== 'string' || !input.name.trim()) return fail(response, 422, 'SEGMENT_INVALID', 'Segment needs a name');
+      const segment = { id: randomHex(), name: input.name.trim(), description: typeof input.description === 'string' ? input.description : null, revision: 1 }; segments.set(segment.id, segment); segmentMembers.set(segment.id, new Set()); return json(response, 201, segment);
+    }
+    const segmentMember = /^\/api\/v1\/segments\/([^/]+)\/parties$/.exec(url.pathname);
+    if (segmentMember && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const members = segmentMembers.get(segmentMember[1]!); if (!members || !directory.has(String(input.party_id))) return fail(response, 404, 'SEGMENT_OR_PARTY_NOT_FOUND', 'Segment or party does not exist');
+      if (input.action === 'add') members.add(String(input.party_id)); else if (input.action === 'remove') members.delete(String(input.party_id)); else return fail(response, 422, 'SEGMENT_ACTION_INVALID', 'Action must be add or remove');
+      return json(response, 200, { segment_id: segmentMember[1], party_id: input.party_id, action: input.action });
+    }
+    if (url.pathname === '/api/v1/fluency' && request.method === 'GET') return json(response, 200, [...fluency.values()].sort((a, b) => a.term.localeCompare(b.term)));
+    const fluencyMatch = /^\/api\/v1\/fluency\/([^/]+)$/.exec(url.pathname);
+    if (fluencyMatch && request.method === 'PUT') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      if (!['unknown', 'learning', 'fluent'].includes(String(input.status))) return fail(response, 422, 'FLUENCY_INVALID', 'Unknown fluency state');
+      const term = decodeURIComponent(fluencyMatch[1]!); const old = fluency.get(term);
+      if (old && input.expected_revision !== old.revision) return fail(response, 409, 'FLUENCY_STALE', 'Vocabulary fluency changed');
+      const updated = { term, status: input.status as 'unknown' | 'learning' | 'fluent', revision: (old?.revision ?? 0) + 1 }; fluency.set(term, updated); return json(response, 200, updated);
+    }
+    const chatPath = /^\/api\/v1\/agent\/chats\/([^/]+)(?:\/(turns|questions))?$/.exec(url.pathname);
+    if (chatPath) {
+      const chat = agentChats.get(chatPath[1]!); if (!chat) return fail(response, 404, 'CHAT_NOT_FOUND', 'Chat does not exist');
+      if (!chatPath[2] && request.method === 'GET') return json(response, 200, chat);
+      if (chatPath[2] === 'questions' && request.method === 'POST') {
+        let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+        const state = { question_id: String(input.question_id), state: input.action === 'ask' ? 'asked' : input.action === 'skip' ? 'skipped' : input.action === 'defer' ? 'deferred' : 'unknown' };
+        const questions = chat.questions as RecordData[]; const index = questions.findIndex((item) => item.question_id === state.question_id); if (index < 0) questions.push(state); else questions[index] = state;
+        if (input.action === 'ask') {
+          const assetKind = chat.asset_kind as 'proof' | 'gift' | 'artifact';
+          (chat.turns as RecordData[]).push({ id: randomHex(), turn_no: (chat.turns as RecordData[]).length + 1, speaker: 'agent', text: questionBank.content.questions[assetKind]?.find((item) => item.id === input.question_id)?.text ?? 'What would you like to share?', job_id: null, created_at: now() });
+        }
+        chat.revision = Number(chat.revision) + 1; return json(response, 200, { chat_id: chat.id, ...state, revision: chat.revision });
+      }
+      if (chatPath[2] === 'turns' && request.method === 'POST') {
+        let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+        const turns = chat.turns as RecordData[]; turns.push({ id: randomHex(), turn_no: turns.length + 1, speaker: 'owner', text: String(input.text), job_id: null, created_at: now() });
+        const jobId = randomHex(); const interviewer = chat.role === 'interviewer'; const candidateId = randomHex();
+        turns.push({ id: randomHex(), turn_no: turns.length + 1, speaker: 'agent', text: interviewer ? 'What context and time period should I record?' : 'I will review only this scoped material. What should we clarify?', job_id: jobId, created_at: now() });
+        if (interviewer) (chat.candidates as RecordData[]).push({ id: candidateId, asset_kind: chat.asset_kind, fields: {}, owner_quotes: {}, missing_fields: ['what'], state: 'proposed', resource_id: null });
+        chat.revision = Number(chat.revision) + 1; chat.active_job_id = jobId; roleJobs.set(jobId, { id: jobId, role: interviewer ? 'interviewer' : 'briefer', status: 'succeeded', result: interviewer ? { candidate_id: candidateId } : { response: 'I will review only this scoped material.' }, last_error: null });
+        return json(response, 202, { chat_id: chat.id, turn_id: turns.at(-2)!.id, job_id: jobId, revision: chat.revision });
+      }
+    }
+    const candidateMatch = /^\/api\/v1\/agent\/candidates\/([^/]+)\/(confirm|dismiss)$/.exec(url.pathname);
+    if (candidateMatch && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      for (const chat of agentChats.values()) {
+        const candidate = (chat.candidates as RecordData[]).find((item) => item.id === candidateMatch[1]);
+        if (candidate) { if (candidateMatch[2] === 'confirm') { candidate.state = 'saved'; candidate.resource_id = randomHex(); candidate.fields = input.fields; } else candidate.state = 'dismissed'; return json(response, candidateMatch[2] === 'confirm' ? 201 : 200, { candidate_id: candidate.id, state: candidate.state, resource_id: candidate.resource_id }); }
+      }
+      return fail(response, 404, 'CANDIDATE_NOT_FOUND', 'Candidate does not exist');
+    }
+    if (url.pathname === '/api/v1/jobs' && request.method === 'GET') return json(response, 200, []);
+    const roleJobMatch = /^\/api\/v1\/jobs\/([^/]+)$/.exec(url.pathname);
+    if (roleJobMatch && request.method === 'GET' && roleJobs.has(roleJobMatch[1]!)) return json(response, 200, roleJobs.get(roleJobMatch[1]!)!);
+    const briefMatch = /^\/api\/v1\/briefs\/(party|segment)\/([^/]+)\/items$/.exec(url.pathname);
+    if (briefMatch && request.method === 'GET') return json(response, 200, briefItems.get(`${briefMatch[1]}:${briefMatch[2]}`) ?? []);
+    if (briefMatch && request.method === 'POST') {
+      const key = `${briefMatch[1]}:${briefMatch[2]}`; const itemId = randomHex(); const item = { id: itemId, scope_kind: briefMatch[1], scope_id: briefMatch[2], kind: 'jargon', text: 'Example term', detail: { plain_meaning: 'Example', use_or_avoid: 'owner_decides', applies_to: 'org' }, tier: 2, quote: null, check_suggestion: 'Check recent professional posts', speaker_kind: 'model_prior', status: 'proposed', revision: 1, supersedes_id: null };
+      briefItems.set(key, [item]); fluency.set(item.text, { term: item.text, status: 'unknown', revision: 1 }); const jobId = randomHex(); roleJobs.set(jobId, { id: jobId, role: 'briefer', status: 'succeeded', result: { item_count: 1 }, last_error: null }); return json(response, 202, { job_id: jobId, scope_kind: briefMatch[1], scope_id: briefMatch[2], state: 'queued' });
+    }
+    const briefDecision = /^\/api\/v1\/brief-items\/([^/]+)\/decision$/.exec(url.pathname);
+    if (briefDecision && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      for (const items of briefItems.values()) { const item = items.find((candidate) => candidate.id === briefDecision[1]); if (item) { item.status = String(input.decision === 'correct' ? 'corrected' : input.decision === 'confirm' ? 'confirmed' : 'dismissed'); item.revision = Number(item.revision) + 1; return json(response, 200, { id: item.id, decision: input.decision, revision: item.revision }); } }
+      return fail(response, 404, 'BRIEF_ITEM_NOT_FOUND', 'Brief item does not exist');
     }
 
     if (url.pathname === '/api/v1/entities' && request.method === 'GET') {
@@ -279,6 +471,70 @@ export function createMockApi(): MockApi {
         observed_cursor: String(events.length),
       });
     }
+    if (url.pathname === '/api/v1/board' && request.method === 'GET') return json(response, 200, boardSnapshot());
+    if (url.pathname === '/api/v1/board/lists' && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const title = typeof input.title === 'string' ? input.title.trim() : '';
+      if (!title || title.length > 120 || boardLists.some((list) => list.title.toLowerCase() === title.toLowerCase())) return fail(response, 422, 'BOARD_LIST_INVALID', 'List title must be unique and non-empty');
+      const active = boardLists.filter((list) => !list.archived).sort((a, b) => a.position - b.position);
+      const beforeIndex = typeof input.before_list_id === 'string' ? active.findIndex((list) => list.id === input.before_list_id) : -1;
+      if (typeof input.before_list_id === 'string' && beforeIndex < 0) return fail(response, 422, 'BOARD_ANCHOR_INVALID', 'List anchor is invalid');
+      const position = beforeIndex < 0 ? active.length : beforeIndex;
+      const list = { id: randomHex(), title, position, archived: false, revision: 1 };
+      boardLists.push(list);
+      boardLists.filter((item) => !item.archived && item.id !== list.id).forEach((item) => { if (item.position >= list.position) { item.position += 1; item.revision += 1; } });
+      return json(response, 201, { list, board_revision: events.length + 1 });
+    }
+    if (url.pathname === '/api/v1/board/lists/reorder' && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const active = boardLists.filter((list) => !list.archived);
+      const ids = input.ordered_ids;
+      const revisions = input.expected_revisions;
+      if (!Array.isArray(ids) || !revisions || typeof revisions !== 'object' || Array.isArray(revisions)
+        || ids.length !== active.length || new Set(ids).size !== active.length
+        || active.some((list) => !ids.includes(list.id) || (revisions as RecordData)[list.id] !== list.revision)) {
+        return fail(response, 409, 'BOARD_LIST_STALE', 'List order or revision is stale');
+      }
+      ids.forEach((id, position) => {
+        const list = active.find((item) => item.id === id)!;
+        list.position = position;
+        list.revision += 1;
+      });
+      return json(response, 200, { lists: active.slice().sort((a, b) => a.position - b.position) });
+    }
+    const boardListMatch = /^\/api\/v1\/board\/lists\/([^/]+)$/.exec(url.pathname);
+    if (boardListMatch && request.method === 'PATCH') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const list = boardLists.find((item) => item.id === boardListMatch[1]);
+      if (!list) return fail(response, 404, 'NOT_FOUND', 'Board list does not exist');
+      if (input.expected_revision !== list.revision) return fail(response, 409, 'BOARD_LIST_STALE', 'Board list changed');
+      const title = typeof input.title === 'string' ? input.title.trim() : '';
+      if (!title || boardLists.some((item) => item.id !== list.id && item.title.toLowerCase() === title.toLowerCase())) return fail(response, 422, 'BOARD_LIST_INVALID', 'List title must be unique and non-empty');
+      list.title = title; list.revision += 1;
+      return json(response, 200, { list });
+    }
+    const archiveMatch = /^\/api\/v1\/board\/lists\/([^/]+)\/archive$/.exec(url.pathname);
+    if (archiveMatch && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const source = boardLists.find((item) => item.id === archiveMatch[1]);
+      const destination = boardLists.find((item) => item.id === String(input.destination_list_id) && !item.archived);
+      const active = boardLists.filter((item) => !item.archived);
+      if (!source || source.archived || !destination || source.id === destination.id || active.length < 2) return fail(response, 422, 'BOARD_ARCHIVE_INVALID', 'Choose a different active destination and keep one active list');
+      if (input.expected_list_revision !== source.revision || input.expected_destination_revision !== destination.revision) return fail(response, 409, 'BOARD_LIST_STALE', 'Board list changed');
+      const moved = boardSnapshot().cards.filter((card) => card.placement.list_id === source.id).sort((a, b) => a.placement.position - b.placement.position);
+      const destinationCards = boardSnapshot().cards.filter((card) => card.placement.list_id === destination.id).sort((a, b) => a.placement.position - b.placement.position);
+      const nextPosition = destinationCards.length;
+      moved.forEach((card, index) => {
+        const placement = placements.get(String(card.opportunity.id))!;
+        placement.list_id = destination.id; placement.position = nextPosition + index; placement.placement_revision += 1;
+      });
+      destination.revision += 1; source.archived = true; source.revision += 1;
+      return json(response, 200, { archived_list: source, destination_list: destination, moved: moved.map((card, index) => ({ opportunity_id: card.opportunity.id, position: nextPosition + index, placement_revision: placements.get(String(card.opportunity.id))!.placement_revision })) });
+    }
     if (url.pathname === '/api/v1/opportunities' && request.method === 'GET') {
       return json(response, 200, [...opportunities.values()]);
     }
@@ -291,7 +547,65 @@ export function createMockApi(): MockApi {
       }
       const record = { id: randomHex(), title: input.title.trim(), state: 'open', revision: 1, participant_ids: [participant.id], source_variant_ids: [], material_ids: [] };
       opportunities.set(record.id, record);
+      const homeList = boardLists.find((list) => !list.archived)!;
+      const position = [...placements.values()].filter((placement) => placement.list_id === homeList.id).length;
+      placements.set(record.id, { list_id: homeList.id, position, placement_revision: 1 });
+      notesByOpportunity.set(record.id, { markdown: '', revision: 1 });
       return json(response, 201, record);
+    }
+    const placementMatch = /^\/api\/v1\/opportunities\/([^/]+)\/placement$/.exec(url.pathname);
+    if (placementMatch && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const opportunity = opportunities.get(placementMatch[1]!);
+      const placement = placements.get(placementMatch[1]!);
+      const source = boardLists.find((list) => list.id === placement?.list_id);
+      const destination = boardLists.find((list) => list.id === String(input.list_id) && !list.archived);
+      if (!opportunity || !placement || !source || !destination) return fail(response, 404, 'NOT_FOUND', 'Opportunity or active board list does not exist');
+      if (input.expected_placement_revision !== placement.placement_revision || input.expected_source_list_revision !== source.revision || input.expected_list_revision !== destination.revision) return fail(response, 409, 'BOARD_PLACEMENT_STALE', 'Board placement changed');
+      const sourceCards = boardSnapshot().cards.filter((card) => card.placement.list_id === source.id && card.opportunity.id !== opportunity.id).sort((a, b) => a.placement.position - b.placement.position);
+      const destinationCards = source.id === destination.id ? sourceCards : boardSnapshot().cards.filter((card) => card.placement.list_id === destination.id).sort((a, b) => a.placement.position - b.placement.position);
+      const beforeId = typeof input.before_opportunity_id === 'string' ? input.before_opportunity_id : null;
+      const targetIndex = beforeId === null ? destinationCards.length : destinationCards.findIndex((card) => card.opportunity.id === beforeId);
+      if (targetIndex < 0) return fail(response, 422, 'BOARD_ANCHOR_INVALID', 'Destination card anchor is invalid');
+      destinationCards.splice(targetIndex, 0, { opportunity, placement: { opportunity_id: opportunity.id, list_id: destination.id, position: targetIndex, revision: placement.placement_revision, next_task: null } });
+      destinationCards.forEach((card, position) => { const current = placements.get(String(card.opportunity.id))!; current.list_id = destination.id; current.position = position; if (card.opportunity.id === opportunity.id) current.placement_revision += 1; });
+      if (source.id !== destination.id) sourceCards.forEach((card, position) => { placements.get(String(card.opportunity.id))!.position = position; });
+      source.revision += 1;
+      if (source.id !== destination.id) destination.revision += 1;
+      return json(response, 200, { opportunity_id: opportunity.id, list_id: destination.id, position: targetIndex, placement_revision: placement.placement_revision, source_list_revision: source.revision, destination_list_revision: destination.revision });
+    }
+    const notesMatch = /^\/api\/v1\/opportunities\/([^/]+)\/notes(?:\/tasks\/toggle)?$/.exec(url.pathname);
+    if (notesMatch && request.method === 'GET') {
+      if (!opportunities.has(notesMatch[1]!)) return fail(response, 404, 'NOT_FOUND', 'Opportunity does not exist');
+      return json(response, 200, notesRecord(notesMatch[1]!));
+    }
+    if (notesMatch && url.pathname.endsWith('/notes') && request.method === 'PATCH') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const current = notesByOpportunity.get(notesMatch[1]!);
+      if (!current) return fail(response, 404, 'NOT_FOUND', 'Opportunity does not exist');
+      if (input.expected_revision !== current.revision) return fail(response, 409, 'NOTES_STALE', 'Markdown notes changed');
+      if (typeof input.markdown !== 'string' || Buffer.byteLength(input.markdown, 'utf8') > 1_000_000) return fail(response, 422, 'NOTES_INVALID', 'Markdown is invalid or too large');
+      current.markdown = input.markdown.replace(/\r\n?/g, '\n'); current.revision += 1;
+      return json(response, 200, notesRecord(notesMatch[1]!));
+    }
+    if (notesMatch && url.pathname.endsWith('/notes/tasks/toggle') && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const current = notesByOpportunity.get(notesMatch[1]!);
+      if (!current) return fail(response, 404, 'NOT_FOUND', 'Opportunity does not exist');
+      if (input.notes_revision !== current.revision) return fail(response, 409, 'NOTES_STALE', 'Markdown notes changed');
+      const task = tasks(current.markdown).find((item) => item.byte_start === input.byte_start && item.byte_end === input.byte_end && item.line_sha256 === input.line_sha256);
+      if (!task || typeof input.checked !== 'boolean') return fail(response, 409, 'TASK_STALE', 'The addressed Markdown task changed');
+      const line = Buffer.from(current.markdown, 'utf8');
+      const lineText = line.subarray(task.byte_start, task.byte_end).toString('utf8');
+      const marker = /\[([ xX])\]/.exec(lineText);
+      if (!marker || marker.index === undefined) return fail(response, 409, 'TASK_STALE', 'The addressed Markdown task changed');
+      const replacement = input.checked ? 'x' : ' ';
+      current.markdown = Buffer.concat([line.subarray(0, task.byte_start + marker.index + 1), Buffer.from(replacement), line.subarray(task.byte_start + marker.index + 2)]).toString('utf8');
+      current.revision += 1;
+      return json(response, 200, notesRecord(notesMatch[1]!));
     }
     if (url.pathname === '/api/v1/outputs' && request.method === 'GET') {
       return json(response, 200, [...outputs.values()]);
