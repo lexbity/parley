@@ -523,6 +523,82 @@ async fn s06_verified_file_release_download_returns_exact_bytes_and_one_grant() 
 }
 
 #[tokio::test]
+async fn s06_head_request_does_not_consume_grant() {
+    // RFC-0004 IQ2: HEAD-as-GET must be disabled. A HEAD probe must not
+    // run the download flow nor consume the one-use grant; the subsequent
+    // GET must still issue exact bytes.
+    let (path, _workspace, port, service) = setup().await;
+    let blobs_dir = format!("{}.blobs", path.display());
+    let recipient = create_party(port, "Dana Lee").await;
+    let (status, opportunity) = request(
+        port,
+        "POST",
+        "/api/v1/opportunities",
+        Some(json!({"title":"Handoff exchange","primary_party_id":recipient})),
+    )
+    .await;
+    assert_eq!(status, 201);
+    let opportunity_id = opportunity["id"].as_str().unwrap();
+    let exchange_version = prepare_exchange(port, opportunity_id, &recipient).await;
+    let template_id = activate_minimal_template(port).await;
+    let upload = upload_file(port, "handoff.pdf", HANDOFF_BYTES).await;
+    let upload_id = upload["id"].as_str().unwrap();
+    review_upload(port, upload_id, true).await;
+
+    let (status, material) = create_handoff_material(
+        port,
+        opportunity_id,
+        &recipient,
+        &template_id,
+        exchange_version,
+        Some(upload_id),
+        "Please find the attached handoff.",
+    )
+    .await;
+    assert_eq!(status, 201, "{material}");
+    let material_id = material["id"].as_str().unwrap();
+
+    let overrides = json!({
+        "S1 GIVE_FIRST": "This is a reviewed file handoff, not a gift message.",
+        "S2 ANCHOR": "The exact approved attachment bytes are the anchor for this handoff."
+    });
+    let (status, approval) = approve_material(port, material_id, overrides).await;
+    assert_eq!(status, 200, "{approval}");
+    let (status, released) = request(
+        port,
+        "POST",
+        &format!("/api/v1/materials/{material_id}/release"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{released}");
+    let release_id = released["release_id"].as_str().unwrap();
+
+    // HEAD must be refused outright (405) and must not consume the grant.
+    let (status, _) = raw_request(
+        port,
+        "HEAD",
+        &format!("/api/v1/materials/{material_id}/download?release_id={release_id}"),
+        "",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(
+        status, 405,
+        "HEAD is not a download and must not be served as GET"
+    );
+
+    // The one-use grant is intact: GET still issues the exact bytes.
+    let (status, bytes) = download(port, material_id, release_id).await;
+    assert_eq!(status, 200);
+    assert_eq!(bytes, HANDOFF_BYTES.to_vec());
+
+    service.shutdown().await;
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_dir_all(blobs_dir);
+}
+
+#[tokio::test]
 async fn s06_unreviewed_or_not_shareable_upload_cannot_bind() {
     let (path, _workspace, port, service) = setup().await;
     let blobs_dir = format!("{}.blobs", path.display());

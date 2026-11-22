@@ -471,6 +471,13 @@ slices:
       owner_role: owner
       package_target: rust
       evidence_path: contract/fixtures/s06/workflow/evidence.md
+    - requirement: BQ4
+      operationId: downloadMaterial
+      test_id: s06_head_request_does_not_consume_grant
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s06/workflow/evidence.md
     - requirement: B-FR-6
       operationId: n/a
       test_id: s06_gc_respects_leases_and_pins_and_reclaims_orphans
