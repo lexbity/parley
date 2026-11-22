@@ -30,7 +30,7 @@ pub(super) fn routes() -> Router<AppState> {
         )
         .route(
             "/api/v1/matching/calibrations",
-            get(get_calibrations).post(save_calibration),
+            get(get_calibrations).post(reject_client_calibration),
         )
         .route(
             "/api/v1/embedding-model",
@@ -241,170 +241,23 @@ async fn get_calibrations(State(state): State<AppState>, headers: HeaderMap) -> 
             );
         }
     };
-    let rows=sqlx::query_as::<_,(String,f64,String,i64,i64,i64,i64,String)>("SELECT asset_kind,threshold,fixture_digest,positives,negatives,true_positives,false_positives,scoring_config_digest FROM matching_calibration WHERE model_digest=? AND scoring_config_digest=? AND calibration_revision=(SELECT max(c2.calibration_revision) FROM matching_calibration c2 WHERE c2.model_digest=matching_calibration.model_digest AND c2.asset_kind=matching_calibration.asset_kind AND c2.scoring_config_digest=matching_calibration.scoring_config_digest) ORDER BY asset_kind").bind(model_digest.clone().unwrap_or_default()).bind(config_digest.clone()).fetch_all(state.workspace.pool()).await;
-    match rows{Ok(rows)=>Json(json!({"model":model,"model_digest":model_digest,"scoring_config_digest":config_digest,"calibrations":rows.into_iter().map(|(kind,threshold,fixture_digest,positives,negatives,true_positives,false_positives,_)|json!({"asset_kind":kind,"threshold":threshold,"fixture_digest":fixture_digest,"positives":positives,"negatives":negatives,"true_positives":true_positives,"false_positives":false_positives})).collect::<Vec<_>>()})).into_response(),Err(error)=>command_error(error.into())}
+    let rows=sqlx::query_as::<_,(String,f64,String,i64,i64,i64,i64,String)>("SELECT asset_kind,threshold,fixture_digest,positives,negatives,true_positives,false_positives,scoring_config_digest FROM matching_calibration WHERE trusted=1 AND model_digest=? AND scoring_config_digest=? AND calibration_revision=(SELECT max(c2.calibration_revision) FROM matching_calibration c2 WHERE c2.trusted=1 AND c2.model_digest=matching_calibration.model_digest AND c2.asset_kind=matching_calibration.asset_kind AND c2.scoring_config_digest=matching_calibration.scoring_config_digest) ORDER BY asset_kind").bind(model_digest.clone().unwrap_or_default()).bind(config_digest.clone()).fetch_all(state.workspace.pool()).await;
+    match rows{Ok(rows)=>Json(json!({"model":model,"model_digest":model_digest,"scoring_config_digest":config_digest,"calibrations":rows.into_iter().map(|(kind,threshold,fixture_digest,positives,negatives,true_positives,false_positives,_)|json!({"asset_kind":kind,"threshold":threshold,"fixture_digest":fixture_digest,"positives":positives,"negatives":negatives,"true_positives":true_positives,"false_positives":false_positives,"trusted":true})).collect::<Vec<_>>()})).into_response(),Err(error)=>command_error(error.into())}
 }
 
-async fn save_calibration(
+async fn reject_client_calibration(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(input): Json<CalibrationRequest>,
+    Json(_input): Json<CalibrationRequest>,
 ) -> impl IntoResponse {
     if let Err(response) = authenticate(&headers, &state).await {
         return response.into_response();
     }
-    if input.fixture_id.trim().is_empty() || input.fixture_id.len() > 200 || input.samples.len() < 2
-    {
-        return err(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "CALIBRATION_INPUT_INVALID",
-            "Calibration requires a named fixture and at least one positive and one negative score.",
-        );
-    }
-    let key = match command_key(&headers) {
-        Ok(value) => value,
-        Err(response) => return response,
-    };
-    let canonical = match canonical_command("POST /api/v1/matching/calibrations", &input) {
-        Ok(value) => value,
-        Err(response) => return response,
-    };
-    let provider: Result<Option<String>, sqlx::Error> =
-        sqlx::query_scalar("SELECT embed_model_digest FROM agent_provider WHERE singleton=1")
-            .fetch_one(state.workspace.pool())
-            .await;
-    let Some(model_digest) = (match provider {
-        Ok(value) => value,
-        Err(error) => return command_error(error.into()),
-    }) else {
-        return err(
-            StatusCode::CONFLICT,
-            "EMBED_MODEL_UNAVAILABLE",
-            "Configure and verify the local embedding model before calibration.",
-        );
-    };
-    let settings_json: String =
-        match sqlx::query_scalar("SELECT settings_json FROM owner_profile WHERE id=1")
-            .fetch_one(state.workspace.pool())
-            .await
-        {
-            Ok(value) => value,
-            Err(error) => return command_error(error.into()),
-        };
-    let settings: Value = match serde_json::from_str(&settings_json) {
-        Ok(value) => value,
-        Err(error) => {
-            return err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "OWNER_SETTINGS_CORRUPT",
-                &error.to_string(),
-            );
-        }
-    };
-    let half_life = settings
-        .pointer("/pack/limits/proof_half_life_months")
-        .and_then(Value::as_f64)
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .unwrap_or(24.0);
-    let weights = settings
-        .pointer("/matcher/weights")
-        .cloned()
-        .unwrap_or(json!({"cosine":0.5,"tags":0.25,"recency":0.15,"track":0.1}));
-    let config_digest = match scoring_config_digest(&weights, half_life) {
-        Ok(value) => value,
-        Err(error) => {
-            return err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "MATCH_CONFIG_SERIALIZE_FAILED",
-                &error,
-            );
-        }
-    };
-    let fixture_bytes = match serde_json::to_vec(
-        &json!({"fixture_id":input.fixture_id,"asset_kind":input.asset_kind,"samples":input.samples}),
-    ) {
-        Ok(value) => value,
-        Err(error) => {
-            return err(
-                StatusCode::BAD_REQUEST,
-                "CALIBRATION_SERIALIZE_FAILED",
-                &error.to_string(),
-            );
-        }
-    };
-    let fixture_digest = digest(&fixture_bytes);
-    let calibration =
-        match parley_domain::matching::calibrate(&model_digest, &fixture_digest, &input.samples) {
-            Ok(value) => value,
-            Err(error) => {
-                return err(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "CALIBRATION_INVALID",
-                    &format!("{error:?}"),
-                );
-            }
-        };
-    let kind = match input.asset_kind {
-        parley_domain::matching::AssetKind::Gift => "gift",
-        parley_domain::matching::AssetKind::Proof => "proof",
-        parley_domain::matching::AssetKind::Artifact => "artifact",
-    };
-    let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
-        Ok(value) => value,
-        Err(error) => return command_error(error.into()),
-    };
-    match receipt_replay(&mut tx, &state.workspace, &key, &canonical).await {
-        Ok(Some(response)) => {
-            let _ = tx.commit().await;
-            return response;
-        }
-        Ok(None) => {}
-        Err(response) => {
-            let _ = tx.rollback().await;
-            return response;
-        }
-    }
-    let version:Result<i64,sqlx::Error>=sqlx::query_scalar("SELECT coalesce(max(calibration_revision),0)+1 FROM matching_calibration WHERE model_digest=? AND asset_kind=?").bind(&model_digest).bind(kind).fetch_one(&mut *tx).await;
-    let version = match version {
-        Ok(value) => value,
-        Err(error) => {
-            let _ = tx.rollback().await;
-            return command_error(error.into());
-        }
-    };
-    let now = now_utc();
-    if let Err(error)=sqlx::query("INSERT INTO matching_calibration(model_digest,asset_kind,threshold,fixture_digest,positives,negatives,true_positives,false_positives,false_negatives,calibration_revision,created_at,scoring_config_digest) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(&model_digest).bind(kind).bind(calibration.threshold).bind(&fixture_digest).bind(calibration.positives as i64).bind(calibration.negatives as i64).bind(calibration.true_positives as i64).bind(calibration.false_positives as i64).bind(calibration.false_negatives as i64).bind(version).bind(&now).bind(&config_digest).execute(&mut *tx).await{let _=tx.rollback().await;return command_error(error.into());}
-    let revision: Result<i64, sqlx::Error> = sqlx::query_scalar(
-        "UPDATE workspace_meta SET revision=revision+1 WHERE singleton=1 RETURNING revision",
+    err(
+        StatusCode::FORBIDDEN,
+        "CALIBRATION_REQUIRES_EVAL",
+        "Calibration scores are accepted only from a successful local E-match evaluation; client-supplied labels are not evaluation evidence.",
     )
-    .fetch_one(&mut *tx)
-    .await;
-    let revision = match revision {
-        Ok(value) => value,
-        Err(error) => {
-            let _ = tx.rollback().await;
-            return command_error(error.into());
-        }
-    };
-    if let Err(error)=sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'matching_calibration',?,?, 'matching.calibration_saved',?)").bind(super::new_id(&fixture_digest)).bind(&now).bind(kind).bind(revision).bind(json!({"model_digest":model_digest,"scoring_config_digest":config_digest,"fixture_digest":fixture_digest,"calibration_revision":version}).to_string()).execute(&mut *tx).await{let _=tx.rollback().await;return command_error(error.into());}
-    let result = json!({"asset_kind":kind,"model_digest":model_digest,"scoring_config_digest":config_digest,"fixture_digest":fixture_digest,"threshold":calibration.threshold,"positives":calibration.positives,"negatives":calibration.negatives,"true_positives":calibration.true_positives,"false_positives":calibration.false_positives,"false_negatives":calibration.false_negatives,"calibration_revision":version});
-    if let Err(error) = receipt_store(
-        &mut tx,
-        &state.workspace,
-        &key,
-        &canonical,
-        StatusCode::CREATED,
-        &result,
-    )
-    .await
-    {
-        let _ = tx.rollback().await;
-        return command_error(error);
-    }
-    if let Err(error) = tx.commit().await {
-        return command_error(error.into());
-    }
-    (StatusCode::CREATED, Json(result)).into_response()
 }
 
 async fn get_embedding_model(
@@ -423,7 +276,7 @@ async fn get_embedding_model(
         Ok(value) => value,
         Err(error) => return command_error(error.into()),
     };
-    let calibrated: Result<Vec<String>,sqlx::Error>=sqlx::query_scalar("SELECT DISTINCT asset_kind FROM matching_calibration WHERE model_digest=? ORDER BY asset_kind").bind(digest.clone().unwrap_or_default()).fetch_all(state.workspace.pool()).await;
+    let calibrated: Result<Vec<String>,sqlx::Error>=sqlx::query_scalar("SELECT DISTINCT asset_kind FROM matching_calibration WHERE trusted=1 AND model_digest=? ORDER BY asset_kind").bind(digest.clone().unwrap_or_default()).fetch_all(state.workspace.pool()).await;
     match calibrated {
         Ok(kinds) => Json(json!({"model":model,"model_digest":digest,"calibrated_kinds":kinds}))
             .into_response(),

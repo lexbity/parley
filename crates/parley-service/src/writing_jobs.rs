@@ -660,7 +660,7 @@ async fn run_matcher(
                 "Scoring configuration digest is missing.",
             )
         })?;
-    let calibrations:Vec<(String,f64,String)>=sqlx::query_as("SELECT asset_kind,threshold,fixture_digest FROM matching_calibration WHERE model_digest=? AND scoring_config_digest=? AND calibration_revision=(SELECT max(c2.calibration_revision) FROM matching_calibration c2 WHERE c2.model_digest=matching_calibration.model_digest AND c2.asset_kind=matching_calibration.asset_kind AND c2.scoring_config_digest=matching_calibration.scoring_config_digest) ORDER BY asset_kind").bind(&model_digest).bind(scoring_config).fetch_all(workspace.pool()).await.map_err(|error|RoleFailure::new("PERSISTENCE_FAILED",error.to_string()))?;
+    let calibrations:Vec<(String,f64,String)>=sqlx::query_as("SELECT asset_kind,threshold,fixture_digest FROM matching_calibration WHERE trusted=1 AND model_digest=? AND scoring_config_digest=? AND calibration_revision=(SELECT max(c2.calibration_revision) FROM matching_calibration c2 WHERE c2.trusted=1 AND c2.model_digest=matching_calibration.model_digest AND c2.asset_kind=matching_calibration.asset_kind AND c2.scoring_config_digest=matching_calibration.scoring_config_digest) ORDER BY asset_kind").bind(&model_digest).bind(scoring_config).fetch_all(workspace.pool()).await.map_err(|error|RoleFailure::new("PERSISTENCE_FAILED",error.to_string()))?;
     let mut thresholds = Vec::new();
     let mut calibration_json = serde_json::Map::new();
     for (kind, value, fixture_digest) in calibrations {
@@ -818,7 +818,7 @@ pub(super) async fn ensure_scope_current(
     job_id: &str,
     input: &Value,
 ) -> Result<(), RoleFailure> {
-    let scope:Option<(String,String,i64)>=sqlx::query_as("SELECT scope_kind,scope_id,scope_revision FROM durable_job WHERE id=? AND status='running'").bind(job_id).fetch_optional(&mut **tx).await.map_err(|error|RoleFailure::new("PERSISTENCE_FAILED",error.to_string()))?;
+    let scope:Option<(String,String,i64)>=sqlx::query_as("SELECT scope_kind,scope_id,scope_revision FROM durable_job WHERE id=? AND status IN ('running','succeeded')").bind(job_id).fetch_optional(&mut **tx).await.map_err(|error|RoleFailure::new("PERSISTENCE_FAILED",error.to_string()))?;
     let Some((kind, id, expected)) = scope else {
         return Err(RoleFailure::new("STALE_INPUT", "Job is no longer active."));
     };
@@ -1036,6 +1036,7 @@ async fn ollama_embed(endpoint: &str, model: &str, text: &str) -> Result<Vec<f32
     }).await.map_err(|_|"embedding request timed out".to_owned())??;
     Ok(response)
 }
+
 pub(super) fn local_endpoint_for_settings(endpoint: &str) -> Result<(String, u16), String> {
     let Some(rest) = endpoint.strip_prefix("http://") else {
         return Err("embedding provider must use local HTTP".into());
@@ -1084,4 +1085,46 @@ fn decode_chunks(mut rest: &str) -> Result<String, String> {
         rest = &rest[size + 2..];
     }
     String::from_utf8(bytes).map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        fs,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    #[tokio::test]
+    async fn completed_proposal_is_rejected_after_scoped_revision_changes() {
+        let path = std::env::temp_dir().join(format!(
+            "parley-s09-stale-job-{}-{}.sqlite",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let workspace = Workspace::open(&path).await.unwrap();
+        sqlx::query("INSERT INTO segment(id,name,revision,created_at,updated_at) VALUES('segment-1','Segment',1,'now','now')")
+            .execute(workspace.pool()).await.unwrap();
+        sqlx::query("INSERT INTO durable_job(id,role,status,input_json,input_sha256,source_occurrence_id,source_variant_id,scope_kind,scope_id,scope_revision,current_attempt,max_attempts,progress_current,progress_total,created_at,updated_at) VALUES('job-1','template_builder','running','{}','hash',NULL,NULL,'segment','segment-1',1,1,3,0,0,'now','now')")
+            .execute(workspace.pool()).await.unwrap();
+        let input = json!({"segment_id":"segment-1"});
+        let mut tx = workspace.pool().begin().await.unwrap();
+        assert!(ensure_scope_current(&mut tx, "job-1", &input).await.is_ok());
+        tx.commit().await.unwrap();
+
+        sqlx::query("UPDATE segment SET revision=revision+1 WHERE id='segment-1'")
+            .execute(workspace.pool())
+            .await
+            .unwrap();
+        let mut tx = workspace.pool().begin().await.unwrap();
+        let failure = ensure_scope_current(&mut tx, "job-1", &input)
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code, "STALE_INPUT");
+        tx.rollback().await.unwrap();
+        drop(workspace);
+        let _ = fs::remove_file(path);
+    }
 }
