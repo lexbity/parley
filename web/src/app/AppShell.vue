@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { newOperationKey, parley, type ContactThread, type ExtractorJob, type ExtractorProposal, type GraphEntity, type Material, type Opportunity, type ProviderConfig, type ReleasedMaterial, type Resource, type SavedSource } from '../api/client';
+import { newOperationKey, parley, type AdminOperation, type ContactThread, type ExtractorJob, type ExtractorProposal, type GraphEntity, type Material, type Opportunity, type ProviderConfig, type ReleasedMaterial, type Resource, type SavedSource } from '../api/client';
 import { tabs } from './tabs';
 import { resolveRoute, routeForTab } from './router';
 import ResourceEditor from '../features/resources/ResourceEditor.vue';
@@ -10,6 +10,7 @@ import BriefWorkspace from '../features/leads/BriefWorkspace.vue';
 import AgentPolicySettings from '../features/settings/AgentPolicySettings.vue';
 import CapacitySettings from '../features/settings/CapacitySettings.vue';
 import Packs from '../features/settings/Packs.vue';
+import DataControls from '../features/settings/DataControls.vue';
 import ContactThreadPanel from '../features/queue/ContactThreadPanel.vue';
 import WritingWorkspace from '../features/output/WritingWorkspace.vue';
 import MaterialActions from '../features/output/MaterialActions.vue';
@@ -43,6 +44,8 @@ const reviewTargetId = ref('');
 const reviewOpportunityId = ref('');
 const provider = ref<ProviderConfig>({ endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' });
 const providerHealth = ref('');
+const workspaceRefreshRequired = ref(false);
+let adminChannel: InstanceType<typeof globalThis.BroadcastChannel> | null = null;
 
 async function refreshLeads() {
   const [directory, savedSources, savedOpportunities, savedOutputs, savedResources, savedThreads] = await Promise.all([parley.listParties(), parley.listSources(), parley.listOpportunities(), parley.listOutputs(), parley.listResources(), parley.listThreads()]);
@@ -170,6 +173,20 @@ function installMaterial(updated: Material) {
   if (deliveredReleases.value[updated.id]?.version !== updated.version) delete deliveredReleases.value[updated.id];
 }
 
+async function applyWorkspaceChange(operation: AdminOperation, epoch: string, announce: boolean) {
+  if (announce) adminChannel?.postMessage({ type: 'workspace-changed', operation, epoch });
+  if (operation === 'restore' || operation === 'erase_workspace') workspaceRefreshRequired.value = true;
+  globalThis.dispatchEvent(new globalThis.CustomEvent('parley:workspace-changed', { detail: { operation, epoch } }));
+  try {
+    if (operation === 'restore' || operation === 'erase_workspace') await parley.refreshSession();
+    await Promise.all([refreshLeads(), parley.listResources().then((next) => { resources.value = next; })]);
+  } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Workspace records changed; reload the current workspace before continuing.'; }
+}
+
+function announceWorkspaceChange(operation: AdminOperation, epoch: string) {
+  void applyWorkspaceChange(operation, epoch, true);
+}
+
 async function pollOutputThreads() {
   if (active.value !== 'Output' || outputThreadReadInFlight || globalThis.document.visibilityState !== 'visible') return;
   outputThreadReadInFlight = true;
@@ -182,11 +199,25 @@ function onOutputVisibilityChange() {
   if (globalThis.document.visibilityState === 'visible') void pollOutputThreads();
 }
 
+function onWorkspaceQuarantined() { workspaceRefreshRequired.value = true; }
+function onWorkspaceReloaded() { workspaceRefreshRequired.value = false; }
+
 onMounted(() => {
   if (route.value.path !== globalThis.location.pathname) navigate(route.value.path, true);
   globalThis.addEventListener('popstate', handlePopState);
   outputThreadTimer = globalThis.setInterval(() => { void pollOutputThreads(); }, 2_000);
   globalThis.document.addEventListener('visibilitychange', onOutputVisibilityChange);
+  globalThis.addEventListener('parley:workspace-quarantined', onWorkspaceQuarantined);
+  globalThis.addEventListener('parley:workspace-reloaded', onWorkspaceReloaded);
+  if ('BroadcastChannel' in globalThis) {
+    adminChannel = new globalThis.BroadcastChannel('parley-workspace-admin');
+    adminChannel.onmessage = (message) => {
+      const value = message.data as { type?: unknown; operation?: unknown; epoch?: unknown } | null;
+      if (value?.type === 'workspace-changed' && ['restore', 'erase_party', 'erase_workspace'].includes(String(value.operation))) {
+        void applyWorkspaceChange(value.operation as AdminOperation, typeof value.epoch === 'string' ? value.epoch : '', false);
+      }
+    };
+  }
   void parley.connect()
     .then(async () => { await refreshLeads(); await loadProvider(); })
     .catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Workspace is unavailable.'; });
@@ -194,7 +225,10 @@ onMounted(() => {
 onBeforeUnmount(() => {
   globalThis.removeEventListener('popstate', handlePopState);
   globalThis.document.removeEventListener('visibilitychange', onOutputVisibilityChange);
+  globalThis.removeEventListener('parley:workspace-quarantined', onWorkspaceQuarantined);
+  globalThis.removeEventListener('parley:workspace-reloaded', onWorkspaceReloaded);
   if (outputThreadTimer) globalThis.clearInterval(outputThreadTimer);
+  adminChannel?.close();
 });
 watch(route, () => { void focusRouteLocation(); });
 </script>
@@ -213,6 +247,12 @@ watch(route, () => { void focusRouteLocation(); });
         {{ tab }}
       </a>
     </nav>
+    <p
+      v-if="workspaceRefreshRequired"
+      role="alert"
+    >
+      The workspace was replaced in another administrative operation. Dirty Queue notes are quarantined; other pending edits must be reviewed before reloading this session.
+    </p>
   </header>
   <main>
     <h1>{{ active }}</h1>
@@ -464,6 +504,7 @@ watch(route, () => { void focusRouteLocation(); });
       <AgentPolicySettings />
       <CapacitySettings />
       <Packs />
+      <DataControls @workspace-changed="announceWorkspaceChange" />
     </section>
     <div v-show="active === 'Queue'">
       <QueueWorkspace

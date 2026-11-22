@@ -31,6 +31,11 @@ export type CoachQuestion = { id: string; kind: string; text: string; target_kin
 export type InsightsReport = { as_of: string; period_start: string; period_end: string; pack_id: string; pack_version: string; sample_size: number; metrics: InsightMetric[]; comparisons: InsightComparison[]; gaps: Array<{ id: string; label: string; covered: number; total: number; blocked_count: number; suggested_kind: string }>; questions: CoachQuestion[] };
 export type PackSettings = { revision: number; active_pack_id: string; active_pack_version: string; active_document: string; available_packs: Array<{ id: string; name: string; version: string; document: string }> };
 export type PackValidation = { valid: boolean; pack_id: string | null; version: string | null; normalized_document: string | null; errors: Array<{ line: number | null; field: string | null; message: string }> };
+export type AdminBackup = { id: string; created_at: string; schema_version: number; workspace_epoch: string; size_bytes: number; integrity: 'verified' | 'unknown' };
+export type AdminOverview = { as_of: string; workspace_epoch: string; event_cursor: string; last_verified_backup: AdminBackup | null; backups: AdminBackup[]; parties: Array<{ id: string; kind: 'person' | 'org'; name: string; descriptor: string | null }> };
+export type AdminOperation = 'restore' | 'erase_party' | 'erase_workspace';
+export type AdminPreview = { id: string; operation: AdminOperation; digest: string; workspace_epoch: string; event_cursor: string; expires_at: string; backup: AdminBackup | null; party: { id: string; name: string } | null; impact: Record<string, number>; preserved_shared: Record<string, number> };
+export type AdminJob = { id: string; operation: AdminOperation; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'; summary: string | null; new_epoch: string | null; last_error: string | null };
 export type BoardList = components['schemas']['BoardList'];
 export type BoardPlacement = { opportunity: Opportunity; opportunity_id: string; list_id: string; position: number; placement_revision: number; next_task: string | null };
 export type BoardSnapshot = { lists: BoardList[]; cards: BoardPlacement[] };
@@ -304,6 +309,34 @@ function decodeInsights(value: unknown): InsightsReport {
   return { as_of: requiredString(report.as_of, 'insights.as_of'), period_start: requiredString(report.period_start, 'insights.period_start'), period_end: requiredString(report.period_end, 'insights.period_end'), pack_id: requiredString(report.pack_id, 'insights.pack_id'), pack_version: requiredString(report.pack_version, 'insights.pack_version'), sample_size: Number(report.sample_size), metrics: report.metrics.map(decodeInsightMetric), comparisons, gaps, questions };
 }
 
+function decodeAdminBackup(value: unknown): AdminBackup {
+  const backup = object(value);
+  if (!backup || !Number.isSafeInteger(backup.schema_version) || !Number.isSafeInteger(backup.size_bytes) || !['verified', 'unknown'].includes(String(backup.integrity))) throw new Error('Invalid response: backup record is malformed');
+  return { id: requiredString(backup.id, 'backup.id'), created_at: requiredString(backup.created_at, 'backup.created_at'), schema_version: Number(backup.schema_version), workspace_epoch: requiredString(backup.workspace_epoch, 'backup.workspace_epoch'), size_bytes: Number(backup.size_bytes), integrity: backup.integrity as AdminBackup['integrity'] };
+}
+
+function decodeAdminOverview(value: unknown): AdminOverview {
+  const overview = object(value);
+  if (!overview || !Array.isArray(overview.backups) || !Array.isArray(overview.parties)) throw new Error('Invalid response: admin overview is malformed');
+  const parties = overview.parties.map((raw) => { const party = object(raw); if (!party || !['person', 'org'].includes(String(party.kind))) throw new Error('Invalid response: admin party is malformed'); return { id: requiredString(party.id, 'party.id'), kind: party.kind as 'person' | 'org', name: requiredString(party.name, 'party.name'), descriptor: typeof party.descriptor === 'string' ? party.descriptor : null }; });
+  return { as_of: requiredString(overview.as_of, 'admin.as_of'), workspace_epoch: requiredString(overview.workspace_epoch, 'admin.workspace_epoch'), event_cursor: requiredString(overview.event_cursor, 'admin.event_cursor'), last_verified_backup: overview.last_verified_backup === null ? null : decodeAdminBackup(overview.last_verified_backup), backups: overview.backups.map(decodeAdminBackup), parties };
+}
+
+function decodeAdminPreview(value: unknown): AdminPreview {
+  const preview = object(value);
+  if (!preview || !['restore', 'erase_party', 'erase_workspace'].includes(String(preview.operation)) || !/^[a-f0-9]{64}$/.test(String(preview.digest))) throw new Error('Invalid response: admin preview is malformed');
+  const party = preview.party === null ? null : object(preview.party);
+  const impact = object(preview.impact); const preserved = object(preview.preserved_shared);
+  if (!impact || !preserved || [...Object.values(impact), ...Object.values(preserved)].some((count) => !Number.isSafeInteger(count) || Number(count) < 0)) throw new Error('Invalid response: admin impact summary is malformed');
+  return { id: requiredString(preview.id, 'preview.id'), operation: preview.operation as AdminOperation, digest: requiredString(preview.digest, 'preview.digest'), workspace_epoch: requiredString(preview.workspace_epoch, 'preview.workspace_epoch'), event_cursor: requiredString(preview.event_cursor, 'preview.event_cursor'), expires_at: requiredString(preview.expires_at, 'preview.expires_at'), backup: preview.backup === null ? null : decodeAdminBackup(preview.backup), party: party ? { id: requiredString(party.id, 'preview.party.id'), name: requiredString(party.name, 'preview.party.name') } : null, impact: impact as Record<string, number>, preserved_shared: preserved as Record<string, number> };
+}
+
+function decodeAdminJob(value: unknown): AdminJob {
+  const job = object(value);
+  if (!job || !['restore', 'erase_party', 'erase_workspace'].includes(String(job.operation)) || !['queued', 'running', 'succeeded', 'failed', 'cancelled'].includes(String(job.status))) throw new Error('Invalid response: admin job is malformed');
+  return { id: requiredString(job.id, 'admin_job.id'), operation: job.operation as AdminOperation, status: job.status as AdminJob['status'], summary: typeof job.summary === 'string' ? job.summary : null, new_epoch: typeof job.new_epoch === 'string' ? job.new_epoch : null, last_error: typeof job.last_error === 'string' ? job.last_error : null };
+}
+
 function decodeWrappedBoardList(value: unknown): { list: BoardList } {
   const wrapper = object(value);
   if (!wrapper) throw new Error('Invalid response: board list result is malformed');
@@ -553,6 +586,12 @@ export class ParleyClient {
     return this.connection;
   }
 
+  async refreshSession(): Promise<void> {
+    this.session = null;
+    this.connection = null;
+    await this.connect();
+  }
+
   private async establishSession(): Promise<void> {
     const fragment = new URLSearchParams(window.location.hash.slice(1));
     const bootstrap = fragment.get('bootstrap');
@@ -766,6 +805,32 @@ export class ParleyClient {
     if (!value || !Number.isSafeInteger(value.revision) || !Array.isArray(value.available_packs)) throw new Error('Invalid response: pack settings are malformed');
     const available_packs = value.available_packs.map((raw) => { const pack = object(raw); if (!pack) throw new Error('Invalid response: available pack is malformed'); return { id: requiredString(pack.id, 'pack.id'), name: requiredString(pack.name, 'pack.name'), version: requiredString(pack.version, 'pack.version'), document: requiredString(pack.document, 'pack.document') }; });
     return { revision: Number(value.revision), active_pack_id: requiredString(value.active_pack_id, 'settings.active_pack_id'), active_pack_version: requiredString(value.active_pack_version, 'settings.active_pack_version'), active_document: requiredString(value.active_document, 'settings.active_document'), available_packs };
+  }
+
+  async getAdminOverview(): Promise<AdminOverview> {
+    return decodeAdminOverview(await this.request('/admin/overview'));
+  }
+
+  async createAdminBackup(key = newOperationKey()): Promise<AdminBackup> {
+    return decodeAdminBackup(await this.mutate('/admin/backups', 'POST', {}, { 'Idempotency-Key': key }));
+  }
+
+  async createAdminPreview(input: { operation: AdminOperation; party_id?: string; backup_id?: string }, key = newOperationKey()): Promise<AdminPreview> {
+    return decodeAdminPreview(await this.mutate('/admin/previews', 'POST', input, { 'Idempotency-Key': key }));
+  }
+
+  async commitAdminPreview(input: { operation: AdminOperation; preview_id: string; digest: string; expected_workspace_epoch: string; expected_event_cursor: string; confirmation: string }, key = newOperationKey()): Promise<{ job_id: string }> {
+    await this.refreshSession();
+    if (this.session?.epoch !== input.expected_workspace_epoch) throw new Error('The workspace epoch changed after preview. Review a fresh impact summary before continuing.');
+    const { operation, ...command } = input;
+    const result = object(await this.mutate(`/admin/previews/${encodeURIComponent(input.preview_id)}/commit`, 'POST', command, { 'Idempotency-Key': key }));
+    if (!result) throw new Error('Invalid response: administrative commit receipt is malformed');
+    if (operation === 'restore' || operation === 'erase_workspace') await this.refreshSession();
+    return { job_id: requiredString(result.job_id, 'admin_job_id') };
+  }
+
+  async getAdminJob(id: string): Promise<AdminJob> {
+    return decodeAdminJob(await this.request(`/admin/jobs/${encodeURIComponent(id)}`));
   }
 
   async validatePack(document: string): Promise<PackValidation> {

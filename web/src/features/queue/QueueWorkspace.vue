@@ -17,6 +17,9 @@ const activeQueueView = ref<'Board' | 'Opportunities' | 'Daily' | 'Insights'>('B
 const detail = ref<OpportunityNotes | null>(null);
 const markdown = ref('');
 const dirty = ref(false);
+const workspaceQuarantined = ref(false);
+const quarantinedMarkdown = ref('');
+const quarantineStatus = ref('');
 const title = ref('');
 const partyId = ref('');
 const newListTitle = ref('');
@@ -221,7 +224,7 @@ async function saveNotes() {
 }
 
 function scheduleNotesSave() {
-  if (!detail.value || loadingNotes.value || composing.value || !dirty.value) return;
+  if (workspaceQuarantined.value || !detail.value || loadingNotes.value || composing.value || !dirty.value) return;
   if (notesTimer) globalThis.clearTimeout(notesTimer);
   notesTimer = globalThis.setTimeout(() => { void saveNotes(); }, 750);
 }
@@ -236,6 +239,50 @@ async function reloadNotes() {
     pendingNotesIntent = null;
     loadingNotes.value = false;
   });
+}
+
+async function copyQuarantinedNotes() {
+  try {
+    await globalThis.navigator.clipboard.writeText(quarantinedMarkdown.value);
+    quarantineStatus.value = 'Unsaved notes copied. They remain quarantined until you discard them or close this workspace.';
+  } catch { quarantineStatus.value = 'Clipboard access was denied. Select and copy the read-only text manually; it remains quarantined.'; }
+}
+
+async function discardQuarantinedNotes() {
+  workspaceQuarantined.value = false;
+  quarantineStatus.value = '';
+  if (notesTimer) globalThis.clearTimeout(notesTimer);
+  notesTimer = undefined;
+  dirty.value = false;
+  pendingNotesIntent = null;
+  detail.value = null;
+  markdown.value = '';
+  selectedId.value = '';
+  await parley.refreshSession();
+  await refreshBoard();
+  globalThis.dispatchEvent(new globalThis.CustomEvent('parley:workspace-reloaded'));
+}
+
+async function onWorkspaceChanged(event: unknown) {
+  const detailEvent = event as { detail?: { operation?: string } };
+  if (['restore', 'erase_workspace'].includes(detailEvent.detail?.operation ?? '')) {
+    if (dirty.value) {
+      if (notesTimer) globalThis.clearTimeout(notesTimer);
+      notesTimer = undefined;
+      quarantinedMarkdown.value = markdown.value;
+      workspaceQuarantined.value = true;
+      quarantineStatus.value = 'This workspace was replaced. The notes buffer is isolated and cannot be saved into the restored workspace.';
+      globalThis.dispatchEvent(new globalThis.CustomEvent('parley:workspace-quarantined'));
+      return;
+    }
+    selectedId.value = '';
+    detail.value = null;
+    markdown.value = '';
+  }
+  try {
+    await refreshBoard();
+    globalThis.dispatchEvent(new globalThis.CustomEvent('parley:workspace-reloaded'));
+  } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not refresh Queue after a workspace change.'; }
 }
 
 async function toggleTask(task: NonNullable<OpportunityNotes['tasks']>[number]) {
@@ -279,6 +326,7 @@ onMounted(async () => {
     await parley.connect(); await refreshBoard(); await openRoutedCard();
     threadPollTimer = globalThis.setInterval(() => { void pollThreads(); }, 2_000);
     globalThis.document.addEventListener('visibilitychange', onThreadVisibilityChange);
+    globalThis.addEventListener('parley:workspace-changed', onWorkspaceChanged);
   }
   catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not load the board.'; }
 });
@@ -298,6 +346,7 @@ onBeforeUnmount(() => {
   if (notesTimer) globalThis.clearTimeout(notesTimer);
   if (threadPollTimer) globalThis.clearInterval(threadPollTimer);
   globalThis.document.removeEventListener('visibilitychange', onThreadVisibilityChange);
+  globalThis.removeEventListener('parley:workspace-changed', onWorkspaceChanged);
   globalThis.removeEventListener('beforeunload', warnDirtyNavigation);
 });
 
@@ -307,6 +356,42 @@ function onThreadVisibilityChange() {
 </script>
 
 <template>
+  <section
+    v-if="workspaceQuarantined"
+    role="alertdialog"
+    aria-modal="true"
+    aria-labelledby="quarantine-heading"
+    class="quarantine-dialog"
+  >
+    <h2 id="quarantine-heading">
+      Unsaved notes quarantined
+    </h2>
+    <p>The workspace changed while these notes were dirty. They are not being replayed into the restored data.</p>
+    <label>Copy out the isolated notes<textarea
+      :value="quarantinedMarkdown"
+      readonly
+      rows="8"
+      aria-label="Quarantined notes text"
+    /></label>
+    <button
+      type="button"
+      @click="copyQuarantinedNotes"
+    >
+      Copy quarantined notes
+    </button>
+    <button
+      type="button"
+      @click="discardQuarantinedNotes"
+    >
+      Discard local notes and load current workspace
+    </button>
+    <p
+      v-if="quarantineStatus"
+      role="status"
+    >
+      {{ quarantineStatus }}
+    </p>
+  </section>
   <section aria-labelledby="queue-heading">
     <h2 id="queue-heading">
       Opportunities
@@ -623,6 +708,7 @@ function onThreadVisibilityChange() {
 .queue-views { display: flex; gap: .5rem; margin-block: .75rem; }
 .opportunity-table { width: 100%; border-collapse: collapse; }
 .opportunity-table th, .opportunity-table td { padding: .5rem; border-bottom: 1px solid #cbd5ce; text-align: left; }
+.quarantine-dialog { position: fixed; z-index: 1000; inset: 10vh max(1rem, calc((100vw - 42rem) / 2)); max-height: 80vh; overflow: auto; background: white; border: 2px solid #80552a; border-radius: .5rem; padding: 1.25rem; box-shadow: 0 1rem 3rem #0005; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 input[type="checkbox"] { width: auto; }
 @media (max-width: 700px) { .card-layout { grid-template-columns: 1fr; } }
