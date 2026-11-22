@@ -22,7 +22,7 @@ type ResourceRecord = {
   updated_at: string;
 };
 
-type EntityRecord = { id: string; kind: string; name: string; revision: number; descriptor?:string; aliases?:string[]; tags?:string[] };
+type EntityRecord = { id: string; kind: string; name: string; revision: number };
 
 type SavedSource = {
   content_id: string;
@@ -30,6 +30,8 @@ type SavedSource = {
   occurrence_id: string;
   normalized_sha256: string;
   raw_sha256: string;
+  job_id?: string | null;
+  job_status?: string;
 };
 
 type EventRecord = {
@@ -58,18 +60,30 @@ export function createMockApi(): MockApi {
   const directory = new Map<string, EntityRecord>();
   const sourceGroups = new Map<string, { id: string; variants: Map<string, string> }>();
   const captures: SavedSource[] = [];
-  const sourceDetails = new Map<string, RecordData>();
-  const graphEdges: Array<RecordData> = [];
-  const positions = new Map<string, RecordData>();
+  const extractorJobs = new Map<string, RecordData>();
+  const roleJobs = new Map<string, RecordData>();
+  const agentChats = new Map<string, RecordData>();
+  const briefItems = new Map<string, RecordData[]>();
+  const segments = new Map<string, RecordData>();
+  const segmentMembers = new Map<string, Set<string>>();
+  const fluency = new Map<string, { term: string; status: 'unknown' | 'learning' | 'fluent'; revision: number }>();
+  const writingInterests = new Map<string, RecordData[]>();
+  const writingExchanges = new Map<string, RecordData[]>();
+  const templateFamilies: Array<{ id: string; name: string }> = [];
+  const writingTemplates: RecordData[] = [];
+  const voiceSamples: RecordData[] = [];
+  let embeddingModel = '';
+  const questionBank = { version_id: 'question-bank-v1', content: { version: 1, questions: { proof: [{ id: 'result', text: 'What changed, and how did you measure the result?' }], gift: [{ id: 'offer', text: 'What useful thing could you offer?' }], artifact: [{ id: 'artifact', text: 'What have you made?' }] } } };
+  const prompts = new Map<string, RecordData>([['interviewer', { role: 'interviewer', version_id: 'interviewer-v1', version: 1, content: 'Bundled Interviewer policy', sha256: 'a'.repeat(64) }], ['briefer', { role: 'briefer', version_id: 'briefer-v1', version: 1, content: 'Bundled Briefer policy', sha256: 'b'.repeat(64) }]]);
+  const jobsByOccurrence = new Map<string, string>();
   const opportunities = new Map<string, RecordData>();
-  const boardLists = new Map<string, RecordData>([['list-inbox', { id:'list-inbox',name:'Opportunities',position:0,revision:1,archived:false }]]);
-  const opportunityNotes = new Map<string, { markdown:string; revision:number }>();
-  let boardRevision = 1;
-  const opportunityInterests = new Map<string, RecordData[]>();
-  const opportunityExchanges = new Map<string, RecordData>();
-  const materials = new Map<string, RecordData>();
-  const copyGrants = new Map<string, RecordData>();
-  const captureStages = new Map<string, RecordData>();
+  const outputs = new Map<string, RecordData>();
+  const boardLists: Array<{ id: string; title: string; position: number; archived: boolean; revision: number }> = [
+    { id: 'list-default', title: 'Inbox', position: 0, archived: false, revision: 1 },
+  ];
+  const placements = new Map<string, { list_id: string; position: number; placement_revision: number }>();
+  const notesByOpportunity = new Map<string, { markdown: string; revision: number }>();
+  let provider = { endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' };
   const receipts = new Map<string, { digest: string; result: RecordData }>();
   const events: EventRecord[] = [];
   let testClock = Date.UTC(2026, 0, 1);
@@ -78,42 +92,53 @@ export function createMockApi(): MockApi {
   const pushEvent = (event: Omit<EventRecord, 'cursor'>) => {
     events.push({ ...event, cursor: String(events.length + 1) });
   };
-  const rememberCommand = (request: IncomingMessage, digest: string, result: RecordData): { key:string; prior:RecordData|null } | null => {
-    const key = request.headers['idempotency-key'];
-    if (typeof key !== 'string' || !key) return null;
-    const prior = receipts.get(key);
-    if (prior) return prior.digest === digest ? { key, prior:prior.result } : { key, prior:{ __key_reused:true } };
-    receipts.set(key,{digest,result});
-    return {key,prior:null};
-  };
-  const gateFor = (material:RecordData):RecordData => {
-    const exchange = opportunityExchanges.get(String(material.opportunity_id));
-    const version=material.current_version&&typeof material.current_version==='object'?material.current_version as RecordData:null;
-    const failures:RecordData[] = [];
-    const hard = (id:string,pass:boolean,detail:string) => { if(!pass)failures.push({id,severity:'hard',pass:false,detail}); };
-    const body = typeof version?.body==='string'?version.body:'';
-    const sentences = Array.isArray(version?.sentences)?version.sentences as RecordData[]:[];
-    const unsupported = sentences.some((sentence)=>Array.isArray(sentence.claims)&&(sentence.claims as RecordData[]).some((claim)=>['self_fact','other_fact','offer'].includes(String(claim.type))&&!claim.ref_id));
-    hard('H1 EXCH_COMPLETE',Boolean(exchange&&String(exchange.they_get).trim()&&String(exchange.i_get).trim()&&Array.isArray(exchange.interest_ids)&&exchange.interest_ids.length>=2),'Link at least one interest from each side and state both benefits.');
-    hard('H2 FAIR_ATTESTED',exchange?.fairness_attested===true,'Attest to the current exchange version.');
-    hard('H3 GROUNDED',!unsupported,'Each factual sentence needs an eligible evidence reference.');
-    const protectedTokens=Array.isArray(version?.protected_tokens)?version.protected_tokens as string[]:[];
-    hard('H4 SLOTS_PRESERVED',protectedTokens.every((token)=>body.includes(token)),'Protected tokens must remain unchanged.');
-    hard('H9 PARTY_OPEN',opportunities.get(String(material.opportunity_id))?.status==='open','The opportunity must remain open.');
-    const soft:[string,boolean,string][]=[['S1 GIVE_FIRST',false,'Add or document a real gift.'],['S2 ANCHOR',false,'Add one grounded proof, fresh hook, or shared identity.'],['S3 STACK_LIMIT',true,'Message rule count is within the configured limit.'],['S4 FLUENCY',true,'No unclaimed glossary terms are used.'],['S5 TONE_LINT',true,'No deterministic tone errors.'],['S6 HOOK_FRESH',true,'No stale hook is used.'],['S7 CADENCE',true,'No cadence conflict.'],['S8 DAILY_CAP',true,'Daily suggestion cap is available.'],['S9 LENGTH',true,'Message is within the channel limit.'],['S10 BRIEF_REVIEWED',true,'No proposed landmine remains unreviewed.']];
-    const results=[...failures,...soft.map(([id,pass,detail])=>({id,severity:'soft',pass,detail}))];
-    const hardFailures=failures.map((item)=>item.id);
-    const softFailures=soft.filter((item)=>!item[1]).map((item)=>item[0]);
-    return {material_id:material.id,version_id:material.current_version&&((material.current_version as RecordData).id),recipient_id:material.recipient_id,evaluated_at:now(),results,hard_failures:hardFailures,soft_failures:softFailures,copy_enabled:hardFailures.length===0};
-  };
-  const boardSnapshot = ():RecordData => ({
-    lists:[...boardLists.values()].sort((a,b)=>Number(a.position)-Number(b.position)||String(a.id).localeCompare(String(b.id))),
-    items:[...opportunities.values()].map((opportunity)=>({
-      id:opportunity.id,revision:opportunity.revision,list_id:opportunity.list_id??'list-inbox',position:Number(opportunity.position??0),title:opportunity.title,status:opportunity.status,
-      participants:opportunity.participants,tags:opportunity.tags??[],next_task:opportunity.next_task??null,deadline:opportunity.deadline??null,missing_material:opportunity.missing_material===true,
-    })).sort((a,b)=>Number(a.position)-Number(b.position)||String(a.id).localeCompare(String(b.id))),
-    board_revision:boardRevision,
-  });
+
+  function tasks(markdown: string) {
+    const bytes = new TextEncoder().encode(markdown);
+    const decoder = new TextDecoder();
+    const text = decoder.decode(bytes);
+    const lines = text.split('\n');
+    const found: Array<{ byte_start: number; byte_end: number; line_sha256: string; checked: boolean; text: string }> = [];
+    let byteOffset = 0;
+    let fence: string | null = null;
+    for (const line of lines) {
+      const fenceMatch = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+      if (fenceMatch) {
+        const marker = fenceMatch[1]![0]!;
+        fence = fence === null ? marker : fence === marker ? null : fence;
+      } else if (fence === null && !/^\s*>/.test(line) && !/^(?: {4}|\t)/.test(line)) {
+        const match = /^(\s*(?:[-*+]|\d+[.)])\s+)\[([ xX])\]\s+(.*)$/.exec(line);
+        if (match) {
+          found.push({
+            byte_start: byteOffset,
+            byte_end: byteOffset + Buffer.byteLength(line, 'utf8'),
+            line_sha256: createHash('sha256').update(line).digest('hex'),
+            checked: match[2]!.toLowerCase() === 'x',
+            text: match[3]!,
+          });
+        }
+      }
+      byteOffset += Buffer.byteLength(line, 'utf8') + 1;
+    }
+    return found;
+  }
+
+  function boardSnapshot() {
+    return {
+      lists: boardLists.slice().sort((a, b) => a.position - b.position || a.id.localeCompare(b.id)),
+      cards: [...opportunities.values()].map((opportunity) => {
+        const placement = placements.get(String(opportunity.id))!;
+        const note = notesByOpportunity.get(String(opportunity.id)) ?? { markdown: '', revision: 1 };
+        const nextTask = tasks(note.markdown).find((task) => !task.checked)?.text ?? null;
+        return { opportunity, placement: { opportunity_id: opportunity.id, list_id: placement.list_id, position: placement.position, revision: placement.placement_revision, next_task: nextTask } };
+      }).sort((a, b) => a.placement.list_id.localeCompare(b.placement.list_id) || a.placement.position - b.placement.position || String(a.opportunity.id).localeCompare(String(b.opportunity.id))),
+    };
+  }
+
+  function notesRecord(id: string) {
+    const notes = notesByOpportunity.get(id) ?? { markdown: '', revision: 1 };
+    return { opportunity_id: id, markdown: notes.markdown, revision: notes.revision, next_task: tasks(notes.markdown).find((task) => !task.checked)?.text ?? null, tasks: tasks(notes.markdown) };
+  }
 
   function json(response: ServerResponse, status: number, body: unknown) {
     response.writeHead(status, {
@@ -197,86 +222,130 @@ export function createMockApi(): MockApi {
       return fail(response, cookie ? 403 : 401, cookie ? 'TOKEN_INVALID' : 'SESSION_REQUIRED', 'Sign in to the local workspace');
     }
 
-    if (url.pathname === '/api/v1/board' && request.method === 'GET') return json(response,200,boardSnapshot());
-    if (url.pathname === '/api/v1/board/lists' && request.method === 'POST') {
-      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}
-      if(Number(input.expected_revision)!==boardRevision)return fail(response,412,'BOARD_STALE','Board order changed in another session.');
-      const name=typeof input.name==='string'?input.name.trim():'';if(!name||name.length>120)return fail(response,422,'LIST_INVALID','Enter a list name of at most 120 characters.');
-      const id=randomHex();const list={id,name,position:boardLists.size,revision:1,archived:false};const command=rememberCommand(request,createHash('sha256').update(JSON.stringify(input)).digest('hex'),boardSnapshot());if(!command)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');if(command.prior)return command.prior.__key_reused?fail(response,409,'KEY_REUSED','Idempotency key was used for a different command'):json(response,201,command.prior);boardLists.set(id,list);boardRevision++;return json(response,201,boardSnapshot());
+    if (url.pathname === '/api/v1/template-families' && request.method === 'GET') return json(response, 200, { items: templateFamilies });
+    if (url.pathname === '/api/v1/template-families' && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const family = { id: randomHex(), name: String(input.name) }; templateFamilies.push(family); return json(response, 201, family);
     }
-    const boardListMatch=url.pathname.match(/^\/api\/v1\/board\/lists\/([^/]+)(?:\/(archive|cards\/reorder))?$/);
-    if(boardListMatch&&request.method==='PATCH'&&!boardListMatch[2]){
-      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}const id=decodeURIComponent(boardListMatch[1]!);const list=boardLists.get(id);if(!list)return fail(response,404,'NOT_FOUND','Board list does not exist');if(Number(input.expected_revision)!==Number(list.revision))return fail(response,412,'LIST_STALE','Board list changed in another session.');const name=typeof input.name==='string'?input.name.trim():'';if(!name||name.length>120)return fail(response,422,'LIST_INVALID','Enter a list name of at most 120 characters.');const command=rememberCommand(request,createHash('sha256').update(JSON.stringify([id,input])).digest('hex'),boardSnapshot());if(!command)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');if(command.prior)return command.prior.__key_reused?fail(response,409,'KEY_REUSED','Idempotency key was used for a different command'):json(response,200,command.prior);boardLists.set(id,{...list,name,revision:Number(list.revision)+1});boardRevision++;return json(response,200,boardSnapshot());
+    if (url.pathname === '/api/v1/templates' && request.method === 'GET') return json(response, 200, writingTemplates);
+    const templateVersionMatch = /^\/api\/v1\/templates\/([^/]+)\/versions$/.exec(url.pathname);
+    if (templateVersionMatch && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const template = { id: randomHex(), family_id: templateVersionMatch[1], version: 1, status: 'draft', ...input, parent_version_id: input.parent_version_id ?? null }; writingTemplates.unshift(template); return json(response, 201, template);
     }
-    if(url.pathname==='/api/v1/board/lists/order'&&request.method==='PUT'){
-      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}if(Number(input.expected_revision)!==boardRevision)return fail(response,412,'BOARD_STALE','Board changed in another session.');const ids=Array.isArray(input.ordered_ids)?input.ordered_ids.map(String):[];const active=[...boardLists.values()].filter(item=>item.archived!==true);if(ids.length!==active.length||new Set(ids).size!==active.length||ids.some(id=>!boardLists.has(id)||boardLists.get(id)!.archived===true))return fail(response,422,'LIST_ORDER_INVALID','Order must include each active list once.');const command=rememberCommand(request,createHash('sha256').update(JSON.stringify(input)).digest('hex'),boardSnapshot());if(!command)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');if(command.prior)return command.prior.__key_reused?fail(response,409,'KEY_REUSED','Idempotency key was used for a different command'):json(response,200,command.prior);ids.forEach((id,index)=>{const list=boardLists.get(id)!;boardLists.set(id,{...list,position:index,revision:Number(list.revision)+1});});boardRevision++;return json(response,200,boardSnapshot());
-    }
-    if(boardListMatch&&boardListMatch[2]==='archive'&&request.method==='POST'){
-      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}const id=decodeURIComponent(boardListMatch[1]!);const source=boardLists.get(id);const target=boardLists.get(String(input.destination_list_id));if(!source||!target||source.archived===true||target.archived===true||source.id===target.id)return fail(response,422,'ARCHIVE_DESTINATION_INVALID','Choose a different active destination list.');if(Number(input.expected_revision)!==Number(source.revision))return fail(response,412,'LIST_STALE','Board list changed in another session.');const command=rememberCommand(request,createHash('sha256').update(JSON.stringify([id,input])).digest('hex'),boardSnapshot());if(!command)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');if(command.prior)return command.prior.__key_reused?fail(response,409,'KEY_REUSED','Idempotency key was used for a different command'):json(response,200,command.prior);for(const [oppId,item] of opportunities){if(item.list_id===id)opportunities.set(oppId,{...item,list_id:target.id,position:Number(target.position)+1});}boardLists.set(id,{...source,archived:true,revision:Number(source.revision)+1});boardRevision++;return json(response,200,boardSnapshot());
-    }
-    if(boardListMatch&&boardListMatch[2]==='cards/reorder'&&request.method==='POST'){
-      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}const list=boardLists.get(decodeURIComponent(boardListMatch[1]!));const id=String(input.opportunity_id);const item=opportunities.get(id);if(!item||!list||item.list_id!==list.id)return fail(response,404,'NOT_FOUND','Opportunity is not in that list.');if(Number(input.expected_revision)!==Number(list.revision))return fail(response,412,'LIST_STALE','Board list changed in another session.');const ordered=[...opportunities.values()].filter(value=>value.list_id===list.id).sort((a,b)=>Number(a.position)-Number(b.position));const remaining=ordered.filter(value=>value.id!==id);const anchorId=input.anchor_opportunity_id as string|null;const anchor=anchorId===null?null:remaining.find(value=>value.id===anchorId);if(anchorId!==null&&!anchor)return fail(response,422,'ANCHOR_INVALID','Choose a current card as the anchor.');const at=anchor?remaining.indexOf(anchor)+1:0;remaining.splice(at,0,item);remaining.forEach((value,index)=>opportunities.set(String(value.id),{...value,position:index}));const command=rememberCommand(request,createHash('sha256').update(JSON.stringify([list.id,input])).digest('hex'),boardSnapshot());if(!command)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');if(command.prior)return command.prior.__key_reused?fail(response,409,'KEY_REUSED','Idempotency key was used for a different command'):json(response,200,command.prior);boardLists.set(String(list.id),{...list,revision:Number(list.revision)+1});boardRevision++;return json(response,200,boardSnapshot());
-    }
-    const boardCardMatch=url.pathname.match(/^\/api\/v1\/board\/cards\/([^/]+)\/move$/);
-    if(boardCardMatch&&request.method==='POST'){
-      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}const id=decodeURIComponent(boardCardMatch[1]!);const item=opportunities.get(id);const source=item?boardLists.get(String(item.list_id)):null;const target=boardLists.get(String(input.destination_list_id));if(!item||!source||!target||target.archived===true)return fail(response,404,'NOT_FOUND','Opportunity or active destination list does not exist.');if(Number(input.expected_board_revision)!==boardRevision||Number(input.expected_source_revision)!==Number(source.revision)||Number(input.expected_destination_revision)!==Number(target.revision))return fail(response,412,'BOARD_STALE','Board or list order changed in another session.');const command=rememberCommand(request,createHash('sha256').update(JSON.stringify([id,input])).digest('hex'),boardSnapshot());if(!command)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');if(command.prior)return command.prior.__key_reused?fail(response,409,'KEY_REUSED','Idempotency key was used for a different command'):json(response,200,command.prior);const dest=[...opportunities.values()].filter(value=>value.list_id===target.id&&value.id!==id).sort((a,b)=>Number(a.position)-Number(b.position));const anchorId=input.anchor_opportunity_id as string|null;const anchor=anchorId===null?null:dest.find(value=>value.id===anchorId);if(anchorId!==null&&!anchor)return fail(response,422,'ANCHOR_INVALID','Choose a current destination card.');dest.splice(anchor?dest.indexOf(anchor)+1:0,0,{...item,list_id:target.id});dest.forEach((value,index)=>opportunities.set(String(value.id),{...value,list_id:target.id,position:index}));const remainder=[...opportunities.values()].filter(value=>value.list_id===source.id&&value.id!==id).sort((a,b)=>Number(a.position)-Number(b.position));remainder.forEach((value,index)=>opportunities.set(String(value.id),{...value,position:index}));boardLists.set(String(source.id),{...source,revision:Number(source.revision)+1});boardLists.set(String(target.id),{...target,revision:Number(target.revision)+1});boardRevision++;return json(response,200,boardSnapshot());
-    }
-    const notesMatch=url.pathname.match(/^\/api\/v1\/opportunities\/([^/]+)\/notes(?:\/tasks)?$/);
-    if(notesMatch&&request.method==='GET'){const id=decodeURIComponent(notesMatch[1]!);if(!opportunities.has(id))return fail(response,404,'NOT_FOUND','Opportunity does not exist');const notes=opportunityNotes.get(id)??{markdown:'',revision:1};return json(response,200,{opportunity_id:id,...notes});}
-    if(notesMatch&&(request.method==='PUT'||request.method==='PATCH')){
-      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}const id=decodeURIComponent(notesMatch[1]!);if(!opportunities.has(id))return fail(response,404,'NOT_FOUND','Opportunity does not exist');const current=opportunityNotes.get(id)??{markdown:'',revision:1};if(Number(input.expected_revision)!==current.revision)return fail(response,412,'NOTES_STALE','Canonical notes changed in another session.');let markdown:string;if(request.method==='PUT'){if(typeof input.markdown!=='string'||Buffer.byteLength(input.markdown)>200000)return fail(response,422,'NOTES_INVALID','Notes must be UTF-8 Markdown up to 200,000 bytes.');markdown=input.markdown;}else{if(!Number.isSafeInteger(input.start_byte)||!Number.isSafeInteger(input.end_byte)||typeof input.line_hash!=='string'||typeof input.checked!=='boolean')return fail(response,422,'TASK_SPAN_INVALID','Task source span is malformed.');const bytes=Buffer.from(current.markdown,'utf8');const start=Number(input.start_byte),end=Number(input.end_byte);if(start<0||end<start||end>bytes.length)return fail(response,422,'TASK_SPAN_INVALID','Task source span is outside the notes.');const lineStart=bytes.lastIndexOf(10,Math.max(0,start-1))+1;let lineEnd=bytes.indexOf(10,end);if(lineEnd<0)lineEnd=bytes.length;const line=bytes.subarray(lineStart,lineEnd);if(createHash('sha256').update(line).digest('hex')!==input.line_hash||bytes.subarray(start,end).toString('utf8')!=='[ ]'&&bytes.subarray(start,end).toString('utf8')!=='[x]'&&bytes.subarray(start,end).toString('utf8')!=='[X]')return fail(response,412,'TASK_STALE','Task marker or source line changed.');markdown=Buffer.concat([bytes.subarray(0,start),Buffer.from(input.checked?'[x]':'[ ]'),bytes.subarray(end)]).toString('utf8');}
-      const command=rememberCommand(request,createHash('sha256').update(JSON.stringify([id,input])).digest('hex'),{});if(!command)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');if(command.prior?.__key_reused)return fail(response,409,'KEY_REUSED','Idempotency key was used for a different command');if(command.prior){const saved=opportunityNotes.get(id)!;return json(response,200,{opportunity_id:id,...saved});}const saved={markdown,revision:current.revision+1};opportunityNotes.set(id,saved);return json(response,200,{opportunity_id:id,...saved});
-    }
+    const templateTransition = /^\/api\/v1\/templates\/([^/]+)\/(approve|activate)$/.exec(url.pathname);
+    if (templateTransition && request.method === 'POST') { const template = writingTemplates.find((item) => item.id === templateTransition[1]); if (!template) return fail(response, 404, 'TEMPLATE_NOT_FOUND', 'Template does not exist'); template.status = templateTransition[2] === 'approve' ? 'approved' : 'active'; response.writeHead(204); response.end(); return; }
+    if (url.pathname === '/api/v1/embedding-model' && request.method === 'GET') return json(response, 200, { model: embeddingModel, model_digest: null, calibrated_kinds: [] });
+    if (url.pathname === '/api/v1/embedding-model' && request.method === 'PUT') { let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); } embeddingModel = String(input.model); return json(response, 200, { model: embeddingModel, model_digest: null, calibration_required: true }); }
+    if (url.pathname === '/api/v1/voice-samples' && request.method === 'GET') return json(response, 200, { items: voiceSamples });
+    if (url.pathname === '/api/v1/voice-samples' && request.method === 'POST') { let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); } const sample = { id: randomHex(), ...input, revision: 1, status: 'active' }; voiceSamples.push(sample); return json(response, 201, sample); }
+    const voiceRetire = /^\/api\/v1\/voice-samples\/([^/]+)\/retire$/.exec(url.pathname);
+    if (voiceRetire && request.method === 'POST') { const sample = voiceSamples.find((item) => item.id === voiceRetire[1]); if (!sample) return fail(response, 404, 'VOICE_SAMPLE_NOT_FOUND', 'Voice sample does not exist'); sample.status = 'retired'; return json(response, 200, { id: sample.id, status: 'retired', revision: 2 }); }
+    if (url.pathname === '/api/v1/matching/calibrations' && request.method === 'GET') return json(response, 200, { model: embeddingModel, model_digest: null, scoring_config_digest: null, calibrations: [] });
+    const writingInterestsMatch = /^\/api\/v1\/opportunities\/([^/]+)\/interests$/.exec(url.pathname);
+    if (writingInterestsMatch && request.method === 'GET') return json(response, 200, { opportunity_id: writingInterestsMatch[1], recipient_id: url.searchParams.get('recipient_id'), items: writingInterests.get(`${writingInterestsMatch[1]}:${url.searchParams.get('recipient_id')}`) ?? [] });
+    if (writingInterestsMatch && request.method === 'POST') { let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); } const key = `${writingInterestsMatch[1]}:${String(input.recipient_id)}`; const item = { id: randomHex(), revision: 1, status: 'active', ...input, check_suggestion: input.check_suggestion ?? null, claim_id: null, claim_revision: null }; writingInterests.set(key, [...(writingInterests.get(key) ?? []), item]); return json(response, 201, item); }
+    const writingExchangeMatch = /^\/api\/v1\/opportunities\/([^/]+)\/exchange(?:\/([^/]+)\/attest)?$/.exec(url.pathname);
+    if (writingExchangeMatch && request.method === 'GET') { const versions = writingExchanges.get(`${writingExchangeMatch[1]}:${url.searchParams.get('recipient_id')}`) ?? []; return json(response, 200, { opportunity_id: writingExchangeMatch[1], recipient_id: url.searchParams.get('recipient_id'), current: versions.at(-1) ?? null, versions }); }
+    if (writingExchangeMatch && url.pathname.endsWith('/attest') && request.method === 'POST') { const recipient = writingExchangeMatch[2]!; const versions = writingExchanges.get(`${writingExchangeMatch[1]}:${recipient}`) ?? []; const current = versions.at(-1); if (!current) return fail(response, 404, 'EXCHANGE_MISSING', 'Exchange does not exist'); current.fairness_attested = true; return json(response, 200, { version: current.version, fairness_attested: true }); }
+    if (writingExchangeMatch && request.method === 'POST') { let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); } const key = `${writingExchangeMatch[1]}:${String(input.recipient_id)}`; const versions = writingExchanges.get(key) ?? []; const version = { version: versions.length + 1, they_get: input.they_get, i_get: input.i_get, fairness_attested: false, interest_ids: input.interest_ids, interests: [], attestation_digest: null, attested_at: null }; versions.push(version); writingExchanges.set(key, versions); return json(response, 201, version); }
+    const writingMatch = /^\/api\/v1\/opportunities\/([^/]+)\/matches$/.exec(url.pathname);
+    if (writingMatch && request.method === 'POST') return fail(response, 503, 'EMBED_MODEL_UNAVAILABLE', 'No local embedding provider is available. Manual resource selection remains available.');
+    if (writingMatch && request.method === 'GET') return fail(response, 404, 'MATCH_NOT_FOUND', 'No completed match exists for this opportunity and recipient.');
+    if (/^\/api\/v1\/templates\/build$/.test(url.pathname) && request.method === 'POST') return fail(response, 503, 'MODEL_UNAVAILABLE', 'Template Builder is unavailable; create a manual template version.');
+    if (/^\/api\/v1\/opportunities\/[^/]+\/materials\/compose$/.test(url.pathname) && request.method === 'POST') return fail(response, 503, 'MODEL_UNAVAILABLE', 'Composer is unavailable; save an owner-authored draft.');
 
-    if (url.pathname === '/api/v1/opportunities' && request.method === 'GET') {
-      return json(response,200,{data:[...opportunities.values()],cursor:String(events.length)});
+    if (url.pathname === '/api/v1/agent/question-bank' && request.method === 'GET') return json(response, 200, questionBank);
+    if (url.pathname === '/api/v1/agent/question-bank' && request.method === 'PUT') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      if (input.expected_version_id !== questionBank.version_id || !input.content || typeof input.content !== 'object') return fail(response, 409, 'QUESTION_BANK_STALE', 'Reload the active bank before editing');
+      questionBank.version_id = randomHex(); questionBank.content = input.content as typeof questionBank.content; return json(response, 200, { version_id: questionBank.version_id, sha256: 'c'.repeat(64) });
     }
-    if (url.pathname === '/api/v1/opportunities' && request.method === 'POST') {
-      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}
-      const title=typeof input.title==='string'?input.title.trim():'';const ids=Array.isArray(input.participant_ids)?input.participant_ids.map(String):[];
-      if(!title||ids.some((id)=>!directory.has(id)))return fail(response,422,'OPPORTUNITY_INVALID','Title and existing participants are required.');
-      const id=randomHex();const stamp=now();const result={id,title,status:'open',revision:1,participants:ids.map((partyId)=>{const row=directory.get(partyId)!;return{id:row.id,kind:row.kind,name:row.name};}),created_at:stamp,updated_at:stamp,list_id:'list-inbox',position:[...opportunities.values()].filter(item=>item.list_id==='list-inbox').length,tags:[],next_task:null,deadline:null,missing_material:false};
-      const digest=createHash('sha256').update(JSON.stringify(input)).digest('hex');const command=rememberCommand(request,digest,result);if(!command)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');if(command.prior)return command.prior.__key_reused?fail(response,409,'KEY_REUSED','Idempotency key was used for a different command'):json(response,201,command.prior);
-      opportunities.set(id,result);opportunityInterests.set(id,[]);opportunityNotes.set(id,{markdown:'',revision:1});boardRevision++;pushEvent({event_id:randomHex(),entity_type:'opportunity',entity_id:id,revision:1,event_type:'opportunity.created',payload:{}});return json(response,201,result);
+    const promptMatch = /^\/api\/v1\/agent\/prompts\/(interviewer|briefer)$/.exec(url.pathname);
+    if (promptMatch && request.method === 'GET') return json(response, 200, prompts.get(promptMatch[1]!)!);
+    if (promptMatch && request.method === 'PUT') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const current = prompts.get(promptMatch[1]!)!; if (input.expected_version_id !== current.version_id) return fail(response, 409, 'PROMPT_STALE', 'Reload the active prompt before editing');
+      const next = { ...current, version: Number(current.version) + 1, version_id: randomHex(), content: String(input.content), sha256: 'd'.repeat(64) }; prompts.set(promptMatch[1]!, next); return json(response, 200, next);
     }
-    const participantMatch=url.pathname.match(/^\/api\/v1\/opportunities\/([^/]+)\/participants$/);
-    if(participantMatch&&request.method==='PUT'){
-      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}const id=decodeURIComponent(participantMatch[1]!);const current=opportunities.get(id);if(!current)return fail(response,404,'NOT_FOUND','Opportunity does not exist');if(Number(input.expected_revision)!==Number(current.revision))return fail(response,412,'STALE_REVISION','Opportunity participants changed.');const ids=Array.isArray(input.participant_ids)?input.participant_ids.map(String):[];if(ids.some((partyId)=>!directory.has(partyId)))return fail(response,422,'PARTICIPANT_UNKNOWN','Every participant must be a saved party.');const result={...current,participants:ids.map((partyId)=>{const row=directory.get(partyId)!;return{id:row.id,kind:row.kind,name:row.name};}),revision:Number(current.revision)+1,updated_at:now()};const command=rememberCommand(request,createHash('sha256').update(JSON.stringify([id,input])).digest('hex'),result);if(!command)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');if(command.prior)return command.prior.__key_reused?fail(response,409,'KEY_REUSED','Idempotency key was used for a different command'):json(response,200,command.prior);opportunities.set(id,result);return json(response,200,result);
+    if (url.pathname === '/api/v1/agent/chats' && request.method === 'GET') {
+      const role = url.searchParams.get('role'); const scopeKind = url.searchParams.get('scope_kind'); const scopeId = url.searchParams.get('scope_id');
+      return json(response, 200, [...agentChats.values()].filter((chat) => (!role || chat.role === role) && (!scopeKind || chat.scope_kind === scopeKind) && (!scopeId || chat.scope_id === scopeId)).map((chat) => ({ id: chat.id, role: chat.role, scope_kind: chat.scope_kind, scope_id: chat.scope_id, asset_kind: chat.asset_kind, revision: chat.revision, last_turn: (chat.turns as RecordData[]).at(-1)?.text ?? null, updated_at: now(), active_job_id: chat.active_job_id })));
     }
-    const interestMatch=url.pathname.match(/^\/api\/v1\/opportunities\/([^/]+)\/interests$/);
-    if(interestMatch&&request.method==='GET'){const rows=opportunityInterests.get(decodeURIComponent(interestMatch[1]!));return rows?json(response,200,{data:rows}):fail(response,404,'NOT_FOUND','Opportunity does not exist');}
-    if(interestMatch&&request.method==='POST'){
-      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}const id=decodeURIComponent(interestMatch[1]!);if(!opportunities.has(id))return fail(response,404,'NOT_FOUND','Opportunity does not exist');const statement=typeof input.statement==='string'?input.statement.trim():'';if(!['me','them'].includes(String(input.side))||!statement)return fail(response,422,'INTEREST_INVALID','Choose a side and write an interest.');const result={id:randomHex(),opportunity_id:id,side:input.side,statement,tier:3,status:'active',revision:1};const command=rememberCommand(request,createHash('sha256').update(JSON.stringify([id,input])).digest('hex'),result);if(!command)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');if(command.prior)return command.prior.__key_reused?fail(response,409,'KEY_REUSED','Idempotency key was used for a different command'):json(response,201,command.prior);opportunityInterests.get(id)!.push(result);return json(response,201,result);
+    if (url.pathname === '/api/v1/agent/chats' && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const id = randomHex(); const chat = { id, role: input.role, scope_kind: input.scope_kind, scope_id: input.scope_id ?? null, asset_kind: input.asset_kind ?? null, revision: 1, active_job_id: null, turns: [], questions: [], candidates: [] };
+      agentChats.set(id, chat); return json(response, 201, chat);
     }
-    const exchangeMatch=url.pathname.match(/^\/api\/v1\/opportunities\/([^/]+)\/exchange$/);
-    if(exchangeMatch&&request.method==='GET'){const id=decodeURIComponent(exchangeMatch[1]!);if(!opportunities.has(id))return fail(response,404,'NOT_FOUND','Opportunity does not exist');return json(response,200,opportunityExchanges.get(id)??null);}
-    if(exchangeMatch&&request.method==='PUT'){
-      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}const id=decodeURIComponent(exchangeMatch[1]!);const current=opportunityExchanges.get(id);if(!opportunities.has(id))return fail(response,404,'NOT_FOUND','Opportunity does not exist');if(Number(input.expected_revision)!==(current?Number(current.version):0))return fail(response,412,'STALE_EXCHANGE','Exchange changed in another session.');const linked=Array.isArray(input.interest_ids)?input.interest_ids.map(String):[];const available=opportunityInterests.get(id)??[];const sides=new Set(linked.map((interestId)=>available.find((item)=>item.id===interestId)?.side).filter(Boolean));if(!String(input.they_get??'').trim()||!String(input.i_get??'').trim()||!sides.has('them')||!sides.has('me'))return fail(response,422,'EXCHANGE_INCOMPLETE','Link an active interest from each side and state both benefits.');const result={id:randomHex(),opportunity_id:id,version:(current?Number(current.version):0)+1,they_get:String(input.they_get),i_get:String(input.i_get),interest_ids:linked,fairness_attested:input.fairness_attested===true,attested_at:input.fairness_attested===true?now():null};const command=rememberCommand(request,createHash('sha256').update(JSON.stringify([id,input])).digest('hex'),result);if(!command)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');if(command.prior)return command.prior.__key_reused?fail(response,409,'KEY_REUSED','Idempotency key was used for a different command'):json(response,200,command.prior);opportunityExchanges.set(id,result);return json(response,200,result);
+    if (url.pathname === '/api/v1/segments' && request.method === 'GET') return json(response, 200, [...segments.values()].sort((a, b) => String(a.name).localeCompare(String(b.name))));
+    if (url.pathname === '/api/v1/segments' && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      if (typeof input.name !== 'string' || !input.name.trim()) return fail(response, 422, 'SEGMENT_INVALID', 'Segment needs a name');
+      const segment = { id: randomHex(), name: input.name.trim(), description: typeof input.description === 'string' ? input.description : null, revision: 1 }; segments.set(segment.id, segment); segmentMembers.set(segment.id, new Set()); return json(response, 201, segment);
     }
-    const opportunityMaterials=url.pathname.match(/^\/api\/v1\/opportunities\/([^/]+)\/materials$/);
-    if(opportunityMaterials&&request.method==='GET'){const id=decodeURIComponent(opportunityMaterials[1]!);if(!opportunities.has(id))return fail(response,404,'NOT_FOUND','Opportunity does not exist');return json(response,200,{data:[...materials.values()].filter((item)=>item.opportunity_id===id)});}
-    if(opportunityMaterials&&request.method==='POST'){
-      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}const opportunityId=decodeURIComponent(opportunityMaterials[1]!);const opportunity=opportunities.get(opportunityId);const recipient=opportunity?.participants instanceof Array?(opportunity.participants as RecordData[]).find((item)=>item.id===input.recipient_id):null;if(!opportunity||!recipient||!['outreach','follow_up','handoff'].includes(String(input.kind))||!String(input.title??'').trim())return fail(response,422,'MATERIAL_INVALID','Choose a participant and valid material details.');const id=randomHex();const result={id,opportunity_id:opportunityId,recipient_id:recipient.id,recipient_kind:recipient.kind,recipient_name:recipient.name,kind:input.kind,title:String(input.title).trim(),revision:1,current_version:null,versions:[],claim_references:[],approval:null,updated_at:now()};const command=rememberCommand(request,createHash('sha256').update(JSON.stringify([opportunityId,input])).digest('hex'),result);if(!command)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');if(command.prior)return command.prior.__key_reused?fail(response,409,'KEY_REUSED','Idempotency key was used for a different command'):json(response,201,command.prior);materials.set(id,result);return json(response,201,result);
+    const segmentMember = /^\/api\/v1\/segments\/([^/]+)\/parties$/.exec(url.pathname);
+    if (segmentMember && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const members = segmentMembers.get(segmentMember[1]!); if (!members || !directory.has(String(input.party_id))) return fail(response, 404, 'SEGMENT_OR_PARTY_NOT_FOUND', 'Segment or party does not exist');
+      if (input.action === 'add') members.add(String(input.party_id)); else if (input.action === 'remove') members.delete(String(input.party_id)); else return fail(response, 422, 'SEGMENT_ACTION_INVALID', 'Action must be add or remove');
+      return json(response, 200, { segment_id: segmentMember[1], party_id: input.party_id, action: input.action });
     }
-    const materialMatch=url.pathname.match(/^\/api\/v1\/materials\/([^/]+)(?:\/(versions|gate|approval|copy-grant))?$/);
-    if(materialMatch){const id=decodeURIComponent(materialMatch[1]!);const operation=materialMatch[2];const material=materials.get(id);if(!material)return fail(response,404,'NOT_FOUND','Material does not exist');
-      if(!operation&&request.method==='GET')return json(response,200,material);
-      if(operation==='versions'&&request.method==='PUT'){
-        let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}if(Number(input.expected_revision)!==Number(material.revision))return fail(response,412,'STALE_MATERIAL','Material changed in another session.');if(typeof input.body!=='string'||!Array.isArray(input.sentences)||!input.sentences.every((sentence)=>sentence&&typeof sentence.text==='string'&&Array.isArray(sentence.claims)&&Array.isArray(sentence.rules)))return fail(response,422,'MATERIAL_VERSION_INVALID','Body and sentence annotations are required.');const sequence=(Array.isArray(material.versions)?material.versions.length:0)+1;const version={id:randomHex(),material_id:id,sequence,body:input.body,sentences:input.sentences,slot_fills:input.slot_fills??{},protected_tokens:input.protected_tokens??[],digest:createHash('sha256').update(input.body).digest('hex'),created_at:now()};const result={...material,revision:Number(material.revision)+1,current_version:version,versions:[...(material.versions as RecordData[]),version],approval:null,updated_at:now()};const command=rememberCommand(request,createHash('sha256').update(JSON.stringify([id,input])).digest('hex'),result);if(!command)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');if(command.prior)return command.prior.__key_reused?fail(response,409,'KEY_REUSED','Idempotency key was used for a different command'):json(response,200,command.prior);materials.set(id,result);return json(response,200,result);
+    if (url.pathname === '/api/v1/fluency' && request.method === 'GET') return json(response, 200, [...fluency.values()].sort((a, b) => a.term.localeCompare(b.term)));
+    const fluencyMatch = /^\/api\/v1\/fluency\/([^/]+)$/.exec(url.pathname);
+    if (fluencyMatch && request.method === 'PUT') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      if (!['unknown', 'learning', 'fluent'].includes(String(input.status))) return fail(response, 422, 'FLUENCY_INVALID', 'Unknown fluency state');
+      const term = decodeURIComponent(fluencyMatch[1]!); const old = fluency.get(term);
+      if (old && input.expected_revision !== old.revision) return fail(response, 409, 'FLUENCY_STALE', 'Vocabulary fluency changed');
+      const updated = { term, status: input.status as 'unknown' | 'learning' | 'fluent', revision: (old?.revision ?? 0) + 1 }; fluency.set(term, updated); return json(response, 200, updated);
+    }
+    const chatPath = /^\/api\/v1\/agent\/chats\/([^/]+)(?:\/(turns|questions))?$/.exec(url.pathname);
+    if (chatPath) {
+      const chat = agentChats.get(chatPath[1]!); if (!chat) return fail(response, 404, 'CHAT_NOT_FOUND', 'Chat does not exist');
+      if (!chatPath[2] && request.method === 'GET') return json(response, 200, chat);
+      if (chatPath[2] === 'questions' && request.method === 'POST') {
+        let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+        const state = { question_id: String(input.question_id), state: input.action === 'ask' ? 'asked' : input.action === 'skip' ? 'skipped' : input.action === 'defer' ? 'deferred' : 'unknown' };
+        const questions = chat.questions as RecordData[]; const index = questions.findIndex((item) => item.question_id === state.question_id); if (index < 0) questions.push(state); else questions[index] = state;
+        if (input.action === 'ask') {
+          const assetKind = chat.asset_kind as 'proof' | 'gift' | 'artifact';
+          (chat.turns as RecordData[]).push({ id: randomHex(), turn_no: (chat.turns as RecordData[]).length + 1, speaker: 'agent', text: questionBank.content.questions[assetKind]?.find((item) => item.id === input.question_id)?.text ?? 'What would you like to share?', job_id: null, created_at: now() });
+        }
+        chat.revision = Number(chat.revision) + 1; return json(response, 200, { chat_id: chat.id, ...state, revision: chat.revision });
       }
-      if(operation==='gate'&&request.method==='GET'){if(!material.current_version||String(material.current_version&& (material.current_version as RecordData).id)!==url.searchParams.get('version_id'))return fail(response,409,'VERSION_STALE','Requested material version is not current.');return json(response,200,gateFor(material));}
-      if(operation==='approval'&&request.method==='POST'){
-        let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}if(Number(input.expected_revision)!==Number(material.revision)||!material.current_version||(material.current_version as RecordData).id!==input.version_id)return fail(response,412,'VERSION_STALE','Material version changed before approval.');const gate=gateFor(material);if((gate.hard_failures as string[]).length)return fail(response,422,'GATE_HARD_FAILURE','Hard gate failures block approval.');const reasons=input.override_reasons&&typeof input.override_reasons==='object'?input.override_reasons as RecordData:{};for(const softId of gate.soft_failures as string[]){if(typeof reasons[softId]!=='string'||String(reasons[softId]).trim().length<10)return fail(response,422,'SOFT_OVERRIDE_REQUIRED',`A reason of at least ten characters is required for ${softId}.`);}const version=material.current_version as RecordData;const result={id:randomHex(),material_id:id,version_id:version.id,recipient_id:material.recipient_id,digest:version.digest,approved_at:now(),gate_snapshot:gate,override_reasons:reasons};const command=rememberCommand(request,createHash('sha256').update(JSON.stringify([id,input])).digest('hex'),result);if(!command)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');if(command.prior)return command.prior.__key_reused?fail(response,409,'KEY_REUSED','Idempotency key was used for a different command'):json(response,201,command.prior);const updated={...material,approval:result,updated_at:now()};materials.set(id,updated);return json(response,201,result);
-      }
-      if(operation==='copy-grant'&&request.method==='POST'){
-        let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}const version=material.current_version as RecordData|null;const approval=material.approval as RecordData|null;if(!version||version.id!==input.version_id||material.recipient_id!==input.recipient_id||!approval||approval.version_id!==version.id||approval.recipient_id!==input.recipient_id)return fail(response,403,'RELEASE_NOT_APPROVED','Only the exact approved version and recipient may be released.');const gate=gateFor(material);if((gate.hard_failures as string[]).length)return fail(response,403,'GATE_CHANGED','Current prerequisites invalidate release.');const grantId=randomHex();const result={grant_id:grantId,material_id:id,version_id:version.id,recipient_id:material.recipient_id,digest:version.digest,body:version.body,expires_at:new Date(testClock+5*60_000).toISOString()};const command=rememberCommand(request,createHash('sha256').update(JSON.stringify([id,input])).digest('hex'),result);if(!command)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');if(command.prior)return command.prior.__key_reused?fail(response,409,'KEY_REUSED','Idempotency key was used for a different command'):json(response,201,command.prior);copyGrants.set(grantId,{...result,status:'issued',acknowledged_at:null});return json(response,201,result);
+      if (chatPath[2] === 'turns' && request.method === 'POST') {
+        let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+        const turns = chat.turns as RecordData[]; turns.push({ id: randomHex(), turn_no: turns.length + 1, speaker: 'owner', text: String(input.text), job_id: null, created_at: now() });
+        const jobId = randomHex(); const interviewer = chat.role === 'interviewer'; const candidateId = randomHex();
+        turns.push({ id: randomHex(), turn_no: turns.length + 1, speaker: 'agent', text: interviewer ? 'What context and time period should I record?' : 'I will review only this scoped material. What should we clarify?', job_id: jobId, created_at: now() });
+        if (interviewer) (chat.candidates as RecordData[]).push({ id: candidateId, asset_kind: chat.asset_kind, fields: {}, owner_quotes: {}, missing_fields: ['what'], state: 'proposed', resource_id: null });
+        chat.revision = Number(chat.revision) + 1; chat.active_job_id = jobId; roleJobs.set(jobId, { id: jobId, role: interviewer ? 'interviewer' : 'briefer', status: 'succeeded', result: interviewer ? { candidate_id: candidateId } : { response: 'I will review only this scoped material.' }, last_error: null });
+        return json(response, 202, { chat_id: chat.id, turn_id: turns.at(-2)!.id, job_id: jobId, revision: chat.revision });
       }
     }
-    const grantReceiptMatch=url.pathname.match(/^\/api\/v1\/copy-grants\/([^/]+)$/);
-    if(grantReceiptMatch&&request.method==='GET'){const grant=copyGrants.get(decodeURIComponent(grantReceiptMatch[1]!));if(!grant)return fail(response,404,'NOT_FOUND','Copy grant does not exist');return json(response,200,{grant_id:grant.grant_id,material_id:grant.material_id,version_id:grant.version_id,recipient_id:grant.recipient_id,digest:grant.digest,status:grant.status,acknowledged_at:grant.acknowledged_at});}
-    const grantAckMatch=url.pathname.match(/^\/api\/v1\/copy-grants\/([^/]+)\/acknowledgement$/);
-    if(grantAckMatch&&request.method==='POST'){
-      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}const grantId=decodeURIComponent(grantAckMatch[1]!);const grant=copyGrants.get(grantId);if(!grant)return fail(response,404,'NOT_FOUND','Copy grant does not exist');const command=rememberCommand(request,createHash('sha256').update(JSON.stringify([grantId,input])).digest('hex'),{});if(!command)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');if(command.prior?.__key_reused)return fail(response,409,'KEY_REUSED','Idempotency key was used for a different command');if(command.prior){const known=copyGrants.get(grantId)!;return json(response,200,{grant_id:known.grant_id,material_id:known.material_id,version_id:known.version_id,recipient_id:known.recipient_id,digest:known.digest,status:known.status,acknowledged_at:known.acknowledged_at});}const result:RecordData={...grant,status:input.success===true?'acknowledged':'failed',acknowledged_at:now()};copyGrants.set(grantId,result);return json(response,200,{grant_id:result.grant_id,material_id:result.material_id,version_id:result.version_id,recipient_id:result.recipient_id,digest:result.digest,status:result.status,acknowledged_at:result.acknowledged_at});
+    const candidateMatch = /^\/api\/v1\/agent\/candidates\/([^/]+)\/(confirm|dismiss)$/.exec(url.pathname);
+    if (candidateMatch && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      for (const chat of agentChats.values()) {
+        const candidate = (chat.candidates as RecordData[]).find((item) => item.id === candidateMatch[1]);
+        if (candidate) { if (candidateMatch[2] === 'confirm') { candidate.state = 'saved'; candidate.resource_id = randomHex(); candidate.fields = input.fields; } else candidate.state = 'dismissed'; return json(response, candidateMatch[2] === 'confirm' ? 201 : 200, { candidate_id: candidate.id, state: candidate.state, resource_id: candidate.resource_id }); }
+      }
+      return fail(response, 404, 'CANDIDATE_NOT_FOUND', 'Candidate does not exist');
+    }
+    if (url.pathname === '/api/v1/jobs' && request.method === 'GET') return json(response, 200, []);
+    const roleJobMatch = /^\/api\/v1\/jobs\/([^/]+)$/.exec(url.pathname);
+    if (roleJobMatch && request.method === 'GET' && roleJobs.has(roleJobMatch[1]!)) return json(response, 200, roleJobs.get(roleJobMatch[1]!)!);
+    const briefMatch = /^\/api\/v1\/briefs\/(party|segment)\/([^/]+)\/items$/.exec(url.pathname);
+    if (briefMatch && request.method === 'GET') return json(response, 200, briefItems.get(`${briefMatch[1]}:${briefMatch[2]}`) ?? []);
+    if (briefMatch && request.method === 'POST') {
+      const key = `${briefMatch[1]}:${briefMatch[2]}`; const itemId = randomHex(); const item = { id: itemId, scope_kind: briefMatch[1], scope_id: briefMatch[2], kind: 'jargon', text: 'Example term', detail: { plain_meaning: 'Example', use_or_avoid: 'owner_decides', applies_to: 'org' }, tier: 2, quote: null, check_suggestion: 'Check recent professional posts', speaker_kind: 'model_prior', status: 'proposed', revision: 1, supersedes_id: null };
+      briefItems.set(key, [item]); fluency.set(item.text, { term: item.text, status: 'unknown', revision: 1 }); const jobId = randomHex(); roleJobs.set(jobId, { id: jobId, role: 'briefer', status: 'succeeded', result: { item_count: 1 }, last_error: null }); return json(response, 202, { job_id: jobId, scope_kind: briefMatch[1], scope_id: briefMatch[2], state: 'queued' });
+    }
+    const briefDecision = /^\/api\/v1\/brief-items\/([^/]+)\/decision$/.exec(url.pathname);
+    if (briefDecision && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      for (const items of briefItems.values()) { const item = items.find((candidate) => candidate.id === briefDecision[1]); if (item) { item.status = String(input.decision === 'correct' ? 'corrected' : input.decision === 'confirm' ? 'confirmed' : 'dismissed'); item.revision = Number(item.revision) + 1; return json(response, 200, { id: item.id, decision: input.decision, revision: item.revision }); } }
+      return fail(response, 404, 'BRIEF_ITEM_NOT_FOUND', 'Brief item does not exist');
     }
 
     if (url.pathname === '/api/v1/entities' && request.method === 'GET') {
@@ -402,30 +471,147 @@ export function createMockApi(): MockApi {
         observed_cursor: String(events.length),
       });
     }
+    if (url.pathname === '/api/v1/board' && request.method === 'GET') return json(response, 200, boardSnapshot());
+    if (url.pathname === '/api/v1/board/lists' && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const title = typeof input.title === 'string' ? input.title.trim() : '';
+      if (!title || title.length > 120 || boardLists.some((list) => list.title.toLowerCase() === title.toLowerCase())) return fail(response, 422, 'BOARD_LIST_INVALID', 'List title must be unique and non-empty');
+      const active = boardLists.filter((list) => !list.archived).sort((a, b) => a.position - b.position);
+      const beforeIndex = typeof input.before_list_id === 'string' ? active.findIndex((list) => list.id === input.before_list_id) : -1;
+      if (typeof input.before_list_id === 'string' && beforeIndex < 0) return fail(response, 422, 'BOARD_ANCHOR_INVALID', 'List anchor is invalid');
+      const position = beforeIndex < 0 ? active.length : beforeIndex;
+      const list = { id: randomHex(), title, position, archived: false, revision: 1 };
+      boardLists.push(list);
+      boardLists.filter((item) => !item.archived && item.id !== list.id).forEach((item) => { if (item.position >= list.position) { item.position += 1; item.revision += 1; } });
+      return json(response, 201, { list, board_revision: events.length + 1 });
+    }
+    if (url.pathname === '/api/v1/board/lists/reorder' && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const active = boardLists.filter((list) => !list.archived);
+      const ids = input.ordered_ids;
+      const revisions = input.expected_revisions;
+      if (!Array.isArray(ids) || !revisions || typeof revisions !== 'object' || Array.isArray(revisions)
+        || ids.length !== active.length || new Set(ids).size !== active.length
+        || active.some((list) => !ids.includes(list.id) || (revisions as RecordData)[list.id] !== list.revision)) {
+        return fail(response, 409, 'BOARD_LIST_STALE', 'List order or revision is stale');
+      }
+      ids.forEach((id, position) => {
+        const list = active.find((item) => item.id === id)!;
+        list.position = position;
+        list.revision += 1;
+      });
+      return json(response, 200, { lists: active.slice().sort((a, b) => a.position - b.position) });
+    }
+    const boardListMatch = /^\/api\/v1\/board\/lists\/([^/]+)$/.exec(url.pathname);
+    if (boardListMatch && request.method === 'PATCH') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const list = boardLists.find((item) => item.id === boardListMatch[1]);
+      if (!list) return fail(response, 404, 'NOT_FOUND', 'Board list does not exist');
+      if (input.expected_revision !== list.revision) return fail(response, 409, 'BOARD_LIST_STALE', 'Board list changed');
+      const title = typeof input.title === 'string' ? input.title.trim() : '';
+      if (!title || boardLists.some((item) => item.id !== list.id && item.title.toLowerCase() === title.toLowerCase())) return fail(response, 422, 'BOARD_LIST_INVALID', 'List title must be unique and non-empty');
+      list.title = title; list.revision += 1;
+      return json(response, 200, { list });
+    }
+    const archiveMatch = /^\/api\/v1\/board\/lists\/([^/]+)\/archive$/.exec(url.pathname);
+    if (archiveMatch && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const source = boardLists.find((item) => item.id === archiveMatch[1]);
+      const destination = boardLists.find((item) => item.id === String(input.destination_list_id) && !item.archived);
+      const active = boardLists.filter((item) => !item.archived);
+      if (!source || source.archived || !destination || source.id === destination.id || active.length < 2) return fail(response, 422, 'BOARD_ARCHIVE_INVALID', 'Choose a different active destination and keep one active list');
+      if (input.expected_list_revision !== source.revision || input.expected_destination_revision !== destination.revision) return fail(response, 409, 'BOARD_LIST_STALE', 'Board list changed');
+      const moved = boardSnapshot().cards.filter((card) => card.placement.list_id === source.id).sort((a, b) => a.placement.position - b.placement.position);
+      const destinationCards = boardSnapshot().cards.filter((card) => card.placement.list_id === destination.id).sort((a, b) => a.placement.position - b.placement.position);
+      const nextPosition = destinationCards.length;
+      moved.forEach((card, index) => {
+        const placement = placements.get(String(card.opportunity.id))!;
+        placement.list_id = destination.id; placement.position = nextPosition + index; placement.placement_revision += 1;
+      });
+      destination.revision += 1; source.archived = true; source.revision += 1;
+      return json(response, 200, { archived_list: source, destination_list: destination, moved: moved.map((card, index) => ({ opportunity_id: card.opportunity.id, position: nextPosition + index, placement_revision: placements.get(String(card.opportunity.id))!.placement_revision })) });
+    }
+    if (url.pathname === '/api/v1/opportunities' && request.method === 'GET') {
+      return json(response, 200, [...opportunities.values()]);
+    }
+    if (url.pathname === '/api/v1/opportunities' && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const participant = directory.get(String(input.primary_party_id));
+      if (!participant || !['person', 'org'].includes(participant.kind) || typeof input.title !== 'string' || !input.title.trim()) {
+        return fail(response, 422, 'OPPORTUNITY_INVALID', 'A title and selected participant are required');
+      }
+      const record = { id: randomHex(), title: input.title.trim(), state: 'open', revision: 1, participant_ids: [participant.id], source_variant_ids: [], material_ids: [] };
+      opportunities.set(record.id, record);
+      const homeList = boardLists.find((list) => !list.archived)!;
+      const position = [...placements.values()].filter((placement) => placement.list_id === homeList.id).length;
+      placements.set(record.id, { list_id: homeList.id, position, placement_revision: 1 });
+      notesByOpportunity.set(record.id, { markdown: '', revision: 1 });
+      return json(response, 201, record);
+    }
+    const placementMatch = /^\/api\/v1\/opportunities\/([^/]+)\/placement$/.exec(url.pathname);
+    if (placementMatch && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const opportunity = opportunities.get(placementMatch[1]!);
+      const placement = placements.get(placementMatch[1]!);
+      const source = boardLists.find((list) => list.id === placement?.list_id);
+      const destination = boardLists.find((list) => list.id === String(input.list_id) && !list.archived);
+      if (!opportunity || !placement || !source || !destination) return fail(response, 404, 'NOT_FOUND', 'Opportunity or active board list does not exist');
+      if (input.expected_placement_revision !== placement.placement_revision || input.expected_source_list_revision !== source.revision || input.expected_list_revision !== destination.revision) return fail(response, 409, 'BOARD_PLACEMENT_STALE', 'Board placement changed');
+      const sourceCards = boardSnapshot().cards.filter((card) => card.placement.list_id === source.id && card.opportunity.id !== opportunity.id).sort((a, b) => a.placement.position - b.placement.position);
+      const destinationCards = source.id === destination.id ? sourceCards : boardSnapshot().cards.filter((card) => card.placement.list_id === destination.id).sort((a, b) => a.placement.position - b.placement.position);
+      const beforeId = typeof input.before_opportunity_id === 'string' ? input.before_opportunity_id : null;
+      const targetIndex = beforeId === null ? destinationCards.length : destinationCards.findIndex((card) => card.opportunity.id === beforeId);
+      if (targetIndex < 0) return fail(response, 422, 'BOARD_ANCHOR_INVALID', 'Destination card anchor is invalid');
+      destinationCards.splice(targetIndex, 0, { opportunity, placement: { opportunity_id: opportunity.id, list_id: destination.id, position: targetIndex, revision: placement.placement_revision, next_task: null } });
+      destinationCards.forEach((card, position) => { const current = placements.get(String(card.opportunity.id))!; current.list_id = destination.id; current.position = position; if (card.opportunity.id === opportunity.id) current.placement_revision += 1; });
+      if (source.id !== destination.id) sourceCards.forEach((card, position) => { placements.get(String(card.opportunity.id))!.position = position; });
+      source.revision += 1;
+      if (source.id !== destination.id) destination.revision += 1;
+      return json(response, 200, { opportunity_id: opportunity.id, list_id: destination.id, position: targetIndex, placement_revision: placement.placement_revision, source_list_revision: source.revision, destination_list_revision: destination.revision });
+    }
+    const notesMatch = /^\/api\/v1\/opportunities\/([^/]+)\/notes(?:\/tasks\/toggle)?$/.exec(url.pathname);
+    if (notesMatch && request.method === 'GET') {
+      if (!opportunities.has(notesMatch[1]!)) return fail(response, 404, 'NOT_FOUND', 'Opportunity does not exist');
+      return json(response, 200, notesRecord(notesMatch[1]!));
+    }
+    if (notesMatch && url.pathname.endsWith('/notes') && request.method === 'PATCH') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const current = notesByOpportunity.get(notesMatch[1]!);
+      if (!current) return fail(response, 404, 'NOT_FOUND', 'Opportunity does not exist');
+      if (input.expected_revision !== current.revision) return fail(response, 409, 'NOTES_STALE', 'Markdown notes changed');
+      if (typeof input.markdown !== 'string' || Buffer.byteLength(input.markdown, 'utf8') > 1_000_000) return fail(response, 422, 'NOTES_INVALID', 'Markdown is invalid or too large');
+      current.markdown = input.markdown.replace(/\r\n?/g, '\n'); current.revision += 1;
+      return json(response, 200, notesRecord(notesMatch[1]!));
+    }
+    if (notesMatch && url.pathname.endsWith('/notes/tasks/toggle') && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const current = notesByOpportunity.get(notesMatch[1]!);
+      if (!current) return fail(response, 404, 'NOT_FOUND', 'Opportunity does not exist');
+      if (input.notes_revision !== current.revision) return fail(response, 409, 'NOTES_STALE', 'Markdown notes changed');
+      const task = tasks(current.markdown).find((item) => item.byte_start === input.byte_start && item.byte_end === input.byte_end && item.line_sha256 === input.line_sha256);
+      if (!task || typeof input.checked !== 'boolean') return fail(response, 409, 'TASK_STALE', 'The addressed Markdown task changed');
+      const line = Buffer.from(current.markdown, 'utf8');
+      const lineText = line.subarray(task.byte_start, task.byte_end).toString('utf8');
+      const marker = /\[([ xX])\]/.exec(lineText);
+      if (!marker || marker.index === undefined) return fail(response, 409, 'TASK_STALE', 'The addressed Markdown task changed');
+      const replacement = input.checked ? 'x' : ' ';
+      current.markdown = Buffer.concat([line.subarray(0, task.byte_start + marker.index + 1), Buffer.from(replacement), line.subarray(task.byte_start + marker.index + 2)]).toString('utf8');
+      current.revision += 1;
+      return json(response, 200, notesRecord(notesMatch[1]!));
+    }
+    if (url.pathname === '/api/v1/outputs' && request.method === 'GET') {
+      return json(response, 200, [...outputs.values()]);
+    }
     if (url.pathname === '/api/v1/captures' && request.method === 'GET') {
       return json(response, 200, captures);
-    }
-    const sourceMatch = url.pathname.match(/^\/api\/v1\/captures\/([^/]+)$/);
-    if (sourceMatch && request.method === 'GET') return sourceDetails.has(sourceMatch[1]!) ? json(response,200,sourceDetails.get(sourceMatch[1]!)!) : fail(response,404,'NOT_FOUND','Source occurrence does not exist');
-    if (url.pathname === '/api/v1/directory' && request.method === 'GET') {
-      const q=(url.searchParams.get('q')??'').toLocaleLowerCase(); const kind=url.searchParams.get('kind')??'';
-      const tag=(url.searchParams.get('tag')??'').toLocaleLowerCase();const matched=[...directory.values()].filter(row=>(!kind||row.kind===kind)&&(`${row.name} ${row.descriptor??''} ${(row.aliases??[]).join(' ')}`).toLocaleLowerCase().includes(q)&&(!tag||(row.tags??[]).some(value=>value.toLocaleLowerCase()===tag))).sort((a,b)=>a.name.localeCompare(b.name)||a.id.localeCompare(b.id));const page=Number(url.searchParams.get('page')??1);const pageSize=Number(url.searchParams.get('page_size')??50);const data=matched.slice((page-1)*pageSize,page*pageSize).map(row=>({ ...row,descriptor:row.descriptor??'',aliases:row.aliases??[],tags:row.tags??[] }));
-      return json(response,200,{data,total:matched.length,page,page_size:pageSize,has_more:page*pageSize<matched.length,cursor:String(events.length)});
-    }
-    const directoryUpdate=url.pathname.match(/^\/api\/v1\/directory\/([^/]+)$/);
-    if(directoryUpdate&&request.method==='PATCH'){
-      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}
-      const commandKey=request.headers['idempotency-key'];if(typeof commandKey!=='string'||!commandKey)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');const commandDigest=createHash('sha256').update(JSON.stringify([directoryUpdate[1],input])).digest('hex');const prior=receipts.get(commandKey);if(prior)return prior.digest===commandDigest?json(response,200,prior.result):fail(response,409,'KEY_REUSED','Idempotency key was used for a different command');
-      const entity=directory.get(decodeURIComponent(directoryUpdate[1]!));if(!entity)return fail(response,404,'NOT_FOUND','Directory entry does not exist');if(Number(input.expected_revision)!==entity.revision)return fail(response,412,'STALE_REVISION','Directory entry changed in another session');
-      const updated:EntityRecord={...entity,name:String(input.name),descriptor:String(input.descriptor),aliases:Array.isArray(input.aliases)?input.aliases.map(String):[],tags:Array.isArray(input.tags)?input.tags.map(String):[],revision:entity.revision+1};directory.set(entity.id,updated);pushEvent({event_id:randomHex(),entity_type:'entity',entity_id:entity.id,revision:updated.revision,event_type:'entity.updated',payload:{}});const result={...updated,descriptor:updated.descriptor,aliases:updated.aliases,tags:updated.tags};receipts.set(commandKey,{digest:commandDigest,result});return json(response,200,result);
-    }
-    const graphMatch=url.pathname.match(/^\/api\/v1\/graph\/([^/]+)$/);
-    if(graphMatch&&request.method==='GET'){
-      const focus=decodeURIComponent(graphMatch[1]!);if(!directory.has(focus))return fail(response,404,'NOT_FOUND','Directory entity does not exist');
-      const edges=graphEdges.filter(edge=>edge.from_id===focus||edge.to_id===focus);const ids=new Set([focus,...edges.flatMap(edge=>[String(edge.from_id),String(edge.to_id)])]);
-      const nodes=[...ids].map(id=>directory.get(id)).filter((value):value is EntityRecord=>Boolean(value)).map(row=>({...row,descriptor:'',aliases:[],tags:[]}));
-      const viewId=url.searchParams.get('view_id')??focus;
-      return json(response,200,{focus_id:focus,nodes,edges,positions:[...positions.values()].filter(position=>position.view_id===viewId),omitted_nodes:0,omitted_edges:0});
     }
     if (url.pathname === '/api/v1/captures' && request.method === 'POST') {
       let input: RecordData;
@@ -450,55 +636,88 @@ export function createMockApi(): MockApi {
         occurrence_id: randomHex(),
         normalized_sha256: normalizedHash,
         raw_sha256: rawHash,
+        job_status: 'queued',
       };
+      // The mock uses a fixed deterministic proposal so browser tests exercise
+      // review semantics without invoking a model. The Rust project remains
+      // the authority for unavailable-provider persistence and real jobs.
+      const jobId = randomHex();
+      const batchId = randomHex();
+      const proposalId = randomHex();
+      result.job_id = jobId;
+      const proposal = {
+        id: proposalId,
+        kind: 'signal',
+        status: 'pending',
+        candidate: {
+          statement: input.text,
+          quote: input.text,
+          mention_name: input.text.includes('Dana Lee') ? 'Dana Lee' : null,
+          mention_kind: input.text.includes('Dana Lee') ? 'person' : null,
+        },
+      };
+      const job = {
+        id: jobId,
+        role: 'extractor',
+        status: 'succeeded',
+        current_attempt: 1,
+        max_attempts: 3,
+        progress_current: 1,
+        progress_total: 1,
+        injection_suspected: false,
+        last_error_code: null,
+        last_error: null,
+        source_occurrence_id: result.occurrence_id,
+        proposal_batch_id: batchId,
+        proposals: [proposal],
+      };
+      extractorJobs.set(jobId, job);
+      jobsByOccurrence.set(result.occurrence_id, jobId);
       captures.unshift(result);
-      sourceDetails.set(result.occurrence_id,{...result,text:input.text,title:typeof input.title==='string'?input.title:null,url:typeof input.url==='string'?input.url:null,captured_at:now(),actor_kind:typeof input.actor_kind==='string'?input.actor_kind:'unknown',actor_entity_id:typeof input.actor_entity_id==='string'?input.actor_entity_id:null,normalization_version:1});
       return json(response, 201, result);
     }
-    if(url.pathname==='/api/v1/capture-stages'&&request.method==='POST'){
-      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}
-      if(typeof input.text!=='string'||!input.text.trim())return fail(response,422,'CAPTURE_EMPTY','Paste source text before staging.');
-      const normalized=input.text.normalize('NFKC').replace(/\s+/g,' ').trim().toLocaleLowerCase();const normalizedHash=createHash('sha256').update(normalized).digest('hex');const group=sourceGroups.get(normalizedHash)??{id:randomHex(),variants:new Map<string,string>()};sourceGroups.set(normalizedHash,group);const rawHash=createHash('sha256').update(input.text).digest('hex');const variant=group.variants.get(rawHash)??randomHex();group.variants.set(rawHash,variant);const source={content_id:group.id,variant_id:variant,occurrence_id:randomHex(),normalized_sha256:normalizedHash,raw_sha256:rawHash,text:input.text,title:typeof input.title==='string'?input.title:null,url:typeof input.url==='string'?input.url:null,captured_at:now(),actor_kind:input.actor_kind??'unknown',actor_entity_id:input.actor_entity_id??null,normalization_version:1};sourceDetails.set(source.occurrence_id,source);captures.unshift({content_id:source.content_id,variant_id:variant,occurrence_id:source.occurrence_id,normalized_sha256:normalizedHash,raw_sha256:rawHash});const batchId=randomHex();const jobId=randomHex();const hiringQuote='The next engineer will work with Dana on onboarding.';const proposals:RecordData[]=[];const hiringIndex=input.text.indexOf(hiringQuote);if(hiringIndex>=0){proposals.push({id:randomHex(),action:'create',target_kind:'hiring_signal',target_id:null,target_label:'Hiring signal',candidate_targets:[],statement:'The source says the next engineer will work with Dana on onboarding.',quote:hiringQuote,quote_start:hiringIndex,quote_end:hiringIndex+hiringQuote.length,tier:1,ambiguity:null,unresolved:false,candidate:{summary:'Hiring signal'},target_revision:null,review_state:'proposed'});const danaIndex=input.text.indexOf('Dana',hiringIndex);if(danaIndex>=0)proposals.push({id:randomHex(),action:'link',target_kind:'person',target_id:null,target_label:'Dana (unresolved mention)',candidate_targets:[...directory.values()].filter((item)=>item.name.toLowerCase().includes('dana')).map((item)=>({id:item.id,kind:item.kind,label:item.name})),statement:'The source mentions Dana but does not identify which person.',quote:'Dana',quote_start:danaIndex,quote_end:danaIndex+4,tier:1,ambiguity:'The source does not disambiguate Dana by organization or role.',unresolved:true,candidate:null,target_revision:null,review_state:'proposed'});}
-      const result={batch_id:batchId,job_id:jobId,status:/MOCK_RUNNING_CAPTURE/.test(input.text)?'running':'ok',revision:1,injection_suspected:/ignore\s+(?:all\s+)?previous|system\s+prompt|you\s+are\s+now/i.test(input.text),source,opportunity_ids:Array.isArray(input.opportunity_ids)?input.opportunity_ids.map(String):[],proposals};const command=rememberCommand(request,createHash('sha256').update(JSON.stringify(input)).digest('hex'),result);if(!command)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');if(command.prior)return command.prior.__key_reused?fail(response,409,'KEY_REUSED','Idempotency key was used for a different command'):json(response,202,command.prior);captureStages.set(batchId,result);pushEvent({event_id:randomHex(),entity_type:'capture_stage',entity_id:batchId,revision:1,event_type:'capture.staged',payload:{}});return json(response,202,result);
+
+    const captureProposalMatch = /^\/api\/v1\/captures\/([^/]+)\/proposals$/.exec(url.pathname);
+    if (captureProposalMatch && request.method === 'GET') {
+      const jobId = jobsByOccurrence.get(captureProposalMatch[1]!);
+      const job = jobId && extractorJobs.get(jobId);
+      return job ? json(response, 200, job) : fail(response, 404, 'NOT_FOUND', 'No Extractor review exists for this source');
     }
-    const captureStageMatch=url.pathname.match(/^\/api\/v1\/capture-stages\/([^/]+)(?:\/(decisions|source-only|cancel))?$/);
-    if(captureStageMatch){const batchId=decodeURIComponent(captureStageMatch[1]!);const operation=captureStageMatch[2];const batch=captureStages.get(batchId);if(!batch)return fail(response,404,'NOT_FOUND','Capture stage does not exist');if(!operation&&request.method==='GET')return json(response,200,batch);
-      if(operation==='cancel'&&request.method==='POST'){let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}if(input.job_id!==batch.job_id)return fail(response,409,'JOB_MISMATCH','Cancellation target does not match this stage.');if(batch.status==='queued'||batch.status==='running'){batch.status='cancelled';batch.revision=Number(batch.revision)+1;pushEvent({event_id:randomHex(),entity_type:'capture_stage',entity_id:batchId,revision:Number(batch.revision),event_type:'capture.cancelled',payload:{}});}return json(response,200,batch);}
-      if((operation==='decisions'||operation==='source-only')&&request.method==='POST'){
-        let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}if(Number(input.expected_revision)!==Number(batch.revision))return fail(response,412,'STALE_CAPTURE_REVIEW','Capture review changed in another session.');const commandKey=request.headers['idempotency-key'];if(typeof commandKey!=='string'||!commandKey)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');const commandDigest=createHash('sha256').update(JSON.stringify([batchId,input])).digest('hex');const prior=receipts.get(commandKey);if(prior)return prior.digest===commandDigest?json(response,200,prior.result):fail(response,409,'KEY_REUSED','Idempotency key was used for a different command');const proposals=batch.proposals as RecordData[];const committed:Array<RecordData>=[];if(operation==='decisions'){if(!Array.isArray(input.decisions)||!input.decisions.length)return fail(response,422,'DECISIONS_REQUIRED','Choose at least one proposal decision.');for(const raw of input.decisions as RecordData[]){const proposal=proposals.find((item)=>item.id===raw.proposal_id);if(!proposal||proposal.review_state!=='proposed')return fail(response,412,'PROPOSAL_STALE','A selected proposal is no longer pending.');if(raw.action==='confirm'&&proposal.candidate_targets instanceof Array&&proposal.candidate_targets.length&&!raw.target_id)return fail(response,422,'TARGET_REQUIRED','Choose a target or keep the mention unresolved.');if(raw.action==='correct'&&typeof raw.corrected_statement!=='string')return fail(response,422,'CORRECTION_REQUIRED','Corrected wording is required.');const state=raw.action==='confirm'?'confirmed':raw.action==='correct'?'corrected':raw.action==='dismiss'?'dismissed':'unresolved';proposal.review_state=state;committed.push({proposal_id:proposal.id,review_state:state});}}
-        else for(const proposal of proposals){if(proposal.review_state==='proposed'){proposal.review_state='source_only';committed.push({proposal_id:proposal.id,review_state:'source_only'});}}
-        batch.revision=Number(batch.revision)+1;const decisionStatus=operation==='source-only'?'source_only':proposals.some((item)=>item.review_state==='proposed')?'partially_applied':'applied';const receipt={batch_id:batchId,revision:batch.revision,status:decisionStatus,committed,source:batch.source};receipts.set(commandKey,{digest:commandDigest,result:receipt});pushEvent({event_id:randomHex(),entity_type:'capture_stage',entity_id:batchId,revision:Number(batch.revision),event_type:'capture.reviewed',payload:{decision_count:committed.length}});return json(response,200,receipt);
+
+    const jobMatch = /^\/api\/v1\/jobs\/([^/]+)$/.exec(url.pathname);
+    if (jobMatch && request.method === 'GET') {
+      const job = extractorJobs.get(jobMatch[1]!);
+      return job ? json(response, 200, job) : fail(response, 404, 'NOT_FOUND', 'Extractor job does not exist');
+    }
+    if (jobMatch && request.method === 'POST') {
+      const job = extractorJobs.get(jobMatch[1]!);
+      if (!job) return fail(response, 404, 'NOT_FOUND', 'Extractor job does not exist');
+      job.status = 'cancelled';
+      job.last_error = 'Cancelled by owner';
+      return json(response, 204, null);
+    }
+    const resolveMatch = /^\/api\/v1\/proposals\/([^/]+)\/resolve$/.exec(url.pathname);
+    if (resolveMatch && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const job = [...extractorJobs.values()].find((candidate) => candidate.proposal_batch_id === resolveMatch[1]);
+      if (!job || !Array.isArray(input.decisions)) return fail(response, 404, 'NOT_FOUND', 'Proposal batch does not exist');
+      const proposals = job.proposals as Array<RecordData>;
+      for (const decision of input.decisions as Array<RecordData>) {
+        const proposal = proposals.find((candidate) => candidate.id === decision.item_id);
+        if (!proposal) return fail(response, 422, 'PROPOSAL_INVALID', 'A selected proposal does not exist');
+        proposal.status = decision.action === 'confirm' ? 'accepted' : String(decision.action);
       }
+      return json(response, 200, { status: 'partially_applied' });
     }
-    if(url.pathname==='/api/v1/graph/related'&&request.method==='POST'){
-      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}
-      const commandKey=request.headers['idempotency-key'];if(typeof commandKey!=='string'||!commandKey)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');
-      const commandDigest=createHash('sha256').update(JSON.stringify(input)).digest('hex');const prior=receipts.get(commandKey);if(prior)return prior.digest===commandDigest?json(response,201,prior.result):fail(response,409,'KEY_REUSED','Idempotency key was used for a different command');
-      const parent=directory.get(String(input.related_entity_id));const source=sourceDetails.get(String(input.occurrence_id));
-      const quote=String(input.quote??'');if(!parent||!source||typeof source.text!=='string'||!quote||!source.text.includes(quote))return fail(response,422,'RELATIONSHIP_REJECTED','The source and exact quote must exist.');
-      const personId=randomHex();const person:EntityRecord={id:personId,kind:String(input.kind),name:String(input.name),revision:1};directory.set(personId,person);
-      const edge={id:randomHex(),from_id:personId,to_id:parent.id,verb:String(input.verb),revision:1,claim_id:randomHex(),claim_revision:1,wording:quote,approved_wording:null,tier:1,speaker_kind:'unknown',speaker_entity_id:null,occurrence_id:String(input.occurrence_id),source_start:source.text.indexOf(quote),source_end:source.text.indexOf(quote)+quote.length,normalization_version:1,source_title:source.title,source_url:source.url};graphEdges.push(edge);
-      positions.set(`${input.view_scope}:${input.view_id}:${personId}`,{view_id:input.view_id,entity_id:personId,x:input.x,y:input.y,pinned:false,revision:1});
-      pushEvent({event_id:randomHex(),entity_type:'edge',entity_id:String(edge.id),revision:1,event_type:'edge.created',payload:{}});receipts.set(commandKey,{digest:commandDigest,result:person});return json(response,201,person);
+
+    if (url.pathname === '/api/v1/agent/provider' && request.method === 'GET') return json(response, 200, provider);
+    if (url.pathname === '/api/v1/agent/provider' && request.method === 'PUT') {
+      provider = await readBody(request) as typeof provider;
+      return json(response, 204, null);
     }
-    if(url.pathname==='/api/v1/graph/edges'&&request.method==='POST'){
-      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}
-      const commandKey=request.headers['idempotency-key'];if(typeof commandKey!=='string'||!commandKey)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');const commandDigest=createHash('sha256').update(JSON.stringify(input)).digest('hex');const prior=receipts.get(commandKey);if(prior)return prior.digest===commandDigest?json(response,201,prior.result):fail(response,409,'KEY_REUSED','Idempotency key was used for a different command');
-      const from=directory.get(String(input.from_id));const to=directory.get(String(input.to_id));const source=sourceDetails.get(String(input.occurrence_id));const quote=String(input.quote??'');if(!from||!to||from.kind!=='person'||to.kind!=='org'||input.verb!=='member_of'||!source||typeof source.text!=='string'||!quote||!source.text.includes(quote))return fail(response,422,'RELATIONSHIP_REJECTED','The selected endpoints or exact source quote are invalid.');
-      if(graphEdges.some(edge=>edge.from_id===from.id&&edge.to_id===to.id&&edge.verb==='member_of'))return fail(response,409,'EDGE_EXISTS','This directed relationship already exists.');
-      const edgeId=randomHex();const edge={id:edgeId,from_id:from.id,to_id:to.id,verb:'member_of',revision:1,claim_id:randomHex(),claim_revision:1,wording:quote,approved_wording:null,tier:1,speaker_kind:source.actor_kind,speaker_entity_id:source.actor_entity_id,occurrence_id:String(input.occurrence_id),source_start:source.text.indexOf(quote),source_end:source.text.indexOf(quote)+quote.length,normalization_version:1,source_title:source.title,source_url:source.url};graphEdges.push(edge);pushEvent({event_id:randomHex(),entity_type:'edge',entity_id:edgeId,revision:1,event_type:'edge.created',payload:{from_id:from.id,to_id:to.id}});const result={edge_id:edgeId};receipts.set(commandKey,{digest:commandDigest,result});return json(response,201,result);
-    }
-    const correctionMatch=url.pathname.match(/^\/api\/v1\/claims\/([^/]+)\/correction$/);
-    if(correctionMatch&&request.method==='POST'){
-      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}
-      const commandKey=request.headers['idempotency-key'];if(typeof commandKey!=='string'||!commandKey)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');const commandDigest=createHash('sha256').update(JSON.stringify([correctionMatch[1],input])).digest('hex');const prior=receipts.get(commandKey);if(prior)return prior.digest===commandDigest?json(response,200,prior.result):fail(response,409,'KEY_REUSED','Idempotency key was used for a different command');
-      const edge=graphEdges.find(item=>item.claim_id===correctionMatch[1]);if(!edge)return fail(response,404,'NOT_FOUND','Claim does not exist');if(Number(input.expected_revision)!==Number(edge.claim_revision))return fail(response,412,'STALE_REVISION','Claim changed in another session');
-      edge.claim_revision=Number(edge.claim_revision)+1;edge.approved_wording=String(input.wording);edge.tier=3;edge.speaker_kind='owner';pushEvent({event_id:randomHex(),entity_type:'claim',entity_id:String(edge.claim_id),revision:Number(edge.claim_revision),event_type:'claim.corrected',payload:{}});const result={claim_id:edge.claim_id,revision:edge.claim_revision,approved_wording:input.wording};receipts.set(commandKey,{digest:commandDigest,result});return json(response,200,result);
-    }
-    if(url.pathname==='/api/v1/layout'&&request.method==='POST'){
-      let input:RecordData;try{input=await readBody(request);}catch{return fail(response,400,'INVALID_JSON','Request body is invalid');}
-      const commandKey=request.headers['idempotency-key'];if(typeof commandKey!=='string'||!commandKey)return fail(response,400,'IDEMPOTENCY_KEY_REQUIRED','Idempotency-Key is required');const commandDigest=createHash('sha256').update(JSON.stringify(input)).digest('hex');const prior=receipts.get(commandKey);if(prior)return prior.digest===commandDigest?json(response,200,prior.result):fail(response,409,'KEY_REUSED','Idempotency key was used for a different command');
-      const key=`${input.view_scope}:${input.view_id}:${input.entity_id}`;const old=positions.get(key);if(Number(input.expected_revision)!==(old?Number(old.revision):0))return fail(response,412,'STALE_LAYOUT','View layout changed in another session');const position={entity_id:input.entity_id,x:input.x,y:input.y,pinned:true,revision:(old?Number(old.revision):0)+1,view_id:input.view_id};positions.set(key,position);const result={entity_id:input.entity_id,revision:position.revision,x:input.x,y:input.y};receipts.set(commandKey,{digest:commandDigest,result});return json(response,200,result);
+    if (url.pathname === '/api/v1/agent/provider/health' && request.method === 'POST') {
+      return json(response, 200, { available: false, model: provider.model, models: [], message: 'Local provider is unavailable in the mock workspace.' });
     }
     return fail(response, 404, 'NOT_FOUND', 'Endpoint does not exist');
   }

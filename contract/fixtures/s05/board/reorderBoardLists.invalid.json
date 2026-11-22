@@ -1,1 +1,1 @@
-{"ordered_ids":["list-inbox","list-inbox"],"expected_revision":0}
+{"$schema":"#/components/schemas/ReorderBoardLists","body":{"ordered_ids":["list-1","list-2"],"expected_revisions":{"list-1":1,"list-2":1}}}

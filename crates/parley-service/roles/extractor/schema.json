@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["candidates", "injection_suspected"],
+  "properties": {
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "statement", "quote", "mention_name", "mention_kind"],
+        "properties": {
+          "kind": {"type": "string", "enum": ["signal", "interest", "hook", "stakeholder"]},
+          "statement": {"type": "string", "minLength": 1, "maxLength": 1000},
+          "quote": {"type": "string", "minLength": 1, "maxLength": 4000},
+          "mention_name": {"type": ["string", "null"]},
+          "mention_kind": {"type": ["string", "null"], "enum": ["person", "org", null]}
+        },
+        "additionalProperties": false
+      }
+    },
+    "injection_suspected": {"type": "boolean"}
+  },
+  "additionalProperties": false
+}

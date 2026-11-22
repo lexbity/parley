@@ -1,1 +1,1 @@
-{"expected_revision":0,"start_byte":5,"end_byte":2,"line_hash":"bad","checked":true}
+{"$schema":"#/components/schemas/ToggleOpportunityTask","body":{"notes_revision":3,"byte_start":100,"byte_end":110,"line_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","checked":true}}

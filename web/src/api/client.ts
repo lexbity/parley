@@ -6,33 +6,39 @@ export type Entity = components['schemas']['Entity'];
 export type SavedSource = components['schemas']['SavedSource'];
 export type EntityInput = components['schemas']['EntityInput'];
 export type CaptureInput = components['schemas']['CaptureInput'];
-export type DirectoryEntity = { id:string; kind:'person'|'org'|'project'; name:string; descriptor:string; aliases:string[]; tags:string[]; revision:number };
-export type DirectoryPage = { items:DirectoryEntity[]; total:number; page:number; page_size:number; has_more:boolean };
-export type GraphEdge = { id:string; from_id:string; to_id:string; verb:string; revision:number; claim_id:string; claim_revision:number; wording:string; approved_wording:string|null; tier:number; speaker_kind:string; speaker_entity_id:string|null; occurrence_id:string|null; source_start:number|null; source_end:number|null; normalization_version:number|null; source_title:string|null; source_url:string|null };
-export type Neighborhood = { focus_id:string; nodes:DirectoryEntity[]; edges:GraphEdge[]; positions:Array<{entity_id:string;x:number;y:number;pinned:boolean;revision:number}>; omitted_nodes:number; omitted_edges:number };
-export type SourceDetail = SavedSource & { text:string; title:string|null; url:string|null; captured_at:string; actor_kind:string; actor_entity_id:string|null; normalization_version:number };
-export type Opportunity = { id:string; title:string; status:'open'|'resolved'|'timed_out'|'archived'; revision:number; participants:Array<{id:string;kind:'person'|'org';name:string}>; created_at:string; updated_at:string };
-export type OpportunityInterest = { id:string; opportunity_id:string; side:'me'|'them'; statement:string; tier:3; status:'active'|'dismissed'; revision:number };
-export type OpportunityExchange = { id:string; opportunity_id:string; version:number; they_get:string; i_get:string; interest_ids:string[]; fairness_attested:boolean; attested_at:string|null };
-export type MaterialSentence = {text:string;claims:Array<{type:'self_fact'|'other_fact'|'offer'|'question'|'ask'|'generic';ref_kind?:string;ref_id?:string}>;rules:string[]};
-export type MaterialVersion = {id:string;material_id:string;sequence:number;body:string;sentences:MaterialSentence[];slot_fills:Record<string,string>;protected_tokens:string[];digest:string;created_at:string};
-export type Material = {id:string;opportunity_id:string;recipient_id:string;recipient_kind:'person'|'org';recipient_name:string;kind:'outreach'|'follow_up'|'handoff';title:string;revision:number;current_version:MaterialVersion|null;versions:MaterialVersion[];claim_references:Array<{kind:string;id:string;label:string;tier:number}>;approval:MaterialApprovalDTO|null;updated_at:string};
-export type MaterialGateDTO = {material_id:string;version_id:string;recipient_id:string;evaluated_at:string;results:Array<{id:string;severity:'hard'|'soft';pass:boolean;detail:string}>;hard_failures:string[];soft_failures:string[];copy_enabled:boolean};
-export type MaterialApprovalDTO = {id:string;material_id:string;version_id:string;recipient_id:string;digest:string;approved_at:string;gate_snapshot:MaterialGateDTO};
-export type CopyGrantDTO = {grant_id:string;material_id:string;version_id:string;recipient_id:string;digest:string;body:string;expires_at:string};
-export type CopyGrantReceiptDTO = {grant_id:string;material_id:string;version_id:string;recipient_id:string;digest:string;status:'issued'|'acknowledged'|'failed'|'expired';acknowledged_at:string|null};
-export type CaptureReviewSourceDTO = {occurrence_id:string;content_id:string;variant_id:string;normalized_sha256:string;raw_sha256:string;text:string;title:string|null;url:string|null;captured_at:string;actor_kind:string;actor_entity_id:string|null;normalization_version:number};
-export type CaptureProposalDTO = {id:string;action:'create'|'link'|'update';target_kind:string;target_id:string|null;target_label:string;candidate_targets:Array<{id:string;kind:'person'|'org'|'project'|'artifact'|'capture'|'resource';label:string}>;statement:string;quote:string;quote_start:number|null;quote_end:number|null;tier:1|2|3;ambiguity:string|null;unresolved:boolean;candidate:Record<string,unknown>|null;target_revision:number|null;review_state:'proposed'|'confirmed'|'corrected'|'dismissed'|'unresolved'|'asked'|'source_only'};
-export type CaptureReviewDTO = {batch_id:string;job_id:string;status:'queued'|'running'|'ok'|'invalid'|'failed'|'cancelled';revision:number;injection_suspected:boolean;source:CaptureReviewSourceDTO;opportunity_ids:string[];proposals:CaptureProposalDTO[]};
-export type CaptureReviewReceiptDTO = {batch_id:string;revision:number;status:string;committed:Array<{proposal_id:string;review_state:'confirmed'|'corrected'|'dismissed'|'unresolved'|'source_only'}>;source:CaptureReviewSourceDTO};
-export type OpportunityBoardItem = {id:string;revision:number;list_id:string;position:number;title:string;status:string;participants:Array<{id:string;kind:'person'|'org';name:string}>;tags:string[];next_task:string|null;deadline:string|null;missing_material:boolean};
-export type BoardListDTO = {id:string;name:string;position:number;revision:number;archived:boolean};
-export type BoardSnapshotDTO = {items:OpportunityBoardItem[];lists:BoardListDTO[];board_revision:number};
-export type OpportunityNotesDTO = {opportunity_id:string;markdown:string;revision:number};
+export type Opportunity = components['schemas']['Opportunity'];
+export type Material = components['schemas']['MaterialRecord'];
+export type ReleasedMaterial = components['schemas']['ReleasedMaterial'];
+export type BoardList = components['schemas']['BoardList'];
+export type BoardPlacement = { opportunity: Opportunity; opportunity_id: string; list_id: string; position: number; placement_revision: number; next_task: string | null };
+export type BoardSnapshot = { lists: BoardList[]; cards: BoardPlacement[] };
+export type OpportunityNotes = components['schemas']['OpportunityNotes'];
+export type OpportunityTask = NonNullable<OpportunityNotes['tasks']>[number];
+export type MovePlacementInput = components['schemas']['MoveOpportunityPlacement'];
 type Session = components['schemas']['Session'];
 type EventPage = components['schemas']['EventPage'];
 type CreateResource = components['schemas']['CreateResource'];
 type UpdateResource = components['schemas']['UpdateResource'];
+
+export type ProviderConfig = { endpoint: string; model: string; num_ctx: number; num_predict: number; locale: string };
+export type ExtractorProposal = { id: string; kind: string; candidate: { statement: string; quote: string; mention_name: string | null; mention_kind: string | null }; status: string };
+export type ExtractorJob = { id: string; role: string; status: string; current_attempt: number; max_attempts: number; progress_current: number; progress_total: number; injection_suspected: boolean; last_error_code: string | null; last_error: string | null; source_occurrence_id: string; proposal_batch_id: string | null; proposals: ExtractorProposal[] };
+export type ProposalDecision = { item_id: string; action: 'confirm' | 'correct' | 'dismiss' | 'source_only' | 'unresolved'; target_entity_id?: string; corrected_statement?: string };
+export type AgentChat = {
+  id: string; role: 'interviewer' | 'briefer'; scope_kind: 'owner' | 'party' | 'segment'; scope_id: string | null;
+  asset_kind: 'gift' | 'proof' | 'artifact' | null; revision: number; active_job_id: string | null;
+  turns: Array<{ id: string; turn_no: number; speaker: 'owner' | 'agent'; text: string; job_id: string | null; created_at: string }>;
+  questions: Array<{ question_id: string; state: string }>;
+  candidates: Array<{ id: string; asset_kind: string; fields: Record<string, unknown>; owner_quotes: Record<string, unknown>; missing_fields: string[]; state: string; resource_id: string | null }>;
+};
+export type AgentChatSummary = { id: string; role: AgentChat['role']; scope_kind: AgentChat['scope_kind']; scope_id: string | null; asset_kind: AgentChat['asset_kind']; revision: number; last_turn: string | null; updated_at: string; active_job_id: string | null };
+export type BriefItem = { id: string; scope_kind: 'party' | 'segment'; scope_id: string; kind: string; text: string; detail: Record<string, unknown>; tier: 1 | 2 | 3; quote: string | null; check_suggestion: string | null; speaker_kind: string; status: string; revision: number; supersedes_id: string | null };
+export type RoleJob = { id: string; role: string; status: string; result: Record<string, unknown> | null; last_error: string | null; scope_kind?: string; scope_id?: string };
+export type VocabularyFluency = { term: string; status: 'unknown' | 'learning' | 'fluent'; revision: number };
+export type WritingTemplate = { id: string; family_id: string; name: string; version: number; status: string; body: string; sentence_rules: string[]; stage_class: string; channel: string; parent_version_id: string | null };
+export type WritingInterest = { id: string; side: 'them' | 'me'; statement: string; knowledge_kind: string; check_suggestion: string | null; claim_id: string | null; claim_revision: number | null; revision: number; status: string };
+export type WritingMatch = { id: string; opportunity_id: string; recipient_id: string; embed_model_digest: string; calibration_json: string; shortlist_json: string; why_job_id: string | null };
+export type WritingJob = { job_id: string; role: string };
 
 export function newOperationKey(): string {
   const timestamp = Date.now().toString(16).padStart(12, '0').slice(-12);
@@ -118,6 +124,198 @@ function decodeEnvelopeList(value: unknown, decode: (item: unknown) => Resource 
   return { data: envelope.data.map(decode), cursor: requiredString(envelope.cursor, 'cursor') };
 }
 
+function stringArray(value: unknown, field: string): string[] {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) {
+    throw new Error(`Invalid response: ${field} must be a text list`);
+  }
+  return value;
+}
+
+function decodeOpportunity(value: unknown): Opportunity {
+  const item = object(value);
+  if (!item || !Number.isSafeInteger(item.revision) || Number(item.revision) < 1) {
+    throw new Error('Invalid response: opportunity is malformed');
+  }
+  return {
+    id: requiredString(item.id, 'opportunity.id'),
+    title: requiredString(item.title, 'opportunity.title'),
+    state: requiredString(item.state, 'opportunity.state'),
+    revision: Number(item.revision),
+    participant_ids: stringArray(item.participant_ids, 'opportunity.participant_ids'),
+    source_variant_ids: stringArray(item.source_variant_ids, 'opportunity.source_variant_ids'),
+    material_ids: stringArray(item.material_ids, 'opportunity.material_ids'),
+  };
+}
+
+function decodeBoardList(value: unknown): BoardList {
+  const item = object(value);
+  if (!item || !Number.isSafeInteger(item.position) || typeof item.archived !== 'boolean'
+    || !Number.isSafeInteger(item.revision) || Number(item.revision) < 1) {
+    throw new Error('Invalid response: board list is malformed');
+  }
+  return {
+    id: requiredString(item.id, 'board_list.id'),
+    title: requiredString(item.title, 'board_list.title'),
+    position: Number(item.position),
+    archived: item.archived,
+    revision: Number(item.revision),
+  };
+}
+
+function decodeBoardPlacement(value: unknown): BoardPlacement {
+  const item = object(value);
+  const placement = item ? object(item.placement) : null;
+  if (!item || !placement || !Number.isSafeInteger(placement.position) || !Number.isSafeInteger(placement.revision)
+    || Number(placement.revision) < 1) {
+    throw new Error('Invalid response: board placement is malformed');
+  }
+  return {
+    opportunity: decodeOpportunity(item.opportunity),
+    opportunity_id: requiredString(placement.opportunity_id, 'placement.opportunity_id'),
+    list_id: requiredString(placement.list_id, 'placement.list_id'),
+    position: Number(placement.position),
+    placement_revision: Number(placement.revision),
+    next_task: typeof placement.next_task === 'string' ? placement.next_task : null,
+  };
+}
+
+function decodeBoardSnapshot(value: unknown): BoardSnapshot {
+  const board = object(value);
+  if (!board || !Array.isArray(board.lists) || !Array.isArray(board.cards)) {
+    throw new Error('Invalid response: board snapshot is malformed');
+  }
+  return { lists: board.lists.map(decodeBoardList), cards: board.cards.map(decodeBoardPlacement) };
+}
+
+function decodeOpportunityNotes(value: unknown): OpportunityNotes {
+  const notes = object(value);
+  if (!notes || !Number.isSafeInteger(notes.revision) || Number(notes.revision) < 1 || !Array.isArray(notes.tasks)) {
+    throw new Error('Invalid response: opportunity notes are malformed');
+  }
+  const tasks = notes.tasks.map((value): OpportunityTask => {
+    const task = object(value);
+    if (!task || !Number.isSafeInteger(task.byte_start) || !Number.isSafeInteger(task.byte_end)
+      || Number(task.byte_start) < 0 || Number(task.byte_end) < Number(task.byte_start)
+      || typeof task.checked !== 'boolean' || !/^[a-f0-9]{64}$/.test(String(task.line_sha256))) {
+      throw new Error('Invalid response: opportunity task is malformed');
+    }
+    return {
+      byte_start: Number(task.byte_start),
+      byte_end: Number(task.byte_end),
+      line_sha256: requiredString(task.line_sha256, 'task.line_sha256'),
+      checked: task.checked,
+      text: requiredString(task.text, 'task.text'),
+    };
+  });
+  return {
+    opportunity_id: requiredString(notes.opportunity_id, 'notes.opportunity_id'),
+    markdown: requiredString(notes.markdown, 'notes.markdown'),
+    revision: Number(notes.revision),
+    next_task: typeof notes.next_task === 'string' ? notes.next_task : null,
+    tasks,
+  };
+}
+
+function decodeWrappedBoardList(value: unknown): { list: BoardList } {
+  const wrapper = object(value);
+  if (!wrapper) throw new Error('Invalid response: board list result is malformed');
+  return { list: decodeBoardList(wrapper.list) };
+}
+
+function decodeArchivedBoardList(value: unknown): components['schemas']['ArchivedBoardList'] {
+  const result = object(value);
+  if (!result || !Array.isArray(result.moved)) throw new Error('Invalid response: archived board list is malformed');
+  const moved = result.moved.map((value) => {
+    const item = object(value);
+    if (!item || !Number.isSafeInteger(item.position) || !Number.isSafeInteger(item.placement_revision)) {
+      throw new Error('Invalid response: archived placement is malformed');
+    }
+    return { opportunity_id: requiredString(item.opportunity_id, 'moved.opportunity_id'), position: Number(item.position), placement_revision: Number(item.placement_revision) };
+  });
+  return { archived_list: decodeBoardList(result.archived_list), destination_list: decodeBoardList(result.destination_list), moved };
+}
+
+function decodeMovedPlacement(value: unknown): components['schemas']['OpportunityPlacement'] {
+  const result = object(value);
+  if (!result || !Number.isSafeInteger(result.position) || !Number.isSafeInteger(result.placement_revision)
+    || !Number.isSafeInteger(result.source_list_revision) || !Number.isSafeInteger(result.destination_list_revision)) {
+    throw new Error('Invalid response: moved placement is malformed');
+  }
+  return {
+    opportunity_id: requiredString(result.opportunity_id, 'placement.opportunity_id'),
+    list_id: requiredString(result.list_id, 'placement.list_id'),
+    position: Number(result.position),
+    placement_revision: Number(result.placement_revision),
+    source_list_revision: Number(result.source_list_revision),
+    destination_list_revision: Number(result.destination_list_revision),
+  };
+}
+
+function decodeAgentChat(value: unknown): AgentChat {
+  const chat = object(value);
+  if (!chat || !Array.isArray(chat.turns) || !Array.isArray(chat.questions) || !Array.isArray(chat.candidates)
+    || !Number.isSafeInteger(chat.revision) || Number(chat.revision) < 1) throw new Error('Invalid response: agent chat is malformed');
+  return {
+    id: requiredString(chat.id, 'chat.id'), role: requiredString(chat.role, 'chat.role') as AgentChat['role'],
+    scope_kind: requiredString(chat.scope_kind, 'chat.scope_kind') as AgentChat['scope_kind'],
+    scope_id: typeof chat.scope_id === 'string' ? chat.scope_id : null,
+    asset_kind: typeof chat.asset_kind === 'string' ? chat.asset_kind as AgentChat['asset_kind'] : null,
+    revision: Number(chat.revision), active_job_id: typeof chat.active_job_id === 'string' ? chat.active_job_id : null,
+    turns: chat.turns.map((raw) => { const turn = object(raw); if (!turn) throw new Error('Invalid response: agent turn is malformed'); return { id: requiredString(turn.id, 'turn.id'), turn_no: Number(turn.turn_no), speaker: requiredString(turn.speaker, 'turn.speaker') as 'owner' | 'agent', text: requiredString(turn.text, 'turn.text'), job_id: typeof turn.job_id === 'string' ? turn.job_id : null, created_at: requiredString(turn.created_at, 'turn.created_at') }; }),
+    questions: chat.questions.map((raw) => { const question = object(raw); if (!question) throw new Error('Invalid response: interviewer question state is malformed'); return { question_id: requiredString(question.question_id, 'question.question_id'), state: requiredString(question.state, 'question.state') }; }),
+    candidates: chat.candidates.map((raw) => { const candidate = object(raw); if (!candidate || !object(candidate.fields) || !object(candidate.owner_quotes) || !Array.isArray(candidate.missing_fields)) throw new Error('Invalid response: interviewer candidate is malformed'); return { id: requiredString(candidate.id, 'candidate.id'), asset_kind: requiredString(candidate.asset_kind, 'candidate.asset_kind'), fields: candidate.fields as Record<string, unknown>, owner_quotes: candidate.owner_quotes as Record<string, unknown>, missing_fields: stringArray(candidate.missing_fields, 'candidate.missing_fields'), state: requiredString(candidate.state, 'candidate.state'), resource_id: typeof candidate.resource_id === 'string' ? candidate.resource_id : null }; }),
+  };
+}
+
+function decodeBriefItem(value: unknown): BriefItem {
+  const item = object(value); if (!item || !object(item.detail) || !Number.isSafeInteger(item.revision) || ![1, 2, 3].includes(Number(item.tier))) throw new Error('Invalid response: brief item is malformed');
+  return { id: requiredString(item.id, 'brief.id'), scope_kind: requiredString(item.scope_kind, 'brief.scope_kind') as BriefItem['scope_kind'], scope_id: requiredString(item.scope_id, 'brief.scope_id'), kind: requiredString(item.kind, 'brief.kind'), text: requiredString(item.text, 'brief.text'), detail: item.detail as Record<string, unknown>, tier: Number(item.tier) as BriefItem['tier'], quote: typeof item.quote === 'string' ? item.quote : null, check_suggestion: typeof item.check_suggestion === 'string' ? item.check_suggestion : null, speaker_kind: requiredString(item.speaker_kind, 'brief.speaker_kind'), status: requiredString(item.status, 'brief.status'), revision: Number(item.revision), supersedes_id: typeof item.supersedes_id === 'string' ? item.supersedes_id : null };
+}
+
+function decodeMaterial(value: unknown): Material {
+  const item = object(value);
+  if (!item || !Number.isSafeInteger(item.version) || Number(item.version) < 1
+    || !/^[a-f0-9]{64}$/.test(String(item.content_sha256))
+    || !['draft', 'approved', 'released'].includes(String(item.status))
+    || !(item.gate === null || object(item.gate))) {
+    throw new Error('Invalid response: material is malformed');
+  }
+  return {
+    id: requiredString(item.id, 'material.id'),
+    opportunity_id: requiredString(item.opportunity_id, 'material.opportunity_id'),
+    recipient_id: requiredString(item.recipient_id, 'material.recipient_id'),
+    recipient_name: requiredString(item.recipient_name, 'material.recipient_name'),
+    kind: requiredString(item.kind, 'material.kind'),
+    version: Number(item.version),
+    body: requiredString(item.body, 'material.body'),
+    content_sha256: item.content_sha256 as string,
+    status: item.status as Material['status'],
+    gate: item.gate as Material['gate'],
+  };
+}
+
+function decodeReleasedMaterial(value: unknown): ReleasedMaterial {
+  const item = object(value);
+  if (!item || !Number.isSafeInteger(item.version) || Number(item.version) < 1
+    || !/^[a-f0-9]{64}$/.test(String(item.content_sha256))) {
+    throw new Error('Invalid response: release is malformed');
+  }
+  return {
+    release_id: requiredString(item.release_id, 'release.release_id'),
+    material_id: requiredString(item.material_id, 'release.material_id'),
+    version: Number(item.version),
+    recipient_id: requiredString(item.recipient_id, 'release.recipient_id'),
+    body: requiredString(item.body, 'release.body'),
+    content_sha256: item.content_sha256 as string,
+    issued_at: requiredString(item.issued_at, 'release.issued_at'),
+  };
+}
+
+function decodeArray<T>(value: unknown, field: string, decode: (item: unknown) => T): T[] {
+  if (!Array.isArray(value)) throw new Error(`Invalid response: ${field} must be a list`);
+  return value.map(decode);
+}
+
 function decodeSavedSource(value: unknown): SavedSource {
   const source = object(value);
   if (!source) throw new Error('Invalid response: saved source is malformed');
@@ -127,7 +325,32 @@ function decodeSavedSource(value: unknown): SavedSource {
     occurrence_id: requiredString(source.occurrence_id, 'source.occurrence_id'),
     normalized_sha256: requiredString(source.normalized_sha256, 'source.normalized_sha256'),
     raw_sha256: requiredString(source.raw_sha256, 'source.raw_sha256'),
+    ...(typeof source.job_id === 'string' ? { job_id: source.job_id } : {}),
+    ...(typeof source.job_status === 'string' ? { job_status: source.job_status } : {}),
   };
+}
+
+function decodeProvider(value: unknown): ProviderConfig {
+  const row = object(value);
+  if (!row || !Number.isSafeInteger(row.num_ctx) || !Number.isSafeInteger(row.num_predict)) throw new Error('Invalid response: provider settings are malformed');
+  return { endpoint: requiredString(row.endpoint, 'provider.endpoint'), model: requiredString(row.model, 'provider.model'), num_ctx: Number(row.num_ctx), num_predict: Number(row.num_predict), locale: requiredString(row.locale, 'provider.locale') };
+}
+
+function decodeExtractorJob(value: unknown): ExtractorJob {
+  const row = object(value);
+  if (!row || !Array.isArray(row.proposals)) throw new Error('Invalid response: Extractor job is malformed');
+  const proposals = row.proposals.map((entry): ExtractorProposal => {
+    const item = object(entry); const candidate = item ? object(item.candidate) : null;
+    if (!item || !candidate) throw new Error('Invalid response: Extractor proposal is malformed');
+    return { id: requiredString(item.id, 'proposal.id'), kind: requiredString(item.kind, 'proposal.kind'), status: requiredString(item.status, 'proposal.status'), candidate: { statement: requiredString(candidate.statement, 'candidate.statement'), quote: requiredString(candidate.quote, 'candidate.quote'), mention_name: typeof candidate.mention_name === 'string' ? candidate.mention_name : null, mention_kind: typeof candidate.mention_kind === 'string' ? candidate.mention_kind : null } };
+  });
+  return { id: requiredString(row.id, 'job.id'), role: requiredString(row.role, 'job.role'), status: requiredString(row.status, 'job.status'), current_attempt: Number(row.current_attempt), max_attempts: Number(row.max_attempts), progress_current: Number(row.progress_current), progress_total: Number(row.progress_total), injection_suspected: row.injection_suspected === true, last_error_code: typeof row.last_error_code === 'string' ? row.last_error_code : null, last_error: typeof row.last_error === 'string' ? row.last_error : null, source_occurrence_id: requiredString(row.source_occurrence_id, 'job.source_occurrence_id'), proposal_batch_id: typeof row.proposal_batch_id === 'string' ? row.proposal_batch_id : null, proposals };
+}
+
+function decodeProviderHealth(value: unknown): { available: boolean; model: string; models: string[]; message: string } {
+  const row = object(value);
+  if (!row || typeof row.available !== 'boolean') throw new Error('Invalid response: provider health is malformed');
+  return { available: row.available, model: requiredString(row.model, 'health.model'), models: stringArray(row.models, 'health.models'), message: requiredString(row.message, 'health.message') };
 }
 
 function decodeSavedSourceList(value: unknown): SavedSource[] {
@@ -192,16 +415,6 @@ export class ParleyClient {
   private session: Session | null = null;
   private connection: Promise<void> | null = null;
 
-  get workspaceEpoch(): string {
-    if (!this.session) throw new Error('Workspace session is not connected.');
-    return this.session.epoch;
-  }
-
-  get eventCursor(): string {
-    if (!this.session) throw new Error('Workspace session is not connected.');
-    return this.session.cursor;
-  }
-
   /**
    * Redeem the bootstrap fragment once and load the workspace session. Every
    * caller awaits the same promise so the one-time secret is spent exactly
@@ -241,56 +454,6 @@ export class ParleyClient {
       decodeGraphEntity,
     );
     return data as GraphEntity[];
-  }
-
-  async searchDirectory(filters: { q?:string; kind?:string; tag?:string } = {}, signal?:AbortSignal, page=1, pageSize=50): Promise<DirectoryPage> {
-    const query = new URLSearchParams();
-    if (filters.q) query.set('q', filters.q); if (filters.kind) query.set('kind', filters.kind); if (filters.tag) query.set('tag', filters.tag);query.set('page',String(page));query.set('page_size',String(pageSize));
-    const value = object(await this.request(`/directory${query.size ? `?${query}` : ''}`,{signal}));
-    if (!value || !Array.isArray(value.data)||!Number.isSafeInteger(value.total)||!Number.isSafeInteger(value.page)||!Number.isSafeInteger(value.page_size)||typeof value.has_more!=='boolean') throw new Error('Invalid response: directory is malformed');
-    const items=value.data.map((item) => {
-      const row=object(item); if (!row || !Array.isArray(row.aliases) || !Array.isArray(row.tags) || !Number.isSafeInteger(row.revision)) throw new Error('Invalid response: directory row is malformed');
-      return { id:requiredString(row.id,'directory.id'), kind:requiredString(row.kind,'directory.kind') as DirectoryEntity['kind'], name:requiredString(row.name,'directory.name'), descriptor:requiredString(row.descriptor,'directory.descriptor'), aliases:row.aliases.map((v)=>requiredString(v,'alias')), tags:row.tags.map((v)=>requiredString(v,'tag')), revision:Number(row.revision) };
-    });
-    return {items,total:Number(value.total),page:Number(value.page),page_size:Number(value.page_size),has_more:value.has_more};
-  }
-
-  async updateDirectory(entity:DirectoryEntity,input:{name:string;descriptor:string;aliases:string[];tags:string},key:string):Promise<DirectoryEntity>{
-    const response=object(await this.mutate(`/directory/${encodeURIComponent(entity.id)}`,'PATCH',{expected_revision:entity.revision,name:input.name,descriptor:input.descriptor,aliases:input.aliases,tags:input.tags.split(',').map(value=>value.trim()).filter(Boolean)},{'Idempotency-Key':key}));
-    if(!response||!Number.isSafeInteger(response.revision)||!Array.isArray(response.aliases)||!Array.isArray(response.tags))throw new Error('Invalid response: directory update is malformed');
-    return {id:requiredString(response.id,'directory.id'),kind:requiredString(response.kind,'directory.kind') as DirectoryEntity['kind'],name:requiredString(response.name,'directory.name'),descriptor:requiredString(response.descriptor,'directory.descriptor'),aliases:response.aliases.map(v=>requiredString(v,'alias')),tags:response.tags.map(v=>requiredString(v,'tag')),revision:Number(response.revision)};
-  }
-
-  async getNeighborhood(id:string, viewScope='party', viewId=id, signal?:AbortSignal): Promise<Neighborhood> {
-    const query=new URLSearchParams({view_scope:viewScope,view_id:viewId}); const value=object(await this.request(`/graph/${encodeURIComponent(id)}?${query}`,{signal}));
-    if (!value || !Array.isArray(value.nodes) || !Array.isArray(value.edges) || !Array.isArray(value.positions)) throw new Error('Invalid response: graph neighborhood is malformed');
-    if(!Number.isSafeInteger(value.omitted_nodes)||!Number.isSafeInteger(value.omitted_edges))throw new Error('Invalid response: graph counts are malformed');
-    return value as unknown as Neighborhood;
-  }
-
-  async getSource(occurrenceId:string): Promise<SourceDetail> {
-    const value=object(await this.request(`/captures/${encodeURIComponent(occurrenceId)}`));
-    if (!value || typeof value.text!=='string') throw new Error('Invalid response: source detail is malformed');
-    return { ...decodeSavedSource(value), text:value.text, title:typeof value.title==='string'?value.title:null, url:typeof value.url==='string'?value.url:null, captured_at:requiredString(value.captured_at,'source.captured_at'), actor_kind:requiredString(value.actor_kind,'source.actor_kind'), actor_entity_id:typeof value.actor_entity_id==='string'?value.actor_entity_id:null, normalization_version:Number(value.normalization_version) };
-  }
-
-  async correctClaim(claimId:string, expectedRevision:number, wording:string): Promise<{claim_id:string;revision:number;approved_wording:string}> {
-    const value=object(await this.mutate(`/claims/${encodeURIComponent(claimId)}/correction`,'POST',{expected_revision:expectedRevision,wording},{'Idempotency-Key':newOperationKey()}));
-    if (!value || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1) throw new Error('Invalid response: correction receipt is malformed');
-    return {claim_id:requiredString(value.claim_id,'claim_id'),revision:Number(value.revision),approved_wording:requiredString(value.approved_wording,'approved_wording')};
-  }
-
-  async saveLayout(input:{view_scope:string;view_id:string;entity_id:string;expected_revision:number;x:number;y:number}):Promise<void> {
-    await this.mutate('/layout','POST',input,{'Idempotency-Key':newOperationKey()});
-  }
-
-  async createRelated(input:{kind:string;name:string;related_entity_id:string;verb:string;occurrence_id:string;quote:string;view_scope:string;view_id:string;x:number;y:number}):Promise<GraphEntity> {
-    const data=await this.request('/graph/related',{method:'POST',body:JSON.stringify(input),headers:{'Idempotency-Key':newOperationKey()}});
-    return decodeGraphEntity(data);
-  }
-
-  async linkExisting(input:{from_id:string;to_id:string;verb:string;occurrence_id:string;quote:string}):Promise<string>{
-    const value=object(await this.mutate('/graph/edges','POST',input,{'Idempotency-Key':newOperationKey()}));if(!value)return Promise.reject(new Error('Invalid response: edge receipt is malformed'));return requiredString(value.edge_id,'edge_id');
   }
 
   async getResource(id: string): Promise<Resource> {
@@ -334,150 +497,251 @@ export class ParleyClient {
     return decodeSavedSource(response);
   }
 
-  async listOpportunities(): Promise<Opportunity[]> {
-    const value = object(await this.request('/opportunities'));
-    if (!value || !Array.isArray(value.data)) throw new Error('Invalid response: opportunity list is malformed');
-    return value.data.map((item) => {
-      const row = object(item);
-      if (!row || !Array.isArray(row.participants) || !Number.isSafeInteger(row.revision)) throw new Error('Invalid response: opportunity is malformed');
-      return { id:requiredString(row.id,'opportunity.id'), title:requiredString(row.title,'opportunity.title'), status:requiredString(row.status,'opportunity.status') as Opportunity['status'], revision:Number(row.revision), participants:row.participants.map((participant) => { const p=object(participant); if(!p)throw new Error('Invalid response: opportunity participant is malformed'); return {id:requiredString(p.id,'participant.id'),kind:requiredString(p.kind,'participant.kind') as 'person'|'org',name:requiredString(p.name,'participant.name')}; }), created_at:requiredString(row.created_at,'opportunity.created_at'), updated_at:requiredString(row.updated_at,'opportunity.updated_at') };
-    });
-  }
-
-  async createOpportunity(input:{title:string;participant_ids:string[]},key=newOperationKey()):Promise<Opportunity>{
-    return this.decodeOpportunity(await this.mutate('/opportunities','POST',input,{'Idempotency-Key':key}));
-  }
-
-  async updateOpportunityParticipants(id:string,expectedRevision:number,participantIds:string[],key=newOperationKey()):Promise<Opportunity>{
-    return this.decodeOpportunity(await this.mutate(`/opportunities/${encodeURIComponent(id)}/participants`,'PUT',{expected_revision:expectedRevision,participant_ids:participantIds},{'Idempotency-Key':key}));
-  }
-
-  async createInterest(id:string,input:{side:'me'|'them';statement:string},key=newOperationKey()):Promise<OpportunityInterest>{
-    const value=object(await this.mutate(`/opportunities/${encodeURIComponent(id)}/interests`,'POST',input,{'Idempotency-Key':key}));
-    if(!value||!Number.isSafeInteger(value.revision))throw new Error('Invalid response: interest is malformed');
-    return {id:requiredString(value.id,'interest.id'),opportunity_id:requiredString(value.opportunity_id,'interest.opportunity_id'),side:requiredString(value.side,'interest.side') as 'me'|'them',statement:requiredString(value.statement,'interest.statement'),tier:3,status:requiredString(value.status,'interest.status') as 'active'|'dismissed',revision:Number(value.revision)};
-  }
-
-  async listOpportunityInterests(id:string,signal?:AbortSignal):Promise<OpportunityInterest[]>{
-    const value=object(await this.request(`/opportunities/${encodeURIComponent(id)}/interests`,{signal}));if(!value||!Array.isArray(value.data))throw new Error('Invalid response: opportunity interests are malformed');return value.data.map((item)=>{const row=object(item);if(!row||!Number.isSafeInteger(row.revision))throw new Error('Invalid response: interest is malformed');return{id:requiredString(row.id,'interest.id'),opportunity_id:requiredString(row.opportunity_id,'interest.opportunity_id'),side:requiredString(row.side,'interest.side') as 'me'|'them',statement:requiredString(row.statement,'interest.statement'),tier:3,status:requiredString(row.status,'interest.status') as 'active'|'dismissed',revision:Number(row.revision)};});
-  }
-
-  async updateExchange(id:string,input:{expected_revision:number;they_get:string;i_get:string;interest_ids:string[];fairness_attested:boolean},key=newOperationKey()):Promise<OpportunityExchange>{
-    const value=object(await this.mutate(`/opportunities/${encodeURIComponent(id)}/exchange`,'PUT',input,{'Idempotency-Key':key}));
-    if(!value||!Number.isSafeInteger(value.version)||!Array.isArray(value.interest_ids))throw new Error('Invalid response: exchange is malformed');
-    return {id:requiredString(value.id,'exchange.id'),opportunity_id:requiredString(value.opportunity_id,'exchange.opportunity_id'),version:Number(value.version),they_get:requiredString(value.they_get,'they_get'),i_get:requiredString(value.i_get,'i_get'),interest_ids:value.interest_ids.map(x=>requiredString(x,'interest_id')),fairness_attested:value.fairness_attested===true,attested_at:typeof value.attested_at==='string'?value.attested_at:null};
-  }
-
-  async getOpportunityExchange(id:string,signal?:AbortSignal):Promise<OpportunityExchange|null>{
-    const value=await this.request(`/opportunities/${encodeURIComponent(id)}/exchange`,{signal});if(value===null)return null;const row=object(value);if(!row||!Number.isSafeInteger(row.version)||!Array.isArray(row.interest_ids))throw new Error('Invalid response: exchange is malformed');return{id:requiredString(row.id,'exchange.id'),opportunity_id:requiredString(row.opportunity_id,'exchange.opportunity_id'),version:Number(row.version),they_get:requiredString(row.they_get,'they_get'),i_get:requiredString(row.i_get,'i_get'),interest_ids:row.interest_ids.map((x)=>requiredString(x,'interest_id')),fairness_attested:row.fairness_attested===true,attested_at:typeof row.attested_at==='string'?row.attested_at:null};
-  }
-
-  async createMaterial(opportunityId:string,input:{recipient_id:string;kind:'outreach'|'follow_up'|'handoff';title:string},key=newOperationKey()):Promise<Material>{
-    return this.decodeMaterial(await this.mutate(`/opportunities/${encodeURIComponent(opportunityId)}/materials`,'POST',input,{'Idempotency-Key':key}));
-  }
-
-  async listOpportunityMaterials(opportunityId:string,signal?:AbortSignal):Promise<Material[]>{const value=object(await this.request(`/opportunities/${encodeURIComponent(opportunityId)}/materials`,{signal}));if(!value||!Array.isArray(value.data))throw new Error('Invalid response: material list is malformed');return value.data.map((item)=>this.decodeMaterial(item));}
-
-  async getBoard(signal?:AbortSignal):Promise<BoardSnapshotDTO>{return this.decodeBoard(await this.request('/board',{signal}));}
-  async createBoardList(input:{name:string;expected_revision:number},key=newOperationKey()):Promise<BoardSnapshotDTO>{return this.decodeBoard(await this.mutate('/board/lists','POST',input,{'Idempotency-Key':key}));}
-  async renameBoardList(id:string,input:{name:string;expected_revision:number},key=newOperationKey()):Promise<BoardSnapshotDTO>{return this.decodeBoard(await this.mutate(`/board/lists/${encodeURIComponent(id)}`,'PATCH',input,{'Idempotency-Key':key}));}
-  async reorderBoardLists(input:{ordered_ids:string[];expected_revision:number},key=newOperationKey()):Promise<BoardSnapshotDTO>{return this.decodeBoard(await this.mutate('/board/lists/order','PUT',input,{'Idempotency-Key':key}));}
-  async archiveBoardList(id:string,input:{destination_list_id:string;expected_revision:number},key=newOperationKey()):Promise<BoardSnapshotDTO>{return this.decodeBoard(await this.mutate(`/board/lists/${encodeURIComponent(id)}/archive`,'POST',input,{'Idempotency-Key':key}));}
-  async moveBoardCard(id:string,input:{destination_list_id:string;anchor_opportunity_id:string|null;expected_board_revision:number;expected_source_revision:number;expected_destination_revision:number},key=newOperationKey()):Promise<BoardSnapshotDTO>{return this.decodeBoard(await this.mutate(`/board/cards/${encodeURIComponent(id)}/move`,'POST',input,{'Idempotency-Key':key}));}
-  async reorderBoardCard(listId:string,input:{opportunity_id:string;anchor_opportunity_id:string|null;expected_revision:number},key=newOperationKey()):Promise<BoardSnapshotDTO>{return this.decodeBoard(await this.mutate(`/board/lists/${encodeURIComponent(listId)}/cards/reorder`,'POST',input,{'Idempotency-Key':key}));}
-  async getOpportunityNotes(id:string,signal?:AbortSignal):Promise<OpportunityNotesDTO>{return this.decodeNotes(await this.request(`/opportunities/${encodeURIComponent(id)}/notes`,{signal}));}
-  async saveOpportunityNotes(id:string,input:{expected_revision:number;markdown:string},key=newOperationKey()):Promise<OpportunityNotesDTO>{return this.decodeNotes(await this.mutate(`/opportunities/${encodeURIComponent(id)}/notes`,'PUT',input,{'Idempotency-Key':key}));}
-  async toggleOpportunityTask(id:string,input:{expected_revision:number;start_byte:number;end_byte:number;line_hash:string;checked:boolean},key=newOperationKey()):Promise<OpportunityNotesDTO>{return this.decodeNotes(await this.mutate(`/opportunities/${encodeURIComponent(id)}/notes/tasks`,'PATCH',input,{'Idempotency-Key':key}));}
-
-  async getMaterial(id:string,signal?:AbortSignal):Promise<Material>{return this.decodeMaterial(await this.request(`/materials/${encodeURIComponent(id)}`,{signal}));}
-
-  async saveMaterialVersion(id:string,input:{expected_revision:number;body:string;sentences:MaterialSentence[];slot_fills:Record<string,string>;protected_tokens:string[]},key=newOperationKey()):Promise<Material>{
-    return this.decodeMaterial(await this.mutate(`/materials/${encodeURIComponent(id)}/versions`,'PUT',input,{'Idempotency-Key':key}));
-  }
-
-  async getMaterialGate(id:string,versionId:string,signal?:AbortSignal):Promise<MaterialGateDTO>{
-    const value=object(await this.request(`/materials/${encodeURIComponent(id)}/gate?version_id=${encodeURIComponent(versionId)}`,{signal}));
-    if(!value||!Array.isArray(value.results)||!Array.isArray(value.hard_failures)||!Array.isArray(value.soft_failures))throw new Error('Invalid response: material gate is malformed');
-    return value as unknown as MaterialGateDTO;
-  }
-
-  async approveMaterialVersion(id:string,input:{expected_revision:number;version_id:string;override_reasons:Record<string,string>},key=newOperationKey()):Promise<MaterialApprovalDTO>{
-    const value=object(await this.mutate(`/materials/${encodeURIComponent(id)}/approval`,'POST',input,{'Idempotency-Key':key}));
-    if(!value||!object(value.gate_snapshot))throw new Error('Invalid response: approval receipt is malformed');
-    return value as unknown as MaterialApprovalDTO;
-  }
-
-  async issueCopyGrant(id:string,input:{version_id:string;recipient_id:string},key=newOperationKey()):Promise<CopyGrantDTO>{
-    const value=object(await this.mutate(`/materials/${encodeURIComponent(id)}/copy-grant`,'POST',input,{'Idempotency-Key':key}));
-    if(!value||typeof value.body!=='string')throw new Error('Invalid response: copy grant is malformed');
-    return value as unknown as CopyGrantDTO;
-  }
-
-  async acknowledgeCopy(grantId:string,success:boolean,key:string):Promise<CopyGrantReceiptDTO>{
-    const value=object(await this.mutate(`/copy-grants/${encodeURIComponent(grantId)}/acknowledgement`,'POST',{success},{'Idempotency-Key':key}));
-    if(!value||typeof value.digest!=='string')throw new Error('Invalid response: copy acknowledgement is malformed');
-    return value as unknown as CopyGrantReceiptDTO;
-  }
-
-  async getCopyGrantReceipt(grantId:string,signal?:AbortSignal):Promise<CopyGrantReceiptDTO>{
-    const value=object(await this.request(`/copy-grants/${encodeURIComponent(grantId)}`,{signal}));
-    if(!value||typeof value.digest!=='string')throw new Error('Invalid response: copy grant receipt is malformed');
-    return value as unknown as CopyGrantReceiptDTO;
-  }
-
-  async stageCapture(input:{text:string;title:string|null;url:string|null;opportunity_ids:string[];actor_kind:'owner'|'party'|'unknown';actor_entity_id:string|null},key=newOperationKey()):Promise<CaptureReviewDTO>{
-    const value=object(await this.mutate('/capture-stages','POST',input,{'Idempotency-Key':key}));
-    if(!value||typeof value.batch_id!=='string')throw new Error('Invalid response: capture stage is malformed');
-    return this.getCaptureReview(value.batch_id);
-  }
-
-  async getCaptureReview(batchId:string,signal?:AbortSignal):Promise<CaptureReviewDTO>{
-    const value=object(await this.request(`/capture-stages/${encodeURIComponent(batchId)}`,{signal}));
-    if(!value||!Array.isArray(value.proposals)||!object(value.source)||typeof value.injection_suspected!=='boolean')throw new Error('Invalid response: capture review is malformed');
-    return value as unknown as CaptureReviewDTO;
-  }
-
-  async cancelCaptureJob(batchId:string,jobId:string,key=newOperationKey()):Promise<CaptureReviewDTO>{
-    const value=object(await this.mutate(`/capture-stages/${encodeURIComponent(batchId)}/cancel`,'POST',{job_id:jobId},{'Idempotency-Key':key}));
-    if(!value||!Array.isArray(value.proposals))throw new Error('Invalid response: capture cancellation is malformed');
-    return value as unknown as CaptureReviewDTO;
-  }
-
-  async applyCaptureReview(batchId:string,expectedRevision:number,decisions:Array<{proposal_id:string;action:'confirm'|'correct'|'dismiss'|'unresolved';target_id:string|null;corrected_statement:string|null}>,key:string):Promise<CaptureReviewReceiptDTO>{
-    const value=object(await this.mutate(`/capture-stages/${encodeURIComponent(batchId)}/decisions`,'POST',{expected_revision:expectedRevision,decisions},{'Idempotency-Key':key}));
-    if(!value||!Array.isArray(value.committed)||!object(value.source))throw new Error('Invalid response: capture decision receipt is malformed');
-    return value as unknown as CaptureReviewReceiptDTO;
-  }
-
-  async saveCaptureSourceOnly(batchId:string,expectedRevision:number,key:string):Promise<CaptureReviewReceiptDTO>{
-    const value=object(await this.mutate(`/capture-stages/${encodeURIComponent(batchId)}/source-only`,'POST',{expected_revision:expectedRevision},{'Idempotency-Key':key}));
-    if(!value||!Array.isArray(value.committed)||!object(value.source))throw new Error('Invalid response: source-only receipt is malformed');
-    return value as unknown as CaptureReviewReceiptDTO;
-  }
-
-  private decodeOpportunity(value:unknown):Opportunity{
-    const row=object(value);if(!row||!Array.isArray(row.participants)||!Number.isSafeInteger(row.revision))throw new Error('Invalid response: opportunity is malformed');
-    return {id:requiredString(row.id,'opportunity.id'),title:requiredString(row.title,'opportunity.title'),status:requiredString(row.status,'opportunity.status') as Opportunity['status'],revision:Number(row.revision),participants:row.participants.map((participant)=>{const p=object(participant);if(!p)throw new Error('Invalid response: participant is malformed');return{id:requiredString(p.id,'participant.id'),kind:requiredString(p.kind,'participant.kind') as 'person'|'org',name:requiredString(p.name,'participant.name')};}),created_at:requiredString(row.created_at,'opportunity.created_at'),updated_at:requiredString(row.updated_at,'opportunity.updated_at')};
-  }
-
-  private decodeBoard(value:unknown):BoardSnapshotDTO {
-    const row=object(value);
-    if(!row||!Array.isArray(row.items)||!Array.isArray(row.lists)||!Number.isSafeInteger(row.board_revision))throw new Error('Invalid response: board snapshot is malformed');
-    const lists=row.lists.map((value)=>{const list=object(value);if(!list||!Number.isSafeInteger(list.revision)||!Number.isSafeInteger(list.position)||typeof list.archived!=='boolean')throw new Error('Invalid response: board list is malformed');return{id:requiredString(list.id,'list.id'),name:requiredString(list.name,'list.name'),position:Number(list.position),revision:Number(list.revision),archived:list.archived};});
-    const items=row.items.map((value)=>{const item=object(value);if(!item||!Array.isArray(item.participants)||!Array.isArray(item.tags)||!Number.isSafeInteger(item.revision)||!Number.isSafeInteger(item.position))throw new Error('Invalid response: board item is malformed');return{id:requiredString(item.id,'item.id'),revision:Number(item.revision),list_id:requiredString(item.list_id,'item.list_id'),position:Number(item.position),title:requiredString(item.title,'item.title'),status:requiredString(item.status,'item.status'),participants:item.participants.map((value)=>{const p=object(value);if(!p)throw new Error('Invalid response: board participant is malformed');return{id:requiredString(p.id,'participant.id'),kind:requiredString(p.kind,'participant.kind') as 'person'|'org',name:requiredString(p.name,'participant.name')};}),tags:item.tags.map((tag)=>requiredString(tag,'tag')),next_task:typeof item.next_task==='string'?item.next_task:null,deadline:typeof item.deadline==='string'?item.deadline:null,missing_material:item.missing_material===true};});
-    return{items,lists,board_revision:Number(row.board_revision)};
-  }
-
-  private decodeNotes(value:unknown):OpportunityNotesDTO {const row=object(value);if(!row||!Number.isSafeInteger(row.revision))throw new Error('Invalid response: opportunity notes are malformed');return{opportunity_id:requiredString(row.opportunity_id,'notes.opportunity_id'),markdown:requiredString(row.markdown,'notes.markdown'),revision:Number(row.revision)};}
-
-  private decodeMaterial(value:unknown):Material{
-    const row=object(value);const version=row?.current_version===null?null:row?object(row.current_version):null;if(!row||(!version&&row.current_version!==null)||!Array.isArray(row.versions)||!Array.isArray(row.claim_references))throw new Error('Invalid response: material is malformed');
-    const decodeVersion=(v:unknown):MaterialVersion=>{const item=object(v);if(!item||!Array.isArray(item.sentences)||!Array.isArray(item.protected_tokens)||!object(item.slot_fills))throw new Error('Invalid response: material version is malformed');return item as unknown as MaterialVersion;};
-    return {...row,current_version:version?decodeVersion(version):null,versions:row.versions.map(decodeVersion)} as unknown as Material;
-  }
-
   async listSources(): Promise<SavedSource[]> {
     return decodeSavedSourceList(await this.request('/captures'));
+  }
+
+  async getExtractorJob(id: string): Promise<ExtractorJob> {
+    return decodeExtractorJob(await this.request(`/jobs/${encodeURIComponent(id)}`));
+  }
+
+  async cancelExtractorJob(id: string): Promise<void> {
+    await this.request(`/jobs/${encodeURIComponent(id)}`, { method: 'POST', body: '{}' });
+  }
+
+  async getCaptureProposals(occurrenceId: string): Promise<ExtractorJob> {
+    return decodeExtractorJob(await this.request(`/captures/${encodeURIComponent(occurrenceId)}/proposals`));
+  }
+
+  async resolveProposals(batchId: string, decisions: ProposalDecision[], opportunityId?: string): Promise<{ status: string }> {
+    const value = object(await this.mutate(`/proposals/${encodeURIComponent(batchId)}/resolve`, 'POST', {
+      decisions,
+      ...(opportunityId ? { opportunity_id: opportunityId } : {}),
+    }, { 'Idempotency-Key': newOperationKey() }));
+    if (!value || typeof value.status !== 'string') throw new Error('Invalid response: review result is malformed');
+    return { status: value.status };
+  }
+
+  async getProvider(): Promise<ProviderConfig> {
+    return decodeProvider(await this.request('/agent/provider'));
+  }
+
+  async updateProvider(config: ProviderConfig): Promise<void> {
+    await this.mutate('/agent/provider', 'PUT', config, { 'Idempotency-Key': newOperationKey() });
+  }
+
+  async checkProvider(): Promise<{ available: boolean; model: string; models: string[]; message: string }> {
+    return decodeProviderHealth(await this.request('/agent/provider/health', { method: 'POST', body: '{}' }));
+  }
+
+  async createOpportunity(title: string, primary_party_id: string): Promise<Opportunity> {
+    return decodeOpportunity(await this.request('/opportunities', { method: 'POST', body: JSON.stringify({ title, primary_party_id }) }));
+  }
+
+  async listOpportunities(): Promise<Opportunity[]> {
+    return decodeArray(await this.request('/opportunities'), 'opportunities', decodeOpportunity);
+  }
+
+  async listOutputs(): Promise<Material[]> {
+    return decodeArray(await this.request('/outputs'), 'outputs', decodeMaterial);
+  }
+
+  async getWritingInterests(opportunityId: string, recipientId: string): Promise<WritingInterest[]> {
+    const value = object(await this.request(`/opportunities/${encodeURIComponent(opportunityId)}/interests?recipient_id=${encodeURIComponent(recipientId)}`));
+    if (!value || !Array.isArray(value.items)) throw new Error('Invalid response: recipient interests are malformed');
+    return value.items.map((raw) => { const item = object(raw); if (!item) throw new Error('Invalid response: recipient interest is malformed'); return { id: requiredString(item.id, 'interest.id'), side: requiredString(item.side, 'interest.side') as WritingInterest['side'], statement: requiredString(item.statement, 'interest.statement'), knowledge_kind: requiredString(item.knowledge_kind, 'interest.knowledge_kind'), check_suggestion: typeof item.check_suggestion === 'string' ? item.check_suggestion : null, claim_id: typeof item.claim_id === 'string' ? item.claim_id : null, claim_revision: Number.isSafeInteger(item.claim_revision) ? Number(item.claim_revision) : null, revision: Number(item.revision), status: requiredString(item.status, 'interest.status') }; });
+  }
+
+  async getWritingExchange(opportunityId: string, recipientId: string): Promise<{ current: Record<string, unknown> | null; versions: Array<Record<string, unknown>> }> {
+    const value = object(await this.request(`/opportunities/${encodeURIComponent(opportunityId)}/exchange?recipient_id=${encodeURIComponent(recipientId)}`));
+    if (!value || !Array.isArray(value.versions)) throw new Error('Invalid response: recipient exchange is malformed');
+    return { current: object(value.current), versions: value.versions.map((entry) => { const version = object(entry); if (!version) throw new Error('Invalid response: exchange version is malformed'); return version; }) };
+  }
+
+  async addWritingInterest(opportunityId: string, input: { recipient_id: string; side: 'them' | 'me'; statement: string; knowledge_kind: 'observation' | 'hypothesis' | 'owner_report'; check_suggestion?: string }, key = newOperationKey()): Promise<WritingInterest> {
+    const value = object(await this.mutate(`/opportunities/${encodeURIComponent(opportunityId)}/interests`, 'POST', input, { 'Idempotency-Key': key }));
+    if (!value) throw new Error('Invalid response: created interest is malformed');
+    return { id: requiredString(value.id, 'interest.id'), side: requiredString(value.side, 'interest.side') as WritingInterest['side'], statement: requiredString(value.statement, 'interest.statement'), knowledge_kind: requiredString(value.knowledge_kind, 'interest.knowledge_kind'), check_suggestion: typeof value.check_suggestion === 'string' ? value.check_suggestion : null, claim_id: null, claim_revision: null, revision: Number(value.revision ?? 1), status: requiredString(value.status ?? 'active', 'interest.status') };
+  }
+
+  async saveWritingExchange(opportunityId: string, input: { recipient_id: string; they_get: string; i_get: string; interest_ids: string[] }, key = newOperationKey()): Promise<Record<string, unknown>> {
+    const value = object(await this.mutate(`/opportunities/${encodeURIComponent(opportunityId)}/exchange`, 'POST', input, { 'Idempotency-Key': key }));
+    if (!value) throw new Error('Invalid response: saved exchange is malformed'); return value;
+  }
+
+  async attestWritingExchange(opportunityId: string, recipientId: string, key = newOperationKey()): Promise<void> {
+    await this.mutate(`/opportunities/${encodeURIComponent(opportunityId)}/exchange/${encodeURIComponent(recipientId)}/attest`, 'POST', {}, { 'Idempotency-Key': key });
+  }
+
+  async listWritingTemplates(): Promise<WritingTemplate[]> {
+    const value = await this.request('/templates');
+    if (!Array.isArray(value)) throw new Error('Invalid response: templates are malformed');
+    return value.map((raw) => { const item = object(raw); if (!item) throw new Error('Invalid response: template is malformed'); return { id: requiredString(item.id, 'template.id'), family_id: requiredString(item.family_id, 'template.family_id'), name: requiredString(item.name, 'template.name'), version: Number(item.version), status: requiredString(item.status, 'template.status'), body: requiredString(item.body, 'template.body'), sentence_rules: Array.isArray(item.sentence_rules) ? item.sentence_rules.flatMap((entry) => Array.isArray(entry) ? entry.filter((rule): rule is string => typeof rule === 'string') : []) : [], stage_class: requiredString(item.stage_class, 'template.stage_class'), channel: requiredString(item.channel, 'template.channel'), parent_version_id: typeof item.parent_version_id === 'string' ? item.parent_version_id : null }; });
+  }
+
+  async listTemplateFamilies(): Promise<Array<{ id: string; name: string }>> { const value = object(await this.request('/template-families')); if (!value || !Array.isArray(value.items)) throw new Error('Invalid response: template families are malformed'); return value.items.map((entry) => { const item = object(entry); if (!item) throw new Error('Invalid response: template family is malformed'); return { id: requiredString(item.id, 'family.id'), name: requiredString(item.name, 'family.name') }; }); }
+  async createTemplateFamily(name: string, key = newOperationKey()): Promise<{ id: string; name: string }> { const value = object(await this.mutate('/template-families', 'POST', { name }, { 'Idempotency-Key': key })); if (!value) throw new Error('Invalid response: created family is malformed'); return { id: requiredString(value.id, 'family.id'), name: requiredString(value.name, 'family.name') }; }
+  async createWritingTemplateVersion(familyId: string, input: { name: string; body: string; stage_class: string; channel: string; sentence_rules: string[][]; proof_fallback?: string; parent_version_id?: string | null }, key = newOperationKey()): Promise<WritingTemplate> { const value = object(await this.mutate(`/templates/${encodeURIComponent(familyId)}/versions`, 'POST', input, { 'Idempotency-Key': key })); if (!value) throw new Error('Invalid response: created template version is malformed'); return { id: requiredString(value.id, 'template.id'), family_id: requiredString(value.family_id, 'template.family_id'), name: typeof value.name === 'string' ? value.name : input.name, version: Number(value.version), status: requiredString(value.status, 'template.status'), body: requiredString(value.body, 'template.body'), sentence_rules: input.sentence_rules.flat(), stage_class: requiredString(value.stage_class, 'template.stage_class'), channel: requiredString(value.channel, 'template.channel'), parent_version_id: typeof value.parent_version_id === 'string' ? value.parent_version_id : null }; }
+  async approveWritingTemplate(id: string, key = newOperationKey()): Promise<void> { await this.mutate(`/templates/${encodeURIComponent(id)}/approve`, 'POST', {}, { 'Idempotency-Key': key }); }
+  async activateWritingTemplate(id: string, key = newOperationKey()): Promise<void> { await this.mutate(`/templates/${encodeURIComponent(id)}/activate`, 'POST', {}, { 'Idempotency-Key': key }); }
+
+  async getEmbeddingModel(): Promise<{ model: string; model_digest: string | null; calibrated_kinds: string[] }> { const value = object(await this.request('/embedding-model')); if (!value || !Array.isArray(value.calibrated_kinds)) throw new Error('Invalid response: embedding model is malformed'); return { model: requiredString(value.model, 'embedding_model'), model_digest: typeof value.model_digest === 'string' ? value.model_digest : null, calibrated_kinds: value.calibrated_kinds.filter((kind): kind is string => typeof kind === 'string') }; }
+  async setEmbeddingModel(model: string, key = newOperationKey()): Promise<void> { await this.mutate('/embedding-model', 'PUT', { model }, { 'Idempotency-Key': key }); }
+  async startMatching(opportunityId: string, recipientId: string, key = newOperationKey()): Promise<WritingJob> { const value = object(await this.mutate(`/opportunities/${encodeURIComponent(opportunityId)}/matches`, 'POST', { recipient_id: recipientId }, { 'Idempotency-Key': key })); if (!value) throw new Error('Invalid response: matching job is malformed'); return { job_id: requiredString(value.job_id, 'job_id'), role: requiredString(value.role, 'role') }; }
+  async getWritingMatch(opportunityId: string, recipientId: string): Promise<WritingMatch> { const value = object(await this.request(`/opportunities/${encodeURIComponent(opportunityId)}/matches?recipient_id=${encodeURIComponent(recipientId)}`)); if (!value) throw new Error('Invalid response: match result is malformed'); return { id: requiredString(value.id, 'match.id'), opportunity_id: requiredString(value.opportunity_id, 'match.opportunity_id'), recipient_id: requiredString(value.recipient_id, 'match.recipient_id'), embed_model_digest: requiredString(value.embed_model_digest, 'match.embed_model_digest'), calibration_json: requiredString(value.calibration_json, 'match.calibration_json'), shortlist_json: requiredString(value.shortlist_json, 'match.shortlist_json'), why_job_id: typeof value.why_job_id === 'string' ? value.why_job_id : null }; }
+  async buildWritingTemplates(input: { segment_id?: string; stage_class: string; rungs: number[]; rules: string[]; channel: string; max_chars: number; voice_sample_ids?: string[] }, key = newOperationKey()): Promise<WritingJob> { const value = object(await this.mutate('/templates/build', 'POST', input, { 'Idempotency-Key': key })); if (!value) throw new Error('Invalid response: template builder job is malformed'); return { job_id: requiredString(value.job_id, 'job_id'), role: requiredString(value.role, 'role') }; }
+  async composeWritingMaterial(opportunityId: string, input: { recipient_id: string; kind: string; template_version_id: string; exchange_version: number; slot_fills: Array<{ slot: string; value: string; resource_id?: string }>; selected_match_ids?: string[] }, key = newOperationKey()): Promise<WritingJob> { const value = object(await this.mutate(`/opportunities/${encodeURIComponent(opportunityId)}/materials/compose`, 'POST', input, { 'Idempotency-Key': key })); if (!value) throw new Error('Invalid response: Composer job is malformed'); return { job_id: requiredString(value.job_id, 'job_id'), role: requiredString(value.role, 'role') }; }
+  async saveWritingDraft(opportunityId: string, jobId: string, body: string, key = newOperationKey()): Promise<Record<string, unknown>> { const value = object(await this.mutate(`/opportunities/${encodeURIComponent(opportunityId)}/materials/compose/${encodeURIComponent(jobId)}/save`, 'POST', { body }, { 'Idempotency-Key': key })); if (!value) throw new Error('Invalid response: saved draft is malformed'); return value; }
+  async lintWritingMaterial(id: string, version: number, content_sha256: string, key = newOperationKey()): Promise<Record<string, unknown>> { const value = object(await this.mutate(`/materials/${encodeURIComponent(id)}/lint`, 'POST', { version, content_sha256 }, { 'Idempotency-Key': key })); if (!value) throw new Error('Invalid response: lint result is malformed'); return value; }
+  async listVoiceSamples(): Promise<Array<{ id: string; text: string; channel: string | null; revision: number }>> { const value = object(await this.request('/voice-samples')); if (!value || !Array.isArray(value.items)) throw new Error('Invalid response: voice samples are malformed'); return value.items.map((entry) => { const item = object(entry); if (!item) throw new Error('Invalid response: voice sample is malformed'); return { id: requiredString(item.id, 'voice_sample.id'), text: requiredString(item.text, 'voice_sample.text'), channel: typeof item.channel === 'string' ? item.channel : null, revision: Number(item.revision) }; }); }
+  async createVoiceSample(text: string, channel?: string, key = newOperationKey()): Promise<void> { await this.mutate('/voice-samples', 'POST', { text, ...(channel ? { channel } : {}) }, { 'Idempotency-Key': key }); }
+  async retireVoiceSample(id: string, key = newOperationKey()): Promise<void> { await this.mutate(`/voice-samples/${encodeURIComponent(id)}/retire`, 'POST', {}, { 'Idempotency-Key': key }); }
+
+  async getBoard(): Promise<BoardSnapshot> {
+    return decodeBoardSnapshot(await this.request('/board'));
+  }
+
+  async createBoardList(input: components['schemas']['CreateBoardList'], key = newOperationKey()): Promise<components['schemas']['CreatedBoardList']> {
+    const result = object(await this.mutate('/board/lists', 'POST', input, { 'Idempotency-Key': key }));
+    if (!result || !Number.isSafeInteger(result.board_revision)) throw new Error('Invalid response: created board list is malformed');
+    return { list: decodeBoardList(result.list), board_revision: Number(result.board_revision) };
+  }
+
+  async reorderBoardLists(input: components['schemas']['ReorderBoardLists'], key = newOperationKey()): Promise<BoardList[]> {
+    const result = object(await this.mutate('/board/lists/reorder', 'POST', input, { 'Idempotency-Key': key }));
+    if (!result || !Array.isArray(result.lists)) throw new Error('Invalid response: reordered board lists are malformed');
+    return result.lists.map(decodeBoardList);
+  }
+
+  async renameBoardList(id: string, input: components['schemas']['RenameBoardList'], key = newOperationKey()): Promise<BoardList> {
+    return decodeWrappedBoardList(await this.mutate(`/board/lists/${encodeURIComponent(id)}`, 'PATCH', input, { 'Idempotency-Key': key })).list;
+  }
+
+  async archiveBoardList(id: string, input: components['schemas']['ArchiveBoardList'], key = newOperationKey()): Promise<components['schemas']['ArchivedBoardList']> {
+    return decodeArchivedBoardList(await this.mutate(`/board/lists/${encodeURIComponent(id)}/archive`, 'POST', input, { 'Idempotency-Key': key }));
+  }
+
+  async moveOpportunityPlacement(id: string, input: MovePlacementInput, key = newOperationKey()): Promise<components['schemas']['OpportunityPlacement']> {
+    return decodeMovedPlacement(await this.mutate(`/opportunities/${encodeURIComponent(id)}/placement`, 'POST', input, { 'Idempotency-Key': key }));
+  }
+
+  async getOpportunityNotes(id: string): Promise<OpportunityNotes> {
+    return decodeOpportunityNotes(await this.request(`/opportunities/${encodeURIComponent(id)}/notes`));
+  }
+
+  async updateOpportunityNotes(id: string, markdown: string, expected_revision: number, key = newOperationKey()): Promise<OpportunityNotes> {
+    return decodeOpportunityNotes(await this.mutate(`/opportunities/${encodeURIComponent(id)}/notes`, 'PATCH', { markdown, expected_revision }, { 'Idempotency-Key': key }));
+  }
+
+  async toggleOpportunityTask(id: string, input: components['schemas']['ToggleOpportunityTask'], key = newOperationKey()): Promise<OpportunityNotes> {
+    return decodeOpportunityNotes(await this.mutate(`/opportunities/${encodeURIComponent(id)}/notes/tasks/toggle`, 'POST', input, { 'Idempotency-Key': key }));
+  }
+
+  async createAgentChat(input: { role: AgentChat['role']; scope_kind: AgentChat['scope_kind']; scope_id?: string; asset_kind?: AgentChat['asset_kind'] }, key = newOperationKey()): Promise<AgentChat> {
+    return decodeAgentChat(await this.mutate('/agent/chats', 'POST', input, { 'Idempotency-Key': key }));
+  }
+
+  async listAgentChats(filter: { role?: AgentChat['role']; scope_kind?: AgentChat['scope_kind']; scope_id?: string } = {}): Promise<AgentChatSummary[]> {
+    const query = new URLSearchParams(Object.entries(filter).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+    const value = await this.request(`/agent/chats${query.size ? `?${query.toString()}` : ''}`);
+    if (!Array.isArray(value)) throw new Error('Invalid response: agent chat history is malformed');
+    return value.map((raw) => { const item = object(raw); if (!item || !Number.isSafeInteger(item.revision)) throw new Error('Invalid response: agent chat summary is malformed'); return { id: requiredString(item.id, 'chat.id'), role: requiredString(item.role, 'chat.role') as AgentChat['role'], scope_kind: requiredString(item.scope_kind, 'chat.scope_kind') as AgentChat['scope_kind'], scope_id: typeof item.scope_id === 'string' ? item.scope_id : null, asset_kind: typeof item.asset_kind === 'string' ? item.asset_kind as AgentChat['asset_kind'] : null, revision: Number(item.revision), last_turn: typeof item.last_turn === 'string' ? item.last_turn : null, updated_at: requiredString(item.updated_at, 'chat.updated_at'), active_job_id: typeof item.active_job_id === 'string' ? item.active_job_id : null }; });
+  }
+
+  async getAgentChat(id: string): Promise<AgentChat> { return decodeAgentChat(await this.request(`/agent/chats/${encodeURIComponent(id)}`)); }
+
+  async addAgentTurn(id: string, text: string, key = newOperationKey()): Promise<{ chat_id: string; turn_id: string; job_id: string; revision: number }> {
+    const result = object(await this.mutate(`/agent/chats/${encodeURIComponent(id)}/turns`, 'POST', { text }, { 'Idempotency-Key': key }));
+    if (!result || !Number.isSafeInteger(result.revision)) throw new Error('Invalid response: Interviewer turn result is malformed');
+    return { chat_id: requiredString(result.chat_id, 'chat_id'), turn_id: requiredString(result.turn_id, 'turn_id'), job_id: requiredString(result.job_id, 'job_id'), revision: Number(result.revision) };
+  }
+
+  async setInterviewerQuestion(id: string, question_id: string, action: 'ask' | 'skip' | 'defer' | 'unknown', key = newOperationKey()): Promise<void> {
+    await this.mutate(`/agent/chats/${encodeURIComponent(id)}/questions`, 'POST', { question_id, action }, { 'Idempotency-Key': key });
+  }
+
+  async confirmInterviewerCandidate(id: string, input: { title: string; fields: Record<string, unknown>; expected_chat_revision: number }, key = newOperationKey()): Promise<void> {
+    await this.mutate(`/agent/candidates/${encodeURIComponent(id)}/confirm`, 'POST', input, { 'Idempotency-Key': key });
+  }
+
+  async dismissInterviewerCandidate(id: string, key = newOperationKey()): Promise<void> {
+    await this.mutate(`/agent/candidates/${encodeURIComponent(id)}/dismiss`, 'POST', {}, { 'Idempotency-Key': key });
+  }
+
+  async getRoleJob(id: string): Promise<RoleJob> {
+    const result = object(await this.request(`/jobs/${encodeURIComponent(id)}`));
+    if (!result || typeof result.status !== 'string') throw new Error('Invalid response: role job is malformed');
+    return { id: requiredString(result.id, 'job.id'), role: requiredString(result.role, 'job.role'), status: result.status, result: object(result.result), last_error: typeof result.last_error === 'string' ? result.last_error : null, scope_kind: typeof result.scope_kind === 'string' ? result.scope_kind : undefined, scope_id: typeof result.scope_id === 'string' ? result.scope_id : undefined };
+  }
+
+  async getBriefItems(scopeKind: 'party' | 'segment', scopeId: string): Promise<BriefItem[]> {
+    const value = await this.request(`/briefs/${scopeKind}/${encodeURIComponent(scopeId)}/items`);
+    if (!Array.isArray(value)) throw new Error('Invalid response: brief items must be a list');
+    return value.map(decodeBriefItem);
+  }
+
+  async generateBrief(scopeKind: 'party' | 'segment', scopeId: string, key = newOperationKey()): Promise<{ job_id: string }> {
+    const result = object(await this.mutate(`/briefs/${scopeKind}/${encodeURIComponent(scopeId)}/items`, 'POST', {}, { 'Idempotency-Key': key }));
+    if (!result) throw new Error('Invalid response: brief job result is malformed');
+    return { job_id: requiredString(result.job_id, 'job_id') };
+  }
+
+  async decideBriefItem(id: string, input: { decision: 'confirm' | 'correct' | 'dismiss'; corrected_text?: string; expected_revision: number }, key = newOperationKey()): Promise<void> {
+    await this.mutate(`/brief-items/${encodeURIComponent(id)}/decision`, 'POST', input, { 'Idempotency-Key': key });
+  }
+
+  async listFluency(): Promise<VocabularyFluency[]> {
+    const value = await this.request('/fluency');
+    if (!Array.isArray(value)) throw new Error('Invalid response: vocabulary fluency list is malformed');
+    return value.map((raw) => { const item = object(raw); if (!item || !['unknown', 'learning', 'fluent'].includes(String(item.status)) || !Number.isSafeInteger(item.revision)) throw new Error('Invalid response: vocabulary fluency item is malformed'); return { term: requiredString(item.term, 'fluency.term'), status: item.status as VocabularyFluency['status'], revision: Number(item.revision) }; });
+  }
+
+  async updateFluency(term: string, status: VocabularyFluency['status'], expected_revision: number, key = newOperationKey()): Promise<VocabularyFluency> {
+    const value = object(await this.mutate(`/fluency/${encodeURIComponent(term)}`, 'PUT', { status, expected_revision }, { 'Idempotency-Key': key }));
+    if (!value || !Number.isSafeInteger(value.revision)) throw new Error('Invalid response: vocabulary fluency update is malformed');
+    return { term: requiredString(value.term, 'fluency.term'), status: requiredString(value.status, 'fluency.status') as VocabularyFluency['status'], revision: Number(value.revision) };
+  }
+
+  async listSegments(): Promise<Array<{ id: string; name: string; description: string | null; revision: number }>> {
+    const value = await this.request('/segments');
+    if (!Array.isArray(value)) throw new Error('Invalid response: segments must be a list');
+    return value.map((item) => { const segment = object(item); if (!segment) throw new Error('Invalid response: segment is malformed'); return { id: requiredString(segment.id, 'segment.id'), name: requiredString(segment.name, 'segment.name'), description: typeof segment.description === 'string' ? segment.description : null, revision: Number(segment.revision) }; });
+  }
+
+  async createSegment(name: string, description?: string, key = newOperationKey()): Promise<{ id: string; name: string; description: string | null; revision: number }> {
+    const value = object(await this.mutate('/segments', 'POST', { name, ...(description === undefined ? {} : { description }) }, { 'Idempotency-Key': key }));
+    if (!value) throw new Error('Invalid response: created segment is malformed');
+    return { id: requiredString(value.id, 'segment.id'), name: requiredString(value.name, 'segment.name'), description: typeof value.description === 'string' ? value.description : null, revision: Number(value.revision) };
+  }
+
+  async updateSegmentParty(segmentId: string, partyId: string, action: 'add' | 'remove', key = newOperationKey()): Promise<void> {
+    await this.mutate(`/segments/${encodeURIComponent(segmentId)}/parties`, 'POST', { party_id: partyId, action }, { 'Idempotency-Key': key });
+  }
+
+  async getAgentPrompt(role: 'interviewer' | 'briefer'): Promise<{ role: string; version_id: string; version: number; content: string; sha256: string }> {
+    const value = object(await this.request(`/agent/prompts/${role}`)); if (!value) throw new Error('Invalid response: prompt is malformed');
+    return { role: requiredString(value.role, 'prompt.role'), version_id: requiredString(value.version_id, 'prompt.version_id'), version: Number(value.version), content: requiredString(value.content, 'prompt.content'), sha256: requiredString(value.sha256, 'prompt.sha256') };
+  }
+
+  async updateAgentPrompt(role: 'interviewer' | 'briefer', expected_version_id: string, content: string, key = newOperationKey()): Promise<void> {
+    await this.mutate(`/agent/prompts/${role}`, 'PUT', { expected_version_id, content }, { 'Idempotency-Key': key });
+  }
+
+  async getQuestionBank(): Promise<{ version_id: string; content: Record<string, unknown> }> {
+    const value = object(await this.request('/agent/question-bank')); if (!value || !object(value.content)) throw new Error('Invalid response: question bank is malformed');
+    return { version_id: requiredString(value.version_id, 'question_bank.version_id'), content: value.content as Record<string, unknown> };
+  }
+
+  async updateQuestionBank(expected_version_id: string, content: Record<string, unknown>, key = newOperationKey()): Promise<void> {
+    await this.mutate('/agent/question-bank', 'PUT', { expected_version_id, content }, { 'Idempotency-Key': key });
+  }
+
+  async releaseMaterial(id: string): Promise<ReleasedMaterial> {
+    return decodeReleasedMaterial(await this.request(`/materials/${encodeURIComponent(id)}/release`, { method: 'POST', body: '{}' }));
+  }
+
+  async acknowledgeRelease(id: string, succeeded: boolean): Promise<void> {
+    await this.request(`/releases/${encodeURIComponent(id)}/ack`, { method: 'POST', body: JSON.stringify({ succeeded }) });
   }
 
   private async mutate(path: string, method: string, body: unknown, headers: Record<string, string>): Promise<unknown> {
@@ -489,7 +753,6 @@ export class ParleyClient {
   }
 
   private async request(path: string, init: RequestInit = {}, authenticated = true): Promise<unknown> {
-    const requestEpoch=authenticated?this.session?.epoch:undefined;
     const headers = new Headers(init.headers);
     headers.set('Accept', 'application/json');
     headers.set('Content-Type', 'application/json');
@@ -514,8 +777,6 @@ export class ParleyClient {
     } catch {
       throw new ApiError('The local service returned an unreadable response.', response.status, 'INVALID_RESPONSE');
     }
-    const responseEpoch=response.headers.get('x-parley-epoch');
-    if(responseEpoch&&requestEpoch&&responseEpoch!==requestEpoch)throw new ApiError('The workspace changed while this read was in progress.',409,'WORKSPACE_CHANGED');
     if (!response.ok) throw decodeApiError(payload, response.status);
     return payload;
   }

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "questions": {
+    "discovery": [
+      {"id":"recent_help","text":"Who have you helped recently, and what changed for them?"},
+      {"id":"work","text":"What work have you done lately that you would be glad to explain to someone?"},
+      {"id":"insight","text":"What have you learned or noticed recently that could help someone else?"},
+      {"id":"interests","text":"What are you interested in enough to keep learning about?"},
+      {"id":"third_party_interest","text":"Who specifically expressed that interest, and what did they say?"},
+      {"id":"overlooked_resource","text":"What checklist, walkthrough, introduction, or other resource could you share?"}
+    ],
+    "proof": [
+      {"id":"result","text":"What changed, and how did you measure the result?"},
+      {"id":"context","text":"Who was the work for, and what problem were they facing?"},
+      {"id":"period","text":"When did this happen, or how long did it take?"},
+      {"id":"role","text":"What was your role in the work?"},
+      {"id":"permission","text":"May Parley name the person or organization, or should it use a descriptor?"}
+    ],
+    "gift": [
+      {"id":"offer","text":"What useful thing could you offer, and who could it help?"},
+      {"id":"delivery","text":"Does it already exist, or would you prepare it on request?"},
+      {"id":"effort","text":"If you prepare it on request, about how much effort does it take?"}
+    ],
+    "artifact": [
+      {"id":"artifact","text":"What have you made, where can the owner find it, and what does it show?"},
+      {"id":"permission","text":"Is it public and permitted to share with a recipient?"}
+    ]
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "$schema": "#/components/schemas/ReleaseAckInput",
+  "body": {
+    "succeeded": true
+  }
+}

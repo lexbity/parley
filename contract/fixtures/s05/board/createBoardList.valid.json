@@ -1,1 +1,1 @@
-{"name":"Friday follow-ups","expected_revision":1}
+{"$schema":"#/components/schemas/CreateBoardList","body":{"title":"Friday follow-ups","before_list_id":null}}

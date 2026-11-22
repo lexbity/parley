@@ -32,16 +32,16 @@ MIGRATIONS_DIR = REPO_ROOT / "migrations"
 # Slice -> owned migration file (RFC-0004 implementation plan).
 SLICE_MIGRATIONS: dict[str, list[str]] = {
     "s01": ["0001_workspace.sql"],
-    "s02": ["0002_graph.sql", "0003_directory.sql"],
-    "s03": ["0004_materials.sql"],
-    "s04": ["0005_jobs.sql"],
-    "s05": ["0006_board.sql"],
-    "s06": ["0007_blobs.sql"],
-    "s07": ["0008_threads.sql"],
-    "s08": ["0009_briefs.sql"],
-    "s09": ["0010_writing.sql"],
-    "s10": ["0011_coach.sql"],
-    "s11": ["0012_legacy.sql"],
+    "s02": ["0002_graph.sql"],
+    "s03": ["0003_materials.sql"],
+    "s04": ["0004_jobs.sql"],
+    "s05": ["0005_board.sql"],
+    "s06": ["0006_blobs.sql"],
+    "s07": ["0007_threads.sql"],
+    "s08": ["0008_briefs.sql"],
+    "s09": ["0009_writing.sql"],
+    "s10": ["0010_coach.sql"],
+    "s11": ["0011_legacy.sql"],
     "s12": [],
 }
 

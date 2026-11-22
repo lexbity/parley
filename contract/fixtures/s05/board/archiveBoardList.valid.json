@@ -1,1 +1,1 @@
-{"destination_list_id":"list-inbox","expected_revision":2}
+{"$schema":"#/components/schemas/ArchiveBoardList","body":{"destination_list_id":"list-2","expected_list_revision":1,"expected_destination_revision":7}}

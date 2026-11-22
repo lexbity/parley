@@ -1,1 +1,1 @@
-{"destination_list_id":"","expected_revision":0}
+{"$schema":"#/components/schemas/ArchiveBoardList","body":{"destination_list_id":"list-1","expected_list_revision":1,"expected_destination_revision":1}}

@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/MoveOpportunityPlacement","body":{"list_id":"list-2","before_opportunity_id":"op-missing","expected_source_list_revision":1,"expected_list_revision":1,"expected_placement_revision":1}}

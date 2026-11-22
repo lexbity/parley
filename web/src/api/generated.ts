@@ -116,14 +116,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/captures/{id}": {
+    "/agent/provider": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["getCaptureOccurrence"];
+        get: operations["getAgentProvider"];
+        put: operations["updateAgentProvider"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/captures/{occurrence_id}/proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getCaptureProposals"];
         put?: never;
         post?: never;
         delete?: never;
@@ -132,23 +148,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/directory": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["searchDirectory"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/directory/{id}": {
+    "/agent/provider/health": {
         parameters: {
             query?: never;
             header?: never;
@@ -157,30 +157,32 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch: operations["updateDirectoryProfile"];
-        trace?: never;
-    };
-    "/graph/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getNeighborhood"];
-        put?: never;
-        post?: never;
+        post: operations["checkAgentProvider"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/graph/edges": {
+    "/jobs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get: operations["getJob"];
+        put?: never;
+        post: operations["cancelJob"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/proposals/{batch_id}/resolve": {
         parameters: {
             query?: never;
             header?: never;
@@ -189,39 +191,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["linkExistingEntity"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/claims/{id}/correction": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["correctClaimWording"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/layout": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["updateViewPosition"];
+        post: operations["resolveProposals"];
         delete?: never;
         options?: never;
         head?: never;
@@ -244,6 +214,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/resources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listResources"];
+        put?: never;
+        post: operations["createResource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/opportunities": {
         parameters: {
             query?: never;
@@ -254,6 +240,361 @@ export interface paths {
         get: operations["listOpportunities"];
         put?: never;
         post: operations["createOpportunity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/opportunities/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getOpportunity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/opportunities/{id}/sources/{source_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["linkOpportunitySource"];
+        delete: operations["unlinkOpportunitySource"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/opportunities/{id}/participants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["addOpportunityParticipant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/opportunities/{id}/interests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listOpportunityInterests"];
+        put?: never;
+        post: operations["addOpportunityInterest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/opportunities/{id}/exchange": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getOpportunityExchange"];
+        put?: never;
+        post: operations["saveOpportunityExchange"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/opportunities/{id}/exchange/{recipient_id}/attest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["attestOpportunityExchange"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listTemplates"];
+        put?: never;
+        post: operations["createTemplate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/template-families": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listTemplateFamilies"];
+        put?: never;
+        post: operations["createTemplateFamily"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/voice-samples": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listVoiceSamples"];
+        put?: never;
+        post: operations["createVoiceSample"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/voice-samples/{id}/retire": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["retireVoiceSample"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/embedding-model": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getEmbeddingModel"];
+        put: operations["updateEmbeddingModel"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/matching/calibrations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listMatchingCalibrations"];
+        put?: never;
+        post: operations["calibrateMatchingKind"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/templates/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["approveTemplate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/templates/{id}/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["activateTemplate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/resources/{id}/ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["markResourceReady"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/opportunities/{id}/materials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listOpportunityMaterials"];
+        put?: never;
+        post: operations["createMaterial"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/materials/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getMaterial"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/materials/{id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["editMaterial"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/materials/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["approveMaterial"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/materials/{id}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["releaseMaterial"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/releases/{id}/ack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["acknowledgeRelease"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/outputs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listOutputs"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -292,7 +633,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/board/lists/order": {
+    "/board/lists/reorder": {
         parameters: {
             query?: never;
             header?: never;
@@ -300,15 +641,15 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        put: operations["reorderBoardLists"];
-        post?: never;
+        put?: never;
+        post: operations["reorderBoardLists"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/board/lists/{id}": {
+    "/board/lists/{list_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -324,7 +665,7 @@ export interface paths {
         patch: operations["renameBoardList"];
         trace?: never;
     };
-    "/board/lists/{id}/archive": {
+    "/board/lists/{list_id}/archive": {
         parameters: {
             query?: never;
             header?: never;
@@ -340,7 +681,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/board/cards/{id}/move": {
+    "/opportunities/{id}/placement": {
         parameters: {
             query?: never;
             header?: never;
@@ -349,87 +690,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["moveBoardCard"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/board/lists/{id}/cards/reorder": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["reorderBoardCard"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/opportunities/{id}/participants": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put: operations["updateOpportunityParticipants"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/opportunities/{id}/interests": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listOpportunityInterests"];
-        put?: never;
-        post: operations["createInterest"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/opportunities/{id}/exchange": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getOpportunityExchange"];
-        put: operations["updateExchange"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/opportunities/{id}/materials": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listOpportunityMaterials"];
-        put?: never;
-        post: operations["createMaterial"];
+        post: operations["moveOpportunityPlacement"];
         delete?: never;
         options?: never;
         head?: never;
@@ -444,15 +705,15 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getOpportunityNotes"];
-        put: operations["saveOpportunityNotes"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        patch: operations["updateOpportunityNotes"];
         trace?: never;
     };
-    "/opportunities/{id}/notes/tasks": {
+    "/opportunities/{id}/notes/tasks/toggle": {
         parameters: {
             query?: never;
             header?: never;
@@ -461,53 +722,37 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post?: never;
+        post: operations["toggleOpportunityTask"];
         delete?: never;
         options?: never;
         head?: never;
-        patch: operations["toggleOpportunityTask"];
+        patch?: never;
         trace?: never;
     };
-    "/materials/{id}": {
+    "/agent/chats": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["getMaterial"];
+        get: operations["listAgentChats"];
         put?: never;
-        post?: never;
+        post: operations["createAgentChat"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/materials/{id}/versions": {
+    "/agent/chats/{id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
-        put: operations["saveMaterialVersion"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/materials/{id}/gate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getMaterialGate"];
+        get: operations["getAgentChat"];
         put?: never;
         post?: never;
         delete?: never;
@@ -516,7 +761,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/materials/{id}/approval": {
+    "/agent/chats/{id}/turns": {
         parameters: {
             query?: never;
             header?: never;
@@ -525,14 +770,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["approveMaterialVersion"];
+        post: operations["addAgentTurn"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/materials/{id}/copy-grant": {
+    "/agent/chats/{id}/questions": {
         parameters: {
             query?: never;
             header?: never;
@@ -541,21 +786,85 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["issueCopyGrant"];
+        post: operations["setInterviewerQuestionState"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/copy-grants/{id}": {
+    "/agent/candidates/{id}/confirm": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["getCopyGrantReceipt"];
+        get?: never;
+        put?: never;
+        post: operations["confirmInterviewerCandidate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/candidates/{id}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["dismissInterviewerCandidate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/question-bank": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getInterviewerQuestionBank"];
+        put: operations["updateInterviewerQuestionBank"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/prompts/{role}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getAgentPrompt"];
+        put: operations["updateAgentPrompt"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/fluency": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listVocabularyFluency"];
         put?: never;
         post?: never;
         delete?: never;
@@ -564,7 +873,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/copy-grants/{id}/acknowledgement": {
+    "/fluency/{term}": {
         parameters: {
             query?: never;
             header?: never;
@@ -572,39 +881,7 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        put?: never;
-        post: operations["acknowledgeCopy"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/capture-stages": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["stageCapture"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/capture-stages/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getCaptureReview"];
-        put?: never;
+        put: operations["updateVocabularyFluency"];
         post?: never;
         delete?: never;
         options?: never;
@@ -612,23 +889,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/capture-stages/{id}/decisions": {
+    "/segments": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        get: operations["listSegments"];
         put?: never;
-        post: operations["applyCaptureReview"];
+        post: operations["createSegment"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/capture-stages/{id}/source-only": {
+    "/segments/{id}/parties": {
         parameters: {
             query?: never;
             header?: never;
@@ -637,14 +914,30 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["saveCaptureSourceOnly"];
+        post: operations["updateSegmentParty"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/capture-stages/{id}/cancel": {
+    "/briefs/{scope_kind}/{scope_id}/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listBriefItems"];
+        put?: never;
+        post: operations["generateBriefItems"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/brief-items/{id}/decision": {
         parameters: {
             query?: never;
             header?: never;
@@ -653,7 +946,103 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["cancelCaptureJob"];
+        post: operations["decideBriefItem"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/opportunities/{id}/matches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getOpportunityMatch"];
+        put?: never;
+        post: operations["startOpportunityMatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/templates/build": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["buildTemplates"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/templates/{family_id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createTemplateVersion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/opportunities/{id}/materials/compose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["composeOpportunityMaterial"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/opportunities/{id}/materials/compose/{job_id}/save": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["saveComposerProposal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/materials/{id}/lint": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["lintMaterial"];
         delete?: never;
         options?: never;
         head?: never;
@@ -702,437 +1091,6 @@ export interface components {
             name: string;
             revision: number;
         };
-        DirectoryEntity: {
-            id: string;
-            /** @enum {unknown} */
-            kind: "person" | "org" | "project";
-            name: string;
-            descriptor: string;
-            aliases: string[];
-            tags: string[];
-            revision: number;
-        };
-        DirectoryEnvelope: {
-            data: components["schemas"]["DirectoryEntity"][];
-            cursor: string;
-            total: number;
-            page: number;
-            page_size: number;
-            has_more: boolean;
-        };
-        DirectoryProfileInput: {
-            expected_revision: number;
-            name: string;
-            descriptor: string;
-            aliases: string[];
-            tags: string[];
-        };
-        SourceDetail: {
-            content_id: string;
-            variant_id: string;
-            occurrence_id: string;
-            normalized_sha256: string;
-            raw_sha256: string;
-            text: string;
-            title: string | null;
-            url: string | null;
-            captured_at: string;
-            /** @enum {unknown} */
-            actor_kind: "owner" | "party" | "unknown";
-            actor_entity_id: string | null;
-            normalization_version: number;
-        };
-        Neighborhood: {
-            focus_id: string;
-            nodes: components["schemas"]["DirectoryEntity"][];
-            edges: {
-                [key: string]: unknown;
-            }[];
-            positions: {
-                [key: string]: unknown;
-            }[];
-            omitted_nodes: number;
-            omitted_edges: number;
-        };
-        ClaimCorrection: {
-            expected_revision: number;
-            wording: string;
-        };
-        ClaimCorrectionReceipt: {
-            claim_id: string;
-            revision: number;
-            approved_wording: string;
-        };
-        LayoutInput: {
-            view_scope: string;
-            view_id: string;
-            entity_id: string;
-            expected_revision: number;
-            x: number;
-            y: number;
-        };
-        LayoutReceipt: {
-            entity_id: string;
-            revision: number;
-            x: number;
-            y: number;
-        };
-        LinkExistingInput: {
-            from_id: string;
-            to_id: string;
-            verb: string;
-            occurrence_id: string;
-            quote: string;
-        };
-        EdgeReceipt: {
-            edge_id: string;
-        };
-        OpportunityParticipant: {
-            id: string;
-            /** @enum {unknown} */
-            kind: "person" | "org";
-            name: string;
-        };
-        Opportunity: {
-            id: string;
-            title: string;
-            /** @enum {unknown} */
-            status: "open" | "resolved" | "timed_out" | "archived";
-            revision: number;
-            participants: components["schemas"]["OpportunityParticipant"][];
-            created_at: string;
-            updated_at: string;
-        };
-        OpportunityList: {
-            data: components["schemas"]["Opportunity"][];
-            cursor: string;
-        };
-        BoardList: {
-            id: string;
-            name: string;
-            position: number;
-            revision: number;
-            archived: boolean;
-        };
-        OpportunityBoardItem: {
-            id: string;
-            title: string;
-            /** @enum {unknown} */
-            status: "open" | "resolved" | "timed_out" | "archived";
-            revision: number;
-            participants: components["schemas"]["OpportunityParticipant"][];
-            list_id: string;
-            position: number;
-            tags: string[];
-            next_task: string | null;
-            deadline: string | null;
-            missing_material: boolean;
-        };
-        BoardSnapshot: {
-            lists: components["schemas"]["BoardList"][];
-            items: components["schemas"]["OpportunityBoardItem"][];
-            board_revision: number;
-        };
-        CreateBoardList: {
-            name: string;
-            expected_revision: number;
-        };
-        RenameBoardList: {
-            name: string;
-            expected_revision: number;
-        };
-        ReorderBoardLists: {
-            ordered_ids: string[];
-            expected_revision: number;
-        };
-        ArchiveBoardList: {
-            destination_list_id: string;
-            expected_revision: number;
-        };
-        MoveBoardCard: {
-            destination_list_id: string;
-            anchor_opportunity_id: string | null;
-            expected_board_revision: number;
-            expected_source_revision: number;
-            expected_destination_revision: number;
-        };
-        ReorderBoardCard: {
-            opportunity_id: string;
-            anchor_opportunity_id: string | null;
-            expected_revision: number;
-        };
-        OpportunityNotes: {
-            opportunity_id: string;
-            markdown: string;
-            revision: number;
-        };
-        SaveOpportunityNotes: {
-            expected_revision: number;
-            markdown: string;
-        };
-        ToggleOpportunityTask: {
-            expected_revision: number;
-            start_byte: number;
-            end_byte: number;
-            line_hash: string;
-            checked: boolean;
-        };
-        CreateOpportunity: {
-            title: string;
-            participant_ids: string[];
-        };
-        OpportunityParticipantsInput: {
-            expected_revision: number;
-            participant_ids: string[];
-        };
-        CreateInterest: {
-            /** @enum {unknown} */
-            side: "me" | "them";
-            statement: string;
-        };
-        Interest: {
-            id: string;
-            opportunity_id: string;
-            /** @enum {unknown} */
-            side: "me" | "them";
-            statement: string;
-            /** @constant */
-            tier: 3;
-            /** @enum {unknown} */
-            status: "active" | "dismissed";
-            revision: number;
-        };
-        InterestList: {
-            data: components["schemas"]["Interest"][];
-        };
-        ExchangeInput: {
-            expected_revision: number;
-            they_get: string;
-            i_get: string;
-            interest_ids: string[];
-            fairness_attested: boolean;
-        };
-        Exchange: {
-            id: string;
-            opportunity_id: string;
-            version: number;
-            they_get: string;
-            i_get: string;
-            interest_ids: string[];
-            fairness_attested: boolean;
-            attested_at: string | null;
-        };
-        ExchangeResponse: components["schemas"]["Exchange"] | null;
-        CreateMaterial: {
-            recipient_id: string;
-            /** @enum {unknown} */
-            kind: "outreach" | "follow_up" | "handoff";
-            title: string;
-        };
-        SentenceClaim: {
-            /** @enum {unknown} */
-            type: "self_fact" | "other_fact" | "offer" | "question" | "ask" | "generic";
-            ref_kind?: string | null;
-            ref_id?: string | null;
-        };
-        MaterialSentence: {
-            text: string;
-            claims: components["schemas"]["SentenceClaim"][];
-            rules: string[];
-        };
-        ClaimReference: {
-            kind: string;
-            id: string;
-            label: string;
-            tier: number;
-        };
-        MaterialVersion: {
-            id: string;
-            material_id: string;
-            sequence: number;
-            body: string;
-            sentences: components["schemas"]["MaterialSentence"][];
-            slot_fills: {
-                [key: string]: string;
-            };
-            protected_tokens: string[];
-            digest: string;
-            created_at: string;
-        };
-        Material: {
-            id: string;
-            opportunity_id: string;
-            recipient_id: string;
-            /** @enum {unknown} */
-            recipient_kind: "person" | "org";
-            recipient_name: string;
-            /** @enum {unknown} */
-            kind: "outreach" | "follow_up" | "handoff";
-            title: string;
-            revision: number;
-            current_version: components["schemas"]["MaterialVersion"] | null;
-            versions: components["schemas"]["MaterialVersion"][];
-            claim_references: components["schemas"]["ClaimReference"][];
-            approval: components["schemas"]["MaterialApproval"] | null;
-            updated_at: string;
-        };
-        MaterialList: {
-            data: components["schemas"]["Material"][];
-        };
-        SaveMaterialVersion: {
-            expected_revision: number;
-            body: string;
-            sentences: components["schemas"]["MaterialSentence"][];
-            slot_fills: {
-                [key: string]: string;
-            };
-            protected_tokens: string[];
-        };
-        GateResult: {
-            id: string;
-            /** @enum {unknown} */
-            severity: "hard" | "soft";
-            pass: boolean;
-            detail: string;
-        };
-        MaterialGate: {
-            material_id: string;
-            version_id: string;
-            recipient_id: string;
-            evaluated_at: string;
-            results: components["schemas"]["GateResult"][];
-            hard_failures: string[];
-            soft_failures: string[];
-            copy_enabled: boolean;
-        };
-        ApproveMaterial: {
-            expected_revision: number;
-            version_id: string;
-            override_reasons: {
-                [key: string]: string;
-            };
-        };
-        MaterialApproval: {
-            id: string;
-            material_id: string;
-            version_id: string;
-            recipient_id: string;
-            digest: string;
-            approved_at: string;
-            gate_snapshot: components["schemas"]["MaterialGate"];
-        };
-        CopyGrantRequest: {
-            version_id: string;
-            recipient_id: string;
-        };
-        CopyGrant: {
-            grant_id: string;
-            material_id: string;
-            version_id: string;
-            recipient_id: string;
-            digest: string;
-            body: string;
-            expires_at: string;
-        };
-        CopyAcknowledgement: {
-            success: boolean;
-        };
-        CopyGrantReceipt: {
-            grant_id: string;
-            material_id: string;
-            version_id: string;
-            recipient_id: string;
-            digest: string;
-            /** @enum {unknown} */
-            status: "issued" | "acknowledged" | "failed" | "expired";
-            acknowledged_at: string | null;
-        };
-        StageCapture: {
-            text: string;
-            title: string | null;
-            url: string | null;
-            opportunity_ids: string[];
-            /** @enum {unknown} */
-            actor_kind: "owner" | "party" | "unknown";
-            actor_entity_id: string | null;
-        };
-        CaptureStage: {
-            batch_id: string;
-            job_id: string;
-            /** @enum {unknown} */
-            status: "queued" | "running" | "ok" | "invalid" | "failed" | "cancelled";
-            revision: number;
-            source: components["schemas"]["SourceDetail"];
-            opportunity_ids: string[];
-        };
-        CaptureProposal: {
-            id: string;
-            /** @enum {unknown} */
-            action: "create" | "link" | "update";
-            target_kind: string;
-            target_id: string | null;
-            target_label: string;
-            candidate_targets: {
-                id: string;
-                /** @enum {unknown} */
-                kind: "person" | "org" | "project" | "artifact" | "capture" | "resource";
-                label: string;
-            }[];
-            statement: string;
-            quote: string;
-            tier: number;
-            ambiguity: string | null;
-            unresolved: boolean;
-            candidate: {
-                [key: string]: unknown;
-            } | null;
-            target_revision: number | null;
-            quote_start: number | null;
-            quote_end: number | null;
-            /** @enum {unknown} */
-            review_state: "proposed" | "confirmed" | "corrected" | "dismissed" | "unresolved" | "asked" | "source_only";
-        };
-        CaptureReview: {
-            batch_id: string;
-            job_id: string;
-            /** @enum {unknown} */
-            status: "queued" | "running" | "ok" | "invalid" | "failed" | "cancelled";
-            revision: number;
-            injection_suspected: boolean;
-            source: components["schemas"]["SourceDetail"];
-            opportunity_ids: string[];
-            proposals: components["schemas"]["CaptureProposal"][];
-        };
-        CaptureReviewDecision: {
-            proposal_id: string;
-            /** @enum {unknown} */
-            action: "confirm" | "correct" | "dismiss" | "unresolved";
-            target_id?: string | null;
-            corrected_statement?: string | null;
-        };
-        CaptureReviewDecisions: {
-            expected_revision: number;
-            decisions: components["schemas"]["CaptureReviewDecision"][];
-        };
-        ReviewRevisionInput: {
-            expected_revision: number;
-        };
-        CancelCaptureJob: {
-            job_id: string;
-        };
-        CaptureDecisionState: {
-            proposal_id: string;
-            /** @enum {unknown} */
-            review_state: "confirmed" | "corrected" | "dismissed" | "unresolved" | "source_only";
-        };
-        CaptureDecisionReceipt: {
-            batch_id: string;
-            revision: number;
-            /** @enum {unknown} */
-            status: "queued" | "running" | "ok" | "invalid" | "failed" | "cancelled" | "source_only" | "partially_applied" | "applied";
-            committed: components["schemas"]["CaptureDecisionState"][];
-            source: components["schemas"]["SourceDetail"];
-        };
         Entity: components["schemas"]["Resource"] | components["schemas"]["GraphEntity"];
         EntityList: {
             data: components["schemas"]["Entity"][];
@@ -1180,9 +1138,6 @@ export interface components {
             text: string;
             title?: string | null;
             url?: string | null;
-            /** @enum {string} */
-            actor_kind?: "owner" | "party" | "unknown";
-            actor_entity_id?: string | null;
         };
         SavedSource: {
             content_id: string;
@@ -1190,6 +1145,54 @@ export interface components {
             occurrence_id: string;
             normalized_sha256: string;
             raw_sha256: string;
+            job_id?: string | null;
+            job_status?: string | null;
+        };
+        ProviderConfig: {
+            endpoint: string;
+            model: string;
+            num_ctx: number;
+            num_predict: number;
+            locale: string;
+        };
+        ProviderHealth: {
+            available: boolean;
+            model: string;
+            models: string[];
+            message: string;
+        };
+        ExtractorProposal: {
+            id: string;
+            kind: string;
+            candidate: {
+                [key: string]: unknown;
+            };
+            status: string;
+        };
+        ExtractorJob: {
+            id: string;
+            role: string;
+            status: string;
+            current_attempt: number;
+            max_attempts: number;
+            progress_current: number;
+            progress_total: number;
+            injection_suspected: boolean;
+            last_error_code?: string | null;
+            last_error?: string | null;
+            source_occurrence_id: string;
+            proposal_batch_id?: string | null;
+            proposals: components["schemas"]["ExtractorProposal"][];
+        };
+        ProposalResolution: {
+            decisions: {
+                item_id: string;
+                /** @enum {unknown} */
+                action: "confirm" | "correct" | "dismiss" | "source_only" | "unresolved";
+                target_entity_id?: string;
+                corrected_statement?: string;
+            }[];
+            opportunity_id?: string | null;
         };
         RelatedEntityInput: {
             /** @enum {unknown} */
@@ -1211,6 +1214,278 @@ export interface components {
                 details: Record<string, never>[];
             };
         };
+        ResourceInput: {
+            /** @enum {string} */
+            kind: "gift" | "proof" | "artifact";
+            title: string;
+            body: Record<string, never>;
+        };
+        OpportunityInput: {
+            title: string;
+            primary_party_id: string;
+        };
+        ParticipantInput: {
+            party_id: string;
+            /** @enum {string} */
+            role: "primary" | "participant";
+        };
+        InterestInput: {
+            recipient_id: string;
+            /** @enum {string} */
+            side: "them" | "me";
+            statement: string;
+            /** @enum {string} */
+            knowledge_kind: "observation" | "hypothesis" | "owner_report";
+            claim_id?: string | null;
+            claim_revision?: number | null;
+        };
+        ExchangeInput: {
+            recipient_id: string;
+            they_get: string;
+            i_get: string;
+            interest_ids: string[];
+        };
+        TemplateInput: {
+            name: string;
+            body: string;
+            /** @enum {string|null} */
+            proof_fallback?: "omit_sentence" | "use_alternative_template" | null;
+        };
+        ReadyResourceInput: {
+            body?: Record<string, never> | null;
+        };
+        SlotFill: {
+            slot: string;
+            value: string;
+            resource_id?: string | null;
+        };
+        SentenceBinding: {
+            sentence_index: number;
+            /** @enum {string} */
+            claim_type: "generic" | "offer" | "self_fact" | "other_fact" | "question" | "ask" | "identity" | "hook";
+            ref_kind?: string | null;
+            ref_id?: string | null;
+            ref_revision?: number | null;
+            approved_wording?: string | null;
+            ask_rung?: number | null;
+        };
+        MaterialInput: {
+            recipient_id: string;
+            /** @enum {string} */
+            kind: "outreach" | "followup" | "handoff";
+            template_version_id: string;
+            body: string;
+            slot_fills: components["schemas"]["SlotFill"][];
+            sentence_bindings: components["schemas"]["SentenceBinding"][];
+            exchange_version: number;
+        };
+        ApprovalInput: {
+            override_reasons: {
+                [key: string]: string;
+            };
+        };
+        ReleaseAckInput: {
+            succeeded: boolean;
+        };
+        CreateAgentChat: {
+            /** @enum {string} */
+            role: "interviewer" | "briefer";
+            /** @enum {string} */
+            scope_kind: "owner" | "party" | "segment";
+            scope_id?: string | null;
+            /** @enum {string|null} */
+            asset_kind?: "gift" | "proof" | "artifact" | null;
+        };
+        AgentChat: {
+            id: string;
+            /** @enum {string} */
+            role: "interviewer" | "briefer";
+            /** @enum {string} */
+            scope_kind: "owner" | "party" | "segment";
+            scope_id: string | null;
+            /** @enum {string|null} */
+            asset_kind: "gift" | "proof" | "artifact" | null;
+            revision: number;
+            active_job_id: string | null;
+            turns: {
+                id: string;
+                turn_no: number;
+                /** @enum {string} */
+                speaker: "owner" | "agent";
+                text: string;
+                job_id: string | null;
+                /** Format: date-time */
+                created_at: string;
+            }[];
+            questions: {
+                question_id: string;
+                /** @enum {string} */
+                state: "asked" | "skipped" | "deferred" | "unknown" | "answered";
+            }[];
+            candidates: {
+                id: string;
+                asset_kind: string;
+                fields: Record<string, never>;
+                owner_quotes: Record<string, never>;
+                missing_fields: string[];
+                /** @enum {string} */
+                state: "proposed" | "saved" | "dismissed";
+                resource_id: string | null;
+            }[];
+        };
+        BriefItem: {
+            id: string;
+            /** @enum {string} */
+            scope_kind: "party" | "segment";
+            scope_id: string;
+            /** @enum {string} */
+            kind: "jargon" | "norm" | "value" | "landmine" | "stakeholder" | "interest_hypothesis";
+            text: string;
+            detail: Record<string, never>;
+            /** @enum {integer} */
+            tier: 1 | 2 | 3;
+            quote: string | null;
+            check_suggestion: string | null;
+            /** @enum {string} */
+            speaker_kind: "owner" | "party" | "unknown" | "model_prior";
+            /** @enum {string} */
+            status: "proposed" | "confirmed" | "corrected" | "dismissed";
+            revision: number;
+            supersedes_id: string | null;
+        };
+        FluencyItem: {
+            term: string;
+            /** @enum {string} */
+            status: "unknown" | "learning" | "fluent";
+            revision: number;
+        };
+        BoardList: {
+            id: string;
+            title: string;
+            position: number;
+            archived: boolean;
+            revision: number;
+        };
+        BoardPlacement: {
+            opportunity_id: string;
+            list_id: string;
+            position: number;
+            revision: number;
+            next_task: string | null;
+        };
+        BoardCard: {
+            opportunity: components["schemas"]["Opportunity"];
+            placement: components["schemas"]["BoardPlacement"];
+        };
+        BoardSnapshot: {
+            lists: components["schemas"]["BoardList"][];
+            cards: components["schemas"]["BoardCard"][];
+        };
+        CreateBoardList: {
+            title: string;
+            before_list_id?: string | null;
+        };
+        CreatedBoardList: {
+            list: components["schemas"]["BoardList"];
+            board_revision: number;
+        };
+        ReorderBoardLists: {
+            ordered_ids: string[];
+            expected_revisions: {
+                [key: string]: number;
+            };
+        };
+        RenameBoardList: {
+            title: string;
+            expected_revision: number;
+        };
+        ArchiveBoardList: {
+            destination_list_id: string;
+            expected_list_revision: number;
+            expected_destination_revision: number;
+        };
+        ArchivedBoardList: {
+            archived_list: components["schemas"]["BoardList"];
+            destination_list: components["schemas"]["BoardList"];
+            moved: {
+                opportunity_id: string;
+                position: number;
+                placement_revision: number;
+            }[];
+        };
+        MoveOpportunityPlacement: {
+            list_id: string;
+            before_opportunity_id?: string | null;
+            expected_source_list_revision: number;
+            expected_list_revision: number;
+            expected_placement_revision: number;
+        };
+        OpportunityPlacement: {
+            opportunity_id: string;
+            list_id: string;
+            position: number;
+            placement_revision: number;
+            source_list_revision: number;
+            destination_list_revision: number;
+        };
+        OpportunityNotes: {
+            opportunity_id: string;
+            markdown: string;
+            revision: number;
+            next_task: string | null;
+            tasks: {
+                byte_start: number;
+                byte_end: number;
+                line_sha256: string;
+                checked: boolean;
+                text: string;
+            }[];
+        };
+        UpdateOpportunityNotes: {
+            markdown: string;
+            expected_revision: number;
+        };
+        ToggleOpportunityTask: {
+            notes_revision: number;
+            byte_start: number;
+            byte_end: number;
+            line_sha256: string;
+            checked: boolean;
+        };
+        Opportunity: {
+            id: string;
+            title: string;
+            state: string;
+            revision: number;
+            participant_ids: string[];
+            source_variant_ids: string[];
+            material_ids: string[];
+        };
+        MaterialRecord: {
+            id: string;
+            opportunity_id: string;
+            recipient_id: string;
+            recipient_name: string;
+            kind: string;
+            version: number;
+            body: string;
+            content_sha256: string;
+            /** @enum {string} */
+            status: "draft" | "approved" | "released";
+            gate: Record<string, never> | null;
+        };
+        ReleasedMaterial: {
+            release_id: string;
+            material_id: string;
+            version: number;
+            recipient_id: string;
+            body: string;
+            content_sha256: string;
+            /** Format: date-time */
+            issued_at: string;
+        };
+        OpportunityList: components["schemas"]["Opportunity"][];
+        MaterialList: components["schemas"]["MaterialRecord"][];
     };
     responses: {
         /** @description Stable error envelope. */
@@ -1512,41 +1787,9 @@ export interface operations {
             401: components["responses"]["Error"];
         };
     };
-    getCaptureOccurrence: {
+    getAgentProvider: {
         parameters: {
             query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Raw captured occurrence and normalization provenance */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SourceDetail"];
-                };
-            };
-            404: components["responses"]["Error"];
-        };
-    };
-    searchDirectory: {
-        parameters: {
-            query?: {
-                q?: string;
-                kind?: "person" | "org" | "project";
-                tag?: string;
-                page?: number;
-                page_size?: number;
-            };
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
                 "X-Parley-Epoch": components["parameters"]["Epoch"];
@@ -1556,164 +1799,173 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Stable */
+            /** @description Local Extractor provider configuration. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DirectoryEnvelope"];
+                    "application/json": components["schemas"]["ProviderConfig"];
                 };
             };
+            401: components["responses"]["Error"];
         };
     };
-    updateDirectoryProfile: {
+    updateAgentProvider: {
         parameters: {
             query?: never;
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
                 "X-Parley-Epoch": components["parameters"]["Epoch"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DirectoryProfileInput"];
-            };
-        };
-        responses: {
-            /** @description Directory profile and revision updated */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DirectoryEntity"];
-                };
-            };
-            412: components["responses"]["Error"];
-        };
-    };
-    getNeighborhood: {
-        parameters: {
-            query?: {
-                view_scope?: string;
-                view_id?: string;
-            };
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Bounded neighborhood with attributed current evidence and view layout */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Neighborhood"];
-                };
-            };
-            404: components["responses"]["Error"];
-        };
-    };
-    linkExistingEntity: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["LinkExistingInput"];
+                "application/json": components["schemas"]["ProviderConfig"];
             };
         };
         responses: {
-            /** @description Existing endpoint records linked with exact attributed evidence */
-            201: {
+            /** @description Provider configuration saved; health must be checked explicitly. */
+            204: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["EdgeReceipt"];
-                };
+                content?: never;
             };
             422: components["responses"]["Error"];
         };
     };
-    correctClaimWording: {
+    getCaptureProposals: {
         parameters: {
             query?: never;
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
                 "X-Parley-Epoch": components["parameters"]["Epoch"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                occurrence_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Durable Extractor job and its staged proposals for this source occurrence. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExtractorJob"];
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    checkAgentProvider: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Local model availability and installed tags. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderHealth"];
+                };
+            };
+        };
+    };
+    getJob: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
             };
             path: {
                 id: string;
             };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ClaimCorrection"];
-            };
-        };
+        requestBody?: never;
         responses: {
-            /** @description Owner correction revision */
+            /** @description Durable job and staged proposals. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ClaimCorrectionReceipt"];
+                    "application/json": components["schemas"]["ExtractorJob"];
                 };
             };
-            412: components["responses"]["Error"];
+            404: components["responses"]["Error"];
         };
     };
-    updateViewPosition: {
+    cancelJob: {
         parameters: {
             query?: never;
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
                 "X-Parley-Epoch": components["parameters"]["Epoch"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
-            path?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cancellation fenced against any late worker completion. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: components["responses"]["Error"];
+        };
+    };
+    resolveProposals: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                batch_id: string;
+            };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["LayoutInput"];
+                "application/json": components["schemas"]["ProposalResolution"];
             };
         };
         responses: {
-            /** @description View-specific position saved */
+            /** @description Selected proposal decisions committed atomically. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["LayoutReceipt"];
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
-            412: components["responses"]["Error"];
+            422: components["responses"]["Error"];
         };
     };
     createRelatedEntity: {
@@ -1722,7 +1974,6 @@ export interface operations {
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
                 "X-Parley-Epoch": components["parameters"]["Epoch"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
             cookie?: never;
@@ -1746,6 +1997,59 @@ export interface operations {
             422: components["responses"]["Error"];
         };
     };
+    listResources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Resource drafts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Resource"][];
+                };
+            };
+        };
+    };
+    createResource: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResourceInput"];
+            };
+        };
+        responses: {
+            /** @description Saved draft */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Resource"];
+                };
+            };
+            /** @description Idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listOpportunities: {
         parameters: {
             query?: never;
@@ -1758,7 +2062,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Opportunities with canonical participant IDs */
+            /** @description Opportunity records and shared material IDs. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1775,18 +2079,17 @@ export interface operations {
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
                 "X-Parley-Epoch": components["parameters"]["Epoch"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CreateOpportunity"];
+                "application/json": components["schemas"]["OpportunityInput"];
             };
         };
         responses: {
-            /** @description Opportunity and owner event committed */
+            /** @description Opportunity with explicit primary participant. */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -1795,7 +2098,820 @@ export interface operations {
                     "application/json": components["schemas"]["Opportunity"];
                 };
             };
-            422: components["responses"]["Error"];
+        };
+    };
+    getOpportunity: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Opportunity detail. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Opportunity"];
+                };
+            };
+            /** @description Missing opportunity */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    linkOpportunitySource: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Link to the existing source variant */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    unlinkOpportunitySource: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Remove only this opportunity association */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    addOpportunityParticipant: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ParticipantInput"];
+            };
+        };
+        responses: {
+            /** @description Updated explicit membership */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listOpportunityInterests: {
+        parameters: {
+            query: {
+                recipient_id: string;
+            };
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current recipient-scoped interests and provenance */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    addOpportunityInterest: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InterestInput"];
+            };
+        };
+        responses: {
+            /** @description Recipient-scoped interest with stated knowledge type */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getOpportunityExchange: {
+        parameters: {
+            query: {
+                recipient_id: string;
+            };
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current immutable recipient exchange */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    saveOpportunityExchange: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExchangeInput"];
+            };
+        };
+        responses: {
+            /** @description New immutable exchange version with attestation reset */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    attestOpportunityExchange: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+                recipient_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Explicit attestation bound to the current exchange and interest digest */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listTemplates: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Immutable template versions and lifecycle state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createTemplate: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TemplateInput"];
+            };
+        };
+        responses: {
+            /** @description Validated immutable template candidate */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid slots or fixed text */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listTemplateFamilies: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reusable template families and lineage */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createTemplateFamily: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                };
+            };
+        };
+        responses: {
+            /** @description New immutable template family */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listVoiceSamples: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Owner-curated voice examples with status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createVoiceSample: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    text: string;
+                    channel?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Curated sample saved */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    retireVoiceSample: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Voice sample retired without deleting its history */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getEmbeddingModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current local embedding model and digest-bound calibrations */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateEmbeddingModel: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    model: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Local model selected; calibration invalidation is explicit */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listMatchingCalibrations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Evaluated fixture thresholds for each current asset kind */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    calibrateMatchingKind: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    asset_kind: "gift" | "proof" | "artifact";
+                    fixture_id: string;
+                    samples: {
+                        score: number;
+                        relevant: boolean;
+                    }[];
+                };
+            };
+        };
+        responses: {
+            /** @description Deterministic F1-optimal threshold computed and bound to exact fixture digest */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    approveTemplate: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Owner approved this template version */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    activateTemplate: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revalidated active template version */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    markResourceReady: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReadyResourceInput"];
+            };
+        };
+        responses: {
+            /** @description Resource passed its kind-specific readiness validator */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid required evidence */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listOpportunityMaterials: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Opportunity materials, same IDs shown in Output. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaterialList"];
+                };
+            };
+        };
+    };
+    createMaterial: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MaterialInput"];
+            };
+        };
+        responses: {
+            /** @description Immutable material version bound to participant and exchange. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaterialRecord"];
+                };
+            };
+            /** @description Invalid resolver */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getMaterial: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current immutable material head. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaterialRecord"];
+                };
+            };
+        };
+    };
+    editMaterial: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MaterialInput"];
+            };
+        };
+        responses: {
+            /** @description New immutable version. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaterialRecord"];
+                };
+            };
+        };
+    };
+    approveMaterial: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalInput"];
+            };
+        };
+        responses: {
+            /** @description Version-bound approval and complete gate snapshot */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Hard gate or unoverridden soft gate blocks approval */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    releaseMaterial: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Exact approved bytes and committed issuance record. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReleasedMaterial"];
+                };
+            };
+            /** @description Current dependency or gate check blocks release */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    acknowledgeRelease: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReleaseAckInput"];
+            };
+        };
+        responses: {
+            /** @description Clipboard success or failure recorded independently of approval */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listOutputs: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Searchable index sharing opportunity and material IDs. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaterialList"];
+                };
+            };
         };
     };
     getBoard: {
@@ -1810,7 +2926,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Ordered custom lists and canonical opportunity cards */
+            /** @description Board lists and opportunity placements from one read snapshot. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1838,16 +2954,17 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Board with the new active list */
+            /** @description A custom list and its event commit atomically. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["BoardSnapshot"];
+                    "application/json": components["schemas"]["CreatedBoardList"];
                 };
             };
-            412: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
         };
     };
     reorderBoardLists: {
@@ -1867,16 +2984,19 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Lists reordered */
+            /** @description Exact active-list permutation committed atomically. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["BoardSnapshot"];
+                    "application/json": {
+                        lists: components["schemas"]["BoardList"][];
+                    };
                 };
             };
-            412: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
         };
     };
     renameBoardList: {
@@ -1888,7 +3008,7 @@ export interface operations {
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
-                id: string;
+                list_id: string;
             };
             cookie?: never;
         };
@@ -1898,16 +3018,19 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Board with the renamed list */
+            /** @description Renamed list with its new revision. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["BoardSnapshot"];
+                    "application/json": {
+                        list: components["schemas"]["BoardList"];
+                    };
                 };
             };
-            412: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
         };
     };
     archiveBoardList: {
@@ -1919,7 +3042,7 @@ export interface operations {
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
-                id: string;
+                list_id: string;
             };
             cookie?: never;
         };
@@ -1929,20 +3052,20 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Cards moved and list archived atomically */
+            /** @description List archive and all placement moves commit atomically. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["BoardSnapshot"];
+                    "application/json": components["schemas"]["ArchivedBoardList"];
                 };
             };
-            412: components["responses"]["Error"];
+            409: components["responses"]["Error"];
             422: components["responses"]["Error"];
         };
     };
-    moveBoardCard: {
+    moveOpportunityPlacement: {
         parameters: {
             query?: never;
             header: {
@@ -1957,249 +3080,20 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["MoveBoardCard"];
+                "application/json": components["schemas"]["MoveOpportunityPlacement"];
             };
         };
         responses: {
-            /** @description Card moved without changing opportunity state or deadlines */
+            /** @description Card placement moved with no opportunity policy or contact-state change. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["BoardSnapshot"];
+                    "application/json": components["schemas"]["OpportunityPlacement"];
                 };
             };
-            412: components["responses"]["Error"];
-        };
-    };
-    reorderBoardCard: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ReorderBoardCard"];
-            };
-        };
-        responses: {
-            /** @description Card reordered within its list */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BoardSnapshot"];
-                };
-            };
-            412: components["responses"]["Error"];
-        };
-    };
-    updateOpportunityParticipants: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["OpportunityParticipantsInput"];
-            };
-        };
-        responses: {
-            /** @description Participant set and opportunity revision */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Opportunity"];
-                };
-            };
-            412: components["responses"]["Error"];
-        };
-    };
-    listOpportunityInterests: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Owner-confirmed interests for the opportunity */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["InterestList"];
-                };
-            };
-        };
-    };
-    createInterest: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateInterest"];
-            };
-        };
-        responses: {
-            /** @description Owner-authored interest */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Interest"];
-                };
-            };
-            422: components["responses"]["Error"];
-        };
-    };
-    getOpportunityExchange: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Current versioned exchange or null */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExchangeResponse"];
-                };
-            };
-        };
-    };
-    updateExchange: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ExchangeInput"];
-            };
-        };
-        responses: {
-            /** @description New exchange version */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Exchange"];
-                };
-            };
-            412: components["responses"]["Error"];
-        };
-    };
-    listOpportunityMaterials: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Canonical materials in this opportunity */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MaterialList"];
-                };
-            };
-        };
-    };
-    createMaterial: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateMaterial"];
-            };
-        };
-        responses: {
-            /** @description Material bound to one opportunity and recipient */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Material"];
-                };
-            };
+            409: components["responses"]["Error"];
             422: components["responses"]["Error"];
         };
     };
@@ -2217,7 +3111,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Canonical Markdown and revision */
+            /** @description Canonical Markdown and its independently versioned task projection. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2226,9 +3120,10 @@ export interface operations {
                     "application/json": components["schemas"]["OpportunityNotes"];
                 };
             };
+            404: components["responses"]["Error"];
         };
     };
-    saveOpportunityNotes: {
+    updateOpportunityNotes: {
         parameters: {
             query?: never;
             header: {
@@ -2243,11 +3138,11 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["SaveOpportunityNotes"];
+                "application/json": components["schemas"]["UpdateOpportunityNotes"];
             };
         };
         responses: {
-            /** @description Canonical Markdown saved with new revision */
+            /** @description Markdown saved with new note revision. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2256,7 +3151,7 @@ export interface operations {
                     "application/json": components["schemas"]["OpportunityNotes"];
                 };
             };
-            412: components["responses"]["Error"];
+            409: components["responses"]["Error"];
         };
     };
     toggleOpportunityTask: {
@@ -2278,7 +3173,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description One exact task marker changed in canonical Markdown */
+            /** @description Only the addressed checkbox marker changes. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2287,216 +3182,33 @@ export interface operations {
                     "application/json": components["schemas"]["OpportunityNotes"];
                 };
             };
-            412: components["responses"]["Error"];
-            422: components["responses"]["Error"];
-        };
-    };
-    getMaterial: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Current output version and canonical lineage */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Material"];
-                };
-            };
-            404: components["responses"]["Error"];
-        };
-    };
-    saveMaterialVersion: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SaveMaterialVersion"];
-            };
-        };
-        responses: {
-            /** @description Immutable output version created; historical versions remain unchanged */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Material"];
-                };
-            };
-            412: components["responses"]["Error"];
-        };
-    };
-    getMaterialGate: {
-        parameters: {
-            query: {
-                version_id: string;
-            };
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Deterministic server gate results for exact current version and recipient */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MaterialGate"];
-                };
-            };
-        };
-    };
-    approveMaterialVersion: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ApproveMaterial"];
-            };
-        };
-        responses: {
-            /** @description Version-bound approval and gate snapshot */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MaterialApproval"];
-                };
-            };
-            412: components["responses"]["Error"];
-            422: components["responses"]["Error"];
-        };
-    };
-    issueCopyGrant: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CopyGrantRequest"];
-            };
-        };
-        responses: {
-            /** @description Authorized exact approved text for one recipient and version */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CopyGrant"];
-                };
-            };
-            403: components["responses"]["Error"];
-            410: components["responses"]["Error"];
-        };
-    };
-    getCopyGrantReceipt: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Receipt status without reissuing content bytes */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CopyGrantReceipt"];
-                };
-            };
-            404: components["responses"]["Error"];
-        };
-    };
-    acknowledgeCopy: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CopyAcknowledgement"];
-            };
-        };
-        responses: {
-            /** @description Browser-reported clipboard promise outcome only; creates no send or timer */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CopyGrantReceipt"];
-                };
-            };
             409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
         };
     };
-    stageCapture: {
+    listAgentChats: {
+        parameters: {
+            query?: {
+                role?: "interviewer" | "briefer";
+                scope_kind?: "owner" | "party" | "segment";
+                scope_id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Persistent scoped chat history */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createAgentChat: {
         parameters: {
             query?: never;
             header: {
@@ -2509,28 +3221,144 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["StageCapture"];
+                "application/json": components["schemas"]["CreateAgentChat"];
             };
         };
         responses: {
-            /** @description Raw source occurrence and durable Extractor job staged; no proposal is accepted */
-            202: {
+            /** @description Scoped conversation created */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CaptureStage"];
+                    "application/json": components["schemas"]["AgentChat"];
                 };
             };
-            422: components["responses"]["Error"];
         };
     };
-    getCaptureReview: {
+    getAgentChat: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Scoped transcript and review state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentChat"];
+                };
+            };
+        };
+    };
+    addAgentTurn: {
         parameters: {
             query?: never;
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
                 "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    text: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Owner turn committed and bounded role job queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    setInterviewerQuestionState: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    question_id: string;
+                    /** @enum {string} */
+                    action: "ask" | "skip" | "defer" | "unknown";
+                };
+            };
+        };
+        responses: {
+            /** @description Question disposition recorded */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    confirmInterviewerCandidate: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    title: string;
+                    fields: Record<string, never>;
+                    expected_chat_revision: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Owner confirmed resource candidate */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    dismissInterviewerCandidate: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 id: string;
@@ -2539,19 +3367,213 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Staged source */
+            /** @description Candidate dismissed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getInterviewerQuestionBank: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Active immutable Interviewer question bank */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateInterviewerQuestionBank: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    expected_version_id: string;
+                    content: Record<string, never>;
+                };
+            };
+        };
+        responses: {
+            /** @description New active question bank version */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAgentPrompt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                role: "interviewer" | "briefer";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Active immutable role prompt */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateAgentPrompt: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                role: "interviewer" | "briefer";
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    expected_version_id: string;
+                    content: string;
+                };
+            };
+        };
+        responses: {
+            /** @description New active prompt version */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listVocabularyFluency: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Owner vocabulary fluency states */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CaptureReview"];
+                    "application/json": components["schemas"]["FluencyItem"][];
                 };
             };
-            404: components["responses"]["Error"];
         };
     };
-    applyCaptureReview: {
+    updateVocabularyFluency: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                term: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    status: "unknown" | "learning" | "fluent";
+                    expected_revision: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Versioned owner fluency state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listSegments: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Owner segments */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createSegment: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                    description?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Segment created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateSegmentParty: {
         parameters: {
             query?: never;
             header: {
@@ -2566,24 +3588,76 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CaptureReviewDecisions"];
+                "application/json": {
+                    party_id: string;
+                    /** @enum {string} */
+                    action: "add" | "remove";
+                };
             };
         };
         responses: {
-            /** @description Selected review decisions committed atomically */
+            /** @description Segment membership updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listBriefItems: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                scope_kind: "party" | "segment";
+                scope_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Attributed brief items scoped to a party or segment */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CaptureDecisionReceipt"];
+                    "application/json": components["schemas"]["BriefItem"][];
                 };
             };
-            412: components["responses"]["Error"];
-            422: components["responses"]["Error"];
         };
     };
-    saveCaptureSourceOnly: {
+    generateBriefItems: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                scope_kind: "party" | "segment";
+                scope_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Durable Briefer job queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    decideBriefItem: {
         parameters: {
             query?: never;
             header: {
@@ -2598,23 +3672,177 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ReviewRevisionInput"];
+                "application/json": {
+                    /** @enum {string} */
+                    decision: "confirm" | "correct" | "dismiss";
+                    corrected_text?: string;
+                    expected_revision: number;
+                };
             };
         };
         responses: {
-            /** @description Raw source retained with no proposals applied */
+            /** @description Owner decision stored with attributable revision */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["CaptureDecisionReceipt"];
-                };
+                content?: never;
             };
-            412: components["responses"]["Error"];
         };
     };
-    cancelCaptureJob: {
+    getOpportunityMatch: {
+        parameters: {
+            query: {
+                recipient_id: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Persisted current shortlist with calibrated thresholds */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    startOpportunityMatch: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    recipient_id: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Deterministic exact matcher run queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    buildTemplates: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    segment_id?: string | null;
+                    stage_class: string;
+                    rungs: number[];
+                    rules: ("R1" | "R2" | "R3" | "R4" | "R5" | "R6" | "R7")[];
+                    channel: string;
+                    max_chars: number;
+                    voice_sample_ids?: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description Validated Template Builder job queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createTemplateVersion: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                family_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                    body: string;
+                    proof_fallback?: string | null;
+                    stage_class: string;
+                    channel: string;
+                    sentence_rules: string[][];
+                    parent_version_id?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Immutable draft template version */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    composeOpportunityMaterial: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    recipient_id: string;
+                    /** @enum {string} */
+                    kind: "outreach" | "followup" | "handoff";
+                    template_version_id: string;
+                    exchange_version: number;
+                    slot_fills: components["schemas"]["SlotFill"][];
+                    selected_match_ids?: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description Owner-review-only composition job queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    saveComposerProposal: {
         parameters: {
             query?: never;
             header: {
@@ -2624,25 +3852,54 @@ export interface operations {
             };
             path: {
                 id: string;
+                job_id: string;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CancelCaptureJob"];
+                "application/json": {
+                    body: string;
+                };
             };
         };
         responses: {
-            /** @description Job cancellation recorded; source and staged decisions remain durable */
-            200: {
+            /** @description Staged immutable material draft; unapproved and unreleased */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["CaptureStage"];
+                content?: never;
+            };
+        };
+    };
+    lintMaterial: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    version: number;
+                    content_sha256: string;
                 };
             };
-            409: components["responses"]["Error"];
+        };
+        responses: {
+            /** @description Deterministic findings persisted and advisory lint queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
 }
