@@ -1,20 +1,31 @@
 import { mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises } from '@vue/test-utils';
-import { parley, type ExtractorJob, type GraphEntity, type Material, type Opportunity, type SavedSource } from '../api/client';
+import { parley, type BoardSnapshot, type ExtractorJob, type GraphEntity, type Material, type Opportunity, type SavedSource } from '../api/client';
 import AppShell from './AppShell.vue';
 import { tabs } from './tabs';
 
 afterEach(() => vi.restoreAllMocks());
 
-function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = []): void {
+function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [], board: BoardSnapshot = {
+  lists: [{ id: 'list-default', title: 'Opportunities', position: 0, archived: false, revision: 1 }], cards: [],
+}): void {
   vi.spyOn(parley, 'connect').mockResolvedValue();
   vi.spyOn(parley, 'listResources').mockResolvedValue([]);
   vi.spyOn(parley, 'listParties').mockResolvedValue(parties);
   vi.spyOn(parley, 'listSources').mockResolvedValue(sources);
   vi.spyOn(parley, 'listOpportunities').mockResolvedValue([]);
   vi.spyOn(parley, 'listOutputs').mockResolvedValue([]);
+  vi.spyOn(parley, 'getBoard').mockResolvedValue(board);
+  vi.spyOn(parley, 'getOpportunityNotes').mockResolvedValue({ opportunity_id: '', markdown: '', revision: 1, next_task: null, tasks: [] });
   vi.spyOn(parley, 'getProvider').mockResolvedValue({ endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' });
+  vi.spyOn(parley, 'getQuestionBank').mockResolvedValue({ version_id: 'question-bank-v1', content: { questions: { proof: [], gift: [], artifact: [] } } });
+  vi.spyOn(parley, 'listAgentChats').mockResolvedValue([]);
+  vi.spyOn(parley, 'listSegments').mockResolvedValue([]);
+  vi.spyOn(parley, 'listFluency').mockResolvedValue([]);
+  vi.spyOn(parley, 'getAgentPrompt').mockResolvedValue({ role: 'interviewer', version_id: 'interviewer-v1', version: 1, content: 'Default', sha256: 'a'.repeat(64) });
+  vi.spyOn(parley, 'updateAgentPrompt').mockResolvedValue();
+  vi.spyOn(parley, 'updateQuestionBank').mockResolvedValue();
 }
 
 function leadsSection(wrapper: ReturnType<typeof mount>) {
@@ -260,9 +271,12 @@ describe('AppShell', () => {
   });
 
   it('creates a selected-participant opportunity and presents shared Output records', async () => {
-    stubWorkspace([{ id: 'p1', kind: 'person', name: 'Dana Lee', revision: 1 }]);
     const created: Opportunity = { id: 'o1', title: 'Onboarding exchange', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: ['m1'] };
     const queued: Material = { id: 'm1', opportunity_id: 'o1', recipient_id: 'p1', recipient_name: 'Dana Lee', kind: 'outreach', version: 1, body: 'Hello Dana.', content_sha256: 'a'.repeat(64), status: 'draft', gate: null };
+    stubWorkspace([{ id: 'p1', kind: 'person', name: 'Dana Lee', revision: 1 }], [], {
+      lists: [{ id: 'list-default', title: 'Opportunities', position: 0, archived: false, revision: 1 }],
+      cards: [{ opportunity: created, opportunity_id: 'o1', list_id: 'list-default', position: 0, placement_revision: 1, next_task: null }],
+    });
     vi.spyOn(parley, 'listOutputs').mockResolvedValue([queued]);
     const createOpportunity = vi.spyOn(parley, 'createOpportunity').mockResolvedValue(created);
     const wrapper = mount(AppShell);
@@ -273,9 +287,11 @@ describe('AppShell', () => {
     await wrapper.get('section[aria-labelledby="queue-heading"] form').trigger('submit');
     await flushPromises();
     expect(createOpportunity).toHaveBeenCalledWith('Onboarding exchange', 'p1');
-    expect(wrapper.text()).toContain('No message was created or sent');
+    expect(wrapper.text()).toContain('initial board placement does not change its stage or outreach state');
     expect(wrapper.text()).toContain('Onboarding exchange');
-    expect(wrapper.text()).toContain('Dana Lee · v1 · draft');
+    await wrapper.findAll('button').find((button) => button.text() === 'Open card')!.trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).toContain('Dana Lee · outreach · v1 · draft');
     await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(4)').trigger('click');
     expect(wrapper.text()).toContain('Approved materials');
     expect(wrapper.text()).toContain('Dana Lee · outreach · v1 · draft');

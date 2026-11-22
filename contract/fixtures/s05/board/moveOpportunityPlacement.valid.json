@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/MoveOpportunityPlacement","body":{"list_id":"list-2","before_opportunity_id":"op-3","expected_source_list_revision":2,"expected_list_revision":7,"expected_placement_revision":1}}

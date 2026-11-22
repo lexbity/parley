@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["next_question", "target_field", "extracted", "ready_to_save"],
+  "properties": {
+    "next_question": {"type":"string","minLength":1,"maxLength":600},
+    "target_field": {"type":"string","minLength":1,"maxLength":80},
+    "extracted": {
+      "type":"object",
+      "additionalProperties": {
+        "type":"object",
+        "required":["value","owner_quote","owner_turn_id"],
+        "properties": {
+          "value": {},
+          "owner_quote":{"type":"string","minLength":1},
+          "owner_turn_id":{"type":"string","minLength":1}
+        },
+        "additionalProperties":false
+      }
+    },
+    "ready_to_save":{"type":"boolean"}
+  },
+  "additionalProperties":false
+}

@@ -1,8 +1,13 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
-import { newOperationKey, parley, type ExtractorJob, type ExtractorProposal, type GraphEntity, type Material, type Opportunity, type ProviderConfig, type SavedSource } from '../api/client';
+import { newOperationKey, parley, type ExtractorJob, type ExtractorProposal, type GraphEntity, type Material, type Opportunity, type ProviderConfig, type Resource, type SavedSource } from '../api/client';
 import { tabs } from './tabs';
 import ResourceEditor from '../features/resources/ResourceEditor.vue';
+import InterviewerWorkspace from '../features/resources/InterviewerWorkspace.vue';
+import QueueWorkspace from '../features/queue/QueueWorkspace.vue';
+import BriefWorkspace from '../features/leads/BriefWorkspace.vue';
+import AgentPolicySettings from '../features/settings/AgentPolicySettings.vue';
+import WritingWorkspace from '../features/output/WritingWorkspace.vue';
 
 /**
  * Tabs whose owner journey is qualified stay discoverable (RFC-0003 S01);
@@ -17,8 +22,7 @@ const parties = ref<GraphEntity[]>([]);
 const sources = ref<SavedSource[]>([]);
 const opportunities = ref<Opportunity[]>([]);
 const outputs = ref<Material[]>([]);
-const opportunityTitle = ref('');
-const opportunityPartyId = ref('');
+const resources = ref<Resource[]>([]);
 const status = ref('');
 const error = ref('');
 const busy = ref(false);
@@ -29,11 +33,19 @@ const provider = ref<ProviderConfig>({ endpoint: 'http://127.0.0.1:11434', model
 const providerHealth = ref('');
 
 async function refreshLeads() {
-  const [directory, savedSources, savedOpportunities, savedOutputs] = await Promise.all([parley.listParties(), parley.listSources(), parley.listOpportunities(), parley.listOutputs()]);
+  const [directory, savedSources, savedOpportunities, savedOutputs, savedResources] = await Promise.all([parley.listParties(), parley.listSources(), parley.listOpportunities(), parley.listOutputs(), parley.listResources()]);
   parties.value = directory;
   sources.value = savedSources;
   opportunities.value = savedOpportunities;
   outputs.value = savedOutputs;
+  resources.value = savedResources;
+}
+
+function selectTab(tab: (typeof tabs)[number]) {
+  active.value = tab;
+  if (tab === 'Output') void refreshLeads().catch((reason: unknown) => {
+    error.value = reason instanceof Error ? reason.message : 'Could not refresh Output records.';
+  });
 }
 
 async function saveParty() {
@@ -113,16 +125,6 @@ async function checkProvider() {
   finally { busy.value = false; }
 }
 
-async function saveOpportunity() {
-  busy.value = true; error.value = ''; status.value = '';
-  try {
-    const opportunity = await parley.createOpportunity(opportunityTitle.value.trim(), opportunityPartyId.value);
-    opportunities.value.unshift(opportunity); opportunityTitle.value = ''; opportunityPartyId.value = '';
-    status.value = 'Opportunity created with the selected participant. No message was created or sent.';
-  } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not create the opportunity.'; }
-  finally { busy.value = false; }
-}
-
 async function copyMaterial(material: Material) {
   busy.value = true; error.value = ''; status.value = '';
   let releaseId: string | undefined;
@@ -154,7 +156,7 @@ onMounted(() => {
         :key="tab"
         type="button"
         :aria-current="active === tab ? 'page' : undefined"
-        @click="active = tab"
+        @click="selectTab(tab)"
       >
         {{ tab }}
       </button>
@@ -176,6 +178,7 @@ onMounted(() => {
     </p>
     <div v-show="active === 'Resources'">
       <ResourceEditor />
+      <InterviewerWorkspace />
     </div>
     <section
       v-if="active === 'Leads'"
@@ -328,6 +331,7 @@ onMounted(() => {
           </section>
         </form>
       </div>
+      <BriefWorkspace :parties="parties" />
     </section>
     <section
       v-if="active === 'Settings'"
@@ -387,65 +391,14 @@ onMounted(() => {
           {{ providerHealth }}
         </p>
       </form>
+      <AgentPolicySettings />
     </section>
-    <section
-      v-if="active === 'Queue'"
-      aria-labelledby="queue-heading"
-    >
-      <h2 id="queue-heading">
-        Opportunities
-      </h2>
-      <div class="workspace-grid">
-        <form @submit.prevent="saveOpportunity">
-          <h3>Create an opportunity</h3>
-          <label>Opportunity title<input
-            v-model="opportunityTitle"
-            required
-            maxlength="500"
-          ></label>
-          <label>Participant<select
-            v-model="opportunityPartyId"
-            required
-          ><option
-            disabled
-            value=""
-          >Choose a lead</option><option
-            v-for="party in parties"
-            :key="party.id"
-            :value="party.id"
-          >{{ party.name }} · {{ party.kind }}</option></select></label>
-          <button
-            :disabled="busy || !parties.length"
-            type="submit"
-          >
-            Create opportunity
-          </button>
-          <p>A lead alone does not create an opportunity or outreach.</p>
-        </form>
-        <section aria-label="Opportunity list">
-          <h3>All opportunities</h3>
-          <p v-if="!opportunities.length">
-            No opportunities yet. Select a lead to bring records together.
-          </p>
-          <article
-            v-for="opportunity in opportunities"
-            :key="opportunity.id"
-            class="record-card"
-          >
-            <h4>{{ opportunity.title }}</h4>
-            <p>{{ opportunity.state }} · {{ opportunity.material_ids.length }} material(s)</p>
-            <ul>
-              <li
-                v-for="output in outputs.filter((item) => item.opportunity_id === opportunity.id)"
-                :key="output.id"
-              >
-                {{ output.recipient_name }} · v{{ output.version }} · {{ output.status }}
-              </li>
-            </ul>
-          </article>
-        </section>
-      </div>
-    </section>
+    <div v-show="active === 'Queue'">
+      <QueueWorkspace
+        :parties="parties"
+        :outputs="outputs"
+      />
+    </div>
     <section
       v-if="active === 'Output'"
       aria-labelledby="output-heading"
@@ -454,6 +407,12 @@ onMounted(() => {
         Approved materials
       </h2>
       <p>Each material is bound to one opportunity, recipient and immutable version. Release checks run against current evidence.</p>
+      <WritingWorkspace
+        :opportunities="opportunities"
+        :parties="parties"
+        :resources="resources"
+        :outputs="outputs"
+      />
       <p v-if="!outputs.length">
         No materials yet. Create an opportunity, prepare its exchange, then author material for a named participant.
       </p>

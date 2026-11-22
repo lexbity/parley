@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type":"object",
+  "required":["items"],
+  "properties":{
+    "response":{"type":["string","null"],"maxLength":1600},
+    "items":{
+      "type":"array",
+      "items":{
+        "type":"object",
+        "required":["kind","text","detail","tier","quote","check_suggestion"],
+        "properties":{
+          "kind":{"enum":["jargon","norm","value","landmine","stakeholder","interest_hypothesis"]},
+          "text":{"type":"string","minLength":1,"maxLength":1000},
+          "detail":{"type":"object","required":["term","plain_meaning","use_or_avoid","applies_to"],"properties":{"term":{"type":["string","null"],"maxLength":120},"plain_meaning":{"type":"string"},"use_or_avoid":{"enum":["use","avoid","owner_decides"]},"applies_to":{"enum":["org","segment","role"]}},"additionalProperties":false},
+          "tier":{"enum":[1,2]},
+          "quote":{"type":["string","null"]},
+          "check_suggestion":{"type":["string","null"]}
+        },
+        "additionalProperties":false
+      }
+    }
+  },
+  "additionalProperties":false
+}

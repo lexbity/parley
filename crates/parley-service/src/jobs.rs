@@ -20,12 +20,24 @@ use tokio::{
 
 const PROMPT: &str = include_str!("../roles/extractor/prompt.md");
 const SCHEMA: &str = include_str!("../roles/extractor/schema.json");
+const INTERVIEWER_PROMPT: &str = include_str!("../roles/interviewer/prompt.md");
+const INTERVIEWER_SCHEMA: &str = include_str!("../roles/interviewer/schema.json");
+const BRIEFER_PROMPT: &str = include_str!("../roles/briefer/prompt.md");
+const BRIEFER_SCHEMA: &str = include_str!("../roles/briefer/schema.json");
+const MATCHER_PROMPT: &str = include_str!("../roles/matcher/prompt.md");
+const MATCHER_SCHEMA: &str = include_str!("../roles/matcher/schema.json");
+const BUILDER_PROMPT: &str = include_str!("../roles/template_builder/prompt.md");
+const BUILDER_SCHEMA: &str = include_str!("../roles/template_builder/schema.json");
+const COMPOSER_PROMPT: &str = include_str!("../roles/composer/prompt.md");
+const COMPOSER_SCHEMA: &str = include_str!("../roles/composer/schema.json");
+const LINTER_PROMPT: &str = include_str!("../roles/linter/prompt.md");
+const LINTER_SCHEMA: &str = include_str!("../roles/linter/schema.json");
 const MAX_BODY: usize = 2_200_000;
 const MAX_CHUNKS: usize = 16;
 const MAX_RETRIES: i64 = 3;
 
 #[derive(Clone)]
-pub(super) struct Queue(mpsc::Sender<String>);
+pub(crate) struct Queue(mpsc::Sender<String>);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,9 +61,12 @@ pub struct JobRecord {
     pub injection_suspected: bool,
     pub last_error_code: Option<String>,
     pub last_error: Option<String>,
-    pub source_occurrence_id: String,
+    pub source_occurrence_id: Option<String>,
+    pub scope_kind: String,
+    pub scope_id: String,
     pub proposal_batch_id: Option<String>,
     pub proposals: Vec<ProposalRecord>,
+    pub result: Option<Value>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -69,6 +84,8 @@ type JobReadRow = (
     i64,
     Option<String>,
     Option<String>,
+    Option<String>,
+    String,
     String,
     i64,
     i64,
@@ -94,16 +111,16 @@ struct ExtractorOutput {
 }
 
 #[derive(Deserialize)]
-struct OllamaChatResponse {
-    message: OllamaMessage,
+pub(crate) struct OllamaChatResponse {
+    pub(crate) message: OllamaMessage,
     #[serde(default)]
-    prompt_eval_count: Option<u32>,
+    pub(crate) prompt_eval_count: Option<u32>,
     #[serde(default)]
-    eval_count: Option<u32>,
+    pub(crate) eval_count: Option<u32>,
 }
 #[derive(Deserialize)]
-struct OllamaMessage {
-    content: String,
+pub(crate) struct OllamaMessage {
+    pub(crate) content: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -155,6 +172,125 @@ pub(super) fn start(workspace: Arc<Workspace>, depth: usize) -> Queue {
     Queue(tx)
 }
 
+pub(super) fn role_allowed(role: &str) -> bool {
+    matches!(
+        role,
+        "extractor"
+            | "interviewer"
+            | "briefer"
+            | "matcher"
+            | "template_builder"
+            | "composer"
+            | "linter"
+    )
+}
+
+#[allow(dead_code)] // Public to other service role adapters added in later RFC-0002 slices.
+#[allow(clippy::too_many_arguments)] // The typed role command is the shared cross-slice worker boundary.
+pub(crate) async fn enqueue_role(
+    workspace: &Workspace,
+    queue: &Queue,
+    role: &str,
+    scope_kind: &str,
+    scope_id: &str,
+    scope_revision: i64,
+    input: &Value,
+    max_attempts: i64,
+) -> Result<String, WorkspaceError> {
+    if !role_allowed(role) || role == "extractor" {
+        return Err(WorkspaceError::Invalid(
+            "agent role is not an enqueueable assistant role".into(),
+        ));
+    }
+    if !matches!(
+        scope_kind,
+        "owner" | "party" | "segment" | "opportunity" | "material"
+    ) || scope_id.is_empty()
+        || scope_revision < 1
+        || !(1..=3).contains(&max_attempts)
+    {
+        return Err(WorkspaceError::Invalid(
+            "assistant job scope or retry budget is invalid".into(),
+        ));
+    }
+    let input_json =
+        serde_json::to_string(input).map_err(|error| WorkspaceError::Invalid(error.to_string()))?;
+    if input_json.len() > MAX_BODY {
+        return Err(WorkspaceError::Invalid(
+            "assistant job input exceeds the bounded size limit".into(),
+        ));
+    }
+    let input_hash = digest(input_json.as_bytes());
+    let id = new_id(&format!("{role}:{scope_kind}:{scope_id}:{input_hash}"));
+    let mut tx = workspace.pool().begin_with("BEGIN IMMEDIATE").await?;
+    enqueue_role_in_tx(
+        &mut tx,
+        role,
+        scope_kind,
+        scope_id,
+        scope_revision,
+        input,
+        max_attempts,
+    )
+    .await?;
+    tx.commit().await?;
+    wake(queue, &id);
+    Ok(id)
+}
+
+pub(crate) fn wake(queue: &Queue, id: &str) {
+    let _ = queue.0.try_send(id.to_owned());
+}
+
+pub(crate) async fn enqueue_role_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    role: &str,
+    scope_kind: &str,
+    scope_id: &str,
+    scope_revision: i64,
+    input: &Value,
+    max_attempts: i64,
+) -> Result<String, WorkspaceError> {
+    if !role_allowed(role) || role == "extractor" {
+        return Err(WorkspaceError::Invalid(
+            "agent role is not an enqueueable assistant role".into(),
+        ));
+    }
+    if !matches!(
+        scope_kind,
+        "owner" | "party" | "segment" | "opportunity" | "material"
+    ) || scope_id.is_empty()
+        || scope_revision < 1
+        || !(1..=3).contains(&max_attempts)
+    {
+        return Err(WorkspaceError::Invalid(
+            "assistant job scope or retry budget is invalid".into(),
+        ));
+    }
+    let input_json =
+        serde_json::to_string(input).map_err(|error| WorkspaceError::Invalid(error.to_string()))?;
+    if input_json.len() > MAX_BODY {
+        return Err(WorkspaceError::Invalid(
+            "assistant job input exceeds the bounded size limit".into(),
+        ));
+    }
+    let in_flight: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM durable_job WHERE status IN ('queued','running')")
+            .fetch_one(&mut **tx)
+            .await?;
+    if in_flight >= 32 {
+        return Err(WorkspaceError::Invalid("agent queue is at capacity".into()));
+    }
+    let input_hash = digest(input_json.as_bytes());
+    let id = new_id(&format!("{role}:{scope_kind}:{scope_id}:{input_hash}"));
+    let now = now_utc();
+    sqlx::query("INSERT INTO durable_job(id,role,status,input_json,input_sha256,scope_kind,scope_id,scope_revision,max_attempts,created_at,updated_at) VALUES(?,?,'queued',?,?,?,?,?,?,?,?)")
+        .bind(&id).bind(role).bind(&input_json).bind(&input_hash).bind(scope_kind).bind(scope_id).bind(scope_revision).bind(max_attempts).bind(&now).bind(&now).execute(&mut **tx).await?;
+    sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'job',?,1,'job.queued',?)")
+        .bind(new_id(&id)).bind(&now).bind(&id).bind(json!({"role":role,"scope_kind":scope_kind,"scope_id":scope_id,"scope_revision":scope_revision}).to_string()).execute(&mut **tx).await?;
+    Ok(id)
+}
+
 pub(super) async fn enqueue(
     workspace: &Workspace,
     queue: &Queue,
@@ -175,8 +311,8 @@ pub(super) async fn enqueue(
     }
     let id = new_id(&input_sha);
     let now = now_utc();
-    sqlx::query("INSERT INTO durable_job(id,role,status,input_json,input_sha256,source_occurrence_id,source_variant_id,current_attempt,max_attempts,created_at,updated_at) VALUES(?,'extractor','queued',?,?,?,?,0,3,?,?)")
-        .bind(&id).bind(&input_json).bind(&input_sha).bind(&source.occurrence_id).bind(&source.variant_id).bind(&now).bind(&now).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO durable_job(id,role,status,input_json,input_sha256,source_occurrence_id,source_variant_id,scope_kind,scope_id,scope_revision,current_attempt,max_attempts,created_at,updated_at) VALUES(?,'extractor','queued',?,?,?,?, 'source',?,1,0,3,?,?)")
+        .bind(&id).bind(&input_json).bind(&input_sha).bind(&source.occurrence_id).bind(&source.variant_id).bind(&source.occurrence_id).bind(&now).bind(&now).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'job',?,1,'job.queued',?)")
         .bind(new_id(&id)).bind(&now).bind(&id).bind(json!({"role":"extractor","source_occurrence_id":source.occurrence_id}).to_string()).execute(&mut *tx).await?;
     tx.commit().await?;
@@ -244,6 +380,20 @@ async fn recover_interrupted(workspace: &Workspace) {
 }
 
 async fn process(workspace: &Workspace, job_id: &str) {
+    let role: Option<String> = sqlx::query_scalar("SELECT role FROM durable_job WHERE id=?")
+        .bind(job_id)
+        .fetch_optional(workspace.pool())
+        .await
+        .ok()
+        .flatten();
+    if let Some(role) = role.as_deref().filter(|role| *role != "extractor") {
+        if matches!(role, "matcher" | "template_builder" | "composer" | "linter") {
+            super::writing_jobs::process_role(workspace, job_id, role).await;
+        } else {
+            super::assistant::process_role(workspace, job_id, role).await;
+        }
+        return;
+    }
     let started = tokio::time::Instant::now();
     loop {
         if started.elapsed() >= Duration::from_secs(360) {
@@ -331,7 +481,7 @@ async fn process(workspace: &Workspace, job_id: &str) {
                 let repair = sqlx::query_scalar::<_,Option<String>>("SELECT error_message FROM job_attempt WHERE job_id=? AND attempt_no<? ORDER BY attempt_no DESC LIMIT 1")
                     .bind(job_id).bind(attempt.number).fetch_optional(workspace.pool()).await.ok().flatten().flatten();
                 let content = format!("Locale: {}. Chunk {}/{}. Previous validation issue: {}\n\n<DATA>\n{}\n</DATA>",config.locale,index+1,chunks.len(),repair.as_deref().unwrap_or("none"),chunk);
-                let response = ollama_chat(&config, &content).await?;
+                let response = ollama_chat(&config, &content, &attempt.prompt, &attempt.schema, 0.0).await?;
                 tokens_in += response.prompt_eval_count.unwrap_or_else(|| token_upper_bound(&content));
                 tokens_out += response.eval_count.unwrap_or(0);
                 let chunk_out: ExtractorOutput = serde_json::from_str(&response.message.content).map_err(|e| format!("SCHEMA: model output did not match Extractor schema: {e}"))?;
@@ -446,16 +596,25 @@ async fn process(workspace: &Workspace, job_id: &str) {
     }
 }
 
-struct Attempt {
-    number: i64,
-    provider_config: ProviderConfig,
-    model_digest: Option<String>,
+pub(crate) struct Attempt {
+    pub(crate) number: i64,
+    pub(crate) role: String,
+    pub(crate) provider_config: ProviderConfig,
+    pub(crate) model_digest: Option<String>,
+    pub(crate) input_sha256: String,
+    pub(crate) input_json: String,
+    pub(crate) prompt_id: String,
+    pub(crate) prompt: String,
+    pub(crate) schema: String,
 }
-async fn claim_attempt(workspace: &Workspace, id: &str) -> Result<Option<Attempt>, WorkspaceError> {
+pub(crate) async fn claim_attempt(
+    workspace: &Workspace,
+    id: &str,
+) -> Result<Option<Attempt>, WorkspaceError> {
     let mut tx = workspace.pool().begin_with("BEGIN IMMEDIATE").await?;
-    let row: Option<(i64,i64,String,String)> = sqlx::query_as("SELECT current_attempt,max_attempts,input_json,input_sha256 FROM durable_job WHERE id=? AND status='queued'")
+    let row: Option<(i64,i64,String,String,String)> = sqlx::query_as("SELECT current_attempt,max_attempts,input_json,input_sha256,role FROM durable_job WHERE id=? AND status='queued'")
         .bind(id).fetch_optional(&mut *tx).await?;
-    let Some((current, max, input, hash)) = row else {
+    let Some((current, max, input, hash, role)) = row else {
         tx.rollback().await?;
         return Ok(None);
     };
@@ -484,17 +643,130 @@ async fn claim_attempt(workspace: &Workspace, id: &str) -> Result<Option<Attempt
     };
     let provider_snapshot = serde_json::to_string(&provider_config)
         .map_err(|error| WorkspaceError::Invalid(error.to_string()))?;
-    let prompt_hash = digest(PROMPT.as_bytes());
-    sqlx::query("INSERT INTO job_attempt(job_id,attempt_no,status,model,model_digest,provider_snapshot_json,prompt_id,prompt_sha256,input_sha256,input_json,started_at) VALUES(?,?,'running',?,?,?, 'extractor@1',?,?,?,?)")
-      .bind(id).bind(number).bind(config.0).bind(config.1.clone()).bind(provider_snapshot).bind(prompt_hash).bind(hash).bind(input.clone()).bind(&now).execute(&mut *tx).await?;
+    let (default_prompt, schema) = role_defaults(&role)
+        .ok_or_else(|| WorkspaceError::Invalid("agent role has no bundled schema".into()))?;
+    let prompt_version_id = serde_json::from_str::<Value>(&input)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("prompt_version_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
+    let prompt_version: Option<(String, String, i64)> = if let Some(version_id) = prompt_version_id
+    {
+        sqlx::query_as("SELECT prompt_text,prompt_sha256,version_no FROM agent_prompt_version WHERE version_id=? AND role=?")
+            .bind(version_id).bind(&role).fetch_optional(&mut *tx).await?
+    } else {
+        None
+    };
+    let (prompt, prompt_id, prompt_digest) = match prompt_version {
+        Some((text, hash, version)) => (text, format!("{role}@{version}"), hash),
+        None => (
+            default_prompt.to_owned(),
+            format!("{role}@1"),
+            digest(default_prompt.as_bytes()),
+        ),
+    };
+    let prompt_hash = digest(format!("{prompt_digest}\0{schema}").as_bytes());
+    sqlx::query("INSERT INTO job_attempt(job_id,attempt_no,status,model,model_digest,provider_snapshot_json,prompt_id,prompt_sha256,input_sha256,input_json,started_at) VALUES(?,?,'running',?,?,?,?,?,?,?,?)")
+      .bind(id).bind(number).bind(config.0).bind(config.1.clone()).bind(provider_snapshot).bind(prompt_id.clone()).bind(prompt_hash).bind(hash.clone()).bind(input.clone()).bind(&now).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'job',?,?, 'job.attempt_started',?)")
       .bind(new_id(id)).bind(&now).bind(id).bind(number).bind(json!({"attempt":number}).to_string()).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Some(Attempt {
         number,
+        role,
         provider_config,
         model_digest: config.1,
+        input_sha256: hash,
+        input_json: input,
+        prompt_id,
+        prompt,
+        schema: schema.to_owned(),
     }))
+}
+
+fn role_defaults(role: &str) -> Option<(&'static str, &'static str)> {
+    match role {
+        "extractor" => Some((PROMPT, SCHEMA)),
+        "interviewer" => Some((INTERVIEWER_PROMPT, INTERVIEWER_SCHEMA)),
+        "briefer" => Some((BRIEFER_PROMPT, BRIEFER_SCHEMA)),
+        "matcher" => Some((MATCHER_PROMPT, MATCHER_SCHEMA)),
+        "template_builder" => Some((BUILDER_PROMPT, BUILDER_SCHEMA)),
+        "composer" => Some((COMPOSER_PROMPT, COMPOSER_SCHEMA)),
+        "linter" => Some((LINTER_PROMPT, LINTER_SCHEMA)),
+        _ => None,
+    }
+}
+
+#[allow(dead_code)] // Role adapters may complete a result without an aggregate write.
+pub(crate) async fn complete_role_result(
+    workspace: &Workspace,
+    id: &str,
+    attempt: i64,
+    input_hash: &str,
+    result: &Value,
+    tokens_in: u32,
+    tokens_out: u32,
+) -> Result<(), WorkspaceError> {
+    let mut tx = workspace.pool().begin_with("BEGIN IMMEDIATE").await?;
+    complete_role_result_in_tx(
+        &mut tx, id, attempt, input_hash, result, tokens_in, tokens_out,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub(super) async fn complete_role_result_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    attempt: i64,
+    input_hash: &str,
+    result: &Value,
+    tokens_in: u32,
+    tokens_out: u32,
+) -> Result<(), WorkspaceError> {
+    let current: Option<(String, i64, String)> =
+        sqlx::query_as("SELECT status,current_attempt,input_sha256 FROM durable_job WHERE id=?")
+            .bind(id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    if current
+        .as_ref()
+        .is_none_or(|(status, current_attempt, hash)| {
+            status != "running" || *current_attempt != attempt || hash != input_hash
+        })
+    {
+        return Err(WorkspaceError::StaleRevision);
+    }
+    let attempt_hash: Option<String> = sqlx::query_scalar(
+        "SELECT input_sha256 FROM job_attempt WHERE job_id=? AND attempt_no=? AND status='running'",
+    )
+    .bind(id)
+    .bind(attempt)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if attempt_hash.as_deref() != Some(input_hash) {
+        return Err(WorkspaceError::StaleRevision);
+    }
+    let now = now_utc();
+    let result_json = serde_json::to_string(result)
+        .map_err(|error| WorkspaceError::Invalid(error.to_string()))?;
+    let changed = sqlx::query("UPDATE job_attempt SET status='succeeded',output_json=?,tokens_in=?,tokens_out=?,finished_at=?,duration_ms=CAST((julianday(?) - julianday(started_at))*86400000 AS INTEGER) WHERE job_id=? AND attempt_no=? AND status='running'")
+        .bind(&result_json).bind(tokens_in as i64).bind(tokens_out as i64).bind(&now).bind(&now).bind(id).bind(attempt).execute(&mut **tx).await?.rows_affected();
+    if changed != 1 {
+        return Err(WorkspaceError::StaleRevision);
+    }
+    let changed = sqlx::query("UPDATE durable_job SET status='succeeded',last_error_code=NULL,last_error=NULL,updated_at=?,completed_at=? WHERE id=? AND status='running' AND current_attempt=? AND input_sha256=?")
+        .bind(&now).bind(&now).bind(id).bind(attempt).bind(input_hash).execute(&mut **tx).await?.rows_affected();
+    if changed != 1 {
+        return Err(WorkspaceError::StaleRevision);
+    }
+    sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'job',?,?, 'job.completed',?)")
+        .bind(new_id(id)).bind(&now).bind(id).bind(attempt).bind(&result_json).execute(&mut **tx).await?;
+    Ok(())
 }
 
 async fn save_proposals(
@@ -592,7 +864,7 @@ async fn source_text(
         .ok_or(WorkspaceError::NotFound)
 }
 
-async fn finish_job_error(
+pub(super) async fn finish_job_error(
     workspace: &Workspace,
     id: &str,
     code: &str,
@@ -611,7 +883,7 @@ async fn finish_job_error(
         finish_attempt_error(workspace, id, attempt, code, message, status).await;
     }
 }
-async fn finish_attempt_error(
+pub(crate) async fn finish_attempt_error(
     workspace: &Workspace,
     id: &str,
     attempt: i64,
@@ -697,20 +969,26 @@ fn validate_endpoint(endpoint: &str) -> Result<(String, u16), String> {
     Ok((host.to_owned(), port))
 }
 
-async fn ollama_chat(config: &ProviderConfig, content: &str) -> Result<OllamaChatResponse, String> {
+pub(crate) async fn ollama_chat(
+    config: &ProviderConfig,
+    content: &str,
+    prompt: &str,
+    schema: &str,
+    temperature: f32,
+) -> Result<OllamaChatResponse, String> {
     let (host, port) = validate_endpoint(&config.endpoint)?;
     // UTF-8 byte length is a conservative upper bound for token count. Include
     // fixed prompt/schema/framing costs so hostile text cannot silently
     // exceed the configured context before the model receives it.
     let prompt_upper_bound = content
         .len()
-        .saturating_add(PROMPT.len())
-        .saturating_add(SCHEMA.len())
+        .saturating_add(prompt.len())
+        .saturating_add(schema.len())
         .saturating_add(1024);
     if prompt_upper_bound.saturating_add(config.num_predict as usize) > config.num_ctx as usize {
         return Err("Prompt exceeds the configured context budget".into());
     }
-    let body=json!({"model":config.model,"stream":false,"format":serde_json::from_str::<Value>(SCHEMA).map_err(|e|e.to_string())?,"messages":[{"role":"system","content":PROMPT},{"role":"user","content":content}],"options":{"temperature":0,"seed":42,"num_ctx":config.num_ctx,"num_predict":config.num_predict}}).to_string();
+    let body=json!({"model":config.model,"stream":false,"format":serde_json::from_str::<Value>(schema).map_err(|e|e.to_string())?,"messages":[{"role":"system","content":prompt},{"role":"user","content":content}],"options":{"temperature":temperature,"seed":42,"num_ctx":config.num_ctx,"num_predict":config.num_predict}}).to_string();
     let mut stream = TcpStream::connect((host.as_str(), port))
         .await
         .map_err(|e| format!("local provider unavailable: {e}"))?;
@@ -1056,7 +1334,7 @@ async fn get_job(
     if let Err(response) = super::authenticate(&headers, &state).await {
         return response.into_response();
     }
-    let row: Option<JobReadRow> = match sqlx::query_as("SELECT j.role,j.status,j.current_attempt,j.max_attempts,j.last_error_code,j.last_error,j.source_occurrence_id,j.progress_current,j.progress_total FROM durable_job j WHERE id=?")
+    let row: Option<JobReadRow> = match sqlx::query_as("SELECT j.role,j.status,j.current_attempt,j.max_attempts,j.last_error_code,j.last_error,j.source_occurrence_id,j.scope_kind,j.scope_id,j.progress_current,j.progress_total FROM durable_job j WHERE id=?")
         .bind(&id).fetch_optional(state.workspace.pool()).await {
         Ok(value) => value,
         Err(error) => return super::error(StatusCode::INTERNAL_SERVER_ERROR, "READ_FAILED", error.to_string()),
@@ -1125,14 +1403,17 @@ async fn get_job(
         status: row.1,
         current_attempt: row.2,
         max_attempts: row.3,
-        progress_current: row.7,
-        progress_total: row.8,
+        progress_current: row.9,
+        progress_total: row.10,
         injection_suspected,
         last_error_code: row.4,
         last_error: row.5,
         source_occurrence_id: row.6,
+        scope_kind: row.7,
+        scope_id: row.8,
         proposal_batch_id: batch,
         proposals,
+        result: output_json.and_then(|value| serde_json::from_str::<Value>(&value).ok()),
     })
     .into_response()
 }

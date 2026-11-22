@@ -42,8 +42,12 @@ use tokio::sync::Mutex;
 
 static IDS: AtomicU64 = AtomicU64::new(0);
 
+mod assistant;
+mod board;
 mod jobs;
 mod materials;
+mod writing;
+mod writing_jobs;
 mod web_assets {
     include!(concat!(env!("OUT_DIR"), "/web_assets.rs"));
 }
@@ -196,6 +200,7 @@ impl Workspace {
             .run(&pool)
             .await
             .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
+        assistant::initialize_defaults(&pool).await?;
         let (epoch, workspace_id): (String, String) =
             sqlx::query_as("SELECT epoch, workspace_id FROM workspace_meta WHERE singleton=1")
                 .fetch_one(&pool)
@@ -842,7 +847,7 @@ pub(crate) struct AppState {
     authority: String,
     bootstrap: Arc<Mutex<HashMap<String, Instant>>>,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
-    jobs: jobs::Queue,
+    pub(crate) jobs: jobs::Queue,
 }
 
 /// Initialize (or open) a private SQLite workspace and bind only to IPv4
@@ -883,8 +888,11 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         .route("/api/v1/events", get(get_events))
         .route("/api/v1/captures", get(list_captures).post(save_capture))
         .route("/api/v1/graph/related", post(create_related_entity))
+        .merge(board::routes())
         .merge(materials::routes())
         .merge(jobs::routes())
+        .merge(assistant::routes())
+        .merge(writing::routes())
         .with_state(state)
         .layer(axum::extract::DefaultBodyLimit::max(2_100_000));
     let (shutdown, receiver) = tokio::sync::oneshot::channel();
