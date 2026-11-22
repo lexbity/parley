@@ -172,6 +172,13 @@ async fn s08_seeds_versioned_defaults_and_keeps_prompt_and_question_versions_imm
 
     let (status, bank) = request(port, "GET", "/api/v1/agent/question-bank", None).await;
     assert_eq!(status, 200, "{bank:?}");
+    assert!(
+        bank["content"]["questions"]["discovery"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == "third_party_interest")
+    );
     let old_bank_id = bank["version_id"].as_str().unwrap().to_owned();
     let mut changed_bank = bank["content"].clone();
     changed_bank["questions"]["proof"][0]["text"] = json!("What measured result changed?");

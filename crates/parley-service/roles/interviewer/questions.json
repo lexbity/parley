@@ -1,6 +1,14 @@
 {
   "version": 1,
   "questions": {
+    "discovery": [
+      {"id":"recent_help","text":"Who have you helped recently, and what changed for them?"},
+      {"id":"work","text":"What work have you done lately that you would be glad to explain to someone?"},
+      {"id":"insight","text":"What have you learned or noticed recently that could help someone else?"},
+      {"id":"interests","text":"What are you interested in enough to keep learning about?"},
+      {"id":"third_party_interest","text":"Who specifically expressed that interest, and what did they say?"},
+      {"id":"overlooked_resource","text":"What checklist, walkthrough, introduction, or other resource could you share?"}
+    ],
     "proof": [
       {"id":"result","text":"What changed, and how did you measure the result?"},
       {"id":"context","text":"Who was the work for, and what problem were they facing?"},

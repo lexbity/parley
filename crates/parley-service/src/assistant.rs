@@ -1604,7 +1604,12 @@ async fn question_action(
         .unwrap_or(Value::Null);
     let question = bank["questions"][kind.as_str()]
         .as_array()
-        .and_then(|items| items.iter().find(|item| item["id"] == request.question_id));
+        .and_then(|items| items.iter().find(|item| item["id"] == request.question_id))
+        .or_else(|| {
+            bank["questions"]["discovery"]
+                .as_array()
+                .and_then(|items| items.iter().find(|item| item["id"] == request.question_id))
+        });
     let Some(question) = question else {
         return super::error(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -1998,22 +2003,24 @@ fn valid_question_bank(value: &Value) -> bool {
     let Some(questions) = value.get("questions").and_then(Value::as_object) else {
         return false;
     };
-    ["proof", "gift", "artifact"].iter().all(|kind| {
-        let Some(items) = questions.get(*kind).and_then(Value::as_array) else {
-            return false;
-        };
-        let mut ids = BTreeSet::new();
-        !items.is_empty()
-            && items.iter().all(|item| {
-                let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
-                let text = item.get("text").and_then(Value::as_str).unwrap_or_default();
-                !id.trim().is_empty()
-                    && id.len() <= 80
-                    && !text.trim().is_empty()
-                    && text.len() <= 600
-                    && ids.insert(id.to_owned())
-            })
-    })
+    ["proof", "gift", "artifact", "discovery"]
+        .iter()
+        .all(|kind| {
+            let Some(items) = questions.get(*kind).and_then(Value::as_array) else {
+                return false;
+            };
+            let mut ids = BTreeSet::new();
+            !items.is_empty()
+                && items.iter().all(|item| {
+                    let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+                    let text = item.get("text").and_then(Value::as_str).unwrap_or_default();
+                    !id.trim().is_empty()
+                        && id.len() <= 80
+                        && !text.trim().is_empty()
+                        && text.len() <= 600
+                        && ids.insert(id.to_owned())
+                })
+        })
 }
 
 async fn get_prompt(
