@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/MaterialInput","body":{"recipient_id":"rec-1","kind":"handoff","template_version_id":"tpl-1","body":"Please find the attached handoff.","exchange_version":1,"slot_fills":[],"sentence_bindings":[{"sentence_index":0,"claim_type":"generic"}],"attachment":{"upload_id":"up-1"}}}

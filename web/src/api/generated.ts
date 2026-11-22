@@ -601,6 +601,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/uploads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listUploads"];
+        put?: never;
+        post: operations["createUpload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/uploads/{id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reviewUpload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/materials/{id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["downloadMaterial"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/board": {
         parameters: {
             query?: never;
@@ -1278,6 +1326,36 @@ export interface components {
             slot_fills: components["schemas"]["SlotFill"][];
             sentence_bindings: components["schemas"]["SentenceBinding"][];
             exchange_version: number;
+            attachment?: components["schemas"]["AttachmentRef"];
+        };
+        AttachmentRef: {
+            upload_id: string;
+        };
+        AttachmentInfo: {
+            upload_id: string;
+            sha256: string;
+            filename: string;
+            content_type: string;
+            size: number;
+        };
+        Upload: {
+            id: string;
+            sha256: string;
+            size: number;
+            filename: string;
+            mime: string;
+            share_permission: boolean;
+            reviewed: boolean;
+            revision: number;
+            /** Format: date-time */
+            created_at: string;
+        };
+        UploadList: components["schemas"]["Upload"][];
+        UploadReviewRequest: {
+            share_permission: boolean;
+        };
+        DownloadQuery: {
+            release_id: string;
         };
         ApprovalInput: {
             override_reasons: {
@@ -1473,6 +1551,7 @@ export interface components {
             /** @enum {string} */
             status: "draft" | "approved" | "released";
             gate: Record<string, never> | null;
+            attachment: components["schemas"]["AttachmentInfo"] | null;
         };
         ReleasedMaterial: {
             release_id: string;
@@ -1483,6 +1562,7 @@ export interface components {
             content_sha256: string;
             /** Format: date-time */
             issued_at: string;
+            attachment: components["schemas"]["AttachmentInfo"] | null;
         };
         OpportunityList: components["schemas"]["Opportunity"][];
         MaterialList: components["schemas"]["MaterialRecord"][];
@@ -2238,6 +2318,7 @@ export interface operations {
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
                 "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 id: string;
@@ -2290,6 +2371,7 @@ export interface operations {
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
                 "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 id: string;
@@ -2317,6 +2399,7 @@ export interface operations {
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
                 "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 id: string;
@@ -2594,12 +2677,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Deterministic F1-optimal threshold computed and bound to exact fixture digest */
-            201: {
+            /** @description Client-supplied labels are not evaluation evidence; only the local versioned E-match evaluator can write trusted calibration. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
             };
         };
     };
@@ -2912,6 +2997,124 @@ export interface operations {
                     "application/json": components["schemas"]["MaterialList"];
                 };
             };
+        };
+    };
+    listUploads: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Owner uploads with review and share permission state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadList"];
+                };
+            };
+        };
+    };
+    createUpload: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                /** @description URL-encoded suggested attachment filename. */
+                "X-Parley-Filename"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description Bytes verified, installed atomically and surfaced as a reviewable upload. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Upload"];
+                };
+            };
+            413: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    reviewUpload: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UploadReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Review binds digest, MIME, scope and share permission. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Upload"];
+                };
+            };
+            422: components["responses"]["Error"];
+        };
+    };
+    downloadMaterial: {
+        parameters: {
+            query: {
+                release_id: string;
+            };
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Exact approved attachment bytes streamed from the verified spool. */
+            200: {
+                headers: {
+                    "Content-Type"?: string;
+                    "Content-Disposition"?: string;
+                    "Content-Length"?: number;
+                    "Cache-Control"?: string;
+                    "X-Parley-Epoch"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
         };
     };
     getBoard: {
@@ -3717,6 +3920,8 @@ export interface operations {
             query?: never;
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 id: string;
@@ -3745,6 +3950,8 @@ export interface operations {
             query?: never;
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path?: never;
             cookie?: never;
@@ -3813,6 +4020,8 @@ export interface operations {
             query?: never;
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 id: string;
@@ -3878,6 +4087,8 @@ export interface operations {
             query?: never;
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 id: string;

@@ -46,8 +46,8 @@ describe('ParleyClient S03 opportunity and release commands', () => {
 
   it('uses the authenticated workspace session for opportunity and Output operations', async () => {
     const opportunity = { id: 'op-1', title: 'Onboarding', state: 'open', revision: 1, participant_ids: ['party 1'], source_variant_ids: [], material_ids: [] };
-    const material = { id: 'mat-1', opportunity_id: 'op-1', recipient_id: 'party 1', recipient_name: 'Dana Lee', kind: 'outreach', version: 1, body: 'Hello Dana.', content_sha256: 'a'.repeat(64), status: 'approved', gate: null };
-    const released = { release_id: 'release-1', material_id: 'mat-1', version: 1, recipient_id: 'party 1', body: 'Hello Dana.', content_sha256: 'a'.repeat(64), issued_at: '2026-11-21T12:00:00Z' };
+    const material = { id: 'mat-1', opportunity_id: 'op-1', recipient_id: 'party 1', recipient_name: 'Dana Lee', kind: 'outreach', version: 1, body: 'Hello Dana.', content_sha256: 'a'.repeat(64), status: 'approved', gate: null, attachment: null };
+    const released = { release_id: 'release-1', material_id: 'mat-1', version: 1, recipient_id: 'party 1', body: 'Hello Dana.', content_sha256: 'a'.repeat(64), issued_at: '2026-11-21T12:00:00Z', attachment: null };
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(sessionResponse())
       .mockResolvedValueOnce(response(opportunity, 201))

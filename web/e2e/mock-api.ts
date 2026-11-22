@@ -34,6 +34,31 @@ type SavedSource = {
   job_status?: string;
 };
 
+type UploadRecord = {
+  id: string;
+  sha256: string;
+  bytes: Buffer;
+  filename: string;
+  mime: string;
+  share_permission: boolean;
+  reviewed: boolean;
+  revision: number;
+  created_at: string;
+};
+
+type ReleaseRecord = {
+  release_id: string;
+  material_id: string;
+  version: number;
+  recipient_id: string;
+  body: string;
+  content_sha256: string;
+  issued_at: string;
+  attachment: RecordData | null;
+  consumed: boolean;
+  bytes: Buffer;
+};
+
 type EventRecord = {
   cursor: string;
   event_id: string;
@@ -78,6 +103,9 @@ export function createMockApi(): MockApi {
   const jobsByOccurrence = new Map<string, string>();
   const opportunities = new Map<string, RecordData>();
   const outputs = new Map<string, RecordData>();
+  const uploads = new Map<string, UploadRecord>();
+  const materialRecords = new Map<string, RecordData>();
+  const releaseRecords = new Map<string, ReleaseRecord>();
   const boardLists: Array<{ id: string; title: string; position: number; archived: boolean; revision: number }> = [
     { id: 'list-default', title: 'Inbox', position: 0, archived: false, revision: 1 },
   ];
@@ -228,6 +256,14 @@ export function createMockApi(): MockApi {
       const family = { id: randomHex(), name: String(input.name) }; templateFamilies.push(family); return json(response, 201, family);
     }
     if (url.pathname === '/api/v1/templates' && request.method === 'GET') return json(response, 200, writingTemplates);
+    if (url.pathname === '/api/v1/templates' && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const family = { id: randomHex(), name: String(input.name ?? 'Template') };
+      templateFamilies.push(family);
+      const template = { id: randomHex(), family_id: family.id, version: 1, status: 'draft', name: String(input.name), body: String(input.body), sentence_rules: [], stage_class: 'identified', channel: 'email', parent_version_id: null };
+      writingTemplates.unshift(template);
+      return json(response, 201, template);
+    }
     const templateVersionMatch = /^\/api\/v1\/templates\/([^/]+)\/versions$/.exec(url.pathname);
     if (templateVersionMatch && request.method === 'POST') {
       let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
@@ -609,6 +645,112 @@ export function createMockApi(): MockApi {
     }
     if (url.pathname === '/api/v1/outputs' && request.method === 'GET') {
       return json(response, 200, [...outputs.values()]);
+    }
+    if (url.pathname === '/api/v1/uploads' && request.method === 'POST') {
+      const chunks: Buffer[] = [];
+      let length = 0;
+      for await (const chunk of request) {
+        length += (chunk as Buffer).length;
+        if (length > 64 * 1024 * 1024) return fail(response, 413, 'UPLOAD_TOO_LARGE', 'Attachment exceeds the byte limit');
+        chunks.push(chunk as Buffer);
+      }
+      const bytes = Buffer.concat(chunks);
+      if (bytes.length === 0) return fail(response, 422, 'EMPTY_UPLOAD', 'Attachment is empty');
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      const header = request.headers['x-parley-filename'];
+      const filename = header ? decodeURIComponent(String(header)) : 'attachment.bin';
+      const mime = String(request.headers['content-type'] ?? 'application/octet-stream');
+      const id = randomHex();
+      const created_at = now();
+      uploads.set(id, { id, sha256, bytes, filename, mime, share_permission: false, reviewed: false, revision: 1, created_at });
+      return json(response, 201, { id, sha256, size: bytes.length, filename, mime, share_permission: false, reviewed: false, revision: 1, created_at });    }
+    if (url.pathname === '/api/v1/uploads' && request.method === 'GET') {
+      return json(response, 200, [...uploads.values()].map((upload) => ({ id: upload.id, sha256: upload.sha256, size: upload.bytes.length, filename: upload.filename, mime: upload.mime, share_permission: upload.share_permission, reviewed: upload.reviewed, revision: upload.revision, created_at: upload.created_at })));
+    }
+    const uploadReviewMatch = /^\/api\/v1\/uploads\/([^/]+)\/review$/.exec(url.pathname);
+    if (uploadReviewMatch && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const upload = uploads.get(uploadReviewMatch[1]!);
+      if (!upload) return fail(response, 404, 'UPLOAD_NOT_FOUND', 'Upload does not exist');
+      if (upload.reviewed) {
+        if (Boolean(input.share_permission) !== Boolean(upload.share_permission)) return fail(response, 422, 'REVIEW_IMMUTABLE', 'An upload review cannot be changed after it is recorded');
+        return json(response, 200, { id: upload.id, sha256: upload.sha256, size: upload.bytes.length, filename: upload.filename, mime: upload.mime, share_permission: upload.share_permission, reviewed: true, revision: upload.revision, created_at: upload.created_at });
+      }
+      upload.reviewed = true;
+      upload.share_permission = Boolean(input.share_permission);
+      upload.revision += 1;
+      return json(response, 200, { id: upload.id, sha256: upload.sha256, size: upload.bytes.length, filename: upload.filename, mime: upload.mime, share_permission: upload.share_permission, reviewed: true, revision: upload.revision, created_at: upload.created_at });
+    }
+    const s06MaterialMatch = /^\/api\/v1\/opportunities\/([^/]+)\/materials$/.exec(url.pathname);
+    if (s06MaterialMatch && request.method === 'GET') {
+      const items = [...materialRecords.values()].filter((record) => String(record.opportunity_id) === s06MaterialMatch[1]);
+      return json(response, 200, items);
+    }
+    if (s06MaterialMatch && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const opportunity = opportunities.get(s06MaterialMatch[1]!);
+      if (!opportunity) return fail(response, 404, 'OPPORTUNITY_NOT_FOUND', 'Opportunity does not exist');
+      const recipientId = String(input.recipient_id);
+      const party = [...directory.values()].find((entity) => entity.id === recipientId);
+      if (!party) return fail(response, 422, 'RECIPIENT_NOT_FOUND', 'Recipient is not a known party');
+      let attachment: RecordData | null = null;
+      const attachInput = input.attachment as RecordData | null | undefined;
+      if (attachInput && typeof attachInput.upload_id === 'string' && attachInput.upload_id) {
+        const upload = uploads.get(attachInput.upload_id);
+        if (!upload || !upload.reviewed || !upload.share_permission) return fail(response, 422, 'ATTACHMENT_NOT_REVIEWED', 'Attachment requires a reviewed, shareable upload');
+        attachment = { upload_id: upload.id, sha256: upload.sha256, filename: upload.filename, content_type: upload.mime, size: upload.bytes.length };
+      }
+      const body = String(input.body);
+      const content_sha256 = attachment ? String(attachment.sha256) : createHash('sha256').update(body).digest('hex');
+      const id = randomHex();
+      const record = { id, opportunity_id: s06MaterialMatch[1], recipient_id: recipientId, recipient_name: party.name, kind: String(input.kind), version: 1, body, content_sha256, status: 'draft', gate: null, attachment };
+      materialRecords.set(id, record);
+      outputs.set(id, record);
+      return json(response, 201, record);
+    }
+    const s06ApproveRelease = /^\/api\/v1\/materials\/([^/]+)\/(approve|release)$/.exec(url.pathname);
+    if (s06ApproveRelease && request.method === 'POST') {
+      const record = materialRecords.get(s06ApproveRelease[1]!);
+      if (!record) return fail(response, 404, 'MATERIAL_NOT_FOUND', 'Material does not exist');
+      if (s06ApproveRelease[2] === 'approve') {
+        record.status = 'approved';
+        return json(response, 200, { id: randomHex(), material_id: record.id, version: record.version, content_sha256: record.content_sha256, gate: { checks: [], copy_enabled: true }, approved_at: now() });
+      }
+      if (record.status !== 'approved') return fail(response, 422, 'MATERIAL_NOT_APPROVED', 'Material version must be approved before release');
+      record.status = 'released';
+      const attachment = record.attachment as RecordData | null;
+      const bytes = attachment ? uploads.get(String(attachment.upload_id))?.bytes ?? Buffer.alloc(0) : Buffer.from(record.body as string, 'utf8');
+      const release: ReleaseRecord = {
+        release_id: randomHex(),
+        material_id: String(record.id),
+        version: Number(record.version),
+        recipient_id: String(record.recipient_id),
+        body: String(record.body),
+        content_sha256: String(record.content_sha256),
+        issued_at: now(),
+        attachment,
+        consumed: false,
+        bytes,
+      };
+      releaseRecords.set(release.release_id, release);
+      return json(response, 200, { release_id: release.release_id, material_id: release.material_id, version: release.version, recipient_id: release.recipient_id, body: release.body, content_sha256: release.content_sha256, issued_at: release.issued_at, attachment: release.attachment });
+    }
+    const s06DownloadMatch = /^\/api\/v1\/materials\/([^/]+)\/download$/.exec(url.pathname);
+    if (s06DownloadMatch && request.method === 'GET') {
+      const release = releaseRecords.get(url.searchParams.get('release_id') ?? '');
+      if (!release) return fail(response, 404, 'RELEASE_NOT_FOUND', 'Release grant does not exist');
+      if (release.consumed) return fail(response, 409, 'GRANT_CONSUMED', 'Release grant was already consumed by a download');
+      release.consumed = true;
+      const attachment = release.attachment as RecordData | null;
+      response.writeHead(200, {
+        'content-type': attachment ? String(attachment.content_type) : 'text/plain; charset=utf-8',
+        'content-length': release.bytes.length,
+        'content-disposition': attachment ? `attachment; filename="${String(attachment.filename)}"` : 'inline',
+        'cache-control': 'no-store',
+        'x-parley-epoch': epoch,
+      });
+      response.end(release.bytes);
+      return;
     }
     if (url.pathname === '/api/v1/captures' && request.method === 'GET') {
       return json(response, 200, captures);
