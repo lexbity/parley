@@ -1,0 +1,1 @@
+S04 fixtures retain one independent source across two opportunity links, keep ambiguous Dana unresolved, allow partial owner decisions, preserve selections after stale targets, and keep cancelled or failed extraction as durable source-only work. Runtime qualification evidence is recorded by `scripts/prove s04`.

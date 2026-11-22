@@ -11,6 +11,24 @@ export type DirectoryPage = { items:DirectoryEntity[]; total:number; page:number
 export type GraphEdge = { id:string; from_id:string; to_id:string; verb:string; revision:number; claim_id:string; claim_revision:number; wording:string; approved_wording:string|null; tier:number; speaker_kind:string; speaker_entity_id:string|null; occurrence_id:string|null; source_start:number|null; source_end:number|null; normalization_version:number|null; source_title:string|null; source_url:string|null };
 export type Neighborhood = { focus_id:string; nodes:DirectoryEntity[]; edges:GraphEdge[]; positions:Array<{entity_id:string;x:number;y:number;pinned:boolean;revision:number}>; omitted_nodes:number; omitted_edges:number };
 export type SourceDetail = SavedSource & { text:string; title:string|null; url:string|null; captured_at:string; actor_kind:string; actor_entity_id:string|null; normalization_version:number };
+export type Opportunity = { id:string; title:string; status:'open'|'resolved'|'timed_out'|'archived'; revision:number; participants:Array<{id:string;kind:'person'|'org';name:string}>; created_at:string; updated_at:string };
+export type OpportunityInterest = { id:string; opportunity_id:string; side:'me'|'them'; statement:string; tier:3; status:'active'|'dismissed'; revision:number };
+export type OpportunityExchange = { id:string; opportunity_id:string; version:number; they_get:string; i_get:string; interest_ids:string[]; fairness_attested:boolean; attested_at:string|null };
+export type MaterialSentence = {text:string;claims:Array<{type:'self_fact'|'other_fact'|'offer'|'question'|'ask'|'generic';ref_kind?:string;ref_id?:string}>;rules:string[]};
+export type MaterialVersion = {id:string;material_id:string;sequence:number;body:string;sentences:MaterialSentence[];slot_fills:Record<string,string>;protected_tokens:string[];digest:string;created_at:string};
+export type Material = {id:string;opportunity_id:string;recipient_id:string;recipient_kind:'person'|'org';recipient_name:string;kind:'outreach'|'follow_up'|'handoff';title:string;revision:number;current_version:MaterialVersion|null;versions:MaterialVersion[];claim_references:Array<{kind:string;id:string;label:string;tier:number}>;approval:MaterialApprovalDTO|null;updated_at:string};
+export type MaterialGateDTO = {material_id:string;version_id:string;recipient_id:string;evaluated_at:string;results:Array<{id:string;severity:'hard'|'soft';pass:boolean;detail:string}>;hard_failures:string[];soft_failures:string[];copy_enabled:boolean};
+export type MaterialApprovalDTO = {id:string;material_id:string;version_id:string;recipient_id:string;digest:string;approved_at:string;gate_snapshot:MaterialGateDTO};
+export type CopyGrantDTO = {grant_id:string;material_id:string;version_id:string;recipient_id:string;digest:string;body:string;expires_at:string};
+export type CopyGrantReceiptDTO = {grant_id:string;material_id:string;version_id:string;recipient_id:string;digest:string;status:'issued'|'acknowledged'|'failed'|'expired';acknowledged_at:string|null};
+export type CaptureReviewSourceDTO = {occurrence_id:string;content_id:string;variant_id:string;normalized_sha256:string;raw_sha256:string;text:string;title:string|null;url:string|null;captured_at:string;actor_kind:string;actor_entity_id:string|null;normalization_version:number};
+export type CaptureProposalDTO = {id:string;action:'create'|'link'|'update';target_kind:string;target_id:string|null;target_label:string;candidate_targets:Array<{id:string;kind:'person'|'org'|'project'|'artifact'|'capture'|'resource';label:string}>;statement:string;quote:string;quote_start:number|null;quote_end:number|null;tier:1|2|3;ambiguity:string|null;unresolved:boolean;candidate:Record<string,unknown>|null;target_revision:number|null;review_state:'proposed'|'confirmed'|'corrected'|'dismissed'|'unresolved'|'asked'|'source_only'};
+export type CaptureReviewDTO = {batch_id:string;job_id:string;status:'queued'|'running'|'ok'|'invalid'|'failed'|'cancelled';revision:number;injection_suspected:boolean;source:CaptureReviewSourceDTO;opportunity_ids:string[];proposals:CaptureProposalDTO[]};
+export type CaptureReviewReceiptDTO = {batch_id:string;revision:number;status:string;committed:Array<{proposal_id:string;review_state:'confirmed'|'corrected'|'dismissed'|'unresolved'|'source_only'}>;source:CaptureReviewSourceDTO};
+export type OpportunityBoardItem = {id:string;revision:number;list_id:string;position:number;title:string;status:string;participants:Array<{id:string;kind:'person'|'org';name:string}>;tags:string[];next_task:string|null;deadline:string|null;missing_material:boolean};
+export type BoardListDTO = {id:string;name:string;position:number;revision:number;archived:boolean};
+export type BoardSnapshotDTO = {items:OpportunityBoardItem[];lists:BoardListDTO[];board_revision:number};
+export type OpportunityNotesDTO = {opportunity_id:string;markdown:string;revision:number};
 type Session = components['schemas']['Session'];
 type EventPage = components['schemas']['EventPage'];
 type CreateResource = components['schemas']['CreateResource'];
@@ -174,6 +192,16 @@ export class ParleyClient {
   private session: Session | null = null;
   private connection: Promise<void> | null = null;
 
+  get workspaceEpoch(): string {
+    if (!this.session) throw new Error('Workspace session is not connected.');
+    return this.session.epoch;
+  }
+
+  get eventCursor(): string {
+    if (!this.session) throw new Error('Workspace session is not connected.');
+    return this.session.cursor;
+  }
+
   /**
    * Redeem the bootstrap fragment once and load the workspace session. Every
    * caller awaits the same promise so the one-time secret is spent exactly
@@ -304,6 +332,148 @@ export class ParleyClient {
   async saveSource(input: CaptureInput): Promise<SavedSource> {
     const response = await this.request('/captures', { method: 'POST', body: JSON.stringify(input) });
     return decodeSavedSource(response);
+  }
+
+  async listOpportunities(): Promise<Opportunity[]> {
+    const value = object(await this.request('/opportunities'));
+    if (!value || !Array.isArray(value.data)) throw new Error('Invalid response: opportunity list is malformed');
+    return value.data.map((item) => {
+      const row = object(item);
+      if (!row || !Array.isArray(row.participants) || !Number.isSafeInteger(row.revision)) throw new Error('Invalid response: opportunity is malformed');
+      return { id:requiredString(row.id,'opportunity.id'), title:requiredString(row.title,'opportunity.title'), status:requiredString(row.status,'opportunity.status') as Opportunity['status'], revision:Number(row.revision), participants:row.participants.map((participant) => { const p=object(participant); if(!p)throw new Error('Invalid response: opportunity participant is malformed'); return {id:requiredString(p.id,'participant.id'),kind:requiredString(p.kind,'participant.kind') as 'person'|'org',name:requiredString(p.name,'participant.name')}; }), created_at:requiredString(row.created_at,'opportunity.created_at'), updated_at:requiredString(row.updated_at,'opportunity.updated_at') };
+    });
+  }
+
+  async createOpportunity(input:{title:string;participant_ids:string[]},key=newOperationKey()):Promise<Opportunity>{
+    return this.decodeOpportunity(await this.mutate('/opportunities','POST',input,{'Idempotency-Key':key}));
+  }
+
+  async updateOpportunityParticipants(id:string,expectedRevision:number,participantIds:string[],key=newOperationKey()):Promise<Opportunity>{
+    return this.decodeOpportunity(await this.mutate(`/opportunities/${encodeURIComponent(id)}/participants`,'PUT',{expected_revision:expectedRevision,participant_ids:participantIds},{'Idempotency-Key':key}));
+  }
+
+  async createInterest(id:string,input:{side:'me'|'them';statement:string},key=newOperationKey()):Promise<OpportunityInterest>{
+    const value=object(await this.mutate(`/opportunities/${encodeURIComponent(id)}/interests`,'POST',input,{'Idempotency-Key':key}));
+    if(!value||!Number.isSafeInteger(value.revision))throw new Error('Invalid response: interest is malformed');
+    return {id:requiredString(value.id,'interest.id'),opportunity_id:requiredString(value.opportunity_id,'interest.opportunity_id'),side:requiredString(value.side,'interest.side') as 'me'|'them',statement:requiredString(value.statement,'interest.statement'),tier:3,status:requiredString(value.status,'interest.status') as 'active'|'dismissed',revision:Number(value.revision)};
+  }
+
+  async listOpportunityInterests(id:string,signal?:AbortSignal):Promise<OpportunityInterest[]>{
+    const value=object(await this.request(`/opportunities/${encodeURIComponent(id)}/interests`,{signal}));if(!value||!Array.isArray(value.data))throw new Error('Invalid response: opportunity interests are malformed');return value.data.map((item)=>{const row=object(item);if(!row||!Number.isSafeInteger(row.revision))throw new Error('Invalid response: interest is malformed');return{id:requiredString(row.id,'interest.id'),opportunity_id:requiredString(row.opportunity_id,'interest.opportunity_id'),side:requiredString(row.side,'interest.side') as 'me'|'them',statement:requiredString(row.statement,'interest.statement'),tier:3,status:requiredString(row.status,'interest.status') as 'active'|'dismissed',revision:Number(row.revision)};});
+  }
+
+  async updateExchange(id:string,input:{expected_revision:number;they_get:string;i_get:string;interest_ids:string[];fairness_attested:boolean},key=newOperationKey()):Promise<OpportunityExchange>{
+    const value=object(await this.mutate(`/opportunities/${encodeURIComponent(id)}/exchange`,'PUT',input,{'Idempotency-Key':key}));
+    if(!value||!Number.isSafeInteger(value.version)||!Array.isArray(value.interest_ids))throw new Error('Invalid response: exchange is malformed');
+    return {id:requiredString(value.id,'exchange.id'),opportunity_id:requiredString(value.opportunity_id,'exchange.opportunity_id'),version:Number(value.version),they_get:requiredString(value.they_get,'they_get'),i_get:requiredString(value.i_get,'i_get'),interest_ids:value.interest_ids.map(x=>requiredString(x,'interest_id')),fairness_attested:value.fairness_attested===true,attested_at:typeof value.attested_at==='string'?value.attested_at:null};
+  }
+
+  async getOpportunityExchange(id:string,signal?:AbortSignal):Promise<OpportunityExchange|null>{
+    const value=await this.request(`/opportunities/${encodeURIComponent(id)}/exchange`,{signal});if(value===null)return null;const row=object(value);if(!row||!Number.isSafeInteger(row.version)||!Array.isArray(row.interest_ids))throw new Error('Invalid response: exchange is malformed');return{id:requiredString(row.id,'exchange.id'),opportunity_id:requiredString(row.opportunity_id,'exchange.opportunity_id'),version:Number(row.version),they_get:requiredString(row.they_get,'they_get'),i_get:requiredString(row.i_get,'i_get'),interest_ids:row.interest_ids.map((x)=>requiredString(x,'interest_id')),fairness_attested:row.fairness_attested===true,attested_at:typeof row.attested_at==='string'?row.attested_at:null};
+  }
+
+  async createMaterial(opportunityId:string,input:{recipient_id:string;kind:'outreach'|'follow_up'|'handoff';title:string},key=newOperationKey()):Promise<Material>{
+    return this.decodeMaterial(await this.mutate(`/opportunities/${encodeURIComponent(opportunityId)}/materials`,'POST',input,{'Idempotency-Key':key}));
+  }
+
+  async listOpportunityMaterials(opportunityId:string,signal?:AbortSignal):Promise<Material[]>{const value=object(await this.request(`/opportunities/${encodeURIComponent(opportunityId)}/materials`,{signal}));if(!value||!Array.isArray(value.data))throw new Error('Invalid response: material list is malformed');return value.data.map((item)=>this.decodeMaterial(item));}
+
+  async getBoard(signal?:AbortSignal):Promise<BoardSnapshotDTO>{return this.decodeBoard(await this.request('/board',{signal}));}
+  async createBoardList(input:{name:string;expected_revision:number},key=newOperationKey()):Promise<BoardSnapshotDTO>{return this.decodeBoard(await this.mutate('/board/lists','POST',input,{'Idempotency-Key':key}));}
+  async renameBoardList(id:string,input:{name:string;expected_revision:number},key=newOperationKey()):Promise<BoardSnapshotDTO>{return this.decodeBoard(await this.mutate(`/board/lists/${encodeURIComponent(id)}`,'PATCH',input,{'Idempotency-Key':key}));}
+  async reorderBoardLists(input:{ordered_ids:string[];expected_revision:number},key=newOperationKey()):Promise<BoardSnapshotDTO>{return this.decodeBoard(await this.mutate('/board/lists/order','PUT',input,{'Idempotency-Key':key}));}
+  async archiveBoardList(id:string,input:{destination_list_id:string;expected_revision:number},key=newOperationKey()):Promise<BoardSnapshotDTO>{return this.decodeBoard(await this.mutate(`/board/lists/${encodeURIComponent(id)}/archive`,'POST',input,{'Idempotency-Key':key}));}
+  async moveBoardCard(id:string,input:{destination_list_id:string;anchor_opportunity_id:string|null;expected_board_revision:number;expected_source_revision:number;expected_destination_revision:number},key=newOperationKey()):Promise<BoardSnapshotDTO>{return this.decodeBoard(await this.mutate(`/board/cards/${encodeURIComponent(id)}/move`,'POST',input,{'Idempotency-Key':key}));}
+  async reorderBoardCard(listId:string,input:{opportunity_id:string;anchor_opportunity_id:string|null;expected_revision:number},key=newOperationKey()):Promise<BoardSnapshotDTO>{return this.decodeBoard(await this.mutate(`/board/lists/${encodeURIComponent(listId)}/cards/reorder`,'POST',input,{'Idempotency-Key':key}));}
+  async getOpportunityNotes(id:string,signal?:AbortSignal):Promise<OpportunityNotesDTO>{return this.decodeNotes(await this.request(`/opportunities/${encodeURIComponent(id)}/notes`,{signal}));}
+  async saveOpportunityNotes(id:string,input:{expected_revision:number;markdown:string},key=newOperationKey()):Promise<OpportunityNotesDTO>{return this.decodeNotes(await this.mutate(`/opportunities/${encodeURIComponent(id)}/notes`,'PUT',input,{'Idempotency-Key':key}));}
+  async toggleOpportunityTask(id:string,input:{expected_revision:number;start_byte:number;end_byte:number;line_hash:string;checked:boolean},key=newOperationKey()):Promise<OpportunityNotesDTO>{return this.decodeNotes(await this.mutate(`/opportunities/${encodeURIComponent(id)}/notes/tasks`,'PATCH',input,{'Idempotency-Key':key}));}
+
+  async getMaterial(id:string,signal?:AbortSignal):Promise<Material>{return this.decodeMaterial(await this.request(`/materials/${encodeURIComponent(id)}`,{signal}));}
+
+  async saveMaterialVersion(id:string,input:{expected_revision:number;body:string;sentences:MaterialSentence[];slot_fills:Record<string,string>;protected_tokens:string[]},key=newOperationKey()):Promise<Material>{
+    return this.decodeMaterial(await this.mutate(`/materials/${encodeURIComponent(id)}/versions`,'PUT',input,{'Idempotency-Key':key}));
+  }
+
+  async getMaterialGate(id:string,versionId:string,signal?:AbortSignal):Promise<MaterialGateDTO>{
+    const value=object(await this.request(`/materials/${encodeURIComponent(id)}/gate?version_id=${encodeURIComponent(versionId)}`,{signal}));
+    if(!value||!Array.isArray(value.results)||!Array.isArray(value.hard_failures)||!Array.isArray(value.soft_failures))throw new Error('Invalid response: material gate is malformed');
+    return value as unknown as MaterialGateDTO;
+  }
+
+  async approveMaterialVersion(id:string,input:{expected_revision:number;version_id:string;override_reasons:Record<string,string>},key=newOperationKey()):Promise<MaterialApprovalDTO>{
+    const value=object(await this.mutate(`/materials/${encodeURIComponent(id)}/approval`,'POST',input,{'Idempotency-Key':key}));
+    if(!value||!object(value.gate_snapshot))throw new Error('Invalid response: approval receipt is malformed');
+    return value as unknown as MaterialApprovalDTO;
+  }
+
+  async issueCopyGrant(id:string,input:{version_id:string;recipient_id:string},key=newOperationKey()):Promise<CopyGrantDTO>{
+    const value=object(await this.mutate(`/materials/${encodeURIComponent(id)}/copy-grant`,'POST',input,{'Idempotency-Key':key}));
+    if(!value||typeof value.body!=='string')throw new Error('Invalid response: copy grant is malformed');
+    return value as unknown as CopyGrantDTO;
+  }
+
+  async acknowledgeCopy(grantId:string,success:boolean,key:string):Promise<CopyGrantReceiptDTO>{
+    const value=object(await this.mutate(`/copy-grants/${encodeURIComponent(grantId)}/acknowledgement`,'POST',{success},{'Idempotency-Key':key}));
+    if(!value||typeof value.digest!=='string')throw new Error('Invalid response: copy acknowledgement is malformed');
+    return value as unknown as CopyGrantReceiptDTO;
+  }
+
+  async getCopyGrantReceipt(grantId:string,signal?:AbortSignal):Promise<CopyGrantReceiptDTO>{
+    const value=object(await this.request(`/copy-grants/${encodeURIComponent(grantId)}`,{signal}));
+    if(!value||typeof value.digest!=='string')throw new Error('Invalid response: copy grant receipt is malformed');
+    return value as unknown as CopyGrantReceiptDTO;
+  }
+
+  async stageCapture(input:{text:string;title:string|null;url:string|null;opportunity_ids:string[];actor_kind:'owner'|'party'|'unknown';actor_entity_id:string|null},key=newOperationKey()):Promise<CaptureReviewDTO>{
+    const value=object(await this.mutate('/capture-stages','POST',input,{'Idempotency-Key':key}));
+    if(!value||typeof value.batch_id!=='string')throw new Error('Invalid response: capture stage is malformed');
+    return this.getCaptureReview(value.batch_id);
+  }
+
+  async getCaptureReview(batchId:string,signal?:AbortSignal):Promise<CaptureReviewDTO>{
+    const value=object(await this.request(`/capture-stages/${encodeURIComponent(batchId)}`,{signal}));
+    if(!value||!Array.isArray(value.proposals)||!object(value.source)||typeof value.injection_suspected!=='boolean')throw new Error('Invalid response: capture review is malformed');
+    return value as unknown as CaptureReviewDTO;
+  }
+
+  async cancelCaptureJob(batchId:string,jobId:string,key=newOperationKey()):Promise<CaptureReviewDTO>{
+    const value=object(await this.mutate(`/capture-stages/${encodeURIComponent(batchId)}/cancel`,'POST',{job_id:jobId},{'Idempotency-Key':key}));
+    if(!value||!Array.isArray(value.proposals))throw new Error('Invalid response: capture cancellation is malformed');
+    return value as unknown as CaptureReviewDTO;
+  }
+
+  async applyCaptureReview(batchId:string,expectedRevision:number,decisions:Array<{proposal_id:string;action:'confirm'|'correct'|'dismiss'|'unresolved';target_id:string|null;corrected_statement:string|null}>,key:string):Promise<CaptureReviewReceiptDTO>{
+    const value=object(await this.mutate(`/capture-stages/${encodeURIComponent(batchId)}/decisions`,'POST',{expected_revision:expectedRevision,decisions},{'Idempotency-Key':key}));
+    if(!value||!Array.isArray(value.committed)||!object(value.source))throw new Error('Invalid response: capture decision receipt is malformed');
+    return value as unknown as CaptureReviewReceiptDTO;
+  }
+
+  async saveCaptureSourceOnly(batchId:string,expectedRevision:number,key:string):Promise<CaptureReviewReceiptDTO>{
+    const value=object(await this.mutate(`/capture-stages/${encodeURIComponent(batchId)}/source-only`,'POST',{expected_revision:expectedRevision},{'Idempotency-Key':key}));
+    if(!value||!Array.isArray(value.committed)||!object(value.source))throw new Error('Invalid response: source-only receipt is malformed');
+    return value as unknown as CaptureReviewReceiptDTO;
+  }
+
+  private decodeOpportunity(value:unknown):Opportunity{
+    const row=object(value);if(!row||!Array.isArray(row.participants)||!Number.isSafeInteger(row.revision))throw new Error('Invalid response: opportunity is malformed');
+    return {id:requiredString(row.id,'opportunity.id'),title:requiredString(row.title,'opportunity.title'),status:requiredString(row.status,'opportunity.status') as Opportunity['status'],revision:Number(row.revision),participants:row.participants.map((participant)=>{const p=object(participant);if(!p)throw new Error('Invalid response: participant is malformed');return{id:requiredString(p.id,'participant.id'),kind:requiredString(p.kind,'participant.kind') as 'person'|'org',name:requiredString(p.name,'participant.name')};}),created_at:requiredString(row.created_at,'opportunity.created_at'),updated_at:requiredString(row.updated_at,'opportunity.updated_at')};
+  }
+
+  private decodeBoard(value:unknown):BoardSnapshotDTO {
+    const row=object(value);
+    if(!row||!Array.isArray(row.items)||!Array.isArray(row.lists)||!Number.isSafeInteger(row.board_revision))throw new Error('Invalid response: board snapshot is malformed');
+    const lists=row.lists.map((value)=>{const list=object(value);if(!list||!Number.isSafeInteger(list.revision)||!Number.isSafeInteger(list.position)||typeof list.archived!=='boolean')throw new Error('Invalid response: board list is malformed');return{id:requiredString(list.id,'list.id'),name:requiredString(list.name,'list.name'),position:Number(list.position),revision:Number(list.revision),archived:list.archived};});
+    const items=row.items.map((value)=>{const item=object(value);if(!item||!Array.isArray(item.participants)||!Array.isArray(item.tags)||!Number.isSafeInteger(item.revision)||!Number.isSafeInteger(item.position))throw new Error('Invalid response: board item is malformed');return{id:requiredString(item.id,'item.id'),revision:Number(item.revision),list_id:requiredString(item.list_id,'item.list_id'),position:Number(item.position),title:requiredString(item.title,'item.title'),status:requiredString(item.status,'item.status'),participants:item.participants.map((value)=>{const p=object(value);if(!p)throw new Error('Invalid response: board participant is malformed');return{id:requiredString(p.id,'participant.id'),kind:requiredString(p.kind,'participant.kind') as 'person'|'org',name:requiredString(p.name,'participant.name')};}),tags:item.tags.map((tag)=>requiredString(tag,'tag')),next_task:typeof item.next_task==='string'?item.next_task:null,deadline:typeof item.deadline==='string'?item.deadline:null,missing_material:item.missing_material===true};});
+    return{items,lists,board_revision:Number(row.board_revision)};
+  }
+
+  private decodeNotes(value:unknown):OpportunityNotesDTO {const row=object(value);if(!row||!Number.isSafeInteger(row.revision))throw new Error('Invalid response: opportunity notes are malformed');return{opportunity_id:requiredString(row.opportunity_id,'notes.opportunity_id'),markdown:requiredString(row.markdown,'notes.markdown'),revision:Number(row.revision)};}
+
+  private decodeMaterial(value:unknown):Material{
+    const row=object(value);const version=row?.current_version===null?null:row?object(row.current_version):null;if(!row||(!version&&row.current_version!==null)||!Array.isArray(row.versions)||!Array.isArray(row.claim_references))throw new Error('Invalid response: material is malformed');
+    const decodeVersion=(v:unknown):MaterialVersion=>{const item=object(v);if(!item||!Array.isArray(item.sentences)||!Array.isArray(item.protected_tokens)||!object(item.slot_fills))throw new Error('Invalid response: material version is malformed');return item as unknown as MaterialVersion;};
+    return {...row,current_version:version?decodeVersion(version):null,versions:row.versions.map(decodeVersion)} as unknown as Material;
   }
 
   async listSources(): Promise<SavedSource[]> {

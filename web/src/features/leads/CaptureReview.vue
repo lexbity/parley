@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onUnmounted, ref } from 'vue';
+import { newOperationKey } from '../../api/client';
 
 export type CaptureJobStatus = 'queued' | 'running' | 'ok' | 'invalid' | 'failed' | 'cancelled' | 'source_only';
 export type CaptureProposalAction = 'confirm' | 'correct' | 'dismiss' | 'unresolved';
-export type CaptureReviewState = 'proposed' | 'confirmed' | 'corrected' | 'dismissed' | 'unresolved' | 'source_only';
+export type CaptureReviewState = 'proposed' | 'confirmed' | 'corrected' | 'dismissed' | 'unresolved' | 'asked' | 'source_only';
 
 export interface CaptureReviewSource {
   occurrence_id: string;
@@ -44,6 +45,7 @@ export interface CaptureReviewBatch {
   batch_id: string;
   revision: number;
   status: CaptureJobStatus;
+  injection_suspected: boolean;
   job_id?: string;
   source: CaptureReviewSource;
   proposals: CaptureProposal[];
@@ -94,6 +96,17 @@ const busy = ref(false);
 const error = ref('');
 const statusMessage = ref('');
 let requestGeneration = 0;
+let pollTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
+
+function schedulePoll() {
+  if (pollTimer) globalThis.clearTimeout(pollTimer);
+  pollTimer = undefined;
+  if (batch.value && ['queued', 'running'].includes(batch.value.status)) {
+    pollTimer = globalThis.setTimeout(() => { void refreshReview(); }, 1500);
+  }
+}
+
+onUnmounted(() => { if (pollTimer) globalThis.clearTimeout(pollTimer); });
 
 const selectedDecisions = computed(() => Object.entries(decisions.value)
   .filter(([id, decision]) => decision.action !== '' && batch.value?.proposals.some((proposal) => proposal.id === id && proposal.review_state === 'proposed'))
@@ -131,7 +144,7 @@ function canApply(decision: CaptureDecision): boolean {
 }
 
 function newKey(): string {
-  return globalThis.crypto.randomUUID();
+  return newOperationKey();
 }
 
 async function stage() {
@@ -148,6 +161,7 @@ async function stage() {
     });
     if (generation !== requestGeneration) return;
     batch.value = result;
+    schedulePoll();
     decisions.value = {};
     statusMessage.value = result.status === 'failed' || result.status === 'invalid'
       ? 'The source is staged, but extraction needs attention. You can save source only or try again.'
@@ -157,6 +171,7 @@ async function stage() {
     if (generation === requestGeneration) error.value = cause instanceof Error ? cause.message : 'Source could not be staged.';
   } finally {
     if (generation === requestGeneration) busy.value = false;
+    schedulePoll();
   }
 }
 
@@ -173,6 +188,7 @@ async function refreshReview() {
     if (generation === requestGeneration) error.value = cause instanceof Error ? cause.message : 'Review status could not be refreshed.';
   } finally {
     if (generation === requestGeneration) busy.value = false;
+    schedulePoll();
   }
 }
 
@@ -192,6 +208,7 @@ async function cancelJob() {
       batch.value = result;
       decisions.value = {};
       statusMessage.value = 'Extraction cancelled. No proposal was applied; the staged source remains available.';
+      schedulePoll();
     }
   } catch (cause) {
     if (generation === requestGeneration) error.value = cause instanceof Error ? cause.message : 'Job cancellation could not be confirmed.';
@@ -367,6 +384,13 @@ function askInChat(proposal: CaptureProposal) {
       <p v-if="batch.source.url">
         {{ batch.source.url }}
       </p>
+      <p
+        v-if="batch.injection_suspected"
+        class="injection-warning"
+        role="alert"
+      >
+        This source contains text resembling instructions to an automated system. It remains untrusted source material; review every proposal against its quoted passage.
+      </p>
       <details>
         <summary>Inspect original source ({{ batch.source.raw_sha256.slice(0, 12) }}…)</summary>
         <pre>{{ batch.source.text }}</pre>
@@ -494,5 +518,5 @@ function askInChat(proposal: CaptureProposal) {
 </template>
 
 <style scoped>
-.capture-review{display:grid;gap:1rem}.capture-form,.staged-source,.proposal-card{padding:1rem;border:1px solid #cbd5cf;border-radius:.5rem;background:#fff}.capture-form label,.proposal-card label{display:grid;gap:.35rem;margin:.75rem 0}.capture-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.75rem}.staged-source>header,.proposal-card>header{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem}.job-status,.tier{font-weight:700;white-space:nowrap}.job-status[data-status=failed],.job-status[data-status=invalid]{color:#8b2c22}.proposal-list{display:grid;gap:.75rem}.proposal-card blockquote{margin:.75rem 0;padding-left:.75rem;border-left:3px solid #62796d}.ambiguity{padding:.5rem;background:#fff4d6}.staged-source pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:24rem;overflow:auto}.review-actions,.job-actions{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:1rem}button{min-height:2.75rem}@media(max-width:500px){.staged-source>header,.proposal-card>header{display:block}}
+.capture-review{display:grid;gap:1rem}.capture-form,.staged-source,.proposal-card{padding:1rem;border:1px solid #cbd5cf;border-radius:.5rem;background:#fff}.injection-warning{padding:.75rem;border:2px solid #9c4a00;background:#fff4e8;color:#5d2d00}.capture-form label,.proposal-card label{display:grid;gap:.35rem;margin:.75rem 0}.capture-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.75rem}.staged-source>header,.proposal-card>header{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem}.job-status,.tier{font-weight:700;white-space:nowrap}.job-status[data-status=failed],.job-status[data-status=invalid]{color:#8b2c22}.proposal-list{display:grid;gap:.75rem}.proposal-card blockquote{margin:.75rem 0;padding-left:.75rem;border-left:3px solid #62796d}.ambiguity{padding:.5rem;background:#fff4d6}.staged-source pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:24rem;overflow:auto}.review-actions,.job-actions{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:1rem}button{min-height:2.75rem}@media(max-width:500px){.staged-source>header,.proposal-card>header{display:block}}
 </style>

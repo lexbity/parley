@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/SaveMaterialVersion","body":{"expected_revision":1,"body":"Hello Dana.","sentences":[{"text":"Hello Dana.","claims":[{"type":"generic","ref_kind":"source","ref_id":null}],"rules":[]}],"slot_fills":{},"protected_tokens":[]}}

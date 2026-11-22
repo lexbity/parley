@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/Error","body":{"error":{"code":"INVALID_OPPORTUNITY","message":"Title is required","details":[]}}}

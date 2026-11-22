@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/OpportunityList","body":{"data":[{"id":"opportunity-1","title":"Northline onboarding exchange","status":"open","revision":1,"participants":[{"id":"party-dana","kind":"person","name":"Dana Lee"}],"created_at":"2026-11-21T18:00:00Z","updated_at":"2026-11-21T18:00:00Z"}],"cursor":"1"}}

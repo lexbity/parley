@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import { newOperationKey as createOperationKey } from '../../api/client';
 
 defineOptions({ name: 'MaterialEditor' });
 
@@ -126,6 +127,14 @@ watch(() => props.material, (next) => {
     }
     return;
   }
+  if (dirty.value && next.body === body.value) {
+    baseBody.value = next.body;
+    body.value = next.body;
+    baseRevision.value = next.revision;
+    baseVersionId.value = next.versionId;
+    conflict.value = null;
+    return;
+  }
   if (dirty.value) {
     conflict.value = { baseBody: baseBody.value, body: next.body, revision: next.revision, versionId: next.versionId };
     return;
@@ -232,7 +241,7 @@ function requestCopy() {
 }
 
 function newOperationKey(): string {
-  return globalThis.crypto.randomUUID();
+  return createOperationKey();
 }
 
 async function copyApprovedText() {

@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/Error","body":{"error":{"code":"VERSION_STALE","message":"Version is not current","details":[]}}}

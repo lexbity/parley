@@ -28,7 +28,7 @@ const proposals: CaptureReviewBatch['proposals'] = [
 ];
 
 function batch(overrides: Partial<CaptureReviewBatch> = {}): CaptureReviewBatch {
-  return { batch_id: 'batch-1', revision: 4, status: 'ok', source, proposals, job_id: 'job-1', ...overrides };
+  return { batch_id: 'batch-1', revision: 4, status: 'ok', injection_suspected:false, source, proposals, job_id: 'job-1', ...overrides };
 }
 
 function service(overrides: Partial<CaptureReviewService> = {}): CaptureReviewService {
@@ -45,6 +45,15 @@ function service(overrides: Partial<CaptureReviewService> = {}): CaptureReviewSe
 const opportunities = [{ id: 'opportunity-onboarding', title: 'Onboarding' }, { id: 'opportunity-hiring', title: 'Hiring' }];
 
 describe('CaptureReview', () => {
+  it('shows a visible warning when deterministic capture screening suspects instructions', async () => {
+    const api=service({stageCapture:vi.fn().mockResolvedValue(batch({injection_suspected:true}))});
+    const wrapper = mount(CaptureReview, { props: { service:api, opportunities } });
+    await wrapper.get('textarea').setValue(source.text);
+    await wrapper.get('form').trigger('submit');
+    await flushPromises();
+    expect(wrapper.get('[role="alert"]').text()).toContain('resembling instructions');
+    wrapper.unmount();
+  });
   it('stages a source for two opportunities and applies only the owner-selected proposal', async () => {
     const api = service();
     const wrapper = mount(CaptureReview, { props: { service: api, opportunities } });

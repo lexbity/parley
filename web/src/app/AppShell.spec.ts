@@ -9,6 +9,8 @@ afterEach(() => vi.restoreAllMocks());
 
 function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = []): void {
   vi.spyOn(parley, 'connect').mockResolvedValue();
+  vi.spyOn(parley, 'eventCursor', 'get').mockReturnValue('0');
+  vi.spyOn(parley, 'getEvents').mockResolvedValue({items:[],next_cursor:'0',observed_cursor:'0'});
   vi.spyOn(parley, 'listResources').mockResolvedValue([]);
   vi.spyOn(parley, 'listParties').mockResolvedValue(parties);
   vi.spyOn(parley, 'listSources').mockResolvedValue(sources);
@@ -29,8 +31,8 @@ describe('AppShell', () => {
     stubWorkspace();
     const wrapper = mountShell();
     const labels = wrapper.findAll('nav[aria-label="Main navigation"] button').map((button) => button.text());
-    expect(labels).toEqual(['Resources', 'Leads']);
-    for (const destination of ['Queue', 'Output', 'Settings']) {
+    expect(labels).toEqual(['Resources', 'Leads', 'Queue', 'Output']);
+    for (const destination of ['Settings']) {
       expect(labels).not.toContain(destination);
     }
     expect(wrapper.get('h1').text()).toBe('Resources');
@@ -112,7 +114,7 @@ describe('AppShell', () => {
     await flushPromises();
     expect(wrapper.text()).toContain('capture denied');
     const labels = wrapper.findAll('nav[aria-label="Main navigation"] button').map((button) => button.text());
-    expect(labels).toEqual(['Resources', 'Leads']);
+    expect(labels).toEqual(['Resources', 'Leads', 'Queue', 'Output']);
     wrapper.unmount();
   });
 });
