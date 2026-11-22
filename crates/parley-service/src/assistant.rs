@@ -1995,21 +1995,72 @@ async fn dismiss_candidate(
     if let Err(response) = super::authenticate(&headers, &state).await {
         return response.into_response();
     }
+    let key = match idempotency_key(&headers) {
+        Ok(value) => value,
+        Err(message) => {
+            return super::error(StatusCode::BAD_REQUEST, "IDEMPOTENCY_KEY_REQUIRED", message);
+        }
+    };
+    let canonical = digest(format!("POST\0/agent/candidates/{id}/dismiss\0").as_bytes());
+    let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
+        Ok(tx) => tx,
+        Err(error) => return super::command_error(error.into()),
+    };
+    if let Some(response) =
+        receipt_response(&mut tx, state.workspace.epoch(), &key, &canonical).await
+    {
+        return response;
+    }
     let now = now_utc();
-    let result=sqlx::query("UPDATE interviewer_candidate SET state='dismissed',updated_at=? WHERE id=? AND state='proposed'").bind(&now).bind(&id).execute(state.workspace.pool()).await;
-    match result {
-        Ok(value) if value.rows_affected() == 1 => response_json(
-            StatusCode::OK,
-            json!({"id":id,"state":"dismissed"}),
-            state.workspace.epoch(),
-        ),
-        Ok(_) => super::error(
+    let updated = sqlx::query(
+        "UPDATE interviewer_candidate SET state='dismissed',updated_at=? WHERE id=? AND state='proposed'",
+    )
+    .bind(&now)
+    .bind(&id)
+    .execute(&mut *tx)
+    .await;
+    let updated = match updated {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = tx.rollback().await;
+            return super::command_error(error.into());
+        }
+    };
+    if updated.rows_affected() != 1 {
+        let _ = tx.rollback().await;
+        return super::error(
             StatusCode::NOT_FOUND,
             "CANDIDATE_NOT_FOUND",
             "Proposed candidate does not exist",
-        ),
-        Err(error) => super::command_error(error.into()),
+        );
     }
+    let result = json!({"id":id,"state":"dismissed"});
+    let cursor =
+        match append_event(&mut tx, &id, "interviewer.candidate_dismissed", json!({})).await {
+            Ok(cursor) => cursor,
+            Err(error) => {
+                let _ = tx.rollback().await;
+                return super::command_error(error);
+            }
+        };
+    if let Err(error) = write_receipt(
+        &mut tx,
+        state.workspace.epoch(),
+        &key,
+        &canonical,
+        200,
+        &result,
+        cursor,
+    )
+    .await
+    {
+        let _ = tx.rollback().await;
+        return super::command_error(error);
+    }
+    if let Err(error) = tx.commit().await {
+        return super::command_error(error.into());
+    }
+    response_json(StatusCode::OK, result, state.workspace.epoch())
 }
 
 async fn get_question_bank(State(state): State<AppState>, headers: HeaderMap) -> Response {

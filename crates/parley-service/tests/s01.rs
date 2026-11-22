@@ -612,3 +612,80 @@ async fn s01_capture_retry_is_one_occurrence() {
     db.close().await;
     stop(service, &path).await;
 }
+
+#[tokio::test]
+async fn s01_capture_concurrent_same_key_retry_returns_one_occurrence() {
+    // BQ1/B-FR-1: two in-flight POSTs with the same idempotency key must
+    // produce exactly one occurrence, one job, one event and one receipt —
+    // both callers receive the identical original response (the loser
+    // replays the winner's committed result, never an error).
+    let path = workspace_path();
+    let service = parley_service::start_workspace(&path)
+        .await
+        .expect("start service");
+    let session = owner_session(service.address, &service.bootstrap_secret).await;
+    let mut headers_owned: Vec<(String, String)> = session_headers(&session)
+        .into_iter()
+        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        .collect();
+    let key = "01935f20-7c00-7000-8000-000000000101";
+    headers_owned.push(("Idempotency-Key".to_owned(), key.to_owned()));
+    let body = json!({"text":"Concurrent onboarding capture."}).to_string();
+
+    // Eight in-flight same-key requests: at least one pair will race the
+    // replay/commit boundary. Every caller must receive the identical
+    // committed response — never an error from a lost PK race.
+    let mut responses = Vec::new();
+    for _ in 0..8 {
+        let address = service.address;
+        let headers = headers_owned.clone();
+        let body = body.clone();
+        responses.push(tokio::spawn(async move {
+            let refs: Vec<(&str, &str)> = headers
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_str()))
+                .collect();
+            request(address, "POST", "/api/v1/captures", &refs, &body, false).await
+        }));
+    }
+    let mut bodies = Vec::new();
+    for handle in responses {
+        let response = handle.await.unwrap();
+        assert_eq!(status(&response), 201, "{response}");
+        bodies.push(json_body(&response));
+    }
+    let first_body = &bodies[0];
+    for body in &bodies[1..] {
+        assert_eq!(
+            body, first_body,
+            "every concurrent same-key caller must receive the identical response"
+        );
+    }
+
+    let db = SqlitePoolOptions::new()
+        .connect(&format!(
+            "sqlite://{}",
+            parley_service::Workspace::resolve_database_path(&path)
+                .unwrap()
+                .display()
+        ))
+        .await
+        .unwrap();
+    for (label, sql) in [
+        ("occurrences", "SELECT count(*) FROM source_occurrence"),
+        ("jobs", "SELECT count(*) FROM durable_job"),
+        (
+            "events",
+            "SELECT count(*) FROM event WHERE event_type='source.captured'",
+        ),
+        ("receipts", "SELECT count(*) FROM idempotency_receipt"),
+    ] {
+        let count: i64 = sqlx::query_scalar(sql).fetch_one(&db).await.unwrap();
+        assert_eq!(
+            count, 1,
+            "{label} count must be exactly one after a concurrent same-key retry"
+        );
+    }
+    db.close().await;
+    stop(service, &path).await;
+}

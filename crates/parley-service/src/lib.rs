@@ -1207,10 +1207,13 @@ impl Workspace {
         Ok(Some(value))
     }
 
-    /// Commit a capture together with its event row and idempotency receipt in
-    /// one writer transaction (B-FR-1, EVT-1, BQ1: a lost-ack retry must
-    /// produce exactly one occurrence; a crash between commit and job enqueue
-    /// must never duplicate the source).
+    /// Commit a capture together with its extractor job, event rows and
+    /// idempotency receipt in one writer transaction (B-FR-1, EVT-1, BQ1):
+    /// a lost-ack retry must produce exactly one occurrence and one job, and
+    /// a crash between "capture" and "enqueue" is impossible because the job
+    /// row commits atomically with the source. Returns the job id (when the
+    /// queue admitted it) and the final response payload, which is also what
+    /// the receipt stores.
     pub async fn save_capture_commit(
         &self,
         key: &str,
@@ -1218,7 +1221,7 @@ impl Workspace {
         text: &str,
         title: Option<&str>,
         url: Option<&str>,
-    ) -> Result<SavedSource, WorkspaceError> {
+    ) -> Result<(Option<String>, Value), WorkspaceError> {
         if key.trim().is_empty() || key.len() > 100 {
             return Err(WorkspaceError::Invalid(
                 "idempotency key must contain 1–100 bytes".into(),
@@ -1270,43 +1273,43 @@ impl Workspace {
             "normalized_sha256": normalized_hash,
             "raw_sha256": raw_hash,
         });
-        let cursor: i64 = sqlx::query_scalar("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'source',?,1,'source.captured',?) RETURNING cursor")
+        let captured_cursor: i64 = sqlx::query_scalar("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'source',?,1,'source.captured',?) RETURNING cursor")
             .bind(new_id(&occurrence_id)).bind(now_utc()).bind(&occurrence_id).bind(event_payload.to_string()).fetch_one(&mut *tx).await?;
+        // The extraction job commits in the same transaction: a crash right
+        // after this commit can never leave a capture without its job.
+        let now = now_utc();
+        let input = json!({"occurrence_id": occurrence_id, "source_variant_id": variant_id});
+        let input_json =
+            serde_json::to_string(&input).map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
+        let input_sha = digest(input_json.as_bytes());
+        let in_flight: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM durable_job WHERE status IN ('queued','running')",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        let (job_id, job_status, last_cursor) = if in_flight < 32 {
+            let id = new_id(&input_sha);
+            sqlx::query("INSERT INTO durable_job(id,role,status,input_json,input_sha256,source_occurrence_id,source_variant_id,scope_kind,scope_id,scope_revision,current_attempt,max_attempts,created_at,updated_at) VALUES(?,'extractor','queued',?,?,?,?, 'source',?,1,0,3,?,?)")
+                .bind(&id).bind(&input_json).bind(&input_sha).bind(&occurrence_id).bind(&variant_id).bind(&occurrence_id).bind(&now).bind(&now).execute(&mut *tx).await?;
+            let job_cursor: i64 = sqlx::query_scalar("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'job',?,1,'job.queued',?) RETURNING cursor")
+                .bind(new_id(&id)).bind(&now).bind(&id).bind(json!({"role":"extractor","source_occurrence_id":occurrence_id}).to_string()).fetch_one(&mut *tx).await?;
+            (Some(id), "queued", job_cursor)
+        } else {
+            (None, "not_queued", captured_cursor)
+        };
+        let full = json!({
+            "content_id": content_id,
+            "variant_id": variant_id,
+            "occurrence_id": occurrence_id,
+            "normalized_sha256": normalized_hash,
+            "raw_sha256": raw_hash,
+            "job_id": job_id,
+            "job_status": job_status,
+        });
         sqlx::query("INSERT INTO idempotency_receipt(owner_id,epoch,key,canonical_digest,status_code,result_json,last_event_cursor,created_at) VALUES(1,?,?,?,201,?,?,?)")
-            .bind(&self.epoch).bind(key).bind(canonical).bind(event_payload.to_string()).bind(cursor).bind(now_utc()).execute(&mut *tx).await?;
+            .bind(&self.epoch).bind(key).bind(canonical).bind(full.to_string()).bind(last_cursor).bind(now_utc()).execute(&mut *tx).await?;
         tx.commit().await?;
-        Ok(SavedSource {
-            content_id,
-            variant_id,
-            occurrence_id,
-            normalized_sha256: normalized_hash,
-            raw_sha256: raw_hash,
-        })
-    }
-
-    /// After the extraction job is enqueued (outside the capture transaction),
-    /// record the final response — including the job reference — in the
-    /// receipt so a replay returns the original result verbatim.
-    pub async fn update_capture_receipt(
-        &self,
-        key: &str,
-        canonical: &str,
-        final_value: &Value,
-    ) -> Result<(), WorkspaceError> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let changed = sqlx::query("UPDATE idempotency_receipt SET result_json=? WHERE owner_id=1 AND epoch=? AND key=? AND canonical_digest=?")
-            .bind(final_value.to_string())
-            .bind(&self.epoch)
-            .bind(key)
-            .bind(canonical)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        if changed != 1 {
-            return Err(WorkspaceError::Invalid("capture receipt is missing".into()));
-        }
-        tx.commit().await?;
-        Ok(())
+        Ok((job_id, full))
     }
 
     /// Create a distinct graph identity. Names are deliberately not keys: two
@@ -2524,37 +2527,27 @@ async fn save_capture(
         )
         .await
     {
-        Ok(source) => {
-            let queued = jobs::enqueue(&state.workspace, &state.jobs, &source).await;
-            let (job_id, job_status) = match queued {
-                Ok(Some(id)) => (Some(id), "queued"),
-                Ok(None) => (None, "not_queued"),
-                Err(_) => (None, "not_queued"),
-            };
-            let full = json!({
-                "content_id": source.content_id,
-                "variant_id": source.variant_id,
-                "occurrence_id": source.occurrence_id,
-                "normalized_sha256": source.normalized_sha256,
-                "raw_sha256": source.raw_sha256,
-                "job_id": job_id,
-                "job_status": job_status,
-            });
-            if let Err(err) = state
-                .workspace
-                .update_capture_receipt(&key, &canonical, &full)
-                .await
-            {
-                return command_error(err);
+        Ok((job_id, full)) => {
+            if let Some(job_id) = &job_id {
+                jobs::wake(&state.jobs, job_id);
             }
             let mut response = (StatusCode::CREATED, Json(full)).into_response();
             private_headers(&mut response, state.workspace.epoch());
             response
         }
-        Err(WorkspaceError::Invalid(message)) => {
-            error(StatusCode::BAD_REQUEST, "INVALID_CAPTURE", message)
+        Err(err) => {
+            // A concurrent same-key commit may have won this race. Replay
+            // its committed result instead of surfacing a lost PK write
+            // (BQ1: one occurrence regardless of interleaving).
+            match state.workspace.save_capture_replay(&key, &canonical).await {
+                Ok(Some(replay)) => {
+                    let mut response = (StatusCode::CREATED, Json(replay)).into_response();
+                    private_headers(&mut response, state.workspace.epoch());
+                    response
+                }
+                _ => command_error(err),
+            }
         }
-        Err(err) => command_error(err),
     }
 }
 
