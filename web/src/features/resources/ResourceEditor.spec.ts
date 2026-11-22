@@ -108,7 +108,7 @@ describe('ResourceEditor', () => {
     const create = vi.spyOn(parley, 'createResource').mockResolvedValue(ready);
     const wrapper = mount(ResourceEditor);
     await flushPromises();
-    await wrapper.get('select').setValue('proof');
+    await wrapper.get('form select').setValue('proof');
     await wrapper.get('input').setValue(ready.title);
     await wrapper.get('textarea').setValue('Documented evidence');
     expect(wrapper.find('label').text()).not.toContain('Availability');
@@ -194,7 +194,7 @@ describe('ResourceEditor', () => {
     await wrapper.findAll('button').find((button) => button.text() === 'Reload')?.trigger('click');
     await flushPromises();
     expect(wrapper.find('li').exists()).toBe(false);
-    expect(wrapper.get('h2').text()).toBe('Add a resource');
+    expect(wrapper.get('form h2').text()).toBe('Add a resource');
     wrapper.unmount();
 
     vi.spyOn(parley, 'connect').mockResolvedValue();
@@ -202,8 +202,8 @@ describe('ResourceEditor', () => {
     const availability = mount(ResourceEditor);
     await flushPromises();
     await availability.findAll('li button').find((button) => button.text().includes('Offer'))?.trigger('click');
-    await availability.findAll('select').at(1)?.setValue('exists');
-    expect(availability.findAll('select').at(1)?.element).toHaveProperty('value', 'exists');
+    await availability.findAll('form select').at(1)?.setValue('exists');
+    expect(availability.findAll('form select').at(1)?.element).toHaveProperty('value', 'exists');
     expect(availability.text()).toContain('Unsaved edits are kept in this tab.');
     availability.unmount();
   });

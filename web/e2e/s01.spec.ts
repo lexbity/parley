@@ -7,6 +7,7 @@ test('s01_resource_first_launch_retry_and_cross_session_conflict', async ({ page
   await expect(page.getByRole('heading', { name: 'Resources', exact: true })).toBeVisible();
   const title = `Onboarding checklist ${randomUUID()}`;
   const resources = page.getByRole('region', { name: 'Resources workspace' });
+  await resources.getByRole('button', { name: 'Add resource' }).click();
   await resources.getByLabel('Name').fill(title);
   await resources.getByLabel('What is it?').fill('A short review guide for onboarding teams.');
   await page.getByRole('button', { name: 'Save draft' }).click();

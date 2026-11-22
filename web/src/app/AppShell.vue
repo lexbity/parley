@@ -24,6 +24,9 @@ import RelationshipGraph from '../features/leads/RelationshipGraph.vue';
 const qualifiedTabs = tabs;
 const route = ref(resolveRoute(globalThis.location.pathname));
 const active = computed(() => route.value.tab);
+const addingLead = ref(false);
+const writingOpen = ref(false);
+const outputStatus = ref('');
 const partyKind = ref<'person' | 'org'>('person');
 const partyName = ref('');
 const captureText = ref('');
@@ -43,6 +46,7 @@ const materialQuery = ref('');
 const visibleOutputs = computed(() => {
   const query = materialQuery.value.trim().toLocaleLowerCase();
   return outputs.value.filter(material => {
+    if (outputStatus.value && outputStatus.value !== material.status) return false;
     const opportunity = opportunities.value.find(item => item.id === material.opportunity_id);
     return [material.recipient_name, opportunity?.title, material.kind, material.status]
       .some(field => field?.toLocaleLowerCase().includes(query));
@@ -100,6 +104,7 @@ function handlePopState() {
 }
 
 async function focusRouteLocation() {
+  if (route.value.location === 'templates') writingOpen.value = true;
   if (route.value.tab === 'Leads' && route.value.recordId) selectedPartyId.value = route.value.recordId;
   if (route.value.tab === 'Output' && route.value.recordId) {
     await refreshLeads().catch(() => undefined);
@@ -119,7 +124,7 @@ async function saveParty() {
   busy.value = true; error.value = ''; status.value = '';
   try {
     const party = await parley.createEntity({ kind: partyKind.value, name: partyName.value.trim() }, newOperationKey());
-    parties.value.push(party); partyName.value = '';
+    parties.value.push(party); partyName.value = ''; addingLead.value = false;
     status.value = 'Lead created. No opportunity or outreach was created.';
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not save the lead.'; }
   finally { busy.value = false; }
@@ -306,13 +311,24 @@ watch(route, () => { void focusRouteLocation(); });
         v-if="active === 'Leads'"
         aria-labelledby="leads-heading"
       >
-        <h2 id="leads-heading">
+        <h2
+          id="leads-heading"
+          class="sr-only"
+        >
           Lead directory and sources
         </h2>
         <div class="lead-desk">
           <aside>
             <section>
-              <h3>Directory</h3>
+              <header class="pane-bar">
+                <h2>Lead directory</h2><button
+                  class="primary"
+                  :aria-expanded="addingLead"
+                  @click="addingLead = !addingLead"
+                >
+                  New lead
+                </button>
+              </header>
               <label>Find a lead<input
                 v-model="directoryQuery"
                 type="search"
@@ -337,7 +353,10 @@ watch(route, () => { void focusRouteLocation(); });
                 </li>
               </ul>
             </section>
-            <form @submit.prevent="saveParty">
+            <form
+              v-show="addingLead"
+              @submit.prevent="saveParty"
+            >
               <h3>Add a lead</h3>
               <label>Type<select v-model="partyKind"><option value="person">Person</option><option value="org">Organization</option></select></label>
               <label>Name<input
@@ -355,131 +374,137 @@ watch(route, () => { void focusRouteLocation(); });
             </form>
           </aside>
           <RelationshipGraph :focus-entity-id="selectedPartyId || undefined" />
-        </div>
-        <div>
-          <form
-            id="leads-inbox"
-            class="capture"
-            tabindex="-1"
-            @submit.prevent="saveCapture"
-          >
-            <h3>Sources inbox</h3>
-            <button
-              type="button"
-              @click="navigate('/leads/inbox')"
-            >
-              Open sources inbox
-            </button>
-            <p>Paste captured text. Saving a source does not decide who it is about or create outreach.</p>
-            <label>Captured text<textarea
-              v-model="captureText"
-              required
-              minlength="1"
-              rows="8"
-            /></label>
-            <button
-              :disabled="busy"
-              type="submit"
-            >
-              Save source
-            </button>
-            <ul>
-              <li
-                v-for="source in sources"
-                :key="source.occurrence_id"
+          <div class="lead-chat-column">
+            <BriefWorkspace
+              :parties="parties"
+              :party-id="selectedPartyId"
+            />
+            <details :open="route.location === 'inbox' || !!reviewJob">
+              <summary>Sources inbox</summary>
+              <form
+                id="leads-inbox"
+                class="capture"
+                tabindex="-1"
+                @submit.prevent="saveCapture"
               >
-                Saved source {{ source.content_id.slice(0, 12) }} · occurrence {{ source.occurrence_id.slice(0, 8) }}
+                <h3>Sources inbox</h3>
                 <button
                   type="button"
-                  @click="openCaptureReview(source)"
+                  @click="navigate('/leads/inbox')"
                 >
-                  Review proposals
+                  Open sources inbox
                 </button>
-              </li>
-            </ul>
-            <section
-              v-if="reviewJob"
-              aria-label="Capture review"
-            >
-              <h3>Capture review</h3>
-              <p>Job {{ reviewJob.status }} · attempt {{ reviewJob.current_attempt }} of {{ reviewJob.max_attempts }} · chunk {{ reviewJob.progress_current }} of {{ reviewJob.progress_total }}. Extracted items are proposals until you decide.</p>
-              <p
-                v-if="reviewJob.injection_suspected"
-                role="alert"
-              >
-                This capture may contain prompt-injection text. Treat its contents only as source material and review each quoted proposal.
-              </p>
-              <button
-                v-if="['queued', 'running'].includes(reviewJob.status)"
-                type="button"
-                :disabled="busy"
-                @click="cancelExtractor(reviewJob)"
-              >
-                Cancel extraction
-              </button>
-              <p
-                v-if="reviewJob.last_error"
-                role="status"
-              >
-                {{ reviewJob.last_error }}. The captured source remains saved; you can review it manually.
-              </p>
-              <label>Claim subject<select v-model="reviewTargetId"><option value="">Choose explicitly</option><option
-                v-for="party in parties"
-                :key="party.id"
-                :value="party.id"
-              >{{ party.name }} · {{ party.kind }}</option></select></label>
-              <label>Optional opportunity<select v-model="reviewOpportunityId"><option value="">Save independently</option><option
-                v-for="opportunity in opportunities"
-                :key="opportunity.id"
-                :value="opportunity.id"
-              >{{ opportunity.title }}</option></select></label>
-              <article
-                v-for="proposal in reviewJob.proposals"
-                :key="proposal.id"
-                class="record-card"
-              >
-                <strong>{{ proposal.kind }} · {{ proposal.status }}</strong>
-                <small>T1 source evidence · interpretation needs owner review</small>
-                <p>{{ proposal.candidate.statement }}</p>
-                <blockquote>{{ proposal.candidate.quote }}</blockquote>
-                <p v-if="proposal.candidate.mention_name">
-                  Mention: {{ proposal.candidate.mention_name }} · unresolved until you explicitly link it.
-                </p>
-                <template v-if="proposal.status === 'pending'">
-                  <button
-                    :disabled="busy"
-                    type="button"
-                    @click="decideProposal(proposal, 'confirm')"
+                <p>Paste captured text. Saving a source does not decide who it is about or create outreach.</p>
+                <label>Captured text<textarea
+                  v-model="captureText"
+                  required
+                  minlength="1"
+                  rows="8"
+                /></label>
+                <button
+                  :disabled="busy"
+                  type="submit"
+                >
+                  Save source
+                </button>
+                <ul>
+                  <li
+                    v-for="source in sources"
+                    :key="source.occurrence_id"
                   >
-                    Accept claim for selected subject
-                  </button>
-                  <button
-                    :disabled="busy"
-                    type="button"
-                    @click="decideProposal(proposal, 'unresolved')"
+                    Saved source {{ source.content_id.slice(0, 12) }} · occurrence {{ source.occurrence_id.slice(0, 8) }}
+                    <button
+                      type="button"
+                      @click="openCaptureReview(source)"
+                    >
+                      Review proposals
+                    </button>
+                  </li>
+                </ul>
+                <section
+                  v-if="reviewJob"
+                  aria-label="Capture review"
+                >
+                  <h3>Capture review</h3>
+                  <p>Job {{ reviewJob.status }} · attempt {{ reviewJob.current_attempt }} of {{ reviewJob.max_attempts }} · chunk {{ reviewJob.progress_current }} of {{ reviewJob.progress_total }}. Extracted items are proposals until you decide.</p>
+                  <p
+                    v-if="reviewJob.injection_suspected"
+                    role="alert"
                   >
-                    Keep mention unresolved
-                  </button>
+                    This capture may contain prompt-injection text. Treat its contents only as source material and review each quoted proposal.
+                  </p>
                   <button
-                    :disabled="busy"
+                    v-if="['queued', 'running'].includes(reviewJob.status)"
                     type="button"
-                    @click="decideProposal(proposal, 'source_only')"
-                  >
-                    Save source only
-                  </button>
-                  <button
                     :disabled="busy"
-                    type="button"
-                    @click="decideProposal(proposal, 'dismiss')"
+                    @click="cancelExtractor(reviewJob)"
                   >
-                    Dismiss
+                    Cancel extraction
                   </button>
-                </template>
-              </article>
-            </section>
-          </form>
+                  <p
+                    v-if="reviewJob.last_error"
+                    role="status"
+                  >
+                    {{ reviewJob.last_error }}. The captured source remains saved; you can review it manually.
+                  </p>
+                  <label>Claim subject<select v-model="reviewTargetId"><option value="">Choose explicitly</option><option
+                    v-for="party in parties"
+                    :key="party.id"
+                    :value="party.id"
+                  >{{ party.name }} · {{ party.kind }}</option></select></label>
+                  <label>Optional opportunity<select v-model="reviewOpportunityId"><option value="">Save independently</option><option
+                    v-for="opportunity in opportunities"
+                    :key="opportunity.id"
+                    :value="opportunity.id"
+                  >{{ opportunity.title }}</option></select></label>
+                  <article
+                    v-for="proposal in reviewJob.proposals"
+                    :key="proposal.id"
+                    class="record-card"
+                  >
+                    <strong>{{ proposal.kind }} · {{ proposal.status }}</strong>
+                    <small>T1 source evidence · interpretation needs owner review</small>
+                    <p>{{ proposal.candidate.statement }}</p>
+                    <blockquote>{{ proposal.candidate.quote }}</blockquote>
+                    <p v-if="proposal.candidate.mention_name">
+                      Mention: {{ proposal.candidate.mention_name }} · unresolved until you explicitly link it.
+                    </p>
+                    <template v-if="proposal.status === 'pending'">
+                      <button
+                        :disabled="busy"
+                        type="button"
+                        @click="decideProposal(proposal, 'confirm')"
+                      >
+                        Accept claim for selected subject
+                      </button>
+                      <button
+                        :disabled="busy"
+                        type="button"
+                        @click="decideProposal(proposal, 'unresolved')"
+                      >
+                        Keep mention unresolved
+                      </button>
+                      <button
+                        :disabled="busy"
+                        type="button"
+                        @click="decideProposal(proposal, 'source_only')"
+                      >
+                        Save source only
+                      </button>
+                      <button
+                        :disabled="busy"
+                        type="button"
+                        @click="decideProposal(proposal, 'dismiss')"
+                      >
+                        Dismiss
+                      </button>
+                    </template>
+                  </article>
+                </section>
+              </form>
+            </details>
+          </div>
         </div>
-        <BriefWorkspace :parties="parties" />
       </section>
       <section
         v-if="active === 'Settings'"
@@ -561,63 +586,108 @@ watch(route, () => { void focusRouteLocation(); });
         v-if="active === 'Output'"
         aria-labelledby="output-heading"
       >
-        <h2 id="output-heading">
+        <h2
+          id="output-heading"
+          class="sr-only"
+        >
           Approved materials
         </h2>
-        <p>Each material is bound to one opportunity, recipient and immutable version. Release checks run against current evidence.</p>
-        <p v-if="!outputs.length">
-          No materials yet. Create an opportunity, prepare its exchange, then author material for a named participant.
-        </p>
-        <label>Find materials<input
-          v-model="materialQuery"
-          type="search"
-          placeholder="Recipient, opportunity, kind or status"
-        ></label>
-        <p v-if="outputs.length && !visibleOutputs.length">
-          No matching materials.
-        </p>
-        <ul class="output-list">
-          <li
-            v-for="material in visibleOutputs"
-            :id="`output-material-${material.id}`"
-            :key="material.id"
-            tabindex="-1"
-            class="record-card"
+        <div class="office-tools">
+          <button
+            class="primary"
+            :aria-expanded="writingOpen"
+            @click="writingOpen = !writingOpen"
           >
-            <strong>{{ material.recipient_name }}</strong> · {{ material.kind }} · v{{ material.version }} · {{ material.status }}
-            <p>Opportunity {{ material.opportunity_id }} · SHA-256 {{ material.content_sha256 }}</p>
-            <button
-              type="button"
-              @click="navigate(`/output/${encodeURIComponent(material.id)}`)"
+            Create output
+          </button>
+          <button @click="writingOpen = true; navigate('/output/templates')">
+            Manage templates
+          </button>
+          <input
+            v-model="materialQuery"
+            aria-label="Find materials"
+            type="search"
+            placeholder="Find material, opportunity or contact"
+          >
+          <select
+            v-model="outputStatus"
+            aria-label="Filter material status"
+          >
+            <option value="">
+              All statuses
+            </option><option
+              v-for="state in ['draft','approved','released']"
+              :key="state"
             >
-              Open material version
-            </button>
-            <MaterialActions
-              :material="material"
-              @updated="installMaterial"
-              @delivered="deliveredReleases[material.id] = $event"
-            />
-            <ContactThreadPanel
-              :opportunity-id="material.opportunity_id"
-              :material="material"
-              :delivered="deliveredReleases[material.id] ?? null"
-              :threads="threads"
-              @changed="refreshLeads"
-            />
-          </li>
-        </ul>
+              {{ state }}
+            </option>
+          </select>
+        </div>
+        <div
+          class="registry"
+          tabindex="0"
+          role="region"
+          aria-label="Material registry"
+        >
+          <table>
+            <thead><tr><th>Material</th><th>Opportunity</th><th>Contact</th><th>Status</th><th>Release</th></tr></thead><tbody>
+              <template
+                v-for="material in visibleOutputs"
+                :key="material.id"
+              >
+                <tr
+                  :id="`output-material-${material.id}`"
+                  tabindex="-1"
+                >
+                  <td>
+                    <button @click="navigate('/output/' + encodeURIComponent(material.id))">
+                      {{ material.kind }} · v{{ material.version }}
+                    </button>
+                  </td><td>
+                    <button @click="navigate('/queue/' + encodeURIComponent(material.opportunity_id))">
+                      {{ opportunities.find(item => item.id === material.opportunity_id)?.title || material.opportunity_id }}
+                    </button>
+                  </td><td>{{ material.recipient_name }}</td><td>{{ material.status }}</td><td>
+                    <button @click="navigate('/output/' + encodeURIComponent(material.id))">
+                      Review
+                    </button>
+                  </td>
+                </tr>
+                <tr v-show="route.recordId === material.id">
+                  <td colspan="5">
+                    <button @click="navigate('/output')">
+                      Close material
+                    </button>
+                    <MaterialActions
+                      :material="material"
+                      @updated="installMaterial"
+                      @delivered="deliveredReleases[material.id] = $event"
+                    />
+                    <ContactThreadPanel
+                      :opportunity-id="material.opportunity_id"
+                      :material="material"
+                      :delivered="deliveredReleases[material.id] ?? null"
+                      :threads="threads"
+                      @changed="refreshLeads"
+                    />
+                  </td>
+                </tr>
+              </template>
+              <tr v-if="!visibleOutputs.length">
+                <td colspan="5">
+                  {{ outputs.length ? 'No matching materials.' : 'No materials yet.' }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
         <WritingWorkspace
+          v-show="writingOpen"
           :opportunities="opportunities"
           :parties="parties"
           :resources="resources"
           :outputs="outputs"
         />
-        <button
-          type="button"
-          @click="navigate('/output/templates')"
-        >
-          Open template library
-        </button>
       </section>
     </template>
     <p
@@ -668,4 +738,41 @@ small { color: #58665f; } .record-card { margin: .55rem 0; overflow-wrap: anywhe
 @media (max-width: 68rem) { .resource-workspace { grid-template-columns: 1fr; } }
 @media (max-width: 54rem) { .lead-desk { grid-template-columns: 1fr; } }
 @media (max-width: 38rem) { .app-header { flex-wrap: wrap; gap: 0; } .app-header nav { flex-basis: 100%; } .app-header > strong { margin-top: .35rem; } }
+
+:root { background:#f8f7f3; }
+.app-header { min-height:54px; }
+.resource-workspace { grid-template-columns:minmax(0,2.2fr) minmax(18rem,1fr); align-items:stretch; }
+.lead-desk { grid-template-columns:minmax(12rem,.8fr) minmax(0,2.2fr) minmax(15rem,1fr); align-items:stretch; }
+.resource-workspace > section, .lead-desk > section, .lead-desk aside, .lead-chat-column { background:white; border:1px solid #ccd5cc; border-radius:.55rem; padding:0; min-width:0; }
+.lead-desk aside > section, .lead-chat-column section { border:0; border-radius:0; }
+.lead-desk aside > section { padding:0; }
+.lead-desk aside label,.lead-desk aside p { margin:.6rem; }
+.pane-bar {display:flex;align-items:center;justify-content:space-between;gap:.5rem;padding:.8rem 1rem;border-bottom:1px solid #dce2db;}
+.pane-bar h2 {font-size:1rem;margin:0}
+.pane-bar select,.office-tools select,.office-tools input,.queue-filter-sort input {width:auto;max-width:100%}
+.pane-bar small {text-transform:uppercase;font-size:.7rem;letter-spacing:.08em}
+.primary,.queue-views button[aria-pressed=true] {background:#235e51;color:white;border-color:#235e51;}
+.primary:not(:disabled):hover {background:#174b40}
+.chat-pane {display:flex;flex-direction:column;min-width:0;}
+.chat-prompt {margin:1rem;padding:.7rem;background:#f2f4ed;border-radius:.4rem}
+.chat-options,.resource-directory,.graph-inspector,.evidence-strip,.lead-chat-column > details {padding:.7rem 1rem;}
+.start-chat {align-self:flex-end;margin:auto 1rem 1rem;}
+.chat-pane .interviewer-grid {padding:.7rem;}
+.directory-rows li button {border:0;border-top:1px solid #e3e9e2;border-radius:0;padding:.55rem .85rem;}
+.directory-rows small {display:block;}
+.office-tools,.queue-views,.queue-filter-sort {display:flex;flex-wrap:wrap;align-items:center;gap:.45rem;margin:.5rem 0;}
+.registry {background:white;border:1px solid #ccd5cc;border-radius:.5rem;padding:.6rem 1rem;overflow-x:auto}
+.registry table {border-collapse:collapse;width:100%;text-align:left;}
+.registry th,.registry td {padding:.65rem .4rem;border-bottom:1px solid #e0e5df}
+.sr-only {position:absolute;clip-path:inset(50%);height:1px;width:1px;overflow:hidden;white-space:nowrap;}
+@media(max-width:800px){.resource-workspace,.lead-desk{grid-template-columns:minmax(0,1fr)}.chat-pane {min-height:18rem}}
+
+.chat-composer {margin-top:auto;padding:.8rem;border:0;border-top:1px solid #dce2db;border-radius:0;}
+.chat-composer textarea {resize:vertical;}
+.chat-composer > div {display:flex;gap:.5rem;align-items:center}
+.chat-composer .primary {margin-left:auto;}
+.lead-chat-column {display:flex;flex-direction:column;}
+.lead-chat-column > .chat-pane {flex:1;padding:0;}
+.lead-desk {min-height:min(73vh,52rem);}
+.resource-directory,.graph-inspector {border-top:1px solid #dce2db;}
 </style>

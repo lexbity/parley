@@ -35,6 +35,8 @@ const loadingNotes = ref(false);
 const noteSequence = ref(0);
 let openGeneration = 0;
 const tagDrafts = ref<Record<string, string>>({});
+const queuePanel = ref<'new' | 'lists' | ''>('');
+const query = ref('');
 const filterTag = ref('');
 const appliedTag = ref('');
 const sortKey = ref<'title' | 'state' | 'next_task'>('title');
@@ -54,7 +56,8 @@ let threadPollTimer: ReturnType<typeof globalThis.setInterval> | undefined;
 let threadPollInFlight = false;
 
 const sortedCards = computed(() => {
-  let cards = board.value.cards.slice();
+  const needle = query.value.trim().toLocaleLowerCase();
+  let cards = board.value.cards.filter(({ opportunity }) => [opportunity.title, ...props.parties.filter(p => opportunity.participant_ids.includes(p.id)).map(p => p.name)].some(value => value.toLocaleLowerCase().includes(needle)));
   if (appliedTag.value) {
     cards = cards.filter((card) => card.opportunity.tags?.includes(appliedTag.value));
   }
@@ -140,7 +143,7 @@ async function createOpportunity() {
   await run('Opportunity created. Its initial board placement does not change its stage or outreach state.', async () => {
     await parley.createOpportunity(title.value.trim(), partyId.value);
     title.value = '';
-    partyId.value = '';
+    partyId.value = ''; queuePanel.value = '';
     await refreshBoard();
   });
 }
@@ -148,7 +151,7 @@ async function createOpportunity() {
 async function createList() {
   await run('Custom list created.', async () => {
     await parley.createBoardList({ title: newListTitle.value.trim(), before_list_id: null });
-    newListTitle.value = '';
+    newListTitle.value = ''; queuePanel.value = '';
     await refreshBoard();
   });
 }
@@ -451,7 +454,10 @@ function onThreadVisibilityChange() {
     </p>
   </section>
   <section aria-labelledby="queue-heading">
-    <h2 id="queue-heading">
+    <h2
+      id="queue-heading"
+      class="sr-only"
+    >
       Opportunities
     </h2>
     <nav
@@ -467,6 +473,18 @@ function onThreadVisibilityChange() {
       >
         {{ view }}
       </button>
+      <button
+        :aria-expanded="queuePanel === 'new'"
+        @click="queuePanel = queuePanel === 'new' ? '' : 'new'"
+      >
+        New opportunity
+      </button>
+      <button
+        :aria-expanded="queuePanel === 'lists'"
+        @click="queuePanel = queuePanel === 'lists' ? '' : 'lists'"
+      >
+        Manage lists
+      </button>
     </nav>
     <p
       v-if="status"
@@ -480,7 +498,16 @@ function onThreadVisibilityChange() {
     >
       {{ error }}
     </p>
-    <div class="queue-filter-sort">
+    <div
+      v-if="activeQueueView === 'Board' || activeQueueView === 'Opportunities'"
+      class="queue-filter-sort"
+    >
+      <input
+        v-model="query"
+        type="search"
+        aria-label="Find opportunities"
+        placeholder="Find opportunity or participant"
+      >
       <label>Filter by tag<input
         v-model="filterTag"
         aria-label="Filter by tag"
@@ -499,7 +526,10 @@ function onThreadVisibilityChange() {
       </button>
     </div>
     <div class="workspace-grid">
-      <form @submit.prevent="createOpportunity">
+      <form
+        v-show="queuePanel === 'new'"
+        @submit.prevent="createOpportunity"
+      >
         <h3>Create an opportunity</h3>
         <label>Opportunity title<input
           v-model="title"
@@ -525,7 +555,10 @@ function onThreadVisibilityChange() {
         </button>
         <p>A lead alone does not create an opportunity or outreach.</p>
       </form>
-      <form @submit.prevent="createList">
+      <form
+        v-show="queuePanel === 'lists'"
+        @submit.prevent="createList"
+      >
         <h3>Custom board lists</h3>
         <label>New list<input
           v-model="newListTitle"
@@ -555,7 +588,7 @@ function onThreadVisibilityChange() {
         :aria-label="`${list.title} list`"
       >
         <header>
-          <h3>{{ list.title }}</h3>
+          <h3>{{ list.title }} <small>{{ board.cards.filter(card => card.list_id === list.id).length }}</small></h3>
           <details>
             <summary>List options</summary>
             <label>Rename {{ list.title }}<input
@@ -800,11 +833,12 @@ function onThreadVisibilityChange() {
 </template>
 
 <style scoped>
-.board-lists { display: grid; grid-auto-columns: minmax(18rem, 1fr); grid-auto-flow: column; gap: 1rem; overflow-x: auto; align-items: start; margin: 1rem 0; }
-.board-list { background: #eef2ef; border: 1px solid #cbd5ce; border-radius: .5rem; min-width: 18rem; padding: .75rem; }
+.board-lists { display: grid; grid-template-rows:minmax(18rem,auto); grid-auto-columns: max(17rem,calc((100% - 3rem)/4)); grid-auto-flow: column; gap: 1rem; overflow-x: auto; align-items: stretch; margin: .65rem 0; }
+.board-list { background: #eef2ef; border: 1px solid #cbd5ce; border-radius: .5rem; min-width: 0; padding: .75rem; }
 .board-list header { display: block; background: transparent; border: 0; padding: 0; }
 .board-list details { margin-block: .4rem; }
 .board-list summary { color: #365741; }
+.board-list h3 small { float:right; font-weight:400; }
 .board-list header h3 { margin-top: 0; }
 .card-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; }
 .card-layout > section { min-width: 0; }

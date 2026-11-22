@@ -8,6 +8,7 @@ test('s05_keyboard_board_list_card_order_and_archive', async ({ page }) => {
   const partyName = `Dana Lee ${suffix}`;
   await page.getByRole('link', { name: 'Leads' }).click();
   const leads = page.getByRole('region', { name: 'Lead directory and sources' });
+  await leads.getByRole('button', { name: 'New lead' }).click();
   await leads.getByRole('complementary').getByLabel('Name').fill(partyName);
   await leads.getByRole('button', { name: 'Add lead' }).click();
 
@@ -21,11 +22,13 @@ test('s05_keyboard_board_list_card_order_and_archive', async ({ page }) => {
   await expect(leads.getByLabel('Find a lead')).toHaveValue(suffix);
   await page.getByRole('link', { name: 'Queue' }).click();
   const queue = page.getByRole('region', { name: 'Opportunities' });
+  await queue.getByRole('button', { name: 'New opportunity' }).click();
   await queue.getByLabel('Opportunity title').fill('Onboarding map');
   await queue.getByLabel('Participant').selectOption({ label: `${partyName} · person` });
   await queue.getByRole('button', { name: 'Create opportunity' }).click();
   await expect(queue.getByRole('heading', { name: 'Onboarding map' })).toBeVisible();
 
+  await queue.getByRole('button', { name: 'Manage lists' }).click();
   await queue.getByLabel('New list').fill('Friday follow-ups');
   await queue.getByRole('button', { name: 'Add list' }).click();
   await queue.getByText('Organize card').click();

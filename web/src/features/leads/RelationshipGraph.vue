@@ -101,10 +101,15 @@ onMounted(() => { void load(); });
 </script>
 
 <template>
-  <section aria-labelledby="relationship-graph-heading">
-    <h3 id="relationship-graph-heading">
-      Relationship graph and evidence list
-    </h3>
+  <section
+    class="network-pane"
+    aria-labelledby="relationship-graph-heading"
+  >
+    <header class="pane-bar">
+      <h2 id="relationship-graph-heading">
+        Lead network
+      </h2>
+    </header>
     <p
       v-if="loading"
       role="status"
@@ -146,13 +151,23 @@ onMounted(() => { void load(); });
           <Background />
           <Controls />
           <MiniMap
+            v-if="nodes.length > 12"
             pannable
             zoomable
           />
         </VueFlow>
       </div>
-      <div>
-        <h4>Relationship list</h4>
+      <div class="pane-bar">
+        <span>{{ nodes.length }} visible · {{ edges.length }} relationships</span>
+      </div>
+      <article
+        v-if="selectedEdge"
+        class="evidence-strip"
+      >
+        <strong>{{ selectedEdge.verb }}</strong><blockquote>{{ selectedEdge.quote }}</blockquote>
+      </article>
+      <details class="graph-inspector">
+        <summary>Relationships and evidence</summary><h4>Relationship list</h4>
         <p v-if="!snapshot.edges.length">
           No accepted relationships in this neighborhood yet. A name or search result does not create a relationship.
         </p>
@@ -249,14 +264,14 @@ onMounted(() => { void load(); });
             {{ relationError }}
           </p>
         </form>
-      </div>
+      </details>
     </div>
   </section>
 </template>
 
 <style scoped>
-.graph-layout { display:grid; grid-template-columns:minmax(0, 3fr) minmax(16rem, 2fr); gap:1rem; }
-.canvas-frame { height:32rem; min-width:0; border:1px solid #82918a; border-radius:.4rem; background:#fff; }
+.graph-layout { display:block; }
+.canvas-frame { height:clamp(23rem,51vh,41rem); min-width:0; border-block:1px solid #d4dcd4; background:#eff3ed; }
 .canvas-frame:focus-visible { outline:3px solid #32735b; outline-offset:2px; }
 blockquote { margin:.5rem 0; padding:.5rem .75rem; border-left:3px solid #32735b; }
 @media(max-width:767px) { .graph-layout { grid-template-columns:1fr; } .canvas-frame { height:22rem; } }

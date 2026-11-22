@@ -2,7 +2,7 @@
 import { onMounted, ref, watch } from 'vue';
 import { parley, type AgentChat, type AgentChatSummary, type BriefItem, type GraphEntity, type RoleJob, type VocabularyFluency } from '../../api/client';
 
-const props = defineProps<{ parties: GraphEntity[] }>();
+const props = defineProps<{ parties: GraphEntity[]; partyId?: string }>();
 const scopeKind = ref<'party' | 'segment'>('party');
 const scopeId = ref('');
 const segments = ref<Array<{ id: string; name: string; description: string | null; revision: number }>>([]);
@@ -102,7 +102,11 @@ async function createResearchChat() {
   if (!scopeId.value) return;
   busy.value = true; error.value = '';
   try {
-    chat.value = await parley.createAgentChat({ role: 'briefer', scope_kind: scopeKind.value, scope_id: scopeId.value });
+    const id = scopeId.value;
+    const kind = scopeKind.value;
+    const created = await parley.createAgentChat({ role: 'briefer', scope_kind: kind, scope_id: id });
+    if (scopeId.value !== id || scopeKind.value !== kind) return;
+    chat.value = created;
     selectedChatId.value = chat.value.id;
     await load();
     status.value = 'A separate research conversation is scoped to this party or segment.';
@@ -113,24 +117,35 @@ async function createResearchChat() {
 async function openResearchChat() {
   if (!selectedChatId.value) return;
   busy.value = true; error.value = '';
-  try { chat.value = await parley.getAgentChat(selectedChatId.value); }
+  try {
+    const id = selectedChatId.value;
+    const loaded = await parley.getAgentChat(id);
+    if (selectedChatId.value === id && loaded.scope_id === scopeId.value) chat.value = loaded;
+  }
   catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not reopen this research chat.'; }
   finally { busy.value = false; }
 }
 
 async function sendResearchTurn() {
-  if (!chat.value || !chatMessage.value.trim()) return;
+  if (!scopeId.value || !chatMessage.value.trim() || busy.value) return;
+  if (!chat.value) await createResearchChat();
+  if (!chat.value || chat.value.scope_id !== scopeId.value) return;
+  const sendingChat = chat.value.id;
   busy.value = true; error.value = '';
   try {
     const result = await parley.addAgentTurn(chat.value.id, chatMessage.value.trim());
+    if (chat.value?.id !== sendingChat) return;
     chatMessage.value = '';
     await openResearchChat();
     status.value = 'Your scoped question is saved; any Briefer response remains a proposal.';
     for (let attempt = 0; attempt < 180; attempt += 1) {
       await new Promise((resolve) => globalThis.setTimeout(resolve, 1000));
+      if (chat.value?.id !== sendingChat) return;
       const job = await parley.getRoleJob(result.job_id);
       if (!['queued', 'running'].includes(job.status)) {
-        chat.value = await parley.getAgentChat(result.chat_id);
+        const updated = await parley.getAgentChat(result.chat_id);
+        if (chat.value?.id !== sendingChat) return;
+        chat.value = updated;
         if (job.status !== 'succeeded') error.value = job.last_error ?? 'Briefer could not validate a response.';
         return;
       }
@@ -149,71 +164,143 @@ async function changeFluency(term: string, statusValue: VocabularyFluency['statu
   finally { busy.value = false; }
 }
 
-watch([scopeKind, scopeId], () => { void load().catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Could not load this brief.'; }); });
-onMounted(() => { void loadSegments().catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Could not load segments.'; }); });
+watch(() => props.partyId, id => {
+  scopeKind.value = 'party'; scopeId.value = id ?? '';
+}, { immediate: true });
+watch([scopeKind, scopeId], () => {
+  chat.value = null; selectedChatId.value = ''; chatMessage.value = '';
+  items.value = []; chatHistory.value = []; correction.value = {};
+  void load().catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Could not load this brief.'; }); });
+onMounted(() => { void load().catch(() => { error.value = 'Could not load this brief.'; }); void loadSegments().catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Could not load segments.'; }); });
 </script>
 
 <template>
-  <section aria-labelledby="brief-heading">
-    <h2 id="brief-heading">
-      Brief by party or segment
-    </h2>
-    <label>Scope type
-      <select v-model="scopeKind"><option value="party">Party</option><option value="segment">Segment</option></select>
-    </label>
-    <label>{{ scopeKind === 'party' ? 'Party' : 'Segment' }}
-      <select
-        v-if="scopeKind === 'party'"
-        v-model="scopeId"
-      ><option value="">Choose a party</option><option
-        v-for="item in props.parties"
-        :key="item.id"
-        :value="item.id"
-      >{{ item.name }} · {{ item.kind }}</option></select>
-    </label>
-    <label v-if="scopeKind === 'segment'">Segment
-      <select v-model="scopeId"><option value="">Choose a segment</option><option
-        v-for="item in segments"
-        :key="item.id"
-        :value="item.id"
-      >{{ item.name }}</option></select>
-    </label>
-    <form
-      v-if="scopeKind === 'segment'"
-      @submit.prevent="createSegment"
-    >
-      <label>New segment<input
-        v-model="segmentName"
-        required
-        maxlength="200"
-      ></label>
-      <button :disabled="busy">
-        Create segment
+  <section
+    class="chat-pane"
+    aria-labelledby="brief-heading"
+  >
+    <header class="pane-bar">
+      <h2 id="brief-heading">
+        Lead chat
+      </h2><small>Briefer</small>
+    </header>
+    <p class="chat-prompt">
+      {{ props.parties.find(p => p.id === scopeId)?.name || (scopeId ? 'Segment research' : 'Select a lead to start a research conversation.') }}
+    </p>
+    <details class="chat-options">
+      <summary>Research scope and brief</summary>
+      <label>Scope type
+        <select v-model="scopeKind"><option value="party">Party</option><option value="segment">Segment</option></select>
+      </label>
+      <label>{{ scopeKind === 'party' ? 'Party' : 'Segment' }}
+        <select
+          v-if="scopeKind === 'party'"
+          v-model="scopeId"
+        ><option value="">Choose a party</option><option
+          v-for="item in props.parties"
+          :key="item.id"
+          :value="item.id"
+        >{{ item.name }} · {{ item.kind }}</option></select>
+      </label>
+      <label v-if="scopeKind === 'segment'">Segment
+        <select v-model="scopeId"><option value="">Choose a segment</option><option
+          v-for="item in segments"
+          :key="item.id"
+          :value="item.id"
+        >{{ item.name }}</option></select>
+      </label>
+      <form
+        v-if="scopeKind === 'segment'"
+        @submit.prevent="createSegment"
+      >
+        <label>New segment<input
+          v-model="segmentName"
+          required
+          maxlength="200"
+        ></label>
+        <button :disabled="busy">
+          Create segment
+        </button>
+      </form>
+      <form
+        v-if="scopeKind === 'segment' && scopeId"
+        @submit.prevent="addMember"
+      >
+        <label>Add party to segment<select
+          v-model="memberId"
+          required
+        ><option value="">Choose a person or organization</option><option
+          v-for="item in props.parties"
+          :key="item.id"
+          :value="item.id"
+        >{{ item.name }} · {{ item.kind }}</option></select></label>
+        <button :disabled="busy">
+          Add member
+        </button>
+      </form>
+      <button
+        type="button"
+        :disabled="busy || !scopeId"
+        @click="generate"
+      >
+        Generate brief proposals
       </button>
-    </form>
-    <form
-      v-if="scopeKind === 'segment' && scopeId"
-      @submit.prevent="addMember"
-    >
-      <label>Add party to segment<select
-        v-model="memberId"
-        required
-      ><option value="">Choose a person or organization</option><option
-        v-for="item in props.parties"
-        :key="item.id"
-        :value="item.id"
-      >{{ item.name }} · {{ item.kind }}</option></select></label>
-      <button :disabled="busy">
-        Add member
-      </button>
-    </form>
-    <button
-      type="button"
-      :disabled="busy || !scopeId"
-      @click="generate"
-    >
-      Generate brief proposals
-    </button>
+      <p>Evidence confirms what the source said, not whether it is true. Model priors stay tier 2 and cannot be used as individual facts. Review each item.</p>
+      <ul aria-label="Brief proposals">
+        <li
+          v-for="item in items"
+          :key="item.id"
+        >
+          <strong>T{{ item.tier }} · {{ item.kind }} · {{ item.status }}</strong>
+          <p>{{ item.text }}</p>
+          <blockquote v-if="item.quote">
+            {{ item.quote }}
+          </blockquote>
+          <p v-if="item.tier === 2">
+            Tendency, not rule. Verify: {{ item.check_suggestion }}
+          </p>
+          <label v-if="item.kind === 'jargon'">Your vocabulary fluency
+            <select
+              aria-label="Your vocabulary fluency"
+              :value="fluency.find((entry) => entry.term.toLowerCase() === item.text.toLowerCase())?.status ?? 'unknown'"
+              @change="changeFluency(item.text, ($event.target as HTMLSelectElement).value as VocabularyFluency['status'])"
+            >
+              <option value="unknown">Unknown</option><option value="learning">Learning</option><option value="fluent">Fluent</option>
+            </select>
+          </label>
+          <template v-if="item.status === 'proposed'">
+            <label>Correct wording<input
+              v-model="correction[item.id]"
+              :placeholder="item.text"
+            ></label>
+            <button
+              type="button"
+              :disabled="busy"
+              @click="decide(item, 'confirm')"
+            >
+              Confirm
+            </button>
+            <button
+              type="button"
+              :disabled="busy"
+              @click="decide(item, 'correct')"
+            >
+              Correct
+            </button>
+            <button
+              type="button"
+              :disabled="busy"
+              @click="decide(item, 'dismiss')"
+            >
+              Dismiss
+            </button>
+          </template>
+        </li>
+      </ul>
+      <p v-if="!items.length && scopeId">
+        No brief items yet. Generate proposals from saved sources.
+      </p>
+    </details>
     <section
       v-if="scopeId"
       aria-label="Scoped research chat"
@@ -251,73 +338,29 @@ onMounted(() => { void loadSegments().catch((reason: unknown) => { error.value =
             <strong>{{ turn.speaker === 'owner' ? 'You' : 'Briefer' }}:</strong> {{ turn.text }}
           </li>
         </ol>
-        <form @submit.prevent="sendResearchTurn">
-          <label>Question<textarea
-            v-model="chatMessage"
-            required
-            maxlength="16000"
-            rows="3"
-          /></label><button :disabled="busy">
-            Ask in this scope
-          </button>
-        </form>
       </div>
     </section>
-    <p>Evidence confirms what the source said, not whether it is true. Model priors stay tier 2 and cannot be used as individual facts. Review each item.</p>
-    <ul aria-label="Brief proposals">
-      <li
-        v-for="item in items"
-        :key="item.id"
-      >
-        <strong>T{{ item.tier }} · {{ item.kind }} · {{ item.status }}</strong>
-        <p>{{ item.text }}</p>
-        <blockquote v-if="item.quote">
-          {{ item.quote }}
-        </blockquote>
-        <p v-if="item.tier === 2">
-          Tendency, not rule. Verify: {{ item.check_suggestion }}
-        </p>
-        <label v-if="item.kind === 'jargon'">Your vocabulary fluency
-          <select
-            aria-label="Your vocabulary fluency"
-            :value="fluency.find((entry) => entry.term.toLowerCase() === item.text.toLowerCase())?.status ?? 'unknown'"
-            @change="changeFluency(item.text, ($event.target as HTMLSelectElement).value as VocabularyFluency['status'])"
-          >
-            <option value="unknown">Unknown</option><option value="learning">Learning</option><option value="fluent">Fluent</option>
-          </select>
-        </label>
-        <template v-if="item.status === 'proposed'">
-          <label>Correct wording<input
-            v-model="correction[item.id]"
-            :placeholder="item.text"
-          ></label>
-          <button
-            type="button"
-            :disabled="busy"
-            @click="decide(item, 'confirm')"
-          >
-            Confirm
-          </button>
-          <button
-            type="button"
-            :disabled="busy"
-            @click="decide(item, 'correct')"
-          >
-            Correct
-          </button>
-          <button
-            type="button"
-            :disabled="busy"
-            @click="decide(item, 'dismiss')"
-          >
-            Dismiss
-          </button>
-        </template>
-      </li>
-    </ul>
-    <p v-if="!items.length && scopeId">
-      No brief items yet. Generate proposals from saved sources.
-    </p>
+    <form
+      class="chat-composer"
+      @submit.prevent="sendResearchTurn"
+    >
+      <textarea
+        v-model="chatMessage"
+        aria-label="Question"
+        :disabled="!scopeId || busy"
+        maxlength="16000"
+        rows="3"
+        placeholder="Ask about this lead…"
+      />
+      <div>
+        <button
+          class="primary"
+          :disabled="!scopeId || busy || !chatMessage.trim()"
+        >
+          Send
+        </button>
+      </div>
+    </form>
     <p
       v-if="status"
       role="status"

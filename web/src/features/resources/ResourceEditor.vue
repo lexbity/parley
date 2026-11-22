@@ -1,11 +1,27 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { VueFlow, Background, type Node } from '@xyflow/vue';
 import { ApiError, newOperationKey, parley, type Resource } from '../../api/client';
 
 type ResourceKind = Resource['kind'];
 const props = defineProps<{ routeId?: string | null }>();
 const emit = defineEmits<{ navigate: [path: string] }>();
 const resources = ref<Resource[]>([]);
+const editorOpen = ref(false);
+const kindFilter = ref('');
+const shown = computed(() => resources.value.filter(item => !kindFilter.value || item.kind === kindFilter.value));
+const nodes = computed<Node[]>(() => shown.value.map((item, index) => ({
+  id: item.id, position: { x: (index % 3) * 230, y: Math.floor(index / 3) * 130 },
+  data: { label: item.title || 'Untitled draft', kind: item.kind },
+  selected: item.id === selectedId.value, draggable: false, connectable: false,
+})));
+function closeEditor() {
+  if (pending.value || saving.value || (dirty.value && !globalThis.confirm('Discard unsaved changes?'))) return;
+  editorOpen.value = false;
+  selectedId.value = null;
+  dirty.value = false;
+  emit('navigate', '/resources');
+}
 const selectedId = ref<string | null>(null);
 const kind = ref<ResourceKind>('gift');
 const title = ref('');
@@ -55,6 +71,7 @@ async function refresh(): Promise<void> {
 function newResource(): void {
   if (workspaceQuarantined.value) return;
   if (dirty.value && !globalThis.confirm('Discard this unsaved resource draft and start another?')) return;
+  editorOpen.value = true;
   selectedId.value = null;
   kind.value = 'gift';
   title.value = '';
@@ -72,6 +89,7 @@ function edit(resource: Resource, reviewedReplacement = false): void {
   if (workspaceQuarantined.value) return;
   if (pending.value) return;
   if (dirty.value && !reviewedReplacement && !globalThis.confirm('Discard this unsaved resource edit?')) return;
+  editorOpen.value = true;
   selectedId.value = resource.id;
   kind.value = resource.kind;
   title.value = resource.title;
@@ -207,6 +225,7 @@ async function discardQuarantined(): Promise<void> {
   dirty.value = false;
   pending.value = null;
   conflict.value = null;
+  editorOpen.value = true;
   selectedId.value = null;
   kind.value = 'gift';
   title.value = '';
@@ -285,53 +304,83 @@ defineExpose({ refresh });
         {{ quarantineStatus }}
       </p>
     </section>
-    <div class="resource-list">
-      <div class="resource-actions">
-        <button
-          type="button"
-          :disabled="!!pending"
-          @click="newResource"
-        >
-          Add resource
-        </button>
-        <button
-          type="button"
-          :disabled="loading || !!pending"
-          @click="reload"
-        >
-          Reload
-        </button>
-      </div>
-      <p v-if="loading">
-        Loading saved resources…
-      </p>
-      <p v-else-if="resources.length === 0">
-        No resources yet. Add an offer, result, or artifact.
-      </p>
-      <ul
-        v-else
-        aria-label="Saved resources"
+    <div class="pane-bar">
+      <button
+        class="primary"
+        :disabled="!!pending"
+        @click="newResource"
       >
-        <li
-          v-for="resource in resources"
-          :key="resource.id"
-        >
+        Add resource
+      </button>
+    </div>
+    <header class="pane-bar">
+      <h2>Resource network</h2><select
+        v-model="kindFilter"
+        aria-label="Resource type filter"
+      >
+        <option value="">
+          All types
+        </option><option value="gift">
+          Offers
+        </option><option value="proof">
+          Proofs
+        </option><option value="artifact">
+          Artifacts
+        </option>
+      </select>
+    </header>
+    <div class="resource-canvas">
+      <VueFlow
+        v-if="nodes.length"
+        :nodes="nodes"
+        :nodes-connectable="false"
+        :delete-key-code="null"
+        fit-view-on-init
+      >
+        <template #node-default="{ id, data }">
           <button
-            type="button"
-            :aria-current="selectedId === resource.id ? 'true' : undefined"
-            @click="edit(resource)"
+            class="resource-node"
+            @click="edit(resources.find(item => item.id === id)!)"
           >
-            <strong>{{ resource.title || 'Untitled draft' }}</strong>
-            <span>{{ resource.kind }} · {{ resource.readiness }}</span>
+            <small>{{ data.kind }}</small><strong>{{ data.label }}</strong>
+          </button>
+        </template>
+        <Background />
+      </VueFlow>
+      <p
+        v-else
+        class="canvas-empty"
+      >
+        {{ loading ? 'Loading resources…' : resources.length ? 'No resources match this type.' : 'Add your first resource' }}
+      </p>
+    </div>
+    <details class="resource-directory">
+      <summary>Saved resources · {{ resources.length }}</summary><button @click="reload">
+        Reload
+      </button><ul aria-label="Saved resources">
+        <li
+          v-for="item in shown"
+          :key="item.id"
+        >
+          <button @click="edit(item)">
+            {{ item.title || 'Untitled draft' }} · {{ item.kind }}
           </button>
         </li>
       </ul>
-    </div>
-
+    </details>
     <form
+      v-show="editorOpen"
       class="resource-form"
       @submit.prevent="save"
     >
+      <button
+        class="close-editor"
+        type="button"
+        :disabled="saving || !!pending"
+        @click="closeEditor"
+      >
+        Close
+      </button>
       <h2>{{ selected ? 'Edit resource' : 'Add a resource' }}</h2>
       <label>
         Resource type
@@ -442,20 +491,13 @@ defineExpose({ refresh });
 </template>
 
 <style scoped>
-.resources { display: grid; grid-template-columns: minmax(11rem, .8fr) minmax(15rem, 1.2fr); gap: .7rem; }
-.resource-list, .resource-form { border: 1px solid #c8ced5; border-radius: .5rem; padding: 1rem; }
-.resource-list ul { list-style: none; margin: 0; padding: 0; }
-.resource-list li + li { border-top: 1px solid #e0e4e8; }
-.resource-list li button { display: grid; gap: .12rem; width: 100%; padding: .8rem .25rem; text-align: left; border: 0; background: transparent; }
-.resource-list li span, .readiness { color: #4b5563; font-size: .9rem; }
-.resource-form { display: grid; gap: .3rem; }
-.resource-form label { display: grid; gap: .35rem; font-weight: 600; }
-input, textarea, select { box-sizing: border-box; width: 100%; padding: .55rem; font: inherit; }
-.resource-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
-button { min-height: 2.15rem; padding: .4rem .75rem; }
-.field-error { color: #8a1c1c; font-weight: 400; }
-.conflict { border-left: .25rem solid #8a1c1c; padding: .5rem 1rem; background: #fff7f7; }
-.status { grid-column: 1 / -1; min-height: 1.5rem; }
-.quarantine-dialog { position: fixed; z-index: 1000; inset: 10vh max(1rem, calc((100vw - 42rem) / 2)); max-height: 80vh; overflow: auto; background: white; border: 2px solid #80552a; border-radius: .5rem; padding: 1.25rem; box-shadow: 0 1rem 3rem #0005; display: grid; gap: .75rem; }
-@media (max-width: 48rem) { .resources { grid-template-columns: 1fr; } .status { grid-column: auto; } }
+.resources { position: relative; padding: 0; overflow: hidden; }
+.resource-canvas { position: relative; height: clamp(25rem, 62vh, 48rem); background: radial-gradient(#bbcdc0 .8px, transparent .8px) #eff3ed; background-size: 18px 18px; }
+.canvas-empty { position:absolute; inset:46% 1rem auto; text-align:center; color:#526657; }
+.resource-node { border:0; background:transparent; width:100%; display:grid; gap:.2rem; }
+.resource-form { position:absolute; z-index:4; top:3.4rem; right:.7rem; width:min(24rem,95%); max-height:80%; overflow:auto; box-shadow:0 6px 25px #24362d30; }
+.close-editor { float:right; }
+.status { padding:.6rem 1rem; margin:0; }
+.field-error {color:#852521}
+.quarantine-dialog { position:fixed; z-index:1000; inset:10vh max(1rem,calc((100vw - 42rem)/2)); background:white; padding:1rem; overflow:auto; }
 </style>

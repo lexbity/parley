@@ -82,7 +82,13 @@ async function waitForJob(id: string) {
 }
 
 async function sendTurn() {
-  if (!chat.value || !message.value.trim()) return;
+  if (!message.value.trim() || busy.value) return;
+  if (!chat.value) {
+    const draft = message.value;
+    await start();
+    message.value = draft;
+  }
+  if (!chat.value) return;
   busy.value = true; error.value = '';
   try {
     const result = await parley.addAgentTurn(chat.value.id, message.value.trim());
@@ -128,38 +134,44 @@ onMounted(async () => { try { bank.value = (await parley.getQuestionBank()).cont
 </script>
 
 <template>
-  <section aria-labelledby="interviewer-heading">
-    <h2 id="interviewer-heading">
-      Interviewer
-    </h2>
-    <p>Turn owner knowledge into an attributed resource. You can skip, defer, or record unknown answers; incomplete candidates remain drafts.</p>
-    <label>Resource kind
-      <select
-        v-model="kind"
-        :disabled="Boolean(chat)"
-      ><option value="proof">Proof</option><option value="gift">Gift</option><option value="artifact">Artifact</option></select>
-    </label>
-    <label>Saved owner chats
-      <select v-model="historyId"><option value="">Choose a saved chat</option><option
-        v-for="item in history"
-        :key="item.id"
-        :value="item.id"
-      >{{ item.asset_kind }} · {{ item.last_turn ?? 'No answer yet' }}</option></select>
-    </label>
-    <button
-      type="button"
-      :disabled="busy || !historyId"
-      @click="openHistory"
+  <section
+    class="chat-pane"
+    aria-labelledby="interviewer-heading"
+  >
+    <header class="pane-bar">
+      <h2 id="interviewer-heading">
+        Resource chat
+      </h2><small>Interviewer</small>
+    </header>
+    <p
+      v-if="!chat"
+      class="chat-prompt"
     >
-      Open saved chat
-    </button>
-    <button
-      type="button"
-      :disabled="busy || Boolean(chat)"
-      @click="start"
-    >
-      Start Interviewer
-    </button>
+      What would you like to offer or record?
+    </p>
+    <details class="chat-options">
+      <summary>Chat options</summary>
+      <label>Resource kind
+        <select
+          v-model="kind"
+          :disabled="Boolean(chat)"
+        ><option value="proof">Proof</option><option value="gift">Gift</option><option value="artifact">Artifact</option></select>
+      </label>
+      <label>Saved owner chats
+        <select v-model="historyId"><option value="">Choose a saved chat</option><option
+          v-for="item in history"
+          :key="item.id"
+          :value="item.id"
+        >{{ item.asset_kind }} · {{ item.last_turn ?? 'No answer yet' }}</option></select>
+      </label>
+      <button
+        type="button"
+        :disabled="busy || !historyId"
+        @click="openHistory"
+      >
+        Open saved chat
+      </button>
+    </details>
     <div
       v-if="chat"
       class="interviewer-grid"
@@ -174,19 +186,10 @@ onMounted(async () => { try { bank.value = (await parley.getQuestionBank()).cont
             <strong>{{ turn.speaker === 'owner' ? 'You' : 'Interviewer' }}:</strong> {{ turn.text }}
           </li>
         </ol>
-        <form @submit.prevent="sendTurn">
-          <label>Your answer<textarea
-            v-model="message"
-            rows="3"
-            required
-            maxlength="16000"
-          /></label><button :disabled="busy">
-            Save answer and ask follow-up
-          </button>
-        </form>
       </section>
-      <section aria-label="Fixed question bank">
-        <h3>Question bank</h3>
+      <details aria-label="Fixed question bank">
+        <summary>Question bank</summary>
+
         <ul>
           <li
             v-for="question in questions"
@@ -224,7 +227,7 @@ onMounted(async () => { try { bank.value = (await parley.getQuestionBank()).cont
             </button>
           </li>
         </ul>
-      </section>
+      </details>
     </div>
     <section
       v-if="candidate"
@@ -261,6 +264,36 @@ onMounted(async () => { try { bank.value = (await parley.getQuestionBank()).cont
         Dismiss
       </button>
     </section>
+    <form
+      class="chat-composer"
+      @submit.prevent="sendTurn"
+    >
+      <textarea
+        v-model="message"
+        aria-label="Your answer"
+        rows="3"
+        maxlength="16000"
+        :disabled="busy"
+        placeholder="Tell me about something you've done…"
+      />
+      <div>
+        <button
+          v-if="!chat"
+          class="ask-question"
+          type="button"
+          :disabled="busy || Boolean(chat)"
+          @click="start"
+        >
+          Start Interviewer
+        </button>
+        <button
+          class="primary"
+          :disabled="busy || !message.trim()"
+        >
+          Send
+        </button>
+      </div>
+    </form>
     <p
       v-if="status"
       role="status"
