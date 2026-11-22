@@ -38,7 +38,7 @@ SLICE_MIGRATIONS: dict[str, list[str]] = {
     "s05": ["0005_board.sql"],
     "s06": ["0006_blobs.sql"],
     "s07": ["0007_threads.sql"],
-    "s08": ["0008_briefs.sql"],
+    "s08": ["0008_assistant.sql"],
     "s09": ["0009_writing.sql"],
     "s10": ["0010_coach.sql"],
     "s11": ["0011_legacy.sql"],

@@ -275,3 +275,281 @@ async fn s09_stale_composer_candidate_cannot_install_a_material_version() {
     drop(workspace);
     let _ = fs::remove_file(path);
 }
+
+#[tokio::test]
+async fn s09_source_correction_after_mark_sent_preserves_sent_bytes() {
+    let (path, workspace, port, service) = setup().await;
+
+    // Source-backed graph entity (tier 1 claim).
+    let (status, org) = request(
+        port,
+        "POST",
+        "/api/v1/entities",
+        Some(json!({"kind":"org","name":"Northline"})),
+        "s09-org",
+    )
+    .await;
+    assert_eq!(status, 201);
+    let (status, source) = request(
+        port,
+        "POST",
+        "/api/v1/captures",
+        Some(json!({"text":"Dana Lee will work with Northline.","title":"Team update"})),
+        "s09-capture",
+    )
+    .await;
+    assert_eq!(status, 201);
+    let (status, relation) = request(
+        port,
+        "POST",
+        "/api/v1/graph/related",
+        Some(json!({
+            "kind":"person","name":"Dana Lee",
+            "related_entity_id": org["id"],"verb":"member_of",
+            "occurrence_id": source["occurrence_id"],
+            "quote":"Dana Lee will work with Northline.",
+            "view_scope":"opportunity","view_id":"pending","x":120.0,"y":90.0
+        })),
+        "s09-relation",
+    )
+    .await;
+    assert_eq!(status, 201, "{relation}");
+    let recipient = relation["id"].as_str().unwrap().to_owned();
+    let claim_id: String = sqlx::query_scalar("SELECT id FROM claim WHERE subject_id=?")
+        .bind(&recipient)
+        .fetch_one(workspace.pool())
+        .await
+        .unwrap();
+
+    let (status, opportunity) = request(
+        port,
+        "POST",
+        "/api/v1/opportunities",
+        Some(json!({"title":"Northline onboarding","primary_party_id":recipient})),
+        "s09-opp",
+    )
+    .await;
+    assert_eq!(status, 201);
+    let opportunity_id = opportunity["id"].as_str().unwrap().to_owned();
+
+    let (status, them) = request(
+        port,
+        "POST",
+        &format!("/api/v1/opportunities/{opportunity_id}/interests"),
+        Some(json!({"recipient_id":recipient,"side":"them","statement":"A clearer onboarding handoff","knowledge_kind":"hypothesis","check_suggestion":"Ask the owner whether this is current."})),
+        "s09-interest-them",
+    )
+    .await;
+    assert_eq!(status, 201);
+    let (status, me) = request(
+        port,
+        "POST",
+        &format!("/api/v1/opportunities/{opportunity_id}/interests"),
+        Some(json!({"recipient_id":recipient,"side":"me","statement":"Offer a usable checklist","knowledge_kind":"owner_report"})),
+        "s09-interest-me",
+    )
+    .await;
+    assert_eq!(status, 201);
+    let (status, exchange) = request(
+        port,
+        "POST",
+        &format!("/api/v1/opportunities/{opportunity_id}/exchange"),
+        Some(json!({"recipient_id":recipient,"they_get":"A practical onboarding checklist","i_get":"A better understanding of the handoff","interest_ids":[them["id"],me["id"]]})),
+        "s09-exchange",
+    )
+    .await;
+    assert_eq!(status, 201);
+    let exchange_version = exchange["version"].as_i64().unwrap();
+    let (status, _) = request(
+        port,
+        "POST",
+        &format!("/api/v1/opportunities/{opportunity_id}/exchange/{recipient}/attest"),
+        None,
+        "s09-attest",
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let (status, template_row) = request(
+        port,
+        "POST",
+        "/api/v1/templates",
+        Some(json!({"name":"Research note","body":"Hello."})),
+        "s09-template",
+    )
+    .await;
+    assert_eq!(status, 201);
+    let template_id = template_row["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        request(
+            port,
+            "POST",
+            &format!("/api/v1/templates/{template_id}/approve"),
+            None,
+            "s09-tpl-approve"
+        )
+        .await
+        .0,
+        204
+    );
+    assert_eq!(
+        request(
+            port,
+            "POST",
+            &format!("/api/v1/templates/{template_id}/activate"),
+            None,
+            "s09-tpl-activate"
+        )
+        .await
+        .0,
+        204
+    );
+
+    let sentence = "Dana Lee will work with Northline.";
+    let (status, material) = request(
+        port,
+        "POST",
+        &format!("/api/v1/opportunities/{opportunity_id}/materials"),
+        Some(json!({
+            "recipient_id": recipient,
+            "kind":"outreach",
+            "template_version_id": template_id,
+            "body": sentence,
+            "exchange_version": exchange_version,
+            "slot_fills": [],
+            "sentence_bindings": [{"sentence_index":0,"claim_type":"other_fact","ref_kind":"claim","ref_id":claim_id,"ref_revision":1,"approved_wording":sentence}]
+        })),
+        "s09-material",
+    )
+    .await;
+    assert_eq!(status, 201, "{material}");
+    let material_id = material["id"].as_str().unwrap().to_owned();
+    let (status, approval) = request(
+        port,
+        "POST",
+        &format!("/api/v1/materials/{material_id}/approve"),
+        Some(json!({"override_reasons":{"S1 GIVE_FIRST":"This is a reviewed factual update, not a gift message.","S2 ANCHOR":"The approved claim is the anchor for this material."}})),
+        "s09-approve",
+    )
+    .await;
+    assert_eq!(status, 200, "{approval}");
+    let (status, released) = request(
+        port,
+        "POST",
+        &format!("/api/v1/materials/{material_id}/release"),
+        None,
+        "s09-release",
+    )
+    .await;
+    assert_eq!(status, 200, "{released}");
+    let release_id = released["release_id"].as_str().unwrap().to_owned();
+    let sent_sha = released["content_sha256"].as_str().unwrap().to_owned();
+
+    // Mark sent through the S07 thread flow: the immutable send snapshot now
+    // exists and carries the exact released bytes.
+    let (status, send) = request(
+        port,
+        "POST",
+        "/api/v1/threads/t-s09/send",
+        Some(json!({
+            "opportunity_id": opportunity_id,
+            "recipient_id": recipient,
+            "primary": {"material_id": material_id, "version": 1, "release_id": release_id},
+            "companions": []
+        })),
+        "s09-send",
+    )
+    .await;
+    assert_eq!(status, 201, "{send}");
+    let send_id = send["id"].as_str().unwrap().to_owned();
+    assert_eq!(send["content_sha256"].as_str().unwrap(), sent_sha);
+
+    let snapshot: (String, String, i64, String, String, String) = sqlx::query_as(
+        "SELECT s.content_sha256, s.primary_material_id, s.primary_version_no, s.recipient_id, s.response_deadline, r.content_sha256 FROM send s JOIN send_part sp ON sp.send_id = s.id AND sp.kind='primary' JOIN release_record r ON r.id = sp.release_id"
+    )
+    .fetch_one(workspace.pool())
+    .await
+    .unwrap();
+    let _ = &workspace;
+
+    // Correct the source claim in a later transaction.
+    let mut correction = workspace
+        .pool()
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO claim_revision(claim_id,revision,wording,knowledge_kind,tier,speaker_kind,confirmed_by_owner,created_at) VALUES(?,2,'Dana Lee is no longer associated with Northline.','owner_report',3,'owner',1,'2026-11-21T12:00:00Z')")
+        .bind(&claim_id)
+        .execute(&mut *correction)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE claim SET current_revision=2 WHERE id=?")
+        .bind(&claim_id)
+        .execute(&mut *correction)
+        .await
+        .unwrap();
+    correction.commit().await.unwrap();
+
+    // The sent snapshot is immutable: same bytes, same recipient, same
+    // version, same deadline; the release still carries the original digest.
+    let after: (String, String, i64, String, String, String) = sqlx::query_as(
+        "SELECT s.content_sha256, s.primary_material_id, s.primary_version_no, s.recipient_id, s.response_deadline, r.content_sha256 FROM send s JOIN send_part sp ON sp.send_id = s.id AND sp.kind='primary' JOIN release_record r ON r.id = sp.release_id"
+    )
+    .fetch_one(workspace.pool())
+    .await
+    .unwrap();
+    assert_eq!(after, snapshot);
+    let material_body: String = sqlx::query_scalar(
+        "SELECT body FROM material_version WHERE material_id=? AND version_no=1",
+    )
+    .bind(&material_id)
+    .fetch_one(workspace.pool())
+    .await
+    .unwrap();
+    assert_eq!(material_body, sentence);
+    let thread_state: String =
+        sqlx::query_scalar("SELECT state FROM contact_thread WHERE id='t-s09'")
+            .fetch_one(workspace.pool())
+            .await
+            .unwrap();
+    assert_eq!(thread_state, "waiting");
+    let send_events: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM event WHERE event_type='send.marked_sent'")
+            .fetch_one(workspace.pool())
+            .await
+            .unwrap();
+    assert_eq!(send_events, 1);
+    let timeout_events: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM event WHERE event_type='thread.timed_out'")
+            .fetch_one(workspace.pool())
+            .await
+            .unwrap();
+    assert_eq!(timeout_events, 0);
+
+    // A later release of the same version is refused because the corrected
+    // source invalidates current eligibility; historical bytes stay intact.
+    let (status, blocked) = request(
+        port,
+        "POST",
+        &format!("/api/v1/materials/{material_id}/release"),
+        None,
+        "s09-release-after-correction",
+    )
+    .await;
+    assert_eq!(status, 422, "{blocked}");
+    let message = blocked["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("dependencies changed") || message.contains("corrected"),
+        "{message}"
+    );
+    let release_count: i64 = sqlx::query_scalar("SELECT count(*) FROM release_record")
+        .fetch_one(workspace.pool())
+        .await
+        .unwrap();
+    assert_eq!(release_count, 1);
+    let _ = send_id;
+
+    service.shutdown().await;
+    drop(workspace);
+    let _ = fs::remove_file(path);
+}

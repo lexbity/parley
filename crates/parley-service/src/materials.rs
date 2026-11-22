@@ -1642,7 +1642,7 @@ impl Workspace {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let material = load_head(&mut tx, id).await?;
         let deps = dependency_vector(&mut tx, &material).await?;
-        let checked = evaluate_material(&mut tx, &material, overrides).await?;
+        let checked = evaluate_material(&mut tx, &material, overrides, false).await?;
         if !checked.copy_enabled {
             return Err(WorkspaceError::Invalid(format!(
                 "release blocked: {}",

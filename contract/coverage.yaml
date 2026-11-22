@@ -478,6 +478,35 @@ slices:
       owner_role: owner
       package_target: rust
       evidence_path: contract/fixtures/s06/workflow/evidence.md
+  s08:
+    - requirement: APP-06
+      operationId: getAgentPrompt
+      test_id: s08_seeds_versioned_defaults_and_keeps_prompt_and_question_versions_immutable
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s08/workflow/evidence.md
+    - requirement: APP-06
+      operationId: createAgentChat
+      test_id: s08_owner_chat_scope_and_segment_scope_are_distinct_and_revisioned
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s08/workflow/evidence.md
+    - requirement: BE-09
+      operationId: getAgentChat
+      test_id: s08_owner_interviewer_and_party_briefer_histories_stay_separate
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s08/workflow/evidence.md
+    - requirement: BRF-4
+      operationId: decideBriefItem
+      test_id: s08_owner_interviewer_and_party_briefer_histories_stay_separate
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s08/workflow/evidence.md
   s07:
     - requirement: B-FR-4
       operationId: sendOnThread
@@ -549,3 +578,39 @@ slices:
       owner_role: owner
       package_target: rust
       evidence_path: contract/fixtures/s07/workflow/evidence.md
+  s09:
+    - requirement: APP-12
+      operationId: createTemplateFamily
+      test_id: s09_template_family_version_receipts_and_voice_retirement_are_durable
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s09/workflow/evidence.md
+    - requirement: TPL-3
+      operationId: activateTemplate
+      test_id: s09_template_family_version_receipts_and_voice_retirement_are_durable
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s09/workflow/evidence.md
+    - requirement: BQ6
+      operationId: composeOpportunityMaterial
+      test_id: s09_stale_composer_candidate_cannot_install_a_material_version
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s09/workflow/evidence.md
+    - requirement: B-FR-3
+      operationId: sendOnThread
+      test_id: s09_source_correction_after_mark_sent_preserves_sent_bytes
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s09/workflow/evidence.md
+    - requirement: B-FR-3
+      operationId: releaseMaterial
+      test_id: s09_source_correction_after_mark_sent_preserves_sent_bytes
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s09/workflow/evidence.md

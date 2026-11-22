@@ -8,7 +8,7 @@
 //! resolved by the timezone library, and an explicit UTC timestamp is used
 //! verbatim as the exclusive expiry.
 
-use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 
 /// The default reply window: seven calendar days in the owner's timezone.
@@ -183,6 +183,40 @@ pub fn advance_rung(current: u32, accepted: u32) -> u32 {
     current.max(accepted)
 }
 
+/// Whole business days (Monday–Friday) between two civil dates. The count is
+/// the number of business days strictly after `from` and on or before `to`.
+pub fn business_days_between(from: NaiveDate, to: NaiveDate) -> i64 {
+    let mut days = 0i64;
+    let mut cursor = from;
+    while cursor < to {
+        cursor = cursor.succ_opt().expect("civil date successor");
+        if !matches!(
+            cursor.weekday(),
+            chrono::Weekday::Sat | chrono::Weekday::Sun
+        ) {
+            days += 1;
+        }
+    }
+    days
+}
+
+/// Add `days` business days to a civil date, skipping weekends. A non-positive
+/// count returns the input date unchanged.
+pub fn add_business_days(date: NaiveDate, days: i64) -> NaiveDate {
+    let mut remaining = days.max(0);
+    let mut cursor = date;
+    while remaining > 0 {
+        cursor = cursor.succ_opt().expect("civil date successor");
+        if !matches!(
+            cursor.weekday(),
+            chrono::Weekday::Sat | chrono::Weekday::Sun
+        ) {
+            remaining -= 1;
+        }
+    }
+    cursor
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,5 +378,26 @@ mod tests {
         assert_eq!(advance_rung(3, 1), 3);
         assert_eq!(advance_rung(0, 1), 1);
         assert_eq!(advance_rung(2, 2), 2);
+    }
+
+    #[test]
+    fn business_days_skip_weekends() {
+        // 2026-11-21 is a Saturday; 2026-11-23 is a Monday.
+        let sat = NaiveDate::from_ymd_opt(2026, 11, 21).unwrap();
+        let mon = NaiveDate::from_ymd_opt(2026, 11, 23).unwrap();
+        assert_eq!(business_days_between(sat, mon), 1);
+        assert_eq!(add_business_days(sat, 1), mon);
+        // Friday -> next Monday is one business day.
+        let fri = NaiveDate::from_ymd_opt(2026, 11, 20).unwrap();
+        assert_eq!(add_business_days(fri, 1), mon);
+        assert_eq!(business_days_between(fri, mon), 1);
+        // Two business days from Friday lands on Tuesday.
+        let tue = NaiveDate::from_ymd_opt(2026, 11, 24).unwrap();
+        assert_eq!(add_business_days(fri, 2), tue);
+        // A full calendar week is five business days.
+        let next_fri = NaiveDate::from_ymd_opt(2026, 11, 27).unwrap();
+        assert_eq!(add_business_days(fri, 5), next_fri);
+        // Non-positive stays put.
+        assert_eq!(add_business_days(fri, 0), fri);
     }
 }

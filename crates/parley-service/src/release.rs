@@ -220,6 +220,7 @@ pub(crate) async fn evaluate_material(
     tx: &mut Transaction<'_, Sqlite>,
     material: &HeadMaterial,
     overrides: &BTreeMap<String, String>,
+    schedule_gates: bool,
 ) -> Result<gate::GateResult, WorkspaceError> {
     let (exchange_state,they_get,i_get,_,attested,digest_stored)=sqlx::query_as::<_,(String,String,String,i64,i64,Option<String>)>("SELECT o.state,x.they_get,x.i_get,x.version_no,x.fairness_attested,x.attestation_digest FROM opportunity o JOIN exchange_version x ON x.opportunity_id=o.id WHERE x.opportunity_id=? AND x.recipient_id=? AND x.version_no=?")
         .bind(&material.opportunity_id).bind(&material.recipient_id).bind(material.exchange_version).fetch_optional(&mut **tx).await?.ok_or_else(||WorkspaceError::Invalid("exchange version is unavailable".into()))?;
@@ -536,14 +537,31 @@ pub(crate) async fn evaluate_material(
         fluency_ok,
         lint_error,
         hook_fresh: !uses_hook,
-        cadence_ok: sqlx::query_scalar::<_, i64>(
-            "SELECT touch_count FROM party_policy WHERE party_id=?",
-        )
-        .bind(&material.recipient_id)
-        .fetch_one(&mut **tx)
-        .await?
-            < 3,
-        daily_cap_ok: true,
+        cadence_ok: if schedule_gates {
+            let pack_id = owner_pack_id(tx).await?;
+            let context =
+                cadence_context(tx, &material.opportunity_id, &material.recipient_id).await?;
+            let cap_ok = context.touch_count < MAX_TOUCHES;
+            let spacing_ok = match &context.last_sent_at {
+                Some(last) => {
+                    let now_date = utc_date_of(&super::now_utc())?;
+                    let last_date = utc_date_of(last)?;
+                    let needed = followup_days_for_touch(&pack_id, context.touch_count);
+                    let earliest = parley_domain::lifecycle::add_business_days(last_date, needed);
+                    now_date >= earliest
+                }
+                None => true,
+            };
+            cap_ok && spacing_ok
+        } else {
+            true
+        },
+        daily_cap_ok: if schedule_gates {
+            let pack_id = owner_pack_id(tx).await?;
+            sends_today_count(tx).await? < i64::from(pack_daily_cap(&pack_id))
+        } else {
+            true
+        },
         body_char_limit: char_limit,
         brief_reviewed: true,
         override_reasons: overrides.clone(),
@@ -572,6 +590,87 @@ fn contains_glossary_term(body: &str, term: &str) -> bool {
     })
 }
 
+/// Maximum touches before a party moves to dormant (RFC-0001 §10.6 CAD-2,
+/// initial calibration from the job_search pack).
+pub(crate) const MAX_TOUCHES: i64 = 3;
+
+pub(crate) fn pack_daily_cap(pack_id: &str) -> u32 {
+    match pack_id {
+        "job_search" => 12,
+        _ => 15,
+    }
+}
+
+/// Business-day follow-up interval after `prior_touches` sends
+/// (RFC-0001 §10.6 CAD-1, pack cadence defaults).
+pub(crate) fn followup_days_for_touch(pack_id: &str, prior_touches: i64) -> i64 {
+    let sequence: &[i64] = if pack_id == "job_search" {
+        &[4, 8]
+    } else {
+        &[3, 7]
+    };
+    let index = (prior_touches - 1).clamp(0, sequence.len() as i64 - 1) as usize;
+    sequence[index]
+}
+
+fn utc_date_of(timestamp: &str) -> Result<chrono::NaiveDate, WorkspaceError> {
+    chrono::NaiveDate::parse_from_str(&timestamp[..10], "%Y-%m-%d")
+        .map_err(|_| WorkspaceError::Invalid("stored timestamp has an unexpected date".into()))
+}
+
+async fn owner_pack_id(tx: &mut Transaction<'_, Sqlite>) -> Result<String, WorkspaceError> {
+    Ok(
+        sqlx::query_scalar("SELECT pack_id FROM owner_profile WHERE id=1")
+            .fetch_one(&mut **tx)
+            .await?,
+    )
+}
+
+struct CadenceContext {
+    last_sent_at: Option<String>,
+    touch_count: i64,
+}
+
+async fn cadence_context(
+    tx: &mut Transaction<'_, Sqlite>,
+    opportunity_id: &str,
+    recipient_id: &str,
+) -> Result<CadenceContext, WorkspaceError> {
+    let row = sqlx::query_as::<_, (Option<String>, i64)>(
+        "SELECT ct.sent_at, pp.touch_count FROM contact_thread ct JOIN party_policy pp ON pp.party_id=ct.recipient_id WHERE ct.opportunity_id=? AND ct.recipient_id=?",
+    )
+    .bind(opportunity_id)
+    .bind(recipient_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(match row {
+        Some((last_sent_at, touch_count)) => CadenceContext {
+            last_sent_at,
+            touch_count,
+        },
+        None => CadenceContext {
+            last_sent_at: None,
+            touch_count: 0,
+        },
+    })
+}
+
+async fn sends_today_count(tx: &mut Transaction<'_, Sqlite>) -> Result<i64, WorkspaceError> {
+    let today = &super::now_utc()[..10];
+    let start = format!("{today}T00:00:00.000Z");
+    let next_day = chrono::NaiveDate::parse_from_str(today, "%Y-%m-%d")
+        .map_err(|_| WorkspaceError::Invalid("today has an unexpected date".into()))?
+        .succ_opt()
+        .expect("tomorrow exists");
+    let end = format!("{}T00:00:00.000Z", next_day.format("%Y-%m-%d"));
+    Ok(
+        sqlx::query_scalar("SELECT count(*) FROM send WHERE sent_at >= ? AND sent_at < ?")
+            .bind(start)
+            .bind(end)
+            .fetch_one(&mut **tx)
+            .await?,
+    )
+}
 fn split_sentences(body: &str) -> Vec<String> {
     let mut result = Vec::new();
     let mut start = 0;
@@ -664,7 +763,15 @@ fn has_sensitive_content(text: &str) -> bool {
     TERMS.iter().any(|term| normalized.contains(term))
 }
 
-async fn capacity_claim_matches_ledger(
+/// Identify a capacity claim in the slot fills: a `capacity_line` typed slot.
+pub(crate) fn capacity_line_fill(fills: &[super::materials::SlotFill]) -> Option<String> {
+    fills
+        .iter()
+        .find(|fill| fill.slot.starts_with("capacity_line:"))
+        .map(|fill| fill.value.clone())
+}
+
+pub(crate) async fn capacity_claim_matches_ledger(
     tx: &mut Transaction<'_, Sqlite>,
     value: &str,
 ) -> Result<bool, WorkspaceError> {
@@ -681,7 +788,7 @@ async fn capacity_claim_matches_ledger(
     Ok(extract_number(value) == Some(remaining))
 }
 
-fn extract_number(text: &str) -> Option<i64> {
+pub(crate) fn extract_number(text: &str) -> Option<i64> {
     text.split(|ch: char| !ch.is_ascii_digit())
         .find(|part| !part.is_empty())
         .and_then(|part| part.parse().ok())
@@ -814,7 +921,7 @@ impl Workspace {
         verify_attachment_eligible(&mut tx, &material).await?;
         let overrides: BTreeMap<String, String> = serde_json::from_str(&approval.overrides_json)
             .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
-        let checked = evaluate_material(&mut tx, &material, &overrides).await?;
+        let checked = evaluate_material(&mut tx, &material, &overrides, false).await?;
         if !checked.copy_enabled {
             return Err(WorkspaceError::Invalid(
                 "current release gate blocks this material".into(),
@@ -988,7 +1095,7 @@ impl Workspace {
         verify_attachment_eligible(&mut tx, &material).await?;
         let overrides: BTreeMap<String, String> = serde_json::from_str(&approval.overrides_json)
             .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
-        let checked = evaluate_material(&mut tx, &material, &overrides).await?;
+        let checked = evaluate_material(&mut tx, &material, &overrides, false).await?;
         if !checked.copy_enabled {
             return Err(WorkspaceError::Invalid(
                 "current release gate blocks this download".into(),

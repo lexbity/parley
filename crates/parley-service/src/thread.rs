@@ -11,7 +11,10 @@
 //! live contact remains.
 
 use super::materials::{event as append_event, workspace_error};
-use super::release::{evaluate_material, load_approval, load_head};
+use super::release::{
+    capacity_claim_matches_ledger, capacity_line_fill, evaluate_material, followup_days_for_touch,
+    load_approval, load_head,
+};
 use super::{AppState, Workspace, WorkspaceError, authenticate, new_id, now_utc};
 use axum::{
     Json, Router,
@@ -52,6 +55,7 @@ pub struct ThreadRecord {
     pub state: String,
     pub current_touch: i64,
     pub expires_at: Option<String>,
+    pub next_action_at: Option<String>,
     pub sent_at: Option<String>,
     pub updated_at: String,
 }
@@ -68,6 +72,7 @@ pub struct SendRecord {
     pub sent_at: String,
     pub response_deadline: String,
     pub deadline_zone: String,
+    pub next_action_at: Option<String>,
     pub capacity_charged: bool,
 }
 
@@ -255,6 +260,20 @@ fn parse_utc(value: &str) -> Result<chrono::DateTime<chrono::Utc>, WorkspaceErro
         .map_err(|_| WorkspaceError::Invalid("timestamp must be RFC3339 UTC".into()))
 }
 
+/// Next follow-up action at the pack cadence after `prior_touches` sends
+/// (RFC-0001 §10.6 CAD-1), measured in business days from today.
+fn plan_next_action(
+    now: &str,
+    prior_touches: i64,
+    pack_id: &str,
+) -> Result<String, WorkspaceError> {
+    let today = chrono::NaiveDate::parse_from_str(&now[..10], "%Y-%m-%d")
+        .map_err(|_| WorkspaceError::Invalid("now has an unexpected date".into()))?;
+    let interval = followup_days_for_touch(pack_id, prior_touches);
+    let target = parley_domain::lifecycle::add_business_days(today, interval);
+    Ok(format!("{}T00:00:00.000Z", target.format("%Y-%m-%d")))
+}
+
 struct ThreadRow {
     id: String,
     opportunity_id: String,
@@ -415,43 +434,6 @@ async fn recoup_party_decline(
     Ok(())
 }
 
-async fn ledger_row(
-    tx: &mut Transaction<'_, Sqlite>,
-) -> Result<Option<(String, String, f64, f64)>, WorkspaceError> {
-    Ok(sqlx::query_as(
-        "SELECT period,unit,total,committed FROM capacity_ledger WHERE period=? AND unit=?",
-    )
-    .bind(DEFAULT_CAPACITY_PERIOD)
-    .bind(DEFAULT_CAPACITY_UNIT)
-    .fetch_optional(&mut **tx)
-    .await?)
-}
-
-/// Identify a capacity claim in the slot fills: a `capacity_line` typed slot.
-fn capacity_line_fill(fills: &[super::materials::SlotFill]) -> Option<String> {
-    fills
-        .iter()
-        .find(|fill| fill.slot.starts_with("capacity_line:"))
-        .map(|fill| fill.value.clone())
-}
-
-fn extract_number(text: &str) -> Option<i64> {
-    text.split(|ch: char| !ch.is_ascii_digit())
-        .find(|part| !part.is_empty())
-        .and_then(|part| part.parse().ok())
-}
-
-async fn capacity_claim_matches_ledger(
-    tx: &mut Transaction<'_, Sqlite>,
-    value: &str,
-) -> Result<bool, WorkspaceError> {
-    let Some((_, _, total, committed)) = ledger_row(tx).await? else {
-        return Ok(false);
-    };
-    let remaining = (total - committed).round() as i64;
-    Ok(extract_number(value) == Some(remaining))
-}
-
 impl Workspace {
     pub async fn list_threads(
         &self,
@@ -459,7 +441,7 @@ impl Workspace {
         recipient_id: Option<&str>,
     ) -> Result<Vec<ThreadRecord>, WorkspaceError> {
         let mut builder = sqlx::QueryBuilder::new(
-            "SELECT id,opportunity_id,recipient_id,state,current_touch,expires_at,sent_at,updated_at FROM contact_thread WHERE 1=1",
+            "SELECT id,opportunity_id,recipient_id,state,current_touch,expires_at,next_action_at,sent_at,updated_at FROM contact_thread WHERE 1=1",
         );
         if let Some(opportunity_id) = opportunity_id {
             builder.push(" AND opportunity_id = ");
@@ -479,6 +461,7 @@ impl Workspace {
                 i64,
                 Option<String>,
                 Option<String>,
+                Option<String>,
                 String,
             )>()
             .fetch_all(self.pool())
@@ -493,6 +476,7 @@ impl Workspace {
                     state,
                     current_touch,
                     expires_at,
+                    next_action_at,
                     sent_at,
                     updated_at,
                 )| {
@@ -503,6 +487,7 @@ impl Workspace {
                         state,
                         current_touch,
                         expires_at,
+                        next_action_at,
                         sent_at,
                         updated_at,
                     }
@@ -660,7 +645,8 @@ impl Workspace {
         let primary_overrides: BTreeMap<String, String> =
             serde_json::from_str(&primary_approval.overrides_json)
                 .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
-        let primary_gate = evaluate_material(&mut tx, &primary_head, &primary_overrides).await?;
+        let primary_gate =
+            evaluate_material(&mut tx, &primary_head, &primary_overrides, true).await?;
         if !primary_gate.copy_enabled {
             return Err(WorkspaceError::Invalid(format!(
                 "mark sent blocked: {}",
@@ -709,7 +695,7 @@ impl Workspace {
                 serde_json::from_str(&companion_approval.overrides_json)
                     .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
             let companion_gate =
-                evaluate_material(&mut tx, &companion_head, &companion_overrides).await?;
+                evaluate_material(&mut tx, &companion_head, &companion_overrides, true).await?;
             if !companion_gate.copy_enabled {
                 return Err(WorkspaceError::Invalid(format!(
                     "companion release blocked: {}",
@@ -765,6 +751,10 @@ impl Workspace {
 
         let touch_no = thread.current_touch + 1;
         let send_id = new_id(&thread.id);
+        let pack_id: String = sqlx::query_scalar("SELECT pack_id FROM owner_profile WHERE id=1")
+            .fetch_one(&mut *tx)
+            .await?;
+        let next_action_at = plan_next_action(now, thread.current_touch, &pack_id)?;
         let gate_json = serde_json::to_string(&primary_gate)
             .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
         let overrides_json = serde_json::to_string(&primary_overrides)
@@ -801,10 +791,11 @@ impl Workspace {
             .await?;
         }
         sqlx::query(
-            "UPDATE contact_thread SET state='waiting',current_touch=?,expires_at=?,sent_at=?,updated_at=? WHERE id=?",
+            "UPDATE contact_thread SET state='waiting',current_touch=?,expires_at=?,next_action_at=?,sent_at=?,updated_at=? WHERE id=?",
         )
         .bind(touch_no)
         .bind(&deadline_str)
+        .bind(&next_action_at)
         .bind(now)
         .bind(now)
         .bind(&thread.id)
@@ -844,6 +835,7 @@ impl Workspace {
             sent_at: now.to_owned(),
             response_deadline: deadline_str,
             deadline_zone: resolved.zone.to_string(),
+            next_action_at: Some(next_action_at),
             capacity_charged,
         })
     }
@@ -1006,7 +998,7 @@ impl Workspace {
         let next = apply_thread_event(thread.state, ThreadEvent::Reopen).ok_or_else(|| {
             WorkspaceError::Invalid("thread cannot be reopened from its current state".into())
         })?;
-        sqlx::query("UPDATE contact_thread SET state=?,expires_at=NULL,updated_at=? WHERE id=?")
+        sqlx::query("UPDATE contact_thread SET state=?,expires_at=NULL,next_action_at=NULL,updated_at=? WHERE id=?")
             .bind(thread_state_name(next))
             .bind(now)
             .bind(thread_id)
@@ -1054,6 +1046,7 @@ impl Workspace {
             state: thread_state_name(next).to_owned(),
             current_touch: thread.current_touch,
             expires_at: None,
+            next_action_at: None,
             sent_at: None,
             updated_at: now.to_owned(),
         })

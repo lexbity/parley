@@ -287,6 +287,7 @@ async fn create_released_material(
     body: &str,
     slots: Value,
     bindings: Value,
+    overrides: Value,
 ) -> ReleasedMaterial {
     let (status, material) = request(
         port,
@@ -309,10 +310,7 @@ async fn create_released_material(
         port,
         "POST",
         &format!("/api/v1/materials/{material_id}/approve"),
-        Some(json!({"override_reasons":{
-            "S1 GIVE_FIRST": "This is a reviewed factual outreach, not a gift message.",
-            "S2 ANCHOR": "The exact approved text is the anchor for this outreach."
-        }})),
+        Some(json!({"override_reasons": overrides})),
     )
     .await;
     assert_eq!(status, 200, "{approval}");
@@ -390,6 +388,7 @@ async fn s07_mark_sent_deadline_and_capacity_charged_exactly_once() {
             {"sentence_index":0,"claim_type":"generic"},
             {"sentence_index":1,"claim_type":"self_fact","ref_kind":"resource","ref_id":proof,"approved_wording":"I have 15 project slots open this quarter."}
         ]),
+        json!({"S1 GIVE_FIRST":"This is a reviewed factual outreach, not a gift message.","S2 ANCHOR":"The exact approved text is the anchor for this outreach."}),
     )
     .await;
 
@@ -475,6 +474,7 @@ async fn s07_timeout_equality_is_inclusive_and_happens_exactly_once_per_touch() 
         "Hello.",
         json!([]),
         json!([{"sentence_index":0,"claim_type":"generic"}]),
+    json!({"S1 GIVE_FIRST":"This is a reviewed factual outreach, not a gift message.","S2 ANCHOR":"The exact approved text is the anchor for this outreach."}),
     )
     .await;
 
@@ -578,6 +578,7 @@ async fn s07_decline_suppresses_party_across_opportunities_but_spares_others() {
         "Hello.",
         json!([]),
         json!([{"sentence_index":0,"claim_type":"generic"}]),
+    json!({"S1 GIVE_FIRST":"This is a reviewed factual outreach, not a gift message.","S2 ANCHOR":"The exact approved text is the anchor for this outreach."}),
     )
     .await;
     let material_a_second = create_released_material(
@@ -589,6 +590,7 @@ async fn s07_decline_suppresses_party_across_opportunities_but_spares_others() {
         "Hello.",
         json!([]),
         json!([{"sentence_index":0,"claim_type":"generic"}]),
+    json!({"S1 GIVE_FIRST":"This is a reviewed factual outreach, not a gift message.","S2 ANCHOR":"The exact approved text is the anchor for this outreach."}),
     )
     .await;
     let material_b_first = create_released_material(
@@ -600,6 +602,7 @@ async fn s07_decline_suppresses_party_across_opportunities_but_spares_others() {
         "Hello.",
         json!([]),
         json!([{"sentence_index":0,"claim_type":"generic"}]),
+    json!({"S1 GIVE_FIRST":"This is a reviewed factual outreach, not a gift message.","S2 ANCHOR":"The exact approved text is the anchor for this outreach."}),
     )
     .await;
 
@@ -702,6 +705,7 @@ async fn s07_decline_suppresses_party_across_opportunities_but_spares_others() {
         "Hello.",
         json!([]),
         json!([{"sentence_index":0,"claim_type":"generic"}]),
+    json!({"S1 GIVE_FIRST":"This is a reviewed factual outreach, not a gift message.","S2 ANCHOR":"The exact approved text is the anchor for this outreach."}),
     )
     .await;
     let (status, released_second) = request(
@@ -736,6 +740,7 @@ async fn s07_companion_bound_to_another_recipient_rolls_back_whole_send() {
         "Hello.",
         json!([]),
         json!([{"sentence_index":0,"claim_type":"generic"}]),
+    json!({"S1 GIVE_FIRST":"This is a reviewed factual outreach, not a gift message.","S2 ANCHOR":"The exact approved text is the anchor for this outreach."}),
     )
     .await;
     let material_second = create_released_material(
@@ -747,6 +752,7 @@ async fn s07_companion_bound_to_another_recipient_rolls_back_whole_send() {
         "Hello.",
         json!([]),
         json!([{"sentence_index":0,"claim_type":"generic"}]),
+    json!({"S1 GIVE_FIRST":"This is a reviewed factual outreach, not a gift message.","S2 ANCHOR":"The exact approved text is the anchor for this outreach."}),
     )
     .await;
 
@@ -783,6 +789,225 @@ async fn s07_companion_bound_to_another_recipient_rolls_back_whole_send() {
         .await
         .unwrap();
     assert_eq!(threads, 0);
+
+    service.shutdown().await;
+    let _ = fs::remove_file(path);
+}
+
+const K_OVERRIDES: &str = r#"{"S1 GIVE_FIRST":"This is a reviewed factual outreach, not a gift message.","S2 ANCHOR":"The exact approved text is the anchor for this outreach."}"#;
+
+async fn create_minimal_material(
+    port: u16,
+    opportunity: &str,
+    recipient: &str,
+    template: &str,
+    exchange: i64,
+    overrides: Value,
+) -> ReleasedMaterial {
+    create_released_material(
+        port,
+        opportunity,
+        recipient,
+        template,
+        exchange,
+        "Hello.",
+        json!([]),
+        json!([{"sentence_index":0,"claim_type":"generic"}]),
+        overrides,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn s07_next_action_at_and_cadence_spacing_gate_are_real() {
+    let (path, workspace, port, service) = setup().await;
+    let recipient = create_party(port, "Dana Lee").await;
+    let opportunity = create_opportunity(port, "Onboarding", &recipient).await;
+    let exchange_version = prepare_exchange(port, &opportunity, &recipient).await;
+    let template = activate_template(port, "Hello", "Hello.").await;
+
+    let first = create_minimal_material(
+        port,
+        &opportunity,
+        &recipient,
+        &template,
+        exchange_version,
+        serde_json::from_str(K_OVERRIDES).unwrap(),
+    )
+    .await;
+    let (status, sent) = mark_sent(
+        port,
+        "t-spacing",
+        &opportunity,
+        &recipient,
+        &first,
+        json!([]),
+        None,
+    )
+    .await;
+    assert_eq!(status, 201, "{sent}");
+    assert_eq!(sent["touch_no"], 1);
+
+    // Next action is the pack cadence (4 business days for the first touch).
+    let sent_date =
+        chrono::NaiveDate::parse_from_str(&sent["sent_at"].as_str().unwrap()[..10], "%Y-%m-%d")
+            .unwrap();
+    let expected_next = parley_domain::lifecycle::add_business_days(sent_date, 4);
+    let expected_next_str = format!("{}T00:00:00.000Z", expected_next.format("%Y-%m-%d"));
+    assert_eq!(sent["next_action_at"].as_str().unwrap(), expected_next_str);
+    let thread_next: Option<String> =
+        sqlx::query_scalar("SELECT next_action_at FROM contact_thread WHERE id='t-spacing'")
+            .fetch_one(workspace.pool())
+            .await
+            .unwrap();
+    assert_eq!(thread_next.as_deref(), Some(expected_next_str.as_str()));
+
+    // An immediate same-day send violates S7 CADENCE (no override).
+    let second = create_minimal_material(
+        port,
+        &opportunity,
+        &recipient,
+        &template,
+        exchange_version,
+        serde_json::from_str(K_OVERRIDES).unwrap(),
+    )
+    .await;
+    let (status, blocked) = mark_sent(
+        port,
+        "t-spacing",
+        &opportunity,
+        &recipient,
+        &second,
+        json!([]),
+        None,
+    )
+    .await;
+    assert_eq!(status, 422, "{blocked}");
+    assert!(
+        blocked["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("S7 CADENCE")
+    );
+
+    // With an explicit S7 override the follow-up is allowed and plans the
+    // second-touch cadence (8 business days).
+    let overridden = serde_json::from_str::<Value>(K_OVERRIDES).unwrap();
+    let with_spacing = json!({
+        "S1 GIVE_FIRST": overridden["S1 GIVE_FIRST"],
+        "S2 ANCHOR": overridden["S2 ANCHOR"],
+        "S7 CADENCE": "The follow-up is scheduled at the pack cadence."
+    });
+    let third = create_minimal_material(
+        port,
+        &opportunity,
+        &recipient,
+        &template,
+        exchange_version,
+        with_spacing.clone(),
+    )
+    .await;
+    let (status, followup) = mark_sent(
+        port,
+        "t-spacing",
+        &opportunity,
+        &recipient,
+        &third,
+        json!([]),
+        None,
+    )
+    .await;
+    assert_eq!(status, 201, "{followup}");
+    assert_eq!(followup["touch_no"], 2);
+    let followup_sent =
+        chrono::NaiveDate::parse_from_str(&followup["sent_at"].as_str().unwrap()[..10], "%Y-%m-%d")
+            .unwrap();
+    let expected_followup = parley_domain::lifecycle::add_business_days(followup_sent, 4);
+    let expected_followup_str = format!("{}T00:00:00.000Z", expected_followup.format("%Y-%m-%d"));
+    assert_eq!(
+        followup["next_action_at"].as_str().unwrap(),
+        expected_followup_str
+    );
+
+    service.shutdown().await;
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn s07_daily_cap_gate_is_real_and_enforced_per_day() {
+    let (path, workspace, port, service) = setup().await;
+    let recipient = create_party(port, "Dana Lee").await;
+    let opportunity = create_opportunity(port, "Onboarding", &recipient).await;
+    let exchange_version = prepare_exchange(port, &opportunity, &recipient).await;
+    let template = activate_template(port, "Hello", "Hello.").await;
+    let overrides = serde_json::from_str::<Value>(K_OVERRIDES).unwrap();
+    let with_spacing = json!({
+        "S1 GIVE_FIRST": overrides["S1 GIVE_FIRST"],
+        "S2 ANCHOR": overrides["S2 ANCHOR"],
+        "S7 CADENCE": "The follow-up is scheduled at the pack cadence."
+    });
+
+    // job_search daily cap is 12; fill it exactly.
+    for index in 0..12 {
+        let material = create_minimal_material(
+            port,
+            &opportunity,
+            &recipient,
+            &template,
+            exchange_version,
+            with_spacing.clone(),
+        )
+        .await;
+        let (status, sent) = mark_sent(
+            port,
+            "t-cap",
+            &opportunity,
+            &recipient,
+            &material,
+            json!([]),
+            None,
+        )
+        .await;
+        assert_eq!(status, 201, "send {index}: {sent}");
+    }
+    let sends: i64 = sqlx::query_scalar("SELECT count(*) FROM send")
+        .fetch_one(workspace.pool())
+        .await
+        .unwrap();
+    assert_eq!(sends, 12);
+
+    // The thirteenth send fails S8 DAILY_CAP.
+    let thirteenth = create_minimal_material(
+        port,
+        &opportunity,
+        &recipient,
+        &template,
+        exchange_version,
+        with_spacing.clone(),
+    )
+    .await;
+    let (status, blocked) = mark_sent(
+        port,
+        "t-cap",
+        &opportunity,
+        &recipient,
+        &thirteenth,
+        json!([]),
+        None,
+    )
+    .await;
+    assert_eq!(status, 422, "{blocked}");
+    assert!(
+        blocked["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("S8 DAILY_CAP")
+    );
+    let sends_after: i64 = sqlx::query_scalar("SELECT count(*) FROM send")
+        .fetch_one(workspace.pool())
+        .await
+        .unwrap();
+    assert_eq!(sends_after, 12);
 
     service.shutdown().await;
     let _ = fs::remove_file(path);
