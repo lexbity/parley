@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/Error","body":{"error":{"code":"INVALID_REQUEST","message":"Thread cannot be reopened from its current state","details":[]}}}

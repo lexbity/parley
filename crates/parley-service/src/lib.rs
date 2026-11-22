@@ -48,6 +48,7 @@ mod board;
 mod jobs;
 mod materials;
 mod release;
+mod thread;
 mod writing;
 mod writing_jobs;
 mod web_assets {
@@ -894,7 +895,23 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
     let address = listener.local_addr().map_err(|error| error.to_string())?;
     let bootstrap_secret = random_hex(32);
     let workspace = Arc::new(workspace);
+    // Reconcile due threads before first read (RFC-0002 BE-08): a deadline
+    // that expired while the service was down must be resolved exactly once,
+    // and no deadline-sensitive read should return an expired thread as
+    // actionable.
+    let _ = workspace.reconcile_deadlines(&now_utc()).await;
     let jobs = jobs::start(workspace.clone(), 32);
+    let _reconcile_loop = {
+        let workspace = workspace.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(15));
+            loop {
+                interval.tick().await;
+                let now = now_utc();
+                let _ = workspace.reconcile_deadlines(&now).await;
+            }
+        })
+    };
     let state = AppState {
         workspace,
         authority: address.to_string(),
@@ -924,6 +941,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         .merge(materials::routes())
         .merge(release::routes())
         .merge(blob::routes())
+        .merge(thread::routes())
         .merge(jobs::routes())
         .merge(assistant::routes())
         .merge(writing::routes())

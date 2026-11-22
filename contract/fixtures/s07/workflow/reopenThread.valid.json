@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/ThreadRecord","body":{"id":"t-1","opportunity_id":"op-1","recipient_id":"rec-1","state":"waiting","current_touch":2,"expires_at":null,"sent_at":null,"updated_at":"2026-11-21T12:00:00Z"}}

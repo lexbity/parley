@@ -28,6 +28,7 @@ pub const REGISTERED_SLOT_TYPES: &[&str] = &[
     "artifact",
     "ask",
     "custom",
+    "capacity_line",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]

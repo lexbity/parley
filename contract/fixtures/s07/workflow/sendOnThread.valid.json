@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/SendInput","body":{"opportunity_id":"op-1","recipient_id":"rec-1","primary":{"material_id":"mat-1","version":1,"release_id":"rel-1"},"companions":[],"deadline":{"days":7}}}

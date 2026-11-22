@@ -6,6 +6,8 @@ publish.workspace = true
 
 [dependencies]
 axum = "0.8.9"
+chrono = "0.4.41"
+chrono-tz = "0.10.4"
 futures-util = "0.3.31"
 parley-domain.workspace = true
 rand = "0.10.4"

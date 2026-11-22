@@ -1870,7 +1870,8 @@ async fn validate_slot_fills(
                 }
             }
             "ask" if fill.resource_id.is_none() => {}
-            "custom" if fill.resource_id.is_none() => {}
+            "custom" | "capacity_line" | "jargon_term" | "identity_link" | "hook"
+                if fill.resource_id.is_none() => {}
             _ => {
                 return Err(WorkspaceError::Invalid(format!(
                     "slot resolver for '{kind}' is unavailable or its value does not match the saved record"

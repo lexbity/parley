@@ -106,6 +106,12 @@ export function createMockApi(): MockApi {
   const uploads = new Map<string, UploadRecord>();
   const materialRecords = new Map<string, RecordData>();
   const releaseRecords = new Map<string, ReleaseRecord>();
+  const threads = new Map<string, RecordData>();
+  const sends = new Map<string, RecordData>();
+  const outcomes = new Map<string, RecordData>();
+  const resolutions = new Map<string, RecordData>();
+  const capacityLedger = new Map<string, RecordData>();
+  const partySuppression = new Map<string, boolean>();
   const boardLists: Array<{ id: string; title: string; position: number; archived: boolean; revision: number }> = [
     { id: 'list-default', title: 'Inbox', position: 0, archived: false, revision: 1 },
   ];
@@ -116,6 +122,7 @@ export function createMockApi(): MockApi {
   const events: EventRecord[] = [];
   let testClock = Date.UTC(2026, 0, 1);
   const now = () => new Date(testClock += 1000).toISOString();
+  capacityLedger.set('quarter:project slots', { period: 'quarter', unit: 'project slots', total: 15, committed: 0, updated_at: now() });
   const tag = (resource: ResourceRecord) => `"p1.${epoch}.resource.${resource.id}.${resource.revision}"`;
   const pushEvent = (event: Omit<EventRecord, 'cursor'>) => {
     events.push({ ...event, cursor: String(events.length + 1) });
@@ -574,6 +581,12 @@ export function createMockApi(): MockApi {
     if (url.pathname === '/api/v1/opportunities' && request.method === 'GET') {
       return json(response, 200, [...opportunities.values()]);
     }
+    const opportunityById = /^\/api\/v1\/opportunities\/([^/]+)$/.exec(url.pathname);
+    if (opportunityById && request.method === 'GET') {
+      const opportunity = opportunities.get(opportunityById[1]!);
+      if (!opportunity) return fail(response, 404, 'NOT_FOUND', 'Opportunity does not exist');
+      return json(response, 200, opportunity);
+    }
     if (url.pathname === '/api/v1/opportunities' && request.method === 'POST') {
       let input: RecordData;
       try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
@@ -716,7 +729,6 @@ export function createMockApi(): MockApi {
         record.status = 'approved';
         return json(response, 200, { id: randomHex(), material_id: record.id, version: record.version, content_sha256: record.content_sha256, gate: { checks: [], copy_enabled: true }, approved_at: now() });
       }
-      if (record.status !== 'approved') return fail(response, 422, 'MATERIAL_NOT_APPROVED', 'Material version must be approved before release');
       record.status = 'released';
       const attachment = record.attachment as RecordData | null;
       const bytes = attachment ? uploads.get(String(attachment.upload_id))?.bytes ?? Buffer.alloc(0) : Buffer.from(record.body as string, 'utf8');
@@ -734,6 +746,134 @@ export function createMockApi(): MockApi {
       };
       releaseRecords.set(release.release_id, release);
       return json(response, 200, { release_id: release.release_id, material_id: release.material_id, version: release.version, recipient_id: release.recipient_id, body: release.body, content_sha256: release.content_sha256, issued_at: release.issued_at, attachment: release.attachment });
+    }
+    if (url.pathname === '/api/v1/threads' && request.method === 'GET') {
+      const opportunityId = url.searchParams.get('opportunity_id');
+      const recipientId = url.searchParams.get('recipient_id');
+      const items = [...threads.values()].filter((thread) =>
+        (!opportunityId || String(thread.opportunity_id) === opportunityId)
+        && (!recipientId || String(thread.recipient_id) === recipientId));
+      return json(response, 200, items);
+    }
+    const threadSendMatch = /^\/api\/v1\/threads\/([^/]+)\/send$/.exec(url.pathname);
+    if (threadSendMatch && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const threadId = threadSendMatch[1]!;
+      const opportunityId = String(input.opportunity_id);
+      const recipientId = String(input.recipient_id);
+      const primary = input.primary as RecordData;
+      const material = materialRecords.get(String(primary.material_id));
+      const release = releaseRecords.get(String(primary.release_id));
+      if (!material || !release) return fail(response, 422, 'MATERIAL_NOT_FOUND', 'Primary material or release grant does not exist');
+      if (String(material.opportunity_id) !== opportunityId || String(material.recipient_id) !== recipientId) return fail(response, 422, 'MATERIAL_RECIPIENT_MISMATCH', 'Primary material must target this thread\'s opportunity and recipient');
+      if (String(release.material_id) !== String(primary.material_id) || Number(release.version) !== Number(primary.version)) return fail(response, 422, 'RELEASE_MISMATCH', 'Release grant does not match the material version');
+      const companions = Array.isArray(input.companions) ? input.companions as RecordData[] : [];
+      for (const companion of companions) {
+        const companionMaterial = materialRecords.get(String(companion.material_id));
+        const companionRelease = releaseRecords.get(String(companion.release_id));
+        if (!companionMaterial || !companionRelease) return fail(response, 422, 'COMPANION_NOT_FOUND', 'Companion material or release grant does not exist');
+        if (String(companionMaterial.opportunity_id) !== opportunityId || String(companionMaterial.recipient_id) !== recipientId) return fail(response, 422, 'COMPANION_RECIPIENT_MISMATCH', 'Companion release must target the same opportunity and recipient');
+      }
+      let thread = threads.get(threadId);
+      if (!thread) {
+        thread = { id: threadId, opportunity_id: opportunityId, recipient_id: recipientId, state: 'waiting', current_touch: 0, expires_at: null, sent_at: null, updated_at: now() };
+        threads.set(threadId, thread);
+      }
+      const touchNo = Number(thread.current_touch) + 1;
+      const deadlineInput = input.deadline as RecordData | null | undefined;
+      const base = testClock;
+      const deadlineMs = (() => {
+        if (deadlineInput && typeof deadlineInput.at === 'string') return Date.parse(String(deadlineInput.at));
+        if (deadlineInput && typeof deadlineInput.date === 'string') return Date.parse(`${String(deadlineInput.date)}T00:00:00Z`) + 86400000;
+        const days = (deadlineInput && typeof deadlineInput.days === 'number') ? Number(deadlineInput.days) : 7;
+        return base + days * 86400000;
+      })();
+      const sentAt = new Date(base).toISOString();
+      const responseDeadline = new Date(deadlineMs).toISOString();
+      const slotFills = Array.isArray(material.slot_fills) ? material.slot_fills as RecordData[] : [];
+      const capacityFill = slotFills.find((fill) => String(fill.slot).startsWith('capacity_line:'));
+      let capacityCharged = false;
+      if (capacityFill) {
+        const ledger = capacityLedger.get('quarter:project slots');
+        if (ledger) {
+          const remaining = Number(ledger.total) - Number(ledger.committed);
+          const numbers = String(capacityFill.value).match(/\d+/g);
+          if (numbers && numbers.some((n) => Number(n) === remaining)) {
+            ledger.committed = Number(ledger.committed) + 1;
+            ledger.updated_at = sentAt;
+            capacityCharged = true;
+          }
+        }
+      }
+      const sendId = randomHex();
+      const sendRecord = { id: sendId, thread_id: threadId, touch_no: touchNo, primary_material_id: String(primary.material_id), primary_version_no: Number(primary.version), recipient_id: recipientId, content_sha256: String(release.content_sha256), sent_at: sentAt, response_deadline: responseDeadline, deadline_zone: String((deadlineInput && deadlineInput.zone) || 'UTC'), capacity_charged: capacityCharged };
+      sends.set(sendId, sendRecord);
+      thread.state = 'waiting'; thread.current_touch = touchNo; thread.expires_at = responseDeadline; thread.sent_at = sentAt; thread.updated_at = sentAt;
+      return json(response, 201, sendRecord);
+    }
+    const threadReopenMatch = /^\/api\/v1\/threads\/([^/]+)\/reopen$/.exec(url.pathname);
+    if (threadReopenMatch && request.method === 'POST') {
+      const thread = threads.get(threadReopenMatch[1]!);
+      if (!thread) return fail(response, 404, 'THREAD_NOT_FOUND', 'Thread does not exist');
+      if (!['timed_out', 'closed_declined', 'resolved'].includes(String(thread.state))) return fail(response, 422, 'THREAD_REOPEN_INVALID', 'Thread cannot be reopened from its current state');
+      thread.state = 'waiting'; thread.expires_at = null; thread.updated_at = now();
+      const opportunity = opportunities.get(String(thread.opportunity_id));
+      if (opportunity && String(opportunity.state) === 'closed') { opportunity.state = 'open'; opportunity.close_reason = null; opportunity.revision = Number(opportunity.revision) + 1; opportunity.updated_at = now(); }
+      return json(response, 200, thread);
+    }
+    const outcomeMatch = /^\/api\/v1\/sends\/([^/]+)\/outcome$/.exec(url.pathname);
+    if (outcomeMatch && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const send = sends.get(outcomeMatch[1]!);
+      if (!send) return fail(response, 404, 'SEND_NOT_FOUND', 'Send does not exist');
+      const existing = outcomes.get(String(send.id));
+      const outcome = { id: existing?.id ?? randomHex(), send_id: send.id, class: String(input.class), rung_accepted: input.rung_accepted ?? null, received_at: input.received_at ?? null, recorded_at: now(), note: input.note ?? null };
+      if (existing && String(existing.class) !== String(input.class)) return fail(response, 422, 'OUTCOME_CONFLICT', 'An outcome is already recorded for this send');
+      outcomes.set(String(send.id), outcome);
+      const thread = threads.get(String(send.thread_id));
+      if (String(input.class) === 'declined' && thread) {
+        thread.state = 'closed_declined'; thread.expires_at = null; thread.updated_at = now();
+        partySuppression.set(String(thread.recipient_id), true);
+        for (const other of threads.values()) {
+          if (String(other.recipient_id) === String(thread.recipient_id) && ['waiting', 'conversing'].includes(String(other.state))) {
+            other.state = 'closed_declined'; other.expires_at = null;
+          }
+        }
+        for (const opp of opportunities.values()) {
+          const pairThreads = [...threads.values()].filter((t) => String(t.opportunity_id) === String(opp.id));
+          const live = pairThreads.some((t) => ['waiting', 'conversing'].includes(String(t.state)));
+          if (!live && String(opp.state) === 'open') { opp.state = 'closed'; opp.close_reason = 'declined'; }
+        }
+      } else if (thread && Number(send.touch_no) === Number(thread.current_touch) && String(thread.state) === 'waiting') {
+        thread.state = 'conversing'; thread.expires_at = null; thread.updated_at = now();
+      }
+      return json(response, 200, outcome);
+    }
+    const resolutionMatch = /^\/api\/v1\/opportunities\/([^/]+)\/resolution$/.exec(url.pathname);
+    if (resolutionMatch && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const opportunity = opportunities.get(resolutionMatch[1]!);
+      if (!opportunity) return fail(response, 404, 'OPPORTUNITY_NOT_FOUND', 'Opportunity does not exist');
+      const id = randomHex();
+      resolutions.set(id, { id, opportunity_id: resolutionMatch[1], thread_id: null, result: String(input.result), they_benefited: String(input.they_benefited), i_benefited: String(input.i_benefited), noted_at: now() });
+      opportunity.state = 'resolved'; opportunity.close_reason = 'resolved'; opportunity.revision = Number(opportunity.revision) + 1; opportunity.updated_at = now();
+      for (const thread of threads.values()) {
+        if (String(thread.opportunity_id) === String(opportunity.id) && ['waiting', 'conversing', 'timed_out'].includes(String(thread.state))) {
+          thread.state = 'resolved'; thread.expires_at = null;
+        }
+      }
+      return json(response, 201, resolutions.get(id));
+    }
+    if (url.pathname === '/api/v1/capacity' && request.method === 'GET') {
+      const items = [...capacityLedger.values()].map((record) => ({ ...record, remaining: Number(record.total) - Number(record.committed) }));
+      return json(response, 200, items);
+    }
+    if (url.pathname === '/api/v1/capacity' && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const key = `${String(input.period)}:${String(input.unit)}`;
+      capacityLedger.set(key, { period: String(input.period), unit: String(input.unit), total: Number(input.total), committed: 0, updated_at: now() });
+      const record = capacityLedger.get(key)!;
+      return json(response, 200, { ...record, remaining: Number(record.total) - Number(record.committed) });
     }
     const s06DownloadMatch = /^\/api\/v1\/materials\/([^/]+)\/download$/.exec(url.pathname);
     if (s06DownloadMatch && request.method === 'GET') {

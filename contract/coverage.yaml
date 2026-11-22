@@ -478,3 +478,74 @@ slices:
       owner_role: owner
       package_target: rust
       evidence_path: contract/fixtures/s06/workflow/evidence.md
+  s07:
+    - requirement: B-FR-4
+      operationId: sendOnThread
+      test_id: s07_mark_sent_deadline_and_capacity_charged_exactly_once
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s07/workflow/evidence.md
+    - requirement: BE-08
+      operationId: listThreads
+      test_id: s07_timeout_equality_is_inclusive_and_happens_exactly_once_per_touch
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s07/workflow/evidence.md
+    - requirement: BE-08
+      operationId: sendOnThread
+      test_id: s07_timeout_equality_is_inclusive_and_happens_exactly_once_per_touch
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s07/workflow/evidence.md
+    - requirement: BQ5
+      operationId: updateCapacity
+      test_id: s07_mark_sent_deadline_and_capacity_charged_exactly_once
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s07/workflow/evidence.md
+    - requirement: BQ5
+      operationId: recordOutcome
+      test_id: s07_decline_suppresses_party_across_opportunities_but_spares_others
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s07/workflow/evidence.md
+    - requirement: GATE-5
+      operationId: recordOutcome
+      test_id: s07_decline_suppresses_party_across_opportunities_but_spares_others
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s07/workflow/evidence.md
+    - requirement: B-FR-4
+      operationId: recordOutcome
+      test_id: s07_timeout_equality_is_inclusive_and_happens_exactly_once_per_touch
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s07/workflow/evidence.md
+    - requirement: BE-08
+      operationId: reopenThread
+      test_id: s07_timeout_equality_is_inclusive_and_happens_exactly_once_per_touch
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s07/workflow/evidence.md
+    - requirement: BE-08
+      operationId: recordResolution
+      test_id: s07_timeout_equality_is_inclusive_and_happens_exactly_once_per_touch
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s07/workflow/evidence.md
+    - requirement: B-FR-4
+      operationId: sendOnThread
+      test_id: s07_companion_bound_to_another_recipient_rolls_back_whole_send
+      fixture_id: workflow
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s07/workflow/evidence.md

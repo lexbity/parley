@@ -649,6 +649,102 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/threads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listThreads"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/threads/{id}/send": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["sendOnThread"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/threads/{id}/reopen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reopenThread"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sends/{id}/outcome": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["recordOutcome"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/opportunities/{id}/resolution": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["recordResolution"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/capacity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listCapacity"];
+        put?: never;
+        post: operations["updateCapacity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/board": {
         parameters: {
             query?: never;
@@ -1356,6 +1452,107 @@ export interface components {
         };
         DownloadQuery: {
             release_id: string;
+        };
+        ThreadRecord: {
+            id: string;
+            opportunity_id: string;
+            recipient_id: string;
+            /** @enum {string} */
+            state: "waiting" | "conversing" | "timed_out" | "closed_declined" | "resolved" | "dormant";
+            current_touch: number;
+            expires_at: string | null;
+            sent_at: string | null;
+            updated_at: string;
+        };
+        ThreadList: components["schemas"]["ThreadRecord"][];
+        MaterialVersionRef: {
+            material_id: string;
+            version: number;
+            release_id: string;
+        };
+        CompanionRef: {
+            material_id: string;
+            version: number;
+            release_id: string;
+        };
+        DeadlineInput: {
+            days?: number;
+            date?: string;
+            /** Format: date-time */
+            at?: string;
+            zone?: string;
+        };
+        SendInput: {
+            primary: components["schemas"]["MaterialVersionRef"];
+            companions?: components["schemas"]["CompanionRef"][];
+            deadline?: components["schemas"]["DeadlineInput"];
+            opportunity_id?: string;
+            recipient_id?: string;
+        };
+        SendRecord: {
+            id: string;
+            thread_id: string;
+            touch_no: number;
+            primary_material_id: string;
+            primary_version_no: number;
+            recipient_id: string;
+            content_sha256: string;
+            /** Format: date-time */
+            sent_at: string;
+            /** Format: date-time */
+            response_deadline: string;
+            deadline_zone: string;
+            capacity_charged: boolean;
+        };
+        OutcomeInput: {
+            /** @enum {string} */
+            class: "no_reply" | "reply_positive" | "reply_neutral" | "reply_negative" | "declined" | "rung_accepted" | "call_scheduled";
+            rung_accepted?: number | null;
+            received_at?: string | null;
+            note?: string | null;
+        };
+        OutcomeRecord: {
+            id: string;
+            send_id: string;
+            class: string;
+            rung_accepted: number | null;
+            received_at: string | null;
+            /** Format: date-time */
+            recorded_at: string;
+            note: string | null;
+        };
+        ResolutionInput: {
+            /** @enum {string} */
+            result: "mutual_win" | "one_sided" | "no_deal";
+            /** @enum {string} */
+            they_benefited: "yes" | "partial" | "no" | "unknown";
+            /** @enum {string} */
+            i_benefited: "yes" | "partial" | "no" | "unknown";
+        };
+        ResolutionRecord: {
+            id: string;
+            opportunity_id: string;
+            thread_id: string | null;
+            result: string;
+            they_benefited: string;
+            i_benefited: string;
+            /** Format: date-time */
+            noted_at: string;
+        };
+        CapacityRecord: {
+            period: string;
+            unit: string;
+            total: number;
+            committed: number;
+            remaining: number;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        CapacityList: components["schemas"]["CapacityRecord"][];
+        CapacityInput: {
+            period: string;
+            unit: string;
+            total: number;
         };
         ApprovalInput: {
             override_reasons: {
@@ -3114,6 +3311,200 @@ export interface operations {
                 };
             };
             409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    listThreads: {
+        parameters: {
+            query?: {
+                opportunity_id?: string;
+                recipient_id?: string;
+            };
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Contact threads with state and current touch. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThreadList"];
+                };
+            };
+        };
+    };
+    sendOnThread: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendInput"];
+            };
+        };
+        responses: {
+            /** @description Explicit Mark sent; one send with touch, gate snapshot and response deadline. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SendRecord"];
+                };
+            };
+            422: components["responses"]["Error"];
+        };
+    };
+    reopenThread: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Thread reopened; the opportunity reopens while history is preserved. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThreadRecord"];
+                };
+            };
+            422: components["responses"]["Error"];
+        };
+    };
+    recordOutcome: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OutcomeInput"];
+            };
+        };
+        responses: {
+            /** @description Outcome recorded against the addressed send; a decline suppresses the party. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutcomeRecord"];
+                };
+            };
+            422: components["responses"]["Error"];
+        };
+    };
+    recordResolution: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolutionInput"];
+            };
+        };
+        responses: {
+            /** @description Resolution closes active timers and marks the opportunity resolved. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolutionRecord"];
+                };
+            };
+            422: components["responses"]["Error"];
+        };
+    };
+    listCapacity: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Capacity ledger rows with committed and remaining units. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapacityList"];
+                };
+            };
+        };
+    };
+    updateCapacity: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CapacityInput"];
+            };
+        };
+        responses: {
+            /** @description Ledger provisioned; committed amount resets for a new period. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapacityRecord"];
+                };
+            };
             422: components["responses"]["Error"];
         };
     };

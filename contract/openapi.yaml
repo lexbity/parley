@@ -1124,6 +1124,175 @@ paths:
           $ref: '#/components/responses/Error'
         '422':
           $ref: '#/components/responses/Error'
+  /threads:
+    get:
+      operationId: listThreads
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: query
+        name: opportunity_id
+        required: false
+        schema:
+          type: string
+      - in: query
+        name: recipient_id
+        required: false
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Contact threads with state and current touch.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ThreadList'
+  /threads/{id}/send:
+    post:
+      operationId: sendOnThread
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendInput'
+      responses:
+        '201':
+          description: Explicit Mark sent; one send with touch, gate snapshot and response deadline.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendRecord'
+        '422':
+          $ref: '#/components/responses/Error'
+  /threads/{id}/reopen:
+    post:
+      operationId: reopenThread
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Thread reopened; the opportunity reopens while history is preserved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ThreadRecord'
+        '422':
+          $ref: '#/components/responses/Error'
+  /sends/{id}/outcome:
+    post:
+      operationId: recordOutcome
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OutcomeInput'
+      responses:
+        '200':
+          description: Outcome recorded against the addressed send; a decline suppresses the party.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutcomeRecord'
+        '422':
+          $ref: '#/components/responses/Error'
+  /opportunities/{id}/resolution:
+    post:
+      operationId: recordResolution
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolutionInput'
+      responses:
+        '201':
+          description: Resolution closes active timers and marks the opportunity resolved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResolutionRecord'
+        '422':
+          $ref: '#/components/responses/Error'
+  /capacity:
+    get:
+      operationId: listCapacity
+      security:
+      - sessionCookie: []
+      responses:
+        '200':
+          description: Capacity ledger rows with committed and remaining units.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapacityList'
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+    post:
+      operationId: updateCapacity
+      security:
+      - sessionCookie: []
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CapacityInput'
+      responses:
+        '200':
+          description: Ledger provisioned; committed amount resets for a new period.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapacityRecord'
+        '422':
+          $ref: '#/components/responses/Error'
   /board:
     get:
       operationId: getBoard
@@ -2377,6 +2546,327 @@ components:
       properties:
         release_id:
           type: string
+      additionalProperties: false
+    ThreadRecord:
+      type: object
+      required:
+      - id
+      - opportunity_id
+      - recipient_id
+      - state
+      - current_touch
+      - expires_at
+      - sent_at
+      - updated_at
+      properties:
+        id:
+          type: string
+        opportunity_id:
+          type: string
+        recipient_id:
+          type: string
+        state:
+          type: string
+          enum:
+          - waiting
+          - conversing
+          - timed_out
+          - closed_declined
+          - resolved
+          - dormant
+        current_touch:
+          type: integer
+          minimum: 0
+        expires_at:
+          type:
+          - string
+          - 'null'
+        sent_at:
+          type:
+          - string
+          - 'null'
+        updated_at:
+          type: string
+      additionalProperties: false
+    ThreadList:
+      type: array
+      items:
+        $ref: '#/components/schemas/ThreadRecord'
+    MaterialVersionRef:
+      type: object
+      required:
+      - material_id
+      - version
+      - release_id
+      properties:
+        material_id:
+          type: string
+        version:
+          type: integer
+          minimum: 1
+        release_id:
+          type: string
+      additionalProperties: false
+    CompanionRef:
+      type: object
+      required:
+      - material_id
+      - version
+      - release_id
+      properties:
+        material_id:
+          type: string
+        version:
+          type: integer
+          minimum: 1
+        release_id:
+          type: string
+      additionalProperties: false
+    DeadlineInput:
+      type: object
+      required: []
+      properties:
+        days:
+          type: integer
+          minimum: 1
+        date:
+          type: string
+        at:
+          type: string
+          format: date-time
+        zone:
+          type: string
+      additionalProperties: false
+    SendInput:
+      type: object
+      required:
+      - primary
+      properties:
+        primary:
+          $ref: '#/components/schemas/MaterialVersionRef'
+        companions:
+          type: array
+          items:
+            $ref: '#/components/schemas/CompanionRef'
+        deadline:
+          type:
+          - object
+          - 'null'
+          $ref: '#/components/schemas/DeadlineInput'
+        opportunity_id:
+          type: string
+        recipient_id:
+          type: string
+      additionalProperties: false
+    SendRecord:
+      type: object
+      required:
+      - id
+      - thread_id
+      - touch_no
+      - primary_material_id
+      - primary_version_no
+      - recipient_id
+      - content_sha256
+      - sent_at
+      - response_deadline
+      - deadline_zone
+      - capacity_charged
+      properties:
+        id:
+          type: string
+        thread_id:
+          type: string
+        touch_no:
+          type: integer
+          minimum: 1
+        primary_material_id:
+          type: string
+        primary_version_no:
+          type: integer
+          minimum: 1
+        recipient_id:
+          type: string
+        content_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        sent_at:
+          type: string
+          format: date-time
+        response_deadline:
+          type: string
+          format: date-time
+        deadline_zone:
+          type: string
+        capacity_charged:
+          type: boolean
+      additionalProperties: false
+    OutcomeInput:
+      type: object
+      required:
+      - class
+      properties:
+        class:
+          type: string
+          enum:
+          - no_reply
+          - reply_positive
+          - reply_neutral
+          - reply_negative
+          - declined
+          - rung_accepted
+          - call_scheduled
+        rung_accepted:
+          type:
+          - integer
+          - 'null'
+          minimum: 1
+          maximum: 5
+        received_at:
+          type:
+          - string
+          - 'null'
+        note:
+          type:
+          - string
+          - 'null'
+      additionalProperties: false
+    OutcomeRecord:
+      type: object
+      required:
+      - id
+      - send_id
+      - class
+      - rung_accepted
+      - received_at
+      - recorded_at
+      - note
+      properties:
+        id:
+          type: string
+        send_id:
+          type: string
+        class:
+          type: string
+        rung_accepted:
+          type:
+          - integer
+          - 'null'
+        received_at:
+          type:
+          - string
+          - 'null'
+        recorded_at:
+          type: string
+          format: date-time
+        note:
+          type:
+          - string
+          - 'null'
+      additionalProperties: false
+    ResolutionInput:
+      type: object
+      required:
+      - result
+      - they_benefited
+      - i_benefited
+      properties:
+        result:
+          type: string
+          enum:
+          - mutual_win
+          - one_sided
+          - no_deal
+        they_benefited:
+          type: string
+          enum:
+          - "yes"
+          - partial
+          - "no"
+          - unknown
+        i_benefited:
+          type: string
+          enum:
+          - "yes"
+          - partial
+          - "no"
+          - unknown
+      additionalProperties: false
+    ResolutionRecord:
+      type: object
+      required:
+      - id
+      - opportunity_id
+      - thread_id
+      - result
+      - they_benefited
+      - i_benefited
+      - noted_at
+      properties:
+        id:
+          type: string
+        opportunity_id:
+          type: string
+        thread_id:
+          type:
+          - string
+          - 'null'
+        result:
+          type: string
+        they_benefited:
+          type: string
+        i_benefited:
+          type: string
+        noted_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    CapacityRecord:
+      type: object
+      required:
+      - period
+      - unit
+      - total
+      - committed
+      - remaining
+      - updated_at
+      properties:
+        period:
+          type: string
+        unit:
+          type: string
+        total:
+          type: number
+          minimum: 0
+        committed:
+          type: number
+          minimum: 0
+        remaining:
+          type: number
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    CapacityList:
+      type: array
+      items:
+        $ref: '#/components/schemas/CapacityRecord'
+    CapacityInput:
+      type: object
+      required:
+      - period
+      - unit
+      - total
+      properties:
+        period:
+          type: string
+          minLength: 1
+        unit:
+          type: string
+          minLength: 1
+        total:
+          type: number
+          minimum: 0
       additionalProperties: false
     ApprovalInput:
       type: object

@@ -467,7 +467,15 @@ pub(crate) async fn evaluate_material(
             sensitive |= has_sensitive_content(&fill.value);
         }
     }
-    let has_capacity_claim = has_capacity_content(&material.body);
+    let capacity_fill = material
+        .slot_fills
+        .iter()
+        .find(|fill| fill.slot.starts_with("capacity_line:"))
+        .map(|fill| fill.value.clone());
+    let scarcity_claim_valid = match &capacity_fill {
+        None => true,
+        Some(value) => capacity_claim_matches_ledger(tx, value).await?,
+    };
     let banned = [
         "i hope this finds you well",
         "synergy",
@@ -485,6 +493,13 @@ pub(crate) async fn evaluate_material(
     let fluency_ok = glossary
         .iter()
         .all(|(term, status)| status == "fluent" || !contains_glossary_term(&material.body, term));
+    let gift_delivered_before = sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM send s JOIN send_part sp ON sp.send_id=s.id JOIN resource_use ru ON ru.material_id=sp.material_id AND ru.version_no=sp.version_no JOIN resource r ON r.id=ru.resource_id WHERE s.recipient_id=? AND r.kind='gift'",
+    )
+    .bind(&material.recipient_id)
+    .fetch_one(&mut **tx)
+    .await?
+        != 0;
     let mut input = gate::GateInput {
         exchange_complete,
         fairness_attested: attested == 1 && digest_stored.as_deref() == Some(current.as_str()),
@@ -493,7 +508,7 @@ pub(crate) async fn evaluate_material(
         bound_sentence_count: material.bindings.len(),
         slot_fills: slot_values,
         body: material.body.clone(),
-        scarcity_claim_valid: !has_capacity_claim,
+        scarcity_claim_valid,
         identity_claims_valid: identity_valid,
         ask_count,
         ask_rung,
@@ -503,7 +518,7 @@ pub(crate) async fn evaluate_material(
         recipient_do_not_contact: dnc != 0,
         references_private_artifact: private_artifact,
         gift_in_body: gift,
-        gift_delivered_before: false,
+        gift_delivered_before,
         anchor_used: anchor,
         rule_count: used_rules.len(),
         rule_limit: if sqlx::query_scalar::<_, i64>(
@@ -649,18 +664,27 @@ fn has_sensitive_content(text: &str) -> bool {
     TERMS.iter().any(|term| normalized.contains(term))
 }
 
-fn has_capacity_content(text: &str) -> bool {
-    let normalized = text.to_lowercase();
-    [
-        "capacity",
-        "remaining slots",
-        "available slots",
-        "only have",
-        "interview slots",
-        "project slots",
-    ]
-    .iter()
-    .any(|term| normalized.contains(term))
+async fn capacity_claim_matches_ledger(
+    tx: &mut Transaction<'_, Sqlite>,
+    value: &str,
+) -> Result<bool, WorkspaceError> {
+    let row: Option<(f64, f64)> =
+        sqlx::query_as("SELECT total,committed FROM capacity_ledger WHERE period=? AND unit=?")
+            .bind(parley_domain::lifecycle::DEFAULT_CAPACITY_PERIOD)
+            .bind(parley_domain::lifecycle::DEFAULT_CAPACITY_UNIT)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let Some((total, committed)) = row else {
+        return Ok(false);
+    };
+    let remaining = (total - committed).round() as i64;
+    Ok(extract_number(value) == Some(remaining))
+}
+
+fn extract_number(text: &str) -> Option<i64> {
+    text.split(|ch: char| !ch.is_ascii_digit())
+        .find(|part| !part.is_empty())
+        .and_then(|part| part.parse().ok())
 }
 
 pub(crate) async fn exchange_interests(
@@ -736,14 +760,14 @@ async fn verify_attachment_eligible(
 }
 
 #[derive(Debug)]
-struct ApprovalRow {
-    id: String,
-    hash: String,
-    dependency_json: String,
-    overrides_json: String,
+pub(crate) struct ApprovalRow {
+    pub(crate) id: String,
+    pub(crate) hash: String,
+    pub(crate) dependency_json: String,
+    pub(crate) overrides_json: String,
 }
 
-async fn load_approval(
+pub(crate) async fn load_approval(
     tx: &mut Transaction<'_, Sqlite>,
     material: &HeadMaterial,
 ) -> Result<ApprovalRow, WorkspaceError> {
