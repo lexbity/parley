@@ -25,7 +25,22 @@ use sqlx::{Sqlite, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) fn routes() -> Router<AppState> {
-    Router::new().route("/api/v1/materials/{id}/download", get(download_material))
+    Router::new().route(
+        "/api/v1/materials/{id}/download",
+        get(download_material).head(head_not_allowed),
+    )
+}
+
+/// RFC-0004 IQ2: HEAD-as-GET is disabled. A HEAD probe must never run the
+/// download flow (spool verification, writer reservation, issuance event,
+/// one-use grant consumption); refuse it outright before any state is
+/// touched.
+async fn head_not_allowed() -> Response {
+    (
+        StatusCode::METHOD_NOT_ALLOWED,
+        [(header::ALLOW, HeaderValue::from_static("GET"))],
+    )
+        .into_response()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
