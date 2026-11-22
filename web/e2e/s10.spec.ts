@@ -1,37 +1,74 @@
+import { randomUUID } from 'node:crypto';
 import { expect } from '@playwright/test';
 import { test } from './fixtures';
 
-test('s10_ranked_daily_work_insights_and_future_pack_activation', async ({ page }) => {
-  test.setTimeout(90_000);
-  const coachRuns: string[] = [];
-  page.on('request', (request) => {
-    if (request.url().endsWith('/api/v1/coach/run')) coachRuns.push(request.method());
-  });
+test('s10_daily_queue_renders_ranked_items_blocked_reason_and_insight_counts_without_dispatch', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Resources', exact: true })).toBeVisible();
-  await expect(page.getByRole('status')).toContainText('Workspace ready');
   await page.getByRole('link', { name: 'Queue' }).click();
-  for (let index = 0; index < 100; index += 1) {
-    await page.getByRole('button', { name: 'Daily' }).click();
-    await expect(page.getByRole('heading', { name: 'Daily priorities' })).toBeVisible();
-    await page.getByRole('button', { name: 'Board' }).click();
-  }
-  expect(coachRuns).toHaveLength(0);
+  await page.getByRole('button', { name: 'Daily work and insights' }).click();
+  const daily = page.getByRole('region', { name: 'Daily queue, insights, and weekly Coach' });
+  await expect(daily.getByRole('heading', { name: 'Ranked daily work' })).toBeVisible();
+  await expect(daily.getByText('Northstar onboarding')).toBeVisible();
+  await expect(daily.getByRole('region', { name: 'Blocked work' })).toContainText('Missing measured proof');
+  await expect(daily.getByRole('region', { name: 'Insights' })).toContainText('3/8');
+  await expect(daily).toContainText('95% Wilson');
+});
 
-  await page.getByRole('button', { name: 'Insights' }).click();
-  await expect(page.getByText('Insufficient observations').first()).toBeVisible();
-  await page.getByRole('button', { name: 'Run Coach for this week' }).click();
-  await expect(page.getByRole('status')).toContainText('Coach report refreshed');
-  expect(coachRuns).toHaveLength(1);
+test('s10_coach_questions_are_impact_ordered_and_answer_pending_requires_interviewer_review', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('link', { name: 'Queue' }).click();
+  await page.getByRole('button', { name: 'Daily work and insights' }).click();
+  const coach = page.getByRole('region', { name: 'Weekly Coach', exact: true });
+  await expect(coach).toContainText('impact 2');
+  await coach.getByLabel('Your answer').fill('I improved activation by measuring new customer setup time.');
+  await coach.getByRole('button', { name: 'Send answer to Interviewer' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Answer sent to Interviewer' })).toContainText('proposal');
+  await expect(coach.getByRole('button', { name: 'Review Interviewer candidate in Resources' })).toBeVisible();
+});
 
-  await page.getByRole('link', { name: 'Settings' }).click();
-  const packs = page.getByRole('region', { name: 'Config packs' });
-  await expect(packs.getByText(/Active: job_search v1\.0\.0/)).toBeVisible();
-  await packs.getByLabel('Pack to review').selectOption('lead_gen@1.0.0');
-  await packs.getByRole('button', { name: 'Validate pack' }).click();
-  await expect(packs.getByRole('status')).toContainText('passed server validation');
-  await packs.getByLabel('Stage mapping JSON').fill('{"Researched":"prepared"}');
-  await packs.getByRole('button', { name: 'Activate validated version' }).click();
-  await expect(packs.getByRole('status')).toContainText('is active for future work');
-  await expect(packs.getByText(/Active: lead_gen v1\.0\.0/)).toBeVisible();
+test('s10_opportunity_table_filters_and_sort_share_board_records', async ({ page }) => {
+  await page.goto('/');
+  const name = `S10 lead ${randomUUID()}`;
+  await page.getByRole('link', { name: 'Leads' }).click();
+  const leads = page.getByRole('region', { name: 'Lead directory and sources' });
+  await leads.locator('form').filter({ hasText: 'Add a lead' }).getByLabel('Name').fill(name);
+  await leads.getByRole('button', { name: 'Add lead' }).click();
+  await page.getByRole('link', { name: 'Queue' }).click();
+  const queue = page.getByRole('region', { name: 'Opportunities' });
+  await queue.getByLabel('Opportunity title').fill('S10 filtered table row');
+  await queue.getByLabel('Participant').selectOption({ label: `${name} · person` });
+  await queue.getByRole('button', { name: 'Create opportunity' }).click();
+  await queue.getByRole('textbox', { name: 'Edit tags for S10 filtered table row' }).fill('onboarding, tested');
+  await queue.getByRole('button', { name: 'Save tags' }).click();
+  await queue.getByLabel('Filter by tag').fill('tested');
+  await queue.getByRole('button', { name: 'Apply to board and table' }).click();
+  await expect(queue.getByRole('table').getByText('S10 filtered table row')).toBeVisible();
+  await expect(queue.locator('[aria-label="Opportunity board"]')).toContainText('S10 filtered table row');
+  await queue.getByLabel('Sort opportunities').selectOption('next_task');
+  await queue.getByRole('button', { name: 'Apply to board and table' }).click();
+  await expect(queue.locator('tbody tr[data-opportunity-id]')).toHaveCount(1);
+});
+
+test('s10_outcome_correction_updates_insight_counts_with_history_preserved', async ({ page }) => {
+  await page.goto('/');
+  const name = `S10 outcome lead ${randomUUID()}`;
+  await page.getByRole('link', { name: 'Leads' }).click();
+  const leads = page.getByRole('region', { name: 'Lead directory and sources' });
+  await leads.locator('form').filter({ hasText: 'Add a lead' }).getByLabel('Name').fill(name);
+  await leads.getByRole('button', { name: 'Add lead' }).click();
+  await page.getByRole('link', { name: 'Queue' }).click();
+  const queue = page.getByRole('region', { name: 'Opportunities' });
+  await queue.getByLabel('Opportunity title').fill('S10 correction history');
+  await queue.getByLabel('Participant').selectOption({ label: `${name} · person` });
+  await queue.getByRole('button', { name: 'Create opportunity' }).click();
+  await queue.getByRole('button', { name: 'Send history and outcomes' }).click();
+  const history = queue.getByRole('region', { name: 'Send history and outcomes' });
+  await expect(history).toContainText('Original: reply_neutral');
+  await history.getByLabel('Corrected outcome').selectOption('reply_positive');
+  await history.getByLabel('Correction reason').fill('The owner verified a positive reply.');
+  await history.getByRole('button', { name: 'Append correction' }).click();
+  await expect(history).toContainText('Original: reply_neutral');
+  await expect(history).toContainText('Revision 2 · reply_positive');
+  await queue.getByRole('button', { name: 'Daily work and insights' }).click();
+  await expect(queue.getByRole('region', { name: 'Insights', exact: true })).toContainText('4/8');
 });

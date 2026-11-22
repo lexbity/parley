@@ -8,6 +8,7 @@ import InterviewerWorkspace from '../features/resources/InterviewerWorkspace.vue
 import QueueWorkspace from '../features/queue/QueueWorkspace.vue';
 import BriefWorkspace from '../features/leads/BriefWorkspace.vue';
 import AgentPolicySettings from '../features/settings/AgentPolicySettings.vue';
+import MaintenanceSettings from '../features/settings/MaintenanceSettings.vue';
 import CapacitySettings from '../features/settings/CapacitySettings.vue';
 import Packs from '../features/settings/Packs.vue';
 import ContactThreadPanel from '../features/queue/ContactThreadPanel.vue';
@@ -464,6 +465,7 @@ watch(route, () => { void focusRouteLocation(); });
       <AgentPolicySettings />
       <CapacitySettings />
       <Packs />
+      <MaintenanceSettings :parties="parties" @erased="refreshLeads" />
     </section>
     <div v-show="active === 'Queue'">
       <QueueWorkspace

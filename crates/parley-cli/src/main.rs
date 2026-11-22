@@ -30,12 +30,9 @@ fn workspace_path(args: &[String]) -> Result<PathBuf, String> {
 }
 
 fn acquire_workspace_lock(workspace: &Path) -> Result<Option<File>, String> {
-    let parent = workspace
-        .parent()
-        .ok_or("workspace path needs a parent directory")?;
-    std::fs::create_dir_all(parent)
-        .map_err(|error| format!("create workspace directory: {error}"))?;
-    let lock_path = parent.join("workspace.lock");
+    let control =
+        parley_service::Workspace::control_directory(workspace).map_err(|e| e.to_string())?;
+    let lock_path = control.join("workspace.lock");
     let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -46,8 +43,6 @@ fn acquire_workspace_lock(workspace: &Path) -> Result<Option<File>, String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-            .map_err(|error| format!("secure workspace directory: {error}"))?;
         std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o600))
             .map_err(|error| format!("secure workspace lock: {error}"))?;
         // The descriptor is held for the entire service lifetime. The kernel
@@ -208,8 +203,8 @@ async fn main() {
         Ok(Some(lock)) => lock,
         Ok(None) => {
             #[cfg(unix)]
-            if let Some(parent) = workspace.parent() {
-                if let Err(error) = open_existing_workspace(parent, headless).await {
+            if let Ok(control) = parley_service::Workspace::control_directory(&workspace) {
+                if let Err(error) = open_existing_workspace(&control, headless).await {
                     eprintln!("parley: {error}");
                     std::process::exit(2);
                 }
@@ -223,7 +218,7 @@ async fn main() {
             std::process::exit(2);
         }
     };
-    let running = match parley_service::start_workspace(&workspace).await {
+    let mut running = match parley_service::start_workspace(&workspace).await {
         Ok(service) => service,
         Err(error) => {
             eprintln!("parley: workspace startup failed: {error}");
@@ -231,7 +226,9 @@ async fn main() {
         }
     };
     #[cfg(unix)]
-    let control_path = workspace.parent().unwrap().join("launcher.sock");
+    let control_path = parley_service::Workspace::control_directory(&workspace)
+        .expect("workspace control root")
+        .join("launcher.sock");
     #[cfg(unix)]
     let control =
         match serve_launcher_control(control_path.clone(), running.bootstrap_issuer()).await {
@@ -251,9 +248,7 @@ async fn main() {
     } else if open_browser(&url).is_err() {
         eprintln!("Open this local URL to continue: {url}");
     }
-    if let Err(error) = tokio::signal::ctrl_c().await {
-        eprintln!("parley: shutdown signal: {error}");
-    }
+    let restart_requested = tokio::select! {signal=tokio::signal::ctrl_c()=>{if let Err(error)=signal{eprintln!("parley: shutdown signal: {error}");}false},_ = running.wait_for_restart()=>true};
     running.shutdown().await;
     #[cfg(unix)]
     {
@@ -261,6 +256,13 @@ async fn main() {
         let _ = std::fs::remove_file(control_path);
     }
     drop(lock);
+    if restart_requested {
+        let executable = std::env::current_exe().expect("current executable path");
+        let args: Vec<_> = std::env::args_os().skip(1).collect();
+        if let Err(error) = std::process::Command::new(executable).args(args).spawn() {
+            eprintln!("parley: restart required; relaunch failed: {error}");
+        }
+    }
 }
 
 fn evaluate_extractor() -> Result<serde_json::Value, String> {

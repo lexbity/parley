@@ -98,7 +98,12 @@ async fn s02_source_only_capture_keeps_two_occurrences_without_identity_merge() 
     assert_ne!(first["occurrence_id"], second["occurrence_id"]);
     let independent = SqlitePoolOptions::new()
         .max_connections(1)
-        .connect(&format!("sqlite://{}", db.display()))
+        .connect(&format!(
+            "sqlite://{}",
+            parley_service::Workspace::resolve_database_path(&db)
+                .unwrap()
+                .display()
+        ))
         .await
         .unwrap();
     let entities: i64 = sqlx::query_scalar("SELECT count(*) FROM entity")
@@ -182,7 +187,12 @@ async fn s02_related_node_edge_and_quote_commit_together() {
     assert_eq!(created.kind, "person");
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
-        .connect(&format!("sqlite://{}", db.display()))
+        .connect(&format!(
+            "sqlite://{}",
+            parley_service::Workspace::resolve_database_path(&db)
+                .unwrap()
+                .display()
+        ))
         .await
         .unwrap();
     let counts: (i64, i64, i64, i64) = sqlx::query_as("SELECT (SELECT count(*) FROM entity),(SELECT count(*) FROM edge WHERE state='active'),(SELECT count(*) FROM edge_evidence),(SELECT count(*) FROM view_position)").fetch_one(&pool).await.unwrap();

@@ -61,6 +61,11 @@ export type WritingTemplate = { id: string; family_id: string; name: string; ver
 export type WritingInterest = { id: string; side: 'them' | 'me'; statement: string; knowledge_kind: string; check_suggestion: string | null; claim_id: string | null; claim_revision: number | null; revision: number; status: string };
 export type WritingMatch = { id: string; opportunity_id: string; recipient_id: string; embed_model_digest: string; calibration_json: string; shortlist_json: string; why_job_id: string | null };
 export type WritingJob = { job_id: string; role: string };
+export type BackupRecord = { id: string; created_at: string; status: 'verified' | 'damaged' | 'incomplete'; manifest_sha256: string; workspace_id: string; format_version: number };
+export type RestorePreview = { id: string; digest: string; backup: BackupRecord; current_cursor: string; erasure_resurrections: number; required_bytes: number };
+export type ErasePreview = { id: string; digest: string; domain_cursor: string; affected_counts: Record<string, number>; shared_sources: number; owner_managed_backups: number };
+export type MaintenanceSettings = { backup_directory: string; interval_hours: number; retention_count: number; revision: number; last_successful_at: string | null };
+export type MaintenanceOperation = { id: string; kind: 'restore' | 'import' | 'erase'; state: 'pending_restart' | 'cleaning' | 'complete' | 'failed'; epoch: string; external_copies_requiring_disposal: number; error_code?: string };
 
 export function newOperationKey(): string {
   const timestamp = Date.now().toString(16).padStart(12, '0').slice(-12);
@@ -538,6 +543,14 @@ export class ParleyClient {
   private session: Session | null = null;
   private connection: Promise<void> | null = null;
 
+  async refreshSession(expectedEpoch?: string): Promise<void> {
+    this.session = null;
+    this.connection = null;
+    await this.connect();
+    const refreshed = this.session as Session | null;
+    if (expectedEpoch && refreshed?.epoch !== expectedEpoch) throw new Error('Maintenance operation epoch does not match the active workspace session.');
+  }
+
   /**
    * Redeem the bootstrap fragment once and load the workspace session. Every
    * caller awaits the same promise so the one-time secret is spent exactly
@@ -753,6 +766,60 @@ export class ParleyClient {
 
   async getInsights(): Promise<InsightsReport> {
     return decodeInsights(await this.request('/insights'));
+  }
+
+  async getMaintenanceSettings(): Promise<MaintenanceSettings> {
+    const value = object(await this.request('/settings/maintenance'));
+    if (!value) throw new Error('Invalid response: maintenance settings are malformed');
+    return { backup_directory: requiredString(value.backup_directory, 'backup_directory'), interval_hours: Number(value.interval_hours), retention_count: Number(value.retention_count), revision: Number(value.revision), last_successful_at: typeof value.last_successful_at === 'string' ? value.last_successful_at : null };
+  }
+
+  async updateMaintenanceSettings(input: Pick<MaintenanceSettings, 'backup_directory' | 'interval_hours' | 'retention_count'> & { expected_revision: number }, key = newOperationKey()): Promise<MaintenanceSettings> {
+    const value = object(await this.mutate('/settings/maintenance', 'PUT', input, { 'Idempotency-Key': key }));
+    if (!value) throw new Error('Invalid response: maintenance settings are malformed');
+    return { backup_directory: requiredString(value.backup_directory, 'backup_directory'), interval_hours: Number(value.interval_hours), retention_count: Number(value.retention_count), revision: Number(value.revision), last_successful_at: typeof value.last_successful_at === 'string' ? value.last_successful_at : null };
+  }
+
+  async listBackups(): Promise<{ items: BackupRecord[]; last_successful_at: string | null }> {
+    const value = object(await this.request('/backups'));
+    if (!value || !Array.isArray(value.items)) throw new Error('Invalid response: backups are malformed');
+    return { items: value.items as BackupRecord[], last_successful_at: typeof value.last_successful_at === 'string' ? value.last_successful_at : null };
+  }
+
+  async createBackup(key = newOperationKey()): Promise<BackupRecord> {
+    return await this.mutate('/backups', 'POST', {}, { 'Idempotency-Key': key }) as BackupRecord;
+  }
+
+  async createFullExport(key = newOperationKey()): Promise<Blob> {
+    return this.requestBlob('/exports', { method: 'POST', headers: { 'Idempotency-Key': key } });
+  }
+
+  async previewRestore(backup_id: string): Promise<RestorePreview> {
+    return await this.mutate('/restore/preview', 'POST', { backup_id }, {}) as RestorePreview;
+  }
+
+  async previewFullImport(archive: Blob): Promise<RestorePreview> {
+    return await this.request('/imports/preview', { method: 'POST', body: archive, headers: { 'Content-Type': 'application/zip' } }) as RestorePreview;
+  }
+
+  async commitFullImport(preview: RestorePreview, key = newOperationKey()): Promise<Record<string, unknown>> {
+    return object(await this.mutate('/imports/commit', 'POST', { preview_id: preview.id, preview_digest: preview.digest, target_must_be_empty: true }, { 'Idempotency-Key': key })) ?? {};
+  }
+
+  async commitRestore(preview: RestorePreview, acknowledge_erasure_resurrection: boolean, key = newOperationKey()): Promise<Record<string, unknown>> {
+    return object(await this.mutate('/restore/commit', 'POST', { preview_id: preview.id, preview_digest: preview.digest, acknowledge_erasure_resurrection }, { 'Idempotency-Key': key })) ?? {};
+  }
+
+  async previewPartyErasure(id: string): Promise<ErasePreview> {
+    return await this.mutate(`/parties/${encodeURIComponent(id)}/erase/preview`, 'POST', {}, {}) as ErasePreview;
+  }
+
+  async eraseParty(id: string, preview: ErasePreview, key = newOperationKey()): Promise<MaintenanceOperation> {
+    return await this.mutate(`/parties/${encodeURIComponent(id)}/erase`, 'POST', { preview_id: preview.id, preview_digest: preview.digest }, { 'Idempotency-Key': key }) as MaintenanceOperation;
+  }
+
+  async getMaintenanceOperation(id: string): Promise<MaintenanceOperation> {
+    return await this.request(`/maintenance/operations/${encodeURIComponent(id)}`) as MaintenanceOperation;
   }
 
   async runCoach(input: { period_start?: string; period_end?: string } = {}, key = newOperationKey()): Promise<{ job_id: string }> {
@@ -1070,6 +1137,18 @@ export class ParleyClient {
     }
     if (!response.ok) throw decodeApiError(payload, response.status);
     return payload;
+  }
+
+  private async requestBlob(path: string, init: RequestInit = {}): Promise<Blob> {
+    const headers = new Headers(init.headers);
+    headers.set('Accept', 'application/zip');
+    if (this.session) {
+      headers.set('X-Parley-Token', this.session.mutation_token);
+      headers.set('X-Parley-Epoch', this.session.epoch);
+    }
+    const response = await fetch(`/api/v1${path}`, { ...init, headers, credentials: 'same-origin', cache: 'no-store' });
+    if (!response.ok) throw new Error(`Export failed (${response.status}).`);
+    return response.blob();
   }
 }
 

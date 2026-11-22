@@ -9,6 +9,7 @@ axum = "0.8.9"
 chrono = "0.4.41"
 chrono-tz = "0.10.4"
 futures-util = "0.3.31"
+zip = { version = "9.8.1", default-features = false }
 parley-domain.workspace = true
 rand = "0.10.4"
 serde = { version = "1.0.229", features = ["derive"] }

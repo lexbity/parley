@@ -278,7 +278,12 @@ async fn s01_resource_create_receipt_atomic() {
     }
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
-        .connect(&format!("sqlite://{}", path.display()))
+        .connect(&format!(
+            "sqlite://{}",
+            parley_service::Workspace::resolve_database_path(&path)
+                .unwrap()
+                .display()
+        ))
         .await
         .unwrap();
     let resources: i64 = sqlx::query_scalar("SELECT count(*) FROM resource")
@@ -431,7 +436,12 @@ async fn s01_lost_ack_retry_returns_one_durable_resource() {
     .await;
     let independent = SqlitePoolOptions::new()
         .max_connections(1)
-        .connect(&format!("sqlite://{}", path.display()))
+        .connect(&format!(
+            "sqlite://{}",
+            parley_service::Workspace::resolve_database_path(&path)
+                .unwrap()
+                .display()
+        ))
         .await
         .unwrap();
     for _ in 0..200 {

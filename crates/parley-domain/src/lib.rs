@@ -7,10 +7,12 @@
 //! model clients; `ci/trace.py` enforces that boundary with an import gate on
 //! every run.
 //!
+pub mod analytics;
 pub mod evidence;
 pub mod gate;
 pub mod lifecycle;
 pub mod lint;
 pub mod matching;
 pub mod notes;
+pub mod queue;
 pub mod template;

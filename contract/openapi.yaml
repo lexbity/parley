@@ -573,6 +573,17 @@ paths:
       operationId: listOpportunities
       security:
       - sessionCookie: []
+      parameters:
+      - {in: query, name: q, required: false, schema: {type: string, maxLength: 300}}
+      - {in: query, name: party_id, required: false, style: form, explode: true, schema: {type: array, items: {type: string}}}
+      - {in: query, name: tag, required: false, style: form, explode: true, schema: {type: array, items: {type: string}}}
+      - {in: query, name: status, required: false, schema: {type: string, enum: [open, resolved, dormant, closed]}}
+      - {in: query, name: missing_material, required: false, schema: {type: boolean}}
+      - {in: query, name: deadline_before, required: false, schema: {type: string, format: date-time}}
+      - {in: query, name: sort, required: false, schema: {type: string, enum: [title, next_task, deadline], default: title}}
+      - {in: query, name: order, required: false, schema: {type: string, enum: [asc, desc], default: asc}}
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
       responses:
         '200':
           description: Opportunity records and shared material IDs.
@@ -580,9 +591,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OpportunityList'
-      parameters:
-      - $ref: '#/components/parameters/MutationToken'
-      - $ref: '#/components/parameters/Epoch'
     post:
       operationId: createOpportunity
       security:
@@ -625,6 +633,45 @@ paths:
                 $ref: '#/components/schemas/Opportunity'
         '404':
           description: Missing opportunity
+  /opportunities/{id}/tags:
+    put:
+      operationId: setOpportunityTags
+      security: [{sessionCookie: []}]
+      parameters:
+      - {in: path, name: id, required: true, schema: {type: string}}
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/OpportunityTagsInput'}}}
+      responses:
+        '200': {description: Opportunity tags updated with an independent revision., content: {application/json: {schema: {$ref: '#/components/schemas/OpportunitySummary'}}}}
+        '409': {$ref: '#/components/responses/Error'}
+  /identity-tags:
+    post:
+      operationId: createIdentityTag
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/IdentityTagInput'}}}
+      responses:
+        '201': {description: Owner or party identity tag with tiered provenance., content: {application/json: {schema: {$ref: '#/components/schemas/IdentityTag'}}}}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /claims/{id}/hook:
+    post:
+      operationId: acceptClaimAsHook
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/HookMetadataInput'}}}
+      responses:
+        '200': {description: Claim marked as a professional-public hook with published date and source., content: {application/json: {schema: {$ref: '#/components/schemas/HookRecord'}}}}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
   /opportunities/{id}/sources/{source_id}:
     parameters:
     - in: path
@@ -1401,11 +1448,91 @@ paths:
                 $ref: '#/components/schemas/CapacityRecord'
         '422':
           $ref: '#/components/responses/Error'
+  /queue:
+    get:
+      operationId: getQueue
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}]
+      responses:
+        '200': {description: Deterministic queue and blocked lane from one snapshot; no agent dispatch., content: {application/json: {schema: {$ref: '#/components/schemas/QueueSnapshot'}}}}
+  /insights:
+    get:
+      operationId: getInsights
+      security: [{sessionCookie: []}]
+      parameters: [{in: query, name: period, required: false, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}]
+      responses:
+        '200': {description: Deterministic rates with counts, uncertainty and historical strata., content: {application/json: {schema: {$ref: '#/components/schemas/InsightsReport'}}}}
+  /coach/weekly:
+    get:
+      operationId: getWeeklyCoachReport
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}]
+      responses:
+        '200': {description: Latest Coach report and pending questions., content: {application/json: {schema: {$ref: '#/components/schemas/CoachReport'}}}}
+    post:
+      operationId: generateWeeklyCoachReport
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [period], properties: {period: {type: string}}, additionalProperties: false}}}
+      responses:
+        '202': {description: Bounded Coach job queued from deterministic evidence., content: {application/json: {schema: {$ref: '#/components/schemas/QueuedJob'}}}}
+        '409': {$ref: '#/components/responses/Error'}
+  /coach/questions:
+    get:
+      operationId: listCoachQuestions
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}]
+      responses:
+        '200': {description: Open Coach questions in impact order., content: {application/json: {schema: {$ref: '#/components/schemas/CoachQuestionList'}}}}
+  /coach/questions/{id}/answer:
+    post:
+      operationId: answerCoachQuestion
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CoachAnswerInput'}}}
+      responses:
+        '202': {description: Owner answer routed into the relevant Interviewer context., content: {application/json: {schema: {$ref: '#/components/schemas/QueuedJob'}}}}
+        '409': {$ref: '#/components/responses/Error'}
+  /coach/questions/{id}/dismiss:
+    post:
+      operationId: dismissCoachQuestion
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      responses:
+        '200': {description: Question disposition recorded., content: {application/json: {schema: {$ref: '#/components/schemas/CoachQuestion'}}}}
+  /sends:
+    get:
+      operationId: listSends
+      security: [{sessionCookie: []}]
+      parameters: [{in: query, name: opportunity_id, required: true, schema: {type: string}}, {in: query, name: recipient_id, required: false, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}]
+      responses:
+        '200': {description: Immutable send snapshots and append-only outcome revisions., content: {application/json: {schema: {$ref: '#/components/schemas/SendHistorySnapshot'}}}}
+  /sends/{id}/outcome/correction:
+    post:
+      operationId: correctOutcome
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/OutcomeCorrectionInput'}}}
+      responses:
+        '200': {description: Correction appended without changing the original outcome or send snapshot., content: {application/json: {schema: {$ref: '#/components/schemas/OutcomeHistory'}}}}
+        '409': {$ref: '#/components/responses/Error'}
   /board:
     get:
       operationId: getBoard
       security: [{sessionCookie: []}]
       parameters:
+      - {in: query, name: q, required: false, schema: {type: string, maxLength: 300}}
+      - {in: query, name: party_id, required: false, style: form, explode: true, schema: {type: array, items: {type: string}}}
+      - {in: query, name: tag, required: false, style: form, explode: true, schema: {type: array, items: {type: string}}}
+      - {in: query, name: status, required: false, schema: {type: string, enum: [open, resolved, dormant, closed]}}
+      - {in: query, name: missing_material, required: false, schema: {type: boolean}}
+      - {in: query, name: deadline_before, required: false, schema: {type: string, format: date-time}}
       - $ref: '#/components/parameters/MutationToken'
       - $ref: '#/components/parameters/Epoch'
       responses:
@@ -1903,6 +2030,112 @@ paths:
         required: true
         content: {application/json: {schema: {type: object, additionalProperties: false, required: [version, content_sha256], properties: {version: {type: integer, minimum: 1}, content_sha256: {type: string, pattern: '^[a-f0-9]{64}$'}}}}}
       responses: {'202': {description: Deterministic findings persisted and advisory lint queued}}
+  /settings/maintenance:
+    get:
+      operationId: getMaintenanceSettings
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}]
+      responses:
+        '200': {description: Owner-selected backup and retention settings., content: {application/json: {schema: {$ref: '#/components/schemas/MaintenanceSettings'}}}}
+    put:
+      operationId: updateMaintenanceSettings
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/MaintenanceSettingsInput'}}}
+      responses:
+        '200': {description: Settings updated with revision check., content: {application/json: {schema: {$ref: '#/components/schemas/MaintenanceSettings'}}}}
+        '409': {$ref: '#/components/responses/Error'}
+  /backups:
+    get:
+      operationId: listBackups
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}]
+      responses:
+        '200': {description: Verified and damaged snapshots with manifest details., content: {application/json: {schema: {$ref: '#/components/schemas/BackupList'}}}}
+    post:
+      operationId: createBackup
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      responses:
+        '201': {description: Consistent SQLite snapshot and pinned referenced blobs published manifest-last., content: {application/json: {schema: {$ref: '#/components/schemas/BackupRecord'}}}}
+  /exports:
+    post:
+      operationId: createFullExport
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      responses:
+        '200': {description: Owner data archive, distinct from recipient-facing release., content: {application/zip: {schema: {type: string, format: binary}}}}
+  /imports/preview:
+    post:
+      operationId: previewFullImport
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}]
+      requestBody:
+        required: true
+        content: {application/zip: {schema: {type: string, format: binary}}}
+      responses:
+        '200': {description: Format, hashes, entries, required space and empty-target check., content: {application/json: {schema: {$ref: '#/components/schemas/ImportPreview'}}}}
+        '422': {$ref: '#/components/responses/Error'}
+  /imports/commit:
+    post:
+      operationId: commitFullImport
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ImportCommitInput'}}}
+      responses:
+        '202': {description: Verified archive committed to a fresh generation; client reconnects after restart., content: {application/json: {schema: {$ref: '#/components/schemas/MaintenanceOperation'}}}}
+        '409': {$ref: '#/components/responses/Error'}
+  /restore/preview:
+    post:
+      operationId: previewRestore
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/RestorePreviewInput'}}}
+      responses:
+        '200': {description: Backup hashes, compatibility, disk requirements and erasure resurrection effects., content: {application/json: {schema: {$ref: '#/components/schemas/RestorePreview'}}}}
+  /restore/commit:
+    post:
+      operationId: commitRestore
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/RestoreCommitInput'}}}
+      responses:
+        '202': {description: Verified replacement generation published; rotate epoch and restart before completion., content: {application/json: {schema: {$ref: '#/components/schemas/MaintenanceOperation'}}}}
+        '409': {$ref: '#/components/responses/Error'}
+  /parties/{id}/erase/preview:
+    post:
+      operationId: previewPartyErasure
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}]
+      responses:
+        '200': {description: Erasure closure, shared sources and external owner-managed copies., content: {application/json: {schema: {$ref: '#/components/schemas/ErasePreview'}}}}
+  /parties/{id}/erase:
+    post:
+      operationId: eraseParty
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/EraseCommitInput'}}}
+      responses:
+        '202': {description: Erasure committed to a replacement generation; poll after reconnect until old bytes are retired and checked., content: {application/json: {schema: {$ref: '#/components/schemas/MaintenanceOperation'}}}}
+        '409': {$ref: '#/components/responses/Error'}
+  /maintenance/operations/{id}:
+    get:
+      operationId: getMaintenanceOperation
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/Epoch'}]
+      responses:
+        '200': {description: Operation status; complete erasure means retired bytes and canary validation passed., content: {application/json: {schema: {$ref: '#/components/schemas/MaintenanceOperation'}}}}
+        '404': {$ref: '#/components/responses/Error'}
 components:
   securitySchemes:
     sessionCookie:
@@ -3368,6 +3601,107 @@ components:
         line_sha256: {type: string, pattern: '^[a-f0-9]{64}$'}
         checked: {type: boolean}
       additionalProperties: false
+    MaintenanceSettings:
+      type: object
+      required: [backup_directory, interval_hours, retention_count, last_successful_at, revision]
+      properties:
+        backup_directory: {type: string}
+        interval_hours: {type: integer, minimum: 1, maximum: 8760}
+        retention_count: {type: integer, minimum: 1, maximum: 365}
+        last_successful_at: {type: string, nullable: true, format: date-time}
+        revision: {type: integer, minimum: 1}
+      additionalProperties: false
+    MaintenanceSettingsInput:
+      type: object
+      required: [backup_directory, interval_hours, retention_count, expected_revision]
+      properties:
+        backup_directory: {type: string, minLength: 1, maxLength: 4096}
+        interval_hours: {type: integer, minimum: 1, maximum: 8760}
+        retention_count: {type: integer, minimum: 1, maximum: 365}
+        expected_revision: {type: integer, minimum: 1}
+      additionalProperties: false
+    BackupRecord:
+      type: object
+      required: [id, created_at, status, manifest_sha256, workspace_id, format_version]
+      properties:
+        id: {type: string}
+        created_at: {type: string, format: date-time}
+        status: {type: string, enum: [verified, damaged]}
+        manifest_sha256: {type: string, pattern: '^[a-f0-9]{64}$'}
+        workspace_id: {type: string}
+        format_version: {type: integer, minimum: 1}
+      additionalProperties: false
+    BackupList:
+      type: object
+      required: [items, last_successful_at]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/BackupRecord'}}
+        last_successful_at: {type: string, nullable: true, format: date-time}
+      additionalProperties: false
+    RestorePreviewInput:
+      type: object
+      required: [backup_id]
+      properties: {backup_id: {type: string}}
+      additionalProperties: false
+    RestorePreview:
+      type: object
+      required: [id, digest, backup, current_cursor, erasure_resurrections, required_bytes]
+      properties:
+        id: {type: string}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        backup: {$ref: '#/components/schemas/BackupRecord'}
+        current_cursor: {type: string}
+        erasure_resurrections: {type: integer, minimum: 0}
+        required_bytes: {type: integer, minimum: 0}
+      additionalProperties: false
+    RestoreCommitInput:
+      type: object
+      required: [preview_id, preview_digest, acknowledge_erased_resurrection]
+      properties:
+        preview_id: {type: string}
+        preview_digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        acknowledge_erasure_resurrection: {type: boolean}
+      additionalProperties: false
+    ImportPreview:
+      allOf:
+      - {$ref: '#/components/schemas/RestorePreview'}
+    ImportCommitInput:
+      type: object
+      required: [preview_id, preview_digest, target_must_be_empty]
+      properties:
+        preview_id: {type: string}
+        preview_digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        target_must_be_empty: {type: boolean, const: true}
+      additionalProperties: false
+    ErasePreview:
+      type: object
+      required: [id, digest, domain_cursor, affected_counts, shared_sources, owner_managed_backups]
+      properties:
+        id: {type: string}
+        digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        domain_cursor: {type: string}
+        affected_counts: {type: object, additionalProperties: {type: integer, minimum: 0}}
+        shared_sources: {type: integer, minimum: 0}
+        owner_managed_backups: {type: integer, minimum: 0}
+      additionalProperties: false
+    EraseCommitInput:
+      type: object
+      required: [preview_id, preview_digest]
+      properties:
+        preview_id: {type: string}
+        preview_digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+      additionalProperties: false
+    MaintenanceOperation:
+      type: object
+      required: [id, kind, state, epoch, external_copies_requiring_disposal]
+      properties:
+        id: {type: string}
+        kind: {type: string, enum: [restore, import, erase]}
+        state: {type: string, enum: [pending_restart, cleaning, complete, failed]}
+        epoch: {type: string}
+        external_copies_requiring_disposal: {type: integer, minimum: 0}
+        error_code: {type: string}
+      additionalProperties: false
     Opportunity:
       type: object
       required:
@@ -3401,6 +3735,162 @@ components:
           items:
             type: string
       additionalProperties: false
+    OpportunitySummary:
+      type: object
+      required: [id, title, state, revision, participants, tags, next_task, next_deadline, missing_material]
+      properties:
+        id: {type: string}
+        title: {type: string}
+        state: {type: string}
+        revision: {type: integer, minimum: 1}
+        participants:
+          type: array
+          items:
+            type: object
+            required: [id, name, kind]
+            properties:
+              id: {type: string}
+              name: {type: string}
+              kind: {type: string, enum: [person, org]}
+            additionalProperties: false
+        tags: {type: array, items: {type: string}}
+        next_task: {type: string, nullable: true}
+        next_deadline: {type: string, nullable: true, format: date-time}
+        missing_material: {type: boolean}
+      additionalProperties: false
+    OpportunityTagsInput:
+      type: object
+      required: [expected_revision, tags]
+      properties:
+        expected_revision: {type: integer, minimum: 1}
+        tags: {type: array, maxItems: 100, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 120}}
+      additionalProperties: false
+    QueueItem:
+      type: object
+      required: [id, opportunity_id, party_id, title, recipient_name, kind, due_at, blocked_reasons, ammo_score]
+      properties:
+        id: {type: string}
+        opportunity_id: {type: string}
+        party_id: {type: string}
+        title: {type: string}
+        recipient_name: {type: string}
+        kind: {type: string, enum: [followup_due, ready_to_send, blocked, needs_input, review_stale]}
+        due_at: {type: string, nullable: true, format: date-time}
+        blocked_reasons: {type: array, items: {type: string}}
+        ammo_score: {type: integer, minimum: 0, maximum: 7}
+        coach_question_id: {type: string, nullable: true}
+      additionalProperties: false
+    QueueSnapshot:
+      type: object
+      required: [event_cursor, actionable, blocked, suggested_send_count]
+      properties:
+        event_cursor: {type: string}
+        actionable: {type: array, items: {$ref: '#/components/schemas/QueueItem'}}
+        blocked: {type: array, items: {$ref: '#/components/schemas/QueueItem'}}
+        suggested_send_count: {type: integer, minimum: 0}
+      additionalProperties: false
+    QueuedJob:
+      type: object
+      required: [job_id, status]
+      properties:
+        job_id: {type: string}
+        status: {type: string}
+        period: {type: string}
+        event_cursor: {type: string}
+        question_id: {type: string}
+        chat_id: {type: string}
+      additionalProperties: false
+    CoachQuestion:
+      type: object
+      required: [id, kind, target, text, priority]
+      properties:
+        id: {type: string}
+        kind: {type: string}
+        target: {type: object}
+        text: {type: string}
+        priority: {type: integer}
+        impact: {type: integer, minimum: 0}
+        status: {type: string, enum: [open, answered, dismissed, expired]}
+      additionalProperties: false
+    CoachQuestionList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/CoachQuestion'}}
+        open_count: {type: integer, minimum: 0, maximum: 5}
+        max_open: {type: integer, const: 5}
+      additionalProperties: false
+    CoachAnswerInput:
+      type: object
+      required: [answer, interviewer_chat_id]
+      properties:
+        answer: {type: string, minLength: 1, maxLength: 12000}
+        interviewer_chat_id: {type: string}
+      additionalProperties: false
+    CoachReport:
+      type: object
+      required: [report, questions, period, input_digest]
+      properties:
+        report: {type: [object, 'null']}
+        questions: {type: array, items: {type: string}}
+        period: {type: [string, 'null']}
+        input_digest: {type: [string, 'null']}
+      additionalProperties: false
+    RateEstimate:
+      type: object
+      required: [numerator, denominator, rate, lower_95, upper_95, status]
+      properties:
+        numerator: {type: integer, minimum: 0}
+        denominator: {type: integer, minimum: 0}
+        rate: {type: number, nullable: true, minimum: 0, maximum: 1}
+        lower_95: {type: number, nullable: true, minimum: 0, maximum: 1}
+        upper_95: {type: number, nullable: true, minimum: 0, maximum: 1}
+        status: {type: string, enum: [measured, insufficient_observations]}
+      additionalProperties: false
+    InsightsReport:
+      type: object
+      additionalProperties: true
+    OutcomeCorrectionInput:
+      type: object
+      required: [expected_revision, class, reason]
+      properties:
+        expected_revision: {type: integer, minimum: 1}
+        class: {type: string, enum: [no_reply, reply_positive, reply_neutral, reply_negative, declined, rung_accepted, call_scheduled]}
+        reason: {type: string, minLength: 10, maxLength: 2000}
+        received_at: {type: string, format: date-time}
+        note: {type: string, maxLength: 4000}
+      additionalProperties: false
+    OutcomeHistory:
+      type: object
+      additionalProperties: true
+    SendHistorySnapshot:
+      type: object
+      additionalProperties: true
+    IdentityTagInput:
+      type: object
+      required: [scope, tag, expected_revision]
+      properties:
+        scope: {type: string, enum: [owner, party]}
+        entity_id: {type: string}
+        tag: {type: string, minLength: 1, maxLength: 80}
+        claim_id: {type: string}
+        claim_revision: {type: integer, minimum: 1}
+        expected_revision: {type: integer, minimum: 1}
+      additionalProperties: false
+    IdentityTag:
+      type: object
+      additionalProperties: true
+    HookMetadataInput:
+      type: object
+      required: [expected_revision, published_at, publicness]
+      properties:
+        expected_revision: {type: integer, minimum: 1}
+        published_at: {type: string, format: date-time}
+        publicness: {type: string, const: professional_public}
+      additionalProperties: false
+    HookRecord:
+      type: object
+      additionalProperties: true
     MaterialRecord:
       type: object
       required:
@@ -3505,7 +3995,7 @@ components:
     OpportunityList:
       type: array
       items:
-        $ref: '#/components/schemas/Opportunity'
+        $ref: '#/components/schemas/OpportunitySummary'
     MaterialList:
       type: array
       items:
