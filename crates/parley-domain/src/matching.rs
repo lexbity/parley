@@ -66,7 +66,7 @@ pub struct MatchResult {
     pub no_match: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LabeledScore {
     pub score: f64,
     pub relevant: bool,

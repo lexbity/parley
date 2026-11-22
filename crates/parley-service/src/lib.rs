@@ -42,8 +42,8 @@ use tokio::sync::Mutex;
 
 static IDS: AtomicU64 = AtomicU64::new(0);
 
-mod board;
 mod assistant;
+mod board;
 mod jobs;
 mod materials;
 mod writing;

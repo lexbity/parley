@@ -6,7 +6,7 @@
 use super::{AppState, Workspace, WorkspaceError, authenticate, digest, new_id, now_utc};
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -16,6 +16,56 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
+
+fn materials_canonical(route: &str, input: &impl Serialize) -> String {
+    let body = serde_json::to_vec(input).unwrap_or_default();
+    let mut bytes = route.as_bytes().to_vec();
+    bytes.push(0);
+    bytes.extend_from_slice(&body);
+    digest(&bytes)
+}
+
+async fn material_receipt_replay(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    epoch: &str,
+    key: &str,
+    canonical: &str,
+) -> Result<Option<Value>, WorkspaceError> {
+    let old: Option<(String, String)> = sqlx::query_as(
+        "SELECT canonical_digest,result_json FROM idempotency_receipt WHERE owner_id=1 AND epoch=? AND key=?",
+    )
+    .bind(epoch)
+    .bind(key)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((old_canonical, result)) = old else {
+        return Ok(None);
+    };
+    if old_canonical != canonical {
+        return Err(WorkspaceError::IdempotencyConflict);
+    }
+    Ok(Some(serde_json::from_str(&result).map_err(|error| {
+        WorkspaceError::Invalid(error.to_string())
+    })?))
+}
+
+async fn material_receipt_store(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    epoch: &str,
+    key: &str,
+    canonical: &str,
+    status: u16,
+    result: &Value,
+) -> Result<(), WorkspaceError> {
+    let result_json = serde_json::to_string(result)
+        .map_err(|error| WorkspaceError::Invalid(error.to_string()))?;
+    let cursor: i64 = sqlx::query_scalar("SELECT coalesce(max(cursor),0) FROM event")
+        .fetch_one(&mut **tx)
+        .await?;
+    sqlx::query("INSERT INTO idempotency_receipt(owner_id,epoch,key,canonical_digest,status_code,result_json,last_event_cursor,created_at) VALUES(1,?,?,?,?,?,?,?)")
+        .bind(epoch).bind(key).bind(canonical).bind(i64::from(status)).bind(result_json).bind(cursor).bind(now_utc()).execute(&mut **tx).await?;
+    Ok(())
+}
 
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
@@ -32,8 +82,14 @@ pub(super) fn routes() -> Router<AppState> {
             "/api/v1/opportunities/{id}/sources/{source_id}",
             post(link_source).delete(unlink_source),
         )
-        .route("/api/v1/opportunities/{id}/interests", post(add_interest))
-        .route("/api/v1/opportunities/{id}/exchange", post(save_exchange))
+        .route(
+            "/api/v1/opportunities/{id}/interests",
+            get(get_interests).post(add_interest),
+        )
+        .route(
+            "/api/v1/opportunities/{id}/exchange",
+            get(get_exchange).post(save_exchange),
+        )
         .route(
             "/api/v1/opportunities/{id}/exchange/{recipient_id}/attest",
             post(attest_exchange),
@@ -208,6 +264,88 @@ async fn get_opportunity(
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecipientQuery {
+    recipient_id: String,
+}
+
+async fn get_interests(
+    State(state): State<AppState>,
+    Path(opportunity_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<RecipientQuery>,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
+    }
+    let participant: Option<i64> = match sqlx::query_scalar(
+        "SELECT count(*) FROM opportunity_party WHERE opportunity_id=? AND party_id=?",
+    )
+    .bind(&opportunity_id)
+    .bind(&query.recipient_id)
+    .fetch_optional(state.workspace.pool())
+    .await
+    {
+        Ok(value) => value,
+        Err(error) => return workspace_error(error.into()),
+    };
+    if participant != Some(1) {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "recipient_not_found",
+            "recipient is not a participant in this opportunity",
+        );
+    }
+    let rows=sqlx::query_as::<_,(String,String,String,String,Option<String>,Option<String>,Option<i64>,i64,String)>("SELECT id,side,statement,knowledge_kind,check_suggestion,claim_id,claim_revision,revision,status FROM opportunity_interest WHERE opportunity_id=? AND party_id=? ORDER BY created_at,id").bind(&opportunity_id).bind(&query.recipient_id).fetch_all(state.workspace.pool()).await;
+    match rows{Ok(rows)=>Json(json!({"opportunity_id":opportunity_id,"recipient_id":query.recipient_id,"items":rows.into_iter().map(|(id,side,statement,knowledge_kind,check_suggestion,claim_id,claim_revision,revision,status)|json!({"id":id,"side":side,"statement":statement,"knowledge_kind":knowledge_kind,"check_suggestion":check_suggestion,"claim_id":claim_id,"claim_revision":claim_revision,"revision":revision,"status":status})).collect::<Vec<_>>()})).into_response(),Err(error)=>workspace_error(error.into())}
+}
+
+async fn get_exchange(
+    State(state): State<AppState>,
+    Path(opportunity_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<RecipientQuery>,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
+    }
+    let participant: Option<i64> = match sqlx::query_scalar(
+        "SELECT count(*) FROM opportunity_party WHERE opportunity_id=? AND party_id=?",
+    )
+    .bind(&opportunity_id)
+    .bind(&query.recipient_id)
+    .fetch_optional(state.workspace.pool())
+    .await
+    {
+        Ok(value) => value,
+        Err(error) => return workspace_error(error.into()),
+    };
+    if participant != Some(1) {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "recipient_not_found",
+            "recipient is not a participant in this opportunity",
+        );
+    }
+    let versions=sqlx::query_as::<_,(i64,String,String,i64,Option<String>,Option<String>)>("SELECT version_no,they_get,i_get,fairness_attested,attestation_digest,attested_at FROM exchange_version WHERE opportunity_id=? AND recipient_id=? ORDER BY version_no").bind(&opportunity_id).bind(&query.recipient_id).fetch_all(state.workspace.pool()).await;
+    let versions = match versions {
+        Ok(value) => value,
+        Err(error) => return workspace_error(error.into()),
+    };
+    let mut results = Vec::new();
+    for (version, they_get, i_get, fairness_attested, attestation_digest, attested_at) in versions {
+        let interests=sqlx::query_as::<_,(String,String,String,String)>("SELECT i.id,i.side,i.statement,i.knowledge_kind FROM exchange_interest_link l JOIN opportunity_interest i ON i.id=l.interest_id WHERE l.opportunity_id=? AND l.recipient_id=? AND l.exchange_version=? ORDER BY i.side,i.id").bind(&opportunity_id).bind(&query.recipient_id).bind(version).fetch_all(state.workspace.pool()).await;
+        let interests = match interests {
+            Ok(value) => value,
+            Err(error) => return workspace_error(error.into()),
+        };
+        results.push(json!({"version":version,"they_get":they_get,"i_get":i_get,"fairness_attested":fairness_attested==1,"attestation_digest":attestation_digest,"attested_at":attested_at,"interest_ids":interests.iter().map(|(id,_,_,_)|id).collect::<Vec<_>>(),"interests":interests.into_iter().map(|(id,side,statement,knowledge_kind)|json!({"id":id,"side":side,"statement":statement,"knowledge_kind":knowledge_kind})).collect::<Vec<_>>()}));
+    }
+    let current = results.last().cloned();
+    Json(json!({"opportunity_id":opportunity_id,"recipient_id":query.recipient_id,"current":current,"versions":results})).into_response()
+}
+
 async fn add_participant(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -264,7 +402,25 @@ async fn add_interest(
     if let Err(error) = authenticate(&headers, &state).await {
         return (error.0, error.1).into_response();
     }
-    match state.workspace.add_interest(&id, &input).await {
+    let key = match super::idempotency_key(&headers) {
+        Ok(value) => value,
+        Err(error) => {
+            return (
+                error.0,
+                Json(json!({"error":{"code":error.1,"message":error.2}})),
+            )
+                .into_response();
+        }
+    };
+    let canonical = materials_canonical(
+        &format!("POST /api/v1/opportunities/{id}/interests"),
+        &input,
+    );
+    match state
+        .workspace
+        .add_interest(&id, &input, &key, &canonical)
+        .await
+    {
         Ok(value) => (StatusCode::CREATED, Json(value)).into_response(),
         Err(error) => workspace_error(error),
     }
@@ -279,7 +435,23 @@ async fn save_exchange(
     if let Err(error) = authenticate(&headers, &state).await {
         return (error.0, error.1).into_response();
     }
-    match state.workspace.save_exchange(&id, &input).await {
+    let key = match super::idempotency_key(&headers) {
+        Ok(value) => value,
+        Err(error) => {
+            return (
+                error.0,
+                Json(json!({"error":{"code":error.1,"message":error.2}})),
+            )
+                .into_response();
+        }
+    };
+    let canonical =
+        materials_canonical(&format!("POST /api/v1/opportunities/{id}/exchange"), &input);
+    match state
+        .workspace
+        .save_exchange(&id, &input, &key, &canonical)
+        .await
+    {
         Ok(value) => (StatusCode::CREATED, Json(value)).into_response(),
         Err(error) => workspace_error(error),
     }
@@ -293,7 +465,25 @@ async fn attest_exchange(
     if let Err(error) = authenticate(&headers, &state).await {
         return (error.0, error.1).into_response();
     }
-    match state.workspace.attest_exchange(&id, &recipient_id).await {
+    let key = match super::idempotency_key(&headers) {
+        Ok(value) => value,
+        Err(error) => {
+            return (
+                error.0,
+                Json(json!({"error":{"code":error.1,"message":error.2}})),
+            )
+                .into_response();
+        }
+    };
+    let canonical = materials_canonical(
+        &format!("POST /api/v1/opportunities/{id}/exchange/{recipient_id}/attest"),
+        &json!({"recipient_id":recipient_id}),
+    );
+    match state
+        .workspace
+        .attest_exchange(&id, &recipient_id, &key, &canonical)
+        .await
+    {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
         Err(error) => workspace_error(error),
     }
@@ -307,7 +497,22 @@ async fn create_template(
     if let Err(error) = authenticate(&headers, &state).await {
         return (error.0, error.1).into_response();
     }
-    match state.workspace.create_template(&input).await {
+    let key = match super::idempotency_key(&headers) {
+        Ok(value) => value,
+        Err(error) => {
+            return (
+                error.0,
+                Json(json!({"error":{"code":error.1,"message":error.2}})),
+            )
+                .into_response();
+        }
+    };
+    let canonical = materials_canonical("POST /api/v1/templates", &input);
+    match state
+        .workspace
+        .create_template(&input, &key, &canonical)
+        .await
+    {
         Ok(value) => (StatusCode::CREATED, Json(value)).into_response(),
         Err(error) => workspace_error(error),
     }
@@ -317,8 +522,11 @@ async fn list_templates(State(state): State<AppState>, headers: HeaderMap) -> im
     if let Err(error) = authenticate(&headers, &state).await {
         return (error.0, error.1).into_response();
     }
-    match sqlx::query_as::<_, (String,String,i64,String,String)>("SELECT id,family_id,version_no,status,body FROM template_version ORDER BY created_at DESC,id").fetch_all(state.workspace.pool()).await {
-        Ok(rows) => (StatusCode::OK, Json(rows.into_iter().map(|(id,family_id,version,status,body)| json!({"id":id,"family_id":family_id,"version":version,"status":status,"body":body})).collect::<Vec<_>>())).into_response(),
+    match sqlx::query_as::<_, (String,String,String,i64,String,String,String,String,String,Option<String>)>("SELECT tv.id,tv.family_id,tv.display_name,tv.version_no,tv.status,tv.body,tv.rules_json,tv.stage_class,tv.channel,tv.parent_version_id FROM template_version tv ORDER BY tv.created_at DESC,tv.id").fetch_all(state.workspace.pool()).await {
+        Ok(rows) => {
+            let items:Result<Vec<Value>,serde_json::Error>=rows.into_iter().map(|(id,family_id,name,version,status,body,rules_json,stage_class,channel,parent_version_id)|Ok(json!({"id":id,"family_id":family_id,"name":name,"version":version,"status":status,"body":body,"sentence_rules":serde_json::from_str::<Value>(&rules_json)?,"stage_class":stage_class,"channel":channel,"parent_version_id":parent_version_id}))).collect();
+            match items{Ok(value)=>(StatusCode::OK,Json(value)).into_response(),Err(error)=>error_response(StatusCode::INTERNAL_SERVER_ERROR,"template_corrupt",&error.to_string())}
+        },
         Err(error) => workspace_error(error.into()),
     }
 }
@@ -331,12 +539,26 @@ async fn approve_template(
     if let Err(error) = authenticate(&headers, &state).await {
         return (error.0, error.1).into_response();
     }
+    let key = match super::idempotency_key(&headers) {
+        Ok(value) => value,
+        Err(error) => {
+            return (
+                error.0,
+                Json(json!({"error":{"code":error.1,"message":error.2}})),
+            )
+                .into_response();
+        }
+    };
+    let canonical = materials_canonical(
+        &format!("POST /api/v1/templates/{id}/approve"),
+        &json!({"id":id,"to":"approved"}),
+    );
     match state
         .workspace
-        .transition_template(&id, "draft", "approved")
+        .transition_template(&id, "draft", "approved", &key, &canonical)
         .await
     {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => workspace_error(error),
     }
 }
@@ -349,12 +571,26 @@ async fn activate_template(
     if let Err(error) = authenticate(&headers, &state).await {
         return (error.0, error.1).into_response();
     }
+    let key = match super::idempotency_key(&headers) {
+        Ok(value) => value,
+        Err(error) => {
+            return (
+                error.0,
+                Json(json!({"error":{"code":error.1,"message":error.2}})),
+            )
+                .into_response();
+        }
+    };
+    let canonical = materials_canonical(
+        &format!("POST /api/v1/templates/{id}/activate"),
+        &json!({"id":id,"to":"active"}),
+    );
     match state
         .workspace
-        .transition_template(&id, "approved", "active")
+        .transition_template(&id, "approved", "active", &key, &canonical)
         .await
     {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => workspace_error(error),
     }
 }
@@ -743,6 +979,8 @@ impl Workspace {
         &self,
         opportunity_id: &str,
         input: &InterestInput,
+        idempotency_key: &str,
+        canonical: &str,
     ) -> Result<Value, WorkspaceError> {
         if !matches!(input.side.as_str(), "them" | "me")
             || !matches!(
@@ -770,6 +1008,12 @@ impl Workspace {
             ));
         }
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(value) =
+            material_receipt_replay(&mut tx, &self.epoch, idempotency_key, canonical).await?
+        {
+            tx.commit().await?;
+            return Ok(value);
+        }
         let member: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM opportunity_party WHERE opportunity_id=? AND party_id=?",
         )
@@ -814,16 +1058,26 @@ impl Workspace {
             json!({"interest_id":id,"recipient_id":input.recipient_id,"side":input.side,"knowledge_kind":input.knowledge_kind,"check_suggestion":input.check_suggestion}),
         )
         .await?;
-        tx.commit().await?;
-        Ok(
-            json!({"id":id,"opportunity_id":opportunity_id,"recipient_id":input.recipient_id,"side":input.side,"statement":input.statement,"knowledge_kind":input.knowledge_kind,"check_suggestion":input.check_suggestion,"revision":1,"status":"active"}),
+        let result = json!({"id":id,"opportunity_id":opportunity_id,"recipient_id":input.recipient_id,"side":input.side,"statement":input.statement,"knowledge_kind":input.knowledge_kind,"check_suggestion":input.check_suggestion,"revision":1,"status":"active"});
+        material_receipt_store(
+            &mut tx,
+            &self.epoch,
+            idempotency_key,
+            canonical,
+            201,
+            &result,
         )
+        .await?;
+        tx.commit().await?;
+        Ok(result)
     }
 
     async fn save_exchange(
         &self,
         opportunity_id: &str,
         input: &ExchangeInput,
+        idempotency_key: &str,
+        canonical: &str,
     ) -> Result<Value, WorkspaceError> {
         if input.they_get.len() > 3000 || input.i_get.len() > 3000 {
             return Err(WorkspaceError::Invalid(
@@ -831,6 +1085,12 @@ impl Workspace {
             ));
         }
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(value) =
+            material_receipt_replay(&mut tx, &self.epoch, idempotency_key, canonical).await?
+        {
+            tx.commit().await?;
+            return Ok(value);
+        }
         let membership: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM opportunity_party WHERE opportunity_id=? AND party_id=?",
         )
@@ -872,18 +1132,34 @@ impl Workspace {
             json!({"recipient_id":input.recipient_id,"exchange_version":next}),
         )
         .await?;
-        tx.commit().await?;
-        Ok(
-            json!({"opportunity_id":opportunity_id,"recipient_id":input.recipient_id,"version":next,"they_get":input.they_get,"i_get":input.i_get,"interest_ids":input.interest_ids,"fairness_attested":false}),
+        let result = json!({"opportunity_id":opportunity_id,"recipient_id":input.recipient_id,"version":next,"they_get":input.they_get,"i_get":input.i_get,"interest_ids":input.interest_ids,"fairness_attested":false});
+        material_receipt_store(
+            &mut tx,
+            &self.epoch,
+            idempotency_key,
+            canonical,
+            201,
+            &result,
         )
+        .await?;
+        tx.commit().await?;
+        Ok(result)
     }
 
     async fn attest_exchange(
         &self,
         opportunity_id: &str,
         recipient_id: &str,
+        idempotency_key: &str,
+        canonical: &str,
     ) -> Result<Value, WorkspaceError> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(value) =
+            material_receipt_replay(&mut tx, &self.epoch, idempotency_key, canonical).await?
+        {
+            tx.commit().await?;
+            return Ok(value);
+        }
         let (version,they_get,i_get): (i64,String,String) = sqlx::query_as("SELECT version_no,they_get,i_get FROM exchange_version WHERE opportunity_id=? AND recipient_id=? ORDER BY version_no DESC LIMIT 1")
             .bind(opportunity_id).bind(recipient_id).fetch_optional(&mut *tx).await?.ok_or_else(|| WorkspaceError::Invalid("exchange does not exist".into()))?;
         let interests = exchange_interests(&mut tx, opportunity_id, recipient_id, version).await?;
@@ -910,13 +1186,26 @@ impl Workspace {
             .bind(&current_digest).bind(&now).bind(opportunity_id).bind(recipient_id).bind(version).execute(&mut *tx).await?;
         let rev = bump_opportunity(&mut tx, opportunity_id, &now).await?;
         event(&mut tx,"opportunity",opportunity_id,rev,"opportunity.exchange_attested",json!({"recipient_id":recipient_id,"exchange_version":version,"attestation_digest":current_digest})).await?;
-        tx.commit().await?;
-        Ok(
-            json!({"opportunity_id":opportunity_id,"recipient_id":recipient_id,"version":version,"fairness_attested":true,"attestation_digest":current_digest}),
+        let result = json!({"opportunity_id":opportunity_id,"recipient_id":recipient_id,"version":version,"fairness_attested":true,"attestation_digest":current_digest});
+        material_receipt_store(
+            &mut tx,
+            &self.epoch,
+            idempotency_key,
+            canonical,
+            200,
+            &result,
         )
+        .await?;
+        tx.commit().await?;
+        Ok(result)
     }
 
-    async fn create_template(&self, input: &TemplateInput) -> Result<Value, WorkspaceError> {
+    async fn create_template(
+        &self,
+        input: &TemplateInput,
+        idempotency_key: &str,
+        canonical: &str,
+    ) -> Result<Value, WorkspaceError> {
         let checked = template::validate(&input.body, input.proof_fallback.as_deref());
         if !checked.errors.is_empty() {
             return Err(WorkspaceError::Invalid(checked.errors.join("; ")));
@@ -932,6 +1221,12 @@ impl Workspace {
         let fallbacks = serde_json::to_string(&json!({"proof":input.proof_fallback}))
             .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(value) =
+            material_receipt_replay(&mut tx, &self.epoch, idempotency_key, canonical).await?
+        {
+            tx.commit().await?;
+            return Ok(value);
+        }
         sqlx::query("INSERT INTO template_family(id,name,created_at) VALUES(?,?,?)")
             .bind(&family)
             .bind(input.name.trim())
@@ -948,10 +1243,18 @@ impl Workspace {
             json!({"family_id":family,"version":1,"body_sha256":digest(input.body.as_bytes())}),
         )
         .await?;
-        tx.commit().await?;
-        Ok(
-            json!({"id":id,"family_id":family,"version":1,"status":"draft","body":input.body,"slots":checked.slots}),
+        let result = json!({"id":id,"family_id":family,"version":1,"status":"draft","body":input.body,"slots":checked.slots});
+        material_receipt_store(
+            &mut tx,
+            &self.epoch,
+            idempotency_key,
+            canonical,
+            201,
+            &result,
         )
+        .await?;
+        tx.commit().await?;
+        Ok(result)
     }
 
     async fn transition_template(
@@ -959,8 +1262,16 @@ impl Workspace {
         id: &str,
         from: &str,
         to: &str,
-    ) -> Result<(), WorkspaceError> {
+        idempotency_key: &str,
+        canonical: &str,
+    ) -> Result<Value, WorkspaceError> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(value) =
+            material_receipt_replay(&mut tx, &self.epoch, idempotency_key, canonical).await?
+        {
+            tx.commit().await?;
+            return Ok(value);
+        }
         let (body, fallback, status): (String, String, String) =
             sqlx::query_as("SELECT body,fallbacks_json,status FROM template_version WHERE id=?")
                 .bind(id)
@@ -999,8 +1310,18 @@ impl Workspace {
             json!({"status":to}),
         )
         .await?;
+        let result = json!({"id":id,"status":to});
+        material_receipt_store(
+            &mut tx,
+            &self.epoch,
+            idempotency_key,
+            canonical,
+            204,
+            &Value::Null,
+        )
+        .await?;
         tx.commit().await?;
-        Ok(())
+        Ok(result)
     }
 
     async fn create_material(

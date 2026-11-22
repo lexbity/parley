@@ -1,7 +1,7 @@
 //! S09 role execution. Model output remains versioned job data until an owner
 //! explicitly saves or edits it. Deterministic shortlist and lint policy stay
 //! in Rust; the local model supplies bounded prose only.
-use super::{Workspace, WorkspaceError, digest};
+use super::{Workspace, digest};
 use parley_domain::{
     lint,
     matching::{self, Asset, AssetKind, Weights},
@@ -85,12 +85,12 @@ struct LinterFinding {
     suggested_rewrite: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct MatcherResult {
     explanations: Vec<MatcherExplanation>,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct MatcherExplanation {
     resource_id: String,
@@ -117,7 +117,7 @@ pub(super) async fn process_role(workspace: &Workspace, job_id: &str, role: &str
         .await;
         return;
     }
-    let input: Value = match serde_json::from_str(&attempt.input_json) {
+    let input: Value = match serde_json::from_str::<Value>(&attempt.input_json) {
         Ok(value) if value.is_object() => value,
         _ => {
             super::jobs::finish_attempt_error(
@@ -146,7 +146,7 @@ pub(super) async fn process_role(workspace: &Workspace, job_id: &str, role: &str
     }
     let result = tokio::time::timeout(Duration::from_secs(120), async {
         match role {
-            "matcher" => run_matcher(workspace, job_id, &attempt, &input).await,
+            "matcher" => run_matcher(workspace, &attempt, &input).await,
             "template_builder" => run_builder(workspace, &attempt, &input).await,
             "composer" => run_composer(workspace, &attempt, &input).await,
             "linter" => run_linter(workspace, &attempt, &input).await,
@@ -230,9 +230,9 @@ pub(super) async fn process_role(workspace: &Workspace, job_id: &str, role: &str
     }
 }
 
-struct RoleFailure {
-    code: &'static str,
-    message: String,
+pub(super) struct RoleFailure {
+    pub(super) code: &'static str,
+    pub(super) message: String,
     retryable: bool,
     invalid: bool,
 }
@@ -265,7 +265,7 @@ impl RoleFailure {
 type RoleResult = Result<(Value, u32, u32), RoleFailure>;
 
 async fn chat(
-    workspace: &Workspace,
+    _workspace: &Workspace,
     attempt: &super::jobs::Attempt,
     content: &str,
     temperature: f32,
@@ -524,7 +524,6 @@ async fn run_linter(
 
 async fn run_matcher(
     workspace: &Workspace,
-    job_id: &str,
     attempt: &super::jobs::Attempt,
     input: &Value,
 ) -> RoleResult {
@@ -652,7 +651,16 @@ async fn run_matcher(
             sends_using_asset: sends,
         });
     }
-    let calibrations:Vec<(String,f64,String)>=sqlx::query_as("SELECT asset_kind,threshold,fixture_digest FROM matching_calibration WHERE model_digest=? AND calibration_revision=(SELECT max(c2.calibration_revision) FROM matching_calibration c2 WHERE c2.model_digest=matching_calibration.model_digest AND c2.asset_kind=matching_calibration.asset_kind) ORDER BY asset_kind").bind(&model_digest).fetch_all(workspace.pool()).await.map_err(|error|RoleFailure::new("PERSISTENCE_FAILED",error.to_string()))?;
+    let scoring_config = input
+        .get("scoring_config_digest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            RoleFailure::new(
+                "MATCH_CONFIG_INVALID",
+                "Scoring configuration digest is missing.",
+            )
+        })?;
+    let calibrations:Vec<(String,f64,String)>=sqlx::query_as("SELECT asset_kind,threshold,fixture_digest FROM matching_calibration WHERE model_digest=? AND scoring_config_digest=? AND calibration_revision=(SELECT max(c2.calibration_revision) FROM matching_calibration c2 WHERE c2.model_digest=matching_calibration.model_digest AND c2.asset_kind=matching_calibration.asset_kind AND c2.scoring_config_digest=matching_calibration.scoring_config_digest) ORDER BY asset_kind").bind(&model_digest).bind(scoring_config).fetch_all(workspace.pool()).await.map_err(|error|RoleFailure::new("PERSISTENCE_FAILED",error.to_string()))?;
     let mut thresholds = Vec::new();
     let mut calibration_json = serde_json::Map::new();
     for (kind, value, fixture_digest) in calibrations {
@@ -726,33 +734,23 @@ async fn run_matcher(
             "matcher explanation schema validation failed: {error}"
         ))
     })?;
-    let candidate_ids = shortlist_ids.iter().cloned().collect::<BTreeSet<_>>();
-    let mut reasons = BTreeMap::new();
-    for item in explanation.explanations {
-        if !candidate_ids.contains(&item.resource_id)
-            || item.why.split_whitespace().count() > 25
-            || item.why.trim().is_empty()
-        {
-            continue;
-        }
-        let Some(fields) = asset_fields.get(&item.resource_id) else {
-            continue;
-        };
-        if !party_fields.contains(&item.cites_party_field)
-            || !fields.contains(&item.cites_asset_field)
-        {
-            continue;
-        }
-        reasons.insert(item.resource_id, item.why);
-    }
+    let explanation_value = serde_json::to_value(&explanation)
+        .map_err(|error| RoleFailure::invalid(error.to_string()))?;
+    let explanations = super::writing::validate_match_explanations(
+        &shortlist_ids,
+        &explanation_value,
+        &party_fields,
+        &asset_fields,
+    );
     let enriched=ranked.into_iter().map(|result|{
-        let candidates=result.candidates.into_iter().map(|candidate|json!({"id":candidate.id,"score":candidate.score,"components":{"cosine":candidate.cosine,"tags":candidate.tag_overlap,"recency":candidate.recency,"track":candidate.track},"why":reasons.get(&candidate.id).cloned().unwrap_or_else(||"Matches on deterministic similarity and available resource evidence.".to_owned())})).collect::<Vec<_>>();
+        let candidates=result.candidates.into_iter().map(|candidate|json!({"id":candidate.id,"score":candidate.score,"components":{"cosine":candidate.cosine,"tags":candidate.tag_overlap,"recency":candidate.recency,"track":candidate.track},"why":explanations.get(&candidate.id).cloned().unwrap_or_else(||"Matches on deterministic similarity and available resource evidence.".to_owned())})).collect::<Vec<_>>();
         json!({"kind":result.kind,"threshold":result.threshold,"no_match":result.no_match,"candidates":candidates})
     }).collect::<Vec<_>>();
     let output = json!({"opportunity_id":input.get("opportunity_id"),"recipient_id":input.get("recipient_id"),"model_digest":model_digest,"calibration":calibration_json,"results":enriched,"status":"ready_for_owner_selection"});
     Ok((output, tokens_in, chat_out))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn complete_if_current(
     workspace: &Workspace,
     job_id: &str,

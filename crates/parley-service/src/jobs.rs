@@ -24,6 +24,14 @@ const INTERVIEWER_PROMPT: &str = include_str!("../roles/interviewer/prompt.md");
 const INTERVIEWER_SCHEMA: &str = include_str!("../roles/interviewer/schema.json");
 const BRIEFER_PROMPT: &str = include_str!("../roles/briefer/prompt.md");
 const BRIEFER_SCHEMA: &str = include_str!("../roles/briefer/schema.json");
+const MATCHER_PROMPT: &str = include_str!("../roles/matcher/prompt.md");
+const MATCHER_SCHEMA: &str = include_str!("../roles/matcher/schema.json");
+const BUILDER_PROMPT: &str = include_str!("../roles/template_builder/prompt.md");
+const BUILDER_SCHEMA: &str = include_str!("../roles/template_builder/schema.json");
+const COMPOSER_PROMPT: &str = include_str!("../roles/composer/prompt.md");
+const COMPOSER_SCHEMA: &str = include_str!("../roles/composer/schema.json");
+const LINTER_PROMPT: &str = include_str!("../roles/linter/prompt.md");
+const LINTER_SCHEMA: &str = include_str!("../roles/linter/schema.json");
 const MAX_BODY: usize = 2_200_000;
 const MAX_CHUNKS: usize = 16;
 const MAX_RETRIES: i64 = 3;
@@ -379,7 +387,11 @@ async fn process(workspace: &Workspace, job_id: &str) {
         .ok()
         .flatten();
     if let Some(role) = role.as_deref().filter(|role| *role != "extractor") {
-        super::assistant::process_role(workspace, job_id, role).await;
+        if matches!(role, "matcher" | "template_builder" | "composer" | "linter") {
+            super::writing_jobs::process_role(workspace, job_id, role).await;
+        } else {
+            super::assistant::process_role(workspace, job_id, role).await;
+        }
         return;
     }
     let started = tokio::time::Instant::now();
@@ -680,6 +692,10 @@ fn role_defaults(role: &str) -> Option<(&'static str, &'static str)> {
         "extractor" => Some((PROMPT, SCHEMA)),
         "interviewer" => Some((INTERVIEWER_PROMPT, INTERVIEWER_SCHEMA)),
         "briefer" => Some((BRIEFER_PROMPT, BRIEFER_SCHEMA)),
+        "matcher" => Some((MATCHER_PROMPT, MATCHER_SCHEMA)),
+        "template_builder" => Some((BUILDER_PROMPT, BUILDER_SCHEMA)),
+        "composer" => Some((COMPOSER_PROMPT, COMPOSER_SCHEMA)),
+        "linter" => Some((LINTER_PROMPT, LINTER_SCHEMA)),
         _ => None,
     }
 }

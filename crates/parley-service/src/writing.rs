@@ -1,7 +1,7 @@
 //! S09 authoring commands. Deterministic ranking and lint preparation happen
 //! here; local model roles return proposal data through the durable worker.
 
-use super::{AppState, authenticate, command_error, digest, error, now_utc};
+use super::{AppState, WorkspaceError, authenticate, command_error, digest, error, now_utc};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -15,6 +15,8 @@ use serde_json::{Value, json};
 use sqlx::{FromRow, Sqlite, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
+type ReadyResourceRow = (String, String, String, String, i64, f64);
+
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
         .route(
@@ -23,6 +25,14 @@ pub(super) fn routes() -> Router<AppState> {
         )
         .route("/api/v1/templates/build", post(build_templates))
         .route(
+            "/api/v1/template-families",
+            get(list_template_families).post(create_template_family),
+        )
+        .route(
+            "/api/v1/matching/calibrations",
+            get(get_calibrations).post(save_calibration),
+        )
+        .route(
             "/api/v1/embedding-model",
             get(get_embedding_model).put(set_embedding_model),
         )
@@ -30,7 +40,10 @@ pub(super) fn routes() -> Router<AppState> {
             "/api/v1/voice-samples",
             get(list_voice_samples).post(create_voice_sample),
         )
-        .route("/api/v1/voice-samples/{id}", post(delete_voice_sample))
+        .route(
+            "/api/v1/voice-samples/{id}/retire",
+            post(retire_voice_sample),
+        )
         .route(
             "/api/v1/templates/{family_id}/versions",
             post(create_template_version),
@@ -56,6 +69,342 @@ struct EmbeddingModelRequest {
 struct VoiceSampleRequest {
     text: String,
     channel: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CalibrationRequest {
+    asset_kind: parley_domain::matching::AssetKind,
+    fixture_id: String,
+    samples: Vec<parley_domain::matching::LabeledScore>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TemplateFamilyRequest {
+    name: String,
+}
+
+async fn list_template_families(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(response) = authenticate(&headers, &state).await {
+        return response.into_response();
+    }
+    let rows = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT id,name,created_at FROM template_family ORDER BY name COLLATE NOCASE,id",
+    )
+    .fetch_all(state.workspace.pool())
+    .await;
+    match rows{Ok(rows)=>Json(json!({"items":rows.into_iter().map(|(id,name,created_at)|json!({"id":id,"name":name,"created_at":created_at})).collect::<Vec<_>>()})).into_response(),Err(error)=>command_error(error.into())}
+}
+
+async fn create_template_family(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<TemplateFamilyRequest>,
+) -> impl IntoResponse {
+    if let Err(response) = authenticate(&headers, &state).await {
+        return response.into_response();
+    }
+    if input.name.trim().is_empty() || input.name.len() > 200 {
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "TEMPLATE_FAMILY_INVALID",
+            "Template family name must contain 1–200 bytes.",
+        );
+    }
+    let key = match command_key(&headers) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let canonical = match canonical_command("POST /api/v1/template-families", &input) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
+        Ok(value) => value,
+        Err(error) => return command_error(error.into()),
+    };
+    match receipt_replay(&mut tx, &state.workspace, &key, &canonical).await {
+        Ok(Some(response)) => {
+            let _ = tx.commit().await;
+            return response;
+        }
+        Ok(None) => {}
+        Err(response) => {
+            let _ = tx.rollback().await;
+            return response;
+        }
+    }
+    let id = super::new_id("template-family");
+    let now = now_utc();
+    if let Err(error) = sqlx::query("INSERT INTO template_family(id,name,created_at) VALUES(?,?,?)")
+        .bind(&id)
+        .bind(input.name.trim())
+        .bind(&now)
+        .execute(&mut *tx)
+        .await
+    {
+        let _ = tx.rollback().await;
+        return command_error(error.into());
+    }
+    let revision: Result<i64, sqlx::Error> = sqlx::query_scalar(
+        "UPDATE workspace_meta SET revision=revision+1 WHERE singleton=1 RETURNING revision",
+    )
+    .fetch_one(&mut *tx)
+    .await;
+    let revision = match revision {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = tx.rollback().await;
+            return command_error(error.into());
+        }
+    };
+    if let Err(error)=sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'template_family',?,?, 'template_family.created',?)").bind(super::new_id(&id)).bind(&now).bind(&id).bind(revision).bind(json!({"name":input.name.trim()}).to_string()).execute(&mut *tx).await{let _=tx.rollback().await;return command_error(error.into());}
+    let result = json!({"id":id,"name":input.name.trim(),"created_at":now});
+    if let Err(error) = receipt_store(
+        &mut tx,
+        &state.workspace,
+        &key,
+        &canonical,
+        StatusCode::CREATED,
+        &result,
+    )
+    .await
+    {
+        let _ = tx.rollback().await;
+        return command_error(error);
+    }
+    if let Err(error) = tx.commit().await {
+        return command_error(error.into());
+    }
+    (StatusCode::CREATED, Json(result)).into_response()
+}
+
+fn scoring_config_digest(weights: &Value, half_life: f64) -> Result<String, String> {
+    let bytes = serde_json::to_vec(
+        &json!({"weights":weights,"proof_half_life_months":half_life,"scoring_revision":1}),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(digest(&bytes))
+}
+
+async fn get_calibrations(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err(response) = authenticate(&headers, &state).await {
+        return response.into_response();
+    }
+    let provider: Result<(String, Option<String>), sqlx::Error> = sqlx::query_as(
+        "SELECT embed_model,embed_model_digest FROM agent_provider WHERE singleton=1",
+    )
+    .fetch_one(state.workspace.pool())
+    .await;
+    let (model, model_digest) = match provider {
+        Ok(value) => value,
+        Err(error) => return command_error(error.into()),
+    };
+    let settings_json: String =
+        match sqlx::query_scalar("SELECT settings_json FROM owner_profile WHERE id=1")
+            .fetch_one(state.workspace.pool())
+            .await
+        {
+            Ok(value) => value,
+            Err(error) => return command_error(error.into()),
+        };
+    let settings: Value = match serde_json::from_str(&settings_json) {
+        Ok(value) => value,
+        Err(error) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "OWNER_SETTINGS_CORRUPT",
+                &error.to_string(),
+            );
+        }
+    };
+    let half_life = settings
+        .pointer("/pack/limits/proof_half_life_months")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(24.0);
+    let weights = settings
+        .pointer("/matcher/weights")
+        .cloned()
+        .unwrap_or(json!({"cosine":0.5,"tags":0.25,"recency":0.15,"track":0.1}));
+    let config_digest = match scoring_config_digest(&weights, half_life) {
+        Ok(value) => value,
+        Err(error) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "MATCH_CONFIG_SERIALIZE_FAILED",
+                &error,
+            );
+        }
+    };
+    let rows=sqlx::query_as::<_,(String,f64,String,i64,i64,i64,i64,String)>("SELECT asset_kind,threshold,fixture_digest,positives,negatives,true_positives,false_positives,scoring_config_digest FROM matching_calibration WHERE model_digest=? AND scoring_config_digest=? AND calibration_revision=(SELECT max(c2.calibration_revision) FROM matching_calibration c2 WHERE c2.model_digest=matching_calibration.model_digest AND c2.asset_kind=matching_calibration.asset_kind AND c2.scoring_config_digest=matching_calibration.scoring_config_digest) ORDER BY asset_kind").bind(model_digest.clone().unwrap_or_default()).bind(config_digest.clone()).fetch_all(state.workspace.pool()).await;
+    match rows{Ok(rows)=>Json(json!({"model":model,"model_digest":model_digest,"scoring_config_digest":config_digest,"calibrations":rows.into_iter().map(|(kind,threshold,fixture_digest,positives,negatives,true_positives,false_positives,_)|json!({"asset_kind":kind,"threshold":threshold,"fixture_digest":fixture_digest,"positives":positives,"negatives":negatives,"true_positives":true_positives,"false_positives":false_positives})).collect::<Vec<_>>()})).into_response(),Err(error)=>command_error(error.into())}
+}
+
+async fn save_calibration(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<CalibrationRequest>,
+) -> impl IntoResponse {
+    if let Err(response) = authenticate(&headers, &state).await {
+        return response.into_response();
+    }
+    if input.fixture_id.trim().is_empty() || input.fixture_id.len() > 200 || input.samples.len() < 2
+    {
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "CALIBRATION_INPUT_INVALID",
+            "Calibration requires a named fixture and at least one positive and one negative score.",
+        );
+    }
+    let key = match command_key(&headers) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let canonical = match canonical_command("POST /api/v1/matching/calibrations", &input) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let provider: Result<Option<String>, sqlx::Error> =
+        sqlx::query_scalar("SELECT embed_model_digest FROM agent_provider WHERE singleton=1")
+            .fetch_one(state.workspace.pool())
+            .await;
+    let Some(model_digest) = (match provider {
+        Ok(value) => value,
+        Err(error) => return command_error(error.into()),
+    }) else {
+        return err(
+            StatusCode::CONFLICT,
+            "EMBED_MODEL_UNAVAILABLE",
+            "Configure and verify the local embedding model before calibration.",
+        );
+    };
+    let settings_json: String =
+        match sqlx::query_scalar("SELECT settings_json FROM owner_profile WHERE id=1")
+            .fetch_one(state.workspace.pool())
+            .await
+        {
+            Ok(value) => value,
+            Err(error) => return command_error(error.into()),
+        };
+    let settings: Value = match serde_json::from_str(&settings_json) {
+        Ok(value) => value,
+        Err(error) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "OWNER_SETTINGS_CORRUPT",
+                &error.to_string(),
+            );
+        }
+    };
+    let half_life = settings
+        .pointer("/pack/limits/proof_half_life_months")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(24.0);
+    let weights = settings
+        .pointer("/matcher/weights")
+        .cloned()
+        .unwrap_or(json!({"cosine":0.5,"tags":0.25,"recency":0.15,"track":0.1}));
+    let config_digest = match scoring_config_digest(&weights, half_life) {
+        Ok(value) => value,
+        Err(error) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "MATCH_CONFIG_SERIALIZE_FAILED",
+                &error,
+            );
+        }
+    };
+    let fixture_bytes = match serde_json::to_vec(
+        &json!({"fixture_id":input.fixture_id,"asset_kind":input.asset_kind,"samples":input.samples}),
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "CALIBRATION_SERIALIZE_FAILED",
+                &error.to_string(),
+            );
+        }
+    };
+    let fixture_digest = digest(&fixture_bytes);
+    let calibration =
+        match parley_domain::matching::calibrate(&model_digest, &fixture_digest, &input.samples) {
+            Ok(value) => value,
+            Err(error) => {
+                return err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "CALIBRATION_INVALID",
+                    &format!("{error:?}"),
+                );
+            }
+        };
+    let kind = match input.asset_kind {
+        parley_domain::matching::AssetKind::Gift => "gift",
+        parley_domain::matching::AssetKind::Proof => "proof",
+        parley_domain::matching::AssetKind::Artifact => "artifact",
+    };
+    let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
+        Ok(value) => value,
+        Err(error) => return command_error(error.into()),
+    };
+    match receipt_replay(&mut tx, &state.workspace, &key, &canonical).await {
+        Ok(Some(response)) => {
+            let _ = tx.commit().await;
+            return response;
+        }
+        Ok(None) => {}
+        Err(response) => {
+            let _ = tx.rollback().await;
+            return response;
+        }
+    }
+    let version:Result<i64,sqlx::Error>=sqlx::query_scalar("SELECT coalesce(max(calibration_revision),0)+1 FROM matching_calibration WHERE model_digest=? AND asset_kind=?").bind(&model_digest).bind(kind).fetch_one(&mut *tx).await;
+    let version = match version {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = tx.rollback().await;
+            return command_error(error.into());
+        }
+    };
+    let now = now_utc();
+    if let Err(error)=sqlx::query("INSERT INTO matching_calibration(model_digest,asset_kind,threshold,fixture_digest,positives,negatives,true_positives,false_positives,false_negatives,calibration_revision,created_at,scoring_config_digest) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(&model_digest).bind(kind).bind(calibration.threshold).bind(&fixture_digest).bind(calibration.positives as i64).bind(calibration.negatives as i64).bind(calibration.true_positives as i64).bind(calibration.false_positives as i64).bind(calibration.false_negatives as i64).bind(version).bind(&now).bind(&config_digest).execute(&mut *tx).await{let _=tx.rollback().await;return command_error(error.into());}
+    let revision: Result<i64, sqlx::Error> = sqlx::query_scalar(
+        "UPDATE workspace_meta SET revision=revision+1 WHERE singleton=1 RETURNING revision",
+    )
+    .fetch_one(&mut *tx)
+    .await;
+    let revision = match revision {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = tx.rollback().await;
+            return command_error(error.into());
+        }
+    };
+    if let Err(error)=sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'matching_calibration',?,?, 'matching.calibration_saved',?)").bind(super::new_id(&fixture_digest)).bind(&now).bind(kind).bind(revision).bind(json!({"model_digest":model_digest,"scoring_config_digest":config_digest,"fixture_digest":fixture_digest,"calibration_revision":version}).to_string()).execute(&mut *tx).await{let _=tx.rollback().await;return command_error(error.into());}
+    let result = json!({"asset_kind":kind,"model_digest":model_digest,"scoring_config_digest":config_digest,"fixture_digest":fixture_digest,"threshold":calibration.threshold,"positives":calibration.positives,"negatives":calibration.negatives,"true_positives":calibration.true_positives,"false_positives":calibration.false_positives,"false_negatives":calibration.false_negatives,"calibration_revision":version});
+    if let Err(error) = receipt_store(
+        &mut tx,
+        &state.workspace,
+        &key,
+        &canonical,
+        StatusCode::CREATED,
+        &result,
+    )
+    .await
+    {
+        let _ = tx.rollback().await;
+        return command_error(error);
+    }
+    if let Err(error) = tx.commit().await {
+        return command_error(error.into());
+    }
+    (StatusCode::CREATED, Json(result)).into_response()
 }
 
 async fn get_embedding_model(
@@ -269,7 +618,7 @@ async fn create_voice_sample(
     (StatusCode::CREATED, Json(response_body)).into_response()
 }
 
-async fn delete_voice_sample(
+async fn retire_voice_sample(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -399,7 +748,7 @@ async fn local_model_digest(endpoint: &str, model: &str) -> Result<String, Strin
     Ok(digest.to_owned())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct MatchRequest {
     recipient_id: String,
@@ -435,7 +784,7 @@ struct TemplateBuildRequest {
     voice_sample_ids: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct TemplateVersionRequest {
     name: String,
@@ -545,7 +894,7 @@ async fn start_match(
             "Add an active, recipient-specific need before matching resources.",
         );
     }
-    let resources: Result<Vec<(String, String, String, String, i64, f64)>, sqlx::Error> = sqlx::query_as(
+    let resources: Result<Vec<ReadyResourceRow>, sqlx::Error> = sqlx::query_as(
         "SELECT id,kind,title,body_json,revision,max(0.0,(julianday('now')-julianday(created_at))/30.4375) FROM resource WHERE readiness='ready' ORDER BY id",
     )
     .fetch_all(state.workspace.pool())
@@ -603,7 +952,17 @@ async fn start_match(
         .pointer("/matcher/weights")
         .cloned()
         .unwrap_or(json!({"cosine":0.5,"tags":0.25,"recency":0.15,"track":0.1}));
-    let input_json = json!({"opportunity_id":opportunity_id,"recipient_id":input.recipient_id,"opportunity_revision":opportunity_revision,"recipient_revision":recipient_revision,"need_text":need_text,"party_fields":{"need_text":need_text},"party_tags":[],"resources":resource_inputs,"proof_half_life_months":proof_half_life_months,"weights":weights,"requested_at":now_utc()});
+    let scoring_config_digest = match scoring_config_digest(&weights, proof_half_life_months) {
+        Ok(value) => value,
+        Err(error) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "MATCH_CONFIG_SERIALIZE_FAILED",
+                &error,
+            );
+        }
+    };
+    let input_json = json!({"opportunity_id":opportunity_id,"recipient_id":input.recipient_id,"opportunity_revision":opportunity_revision,"recipient_revision":recipient_revision,"need_text":need_text,"party_fields":{"need_text":need_text},"party_tags":[],"resources":resource_inputs,"proof_half_life_months":proof_half_life_months,"weights":weights,"scoring_config_digest":scoring_config_digest,"requested_at":now_utc()});
     let key = match command_key(&headers) {
         Ok(value) => value,
         Err(response) => return response,
@@ -647,7 +1006,7 @@ async fn get_match(
     if let Err(response) = authenticate(&headers, &state).await {
         return response.into_response();
     }
-    let row = sqlx::query_as::<_,MatchRunRow>("SELECT id,opportunity_id,recipient_id,embed_model_digest,calibration_json,shortlist_json,why_job_id FROM match_run WHERE opportunity_id=? AND recipient_id=? ORDER BY created_at DESC,id DESC LIMIT 1").bind(opportunity_id).bind(query.recipient_id).fetch_optional(state.workspace.pool()).await;
+    let row = sqlx::query_as::<_,MatchRunRow>("SELECT mr.id,mr.opportunity_id,mr.recipient_id,mr.embed_model_digest,mr.calibration_json,mr.shortlist_json,mr.why_job_id FROM match_run mr JOIN opportunity o ON o.id=mr.opportunity_id JOIN entity e ON e.id=mr.recipient_id WHERE mr.opportunity_id=? AND mr.recipient_id=? AND mr.opportunity_revision=o.revision AND mr.recipient_revision=e.revision ORDER BY mr.created_at DESC,mr.id DESC LIMIT 1").bind(opportunity_id).bind(query.recipient_id).fetch_optional(state.workspace.pool()).await;
     match row {
         Ok(Some(value)) => Json(value).into_response(),
         Ok(None) => err(
@@ -751,7 +1110,7 @@ async fn build_templates(
             }
         };
         let samples: Result<Vec<(String,String)>,sqlx::Error> = sqlx::query_as("SELECT id,text FROM voice_sample WHERE id IN (SELECT value FROM json_each(?)) AND status='active' ORDER BY id")
-            .bind(ids_json)
+            .bind(&ids_json)
             .fetch_all(state.workspace.pool()).await;
         let samples = match samples {
             Ok(value) => value,
@@ -1097,7 +1456,7 @@ async fn compose_material(
     };
     let fallback: Value = serde_json::from_str(&slots.1).unwrap_or(Value::Null);
     let declared = template::validate(&slots.0, fallback.get("proof").and_then(Value::as_str));
-    if declared.errors.len() > 0 {
+    if !declared.errors.is_empty() {
         return err(
             StatusCode::UNPROCESSABLE_ENTITY,
             "TEMPLATE_INVALID",
@@ -1281,7 +1640,7 @@ async fn save_composer_candidate(
         }
     }
     let row:Option<(String,String,i64,String,String,String)>=match sqlx::query_as("SELECT j.status,j.role,j.current_attempt,j.input_json,a.output_json,a.prompt_sha256 FROM durable_job j JOIN job_attempt a ON a.job_id=j.id AND a.attempt_no=j.current_attempt WHERE j.id=?").bind(&job_id).fetch_optional(&mut *tx).await{Ok(value)=>value,Err(error)=>{let _=tx.rollback().await;return command_error(error.into())}};
-    let Some((status, role, attempt, input_json, output_json, prompt_sha)) = row else {
+    let Some((status, role, _attempt, input_json, output_json, prompt_sha)) = row else {
         let _ = tx.rollback().await;
         return err(
             StatusCode::NOT_FOUND,
@@ -1475,8 +1834,8 @@ async fn save_composer_candidate(
         if let (Some(resource_id), Some(slot)) = (
             fill.get("resource_id").and_then(Value::as_str),
             fill.get("slot").and_then(Value::as_str),
-        ) {
-            if let Err(error)=sqlx::query("INSERT INTO resource_use(material_id,version_no,resource_id,slot_name) VALUES(?,1,?,?)").bind(&material_id).bind(resource_id).bind(slot).execute(&mut *tx).await{let _=tx.rollback().await;return command_error(error.into());}
+        ) && let Err(error)=sqlx::query("INSERT INTO resource_use(material_id,version_no,resource_id,slot_name) VALUES(?,1,?,?)").bind(&material_id).bind(resource_id).bind(slot).execute(&mut *tx).await{
+            let _=tx.rollback().await;return command_error(error.into());
         }
     }
     let revision: Result<i64, sqlx::Error> = sqlx::query_scalar(
@@ -1692,6 +2051,7 @@ fn err(status: StatusCode, code: &'static str, message: &str) -> axum::response:
     error(status, code, message)
 }
 
+#[allow(clippy::result_large_err)]
 async fn receipt_replay(
     tx: &mut Transaction<'_, Sqlite>,
     workspace: &super::Workspace,
@@ -1741,10 +2101,12 @@ async fn receipt_store(
     Ok(())
 }
 
+#[allow(clippy::result_large_err)]
 fn command_key(headers: &HeaderMap) -> Result<String, axum::response::Response> {
     super::idempotency_key(headers).map_err(|(status, code, message)| err(status, code, message))
 }
 
+#[allow(clippy::result_large_err)]
 fn canonical_command(
     route: &str,
     input: &impl Serialize,
@@ -1766,6 +2128,7 @@ enum EnqueueOutcome {
     Replay(axum::response::Response),
     New(String),
 }
+#[allow(clippy::result_large_err, clippy::too_many_arguments)]
 async fn enqueue_role_command(
     state: &AppState,
     key: &str,
@@ -1799,7 +2162,7 @@ async fn enqueue_role_command(
         max_attempts,
     )
     .await
-    .map_err(|error| super::materials::workspace_error(error))?;
+    .map_err(super::materials::workspace_error)?;
     let result = json!({"job_id":job_id,"role":role});
     receipt_store(
         &mut tx,
@@ -1810,7 +2173,7 @@ async fn enqueue_role_command(
         &result,
     )
     .await
-    .map_err(|error| command_error(error))?;
+    .map_err(command_error)?;
     tx.commit()
         .await
         .map_err(|error| command_error(error.into()))?;
@@ -1825,7 +2188,7 @@ pub(super) fn validate_match_explanations(
     shortlist: &[String],
     explanations: &Value,
     party_fields: &BTreeSet<String>,
-    asset_fields: &BTreeSet<String>,
+    asset_fields: &BTreeMap<String, BTreeSet<String>>,
 ) -> BTreeMap<String, String> {
     let mut accepted = BTreeMap::new();
     for item in explanations
@@ -1852,7 +2215,9 @@ pub(super) fn validate_match_explanations(
         if why.split_whitespace().count() <= 25
             && !why.trim().is_empty()
             && party_fields.contains(party)
-            && asset_fields.contains(asset)
+            && asset_fields
+                .get(id)
+                .is_some_and(|fields| fields.contains(asset))
         {
             accepted.insert(id.to_owned(), why.to_owned());
         }

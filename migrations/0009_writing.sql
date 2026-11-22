@@ -42,6 +42,7 @@ CREATE TABLE matching_calibration (
   PRIMARY KEY(model_digest,asset_kind,calibration_revision)
 );
 CREATE INDEX active_match_calibration ON matching_calibration(model_digest,asset_kind,calibration_revision DESC);
+ALTER TABLE matching_calibration ADD COLUMN scoring_config_digest TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE match_run (
   id TEXT PRIMARY KEY,

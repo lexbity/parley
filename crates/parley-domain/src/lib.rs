@@ -9,7 +9,7 @@
 //!
 pub mod evidence;
 pub mod gate;
-pub mod notes;
 pub mod lint;
 pub mod matching;
+pub mod notes;
 pub mod template;
