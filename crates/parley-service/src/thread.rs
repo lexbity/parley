@@ -501,7 +501,7 @@ fn plan_next_action(
 ) -> Result<String, WorkspaceError> {
     let today = chrono::NaiveDate::parse_from_str(&now[..10], "%Y-%m-%d")
         .map_err(|_| WorkspaceError::Invalid("now has an unexpected date".into()))?;
-    let interval = followup_days_for_touch(pack_id, prior_touches);
+    let interval = followup_days_for_touch(pack_id, prior_touches, &[]);
     let target = parley_domain::lifecycle::add_business_days(today, interval);
     Ok(format!("{}T00:00:00.000Z", target.format("%Y-%m-%d")))
 }

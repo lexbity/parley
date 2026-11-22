@@ -1,0 +1,1 @@
+s10 evidence is the named s10 integration cases in `crates/parley-service/tests/s10.rs`. The fixtures are schema-free placeholder pairs documenting the covered operations; behavior is proven by the executed test cases.

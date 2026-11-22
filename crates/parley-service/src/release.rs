@@ -25,7 +25,18 @@ use sqlx::{Sqlite, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) fn routes() -> Router<AppState> {
-    Router::new().route("/api/v1/materials/{id}/download", get(download_material))
+    Router::new().route(
+        "/api/v1/materials/{id}/download",
+        // HEAD-as-GET is forbidden (RFC-0004 IQ2): a link preview must not
+        // consume the one-use download grant. HEAD is answered with 405
+        // before any handler runs, so no grant bytes, spool verification or
+        // issuance event can be triggered by a prefetch.
+        get(download_material).head(reject_head),
+    )
+}
+
+async fn reject_head() -> StatusCode {
+    StatusCode::METHOD_NOT_ALLOWED
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -273,6 +284,15 @@ pub(crate) async fn evaluate_material(
     let mut uses_hook = false;
     let mut sensitive = false;
     let mut identity_valid = true;
+    let mut hook_refs: Vec<(Option<String>, Option<i64>)> = Vec::new();
+    let mut identity_used = false;
+    let pack_settings = owner_pack_settings(tx).await?;
+    let hook_max_age_days = pack_settings
+        .pointer("/pack_policy/limits/hook_max_age_days")
+        .and_then(Value::as_i64)
+        .unwrap_or(90);
+    let hook_cutoff = (chrono::Utc::now() - chrono::Duration::days(hook_max_age_days)).to_rfc3339();
+    let mut resolved_hooks: BTreeMap<(String, i64), bool> = BTreeMap::new();
     for binding in &material.bindings {
         let sentence = &sentence_list[binding.sentence_index];
         match binding.claim_type.as_str() {
@@ -406,7 +426,9 @@ pub(crate) async fn evaluate_material(
                 used_rules.insert("R2");
             }
             "identity" => {
-                identity_valid = false;
+                // Verified below against the shared-tag tables: H6 requires the
+                // tag to be held by *both* sides with tier 1|3 (RFC-0001 H6).
+                identity_used = true;
                 anchor = true;
                 used_rules.insert("R7");
             }
@@ -414,11 +436,64 @@ pub(crate) async fn evaluate_material(
                 uses_hook = true;
                 anchor = true;
                 used_rules.insert("R5");
+                hook_refs.push((binding.ref_id.clone(), binding.ref_revision));
             }
             _ => binding_valid = false,
         }
         sensitive |= has_sensitive_content(sentence);
     }
+    for (claim_id, revision) in &hook_refs {
+        let Some(claim_id) = claim_id else {
+            binding_valid = false;
+            continue;
+        };
+        let Some(revision) = revision else {
+            binding_valid = false;
+            continue;
+        };
+        // A used hook must resolve to an accepted hook on the claim's current
+        // revision, with professional publicness and tier 1|3 (HOOK-1/2,
+        // R5). Freshness is measured against the pack's hook_max_age_days
+        // (HOOK-3, S6).
+        let row: Option<(String, String, i64)> = sqlx::query_as(
+            "SELECT h.published_at,h.publicness,r.tier FROM accepted_hook h JOIN claim c ON c.id=h.claim_id JOIN claim_revision r ON r.claim_id=h.claim_id AND r.revision=h.claim_revision WHERE h.claim_id=? AND h.claim_revision=? AND c.current_revision=h.claim_revision",
+        )
+        .bind(claim_id)
+        .bind(revision)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let ok = match row {
+            Some((published_at, publicness, tier)) => {
+                publicness == "professional_public"
+                    && matches!(tier, 1 | 3)
+                    && published_at >= hook_cutoff
+            }
+            None => false,
+        };
+        if !ok {
+            binding_valid = false;
+        }
+        resolved_hooks.insert((claim_id.clone(), *revision), ok);
+    }
+    if identity_used {
+        let shared: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM party_identity_tag p JOIN owner_identity_tag o ON o.tag=p.tag JOIN claim_revision r ON r.claim_id=p.claim_id AND r.revision=p.claim_revision WHERE p.entity_id=? AND r.tier IN (1,3) AND r.approved_wording IS NOT NULL AND r.knowledge_kind<>'hypothesis'",
+        )
+        .bind(&material.recipient_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        identity_valid = shared > 0;
+    }
+    let hook_fresh = if uses_hook {
+        hook_refs
+            .iter()
+            .all(|(claim_id, revision)| match (claim_id, revision) {
+                (Some(c), Some(r)) => resolved_hooks.get(&(c.clone(), *r)).copied() == Some(true),
+                _ => false,
+            })
+    } else {
+        true
+    };
     for fill in &material.slot_fills {
         if let Some(resource_id) = &fill.resource_id {
             let row: Option<(String, String)> = sqlx::query_as(
@@ -477,17 +552,76 @@ pub(crate) async fn evaluate_material(
         None => true,
         Some(value) => capacity_claim_matches_ledger(tx, value).await?,
     };
-    let banned = [
+    let default_banned = [
         "i hope this finds you well",
         "synergy",
         "circle back",
         "touch base",
         "leverage",
     ];
+    let banned: Vec<String> = pack_settings
+        .pointer("/lint/banned_phrases")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    let banned = if banned.is_empty() {
+        default_banned
+            .iter()
+            .map(|phrase| (*phrase).to_owned())
+            .collect()
+    } else {
+        banned
+    };
     let lint_error = banned
         .iter()
         .any(|phrase| material.body.to_lowercase().contains(phrase));
-    let char_limit = 1200usize;
+    let char_limit = pack_settings
+        .pointer("/pack/limits/max_chars/email")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(1200);
+    let max_touches = pack_settings
+        .pointer("/pack_policy/cadence/max_touches")
+        .and_then(Value::as_i64)
+        .unwrap_or(MAX_TOUCHES);
+    let followup_sequence: Vec<i64> = pack_settings
+        .pointer("/pack_policy/cadence/followup_days")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_i64)
+        .collect();
+    let daily_cap = pack_settings
+        .pointer("/pack_policy/limits/daily_send_cap")
+        .and_then(Value::as_u64)
+        .unwrap_or(u64::from(pack_daily_cap(&owner_pack_id(tx).await?)));
+    let rule_limit =
+        if sqlx::query_scalar::<_, i64>("SELECT touch_count FROM party_policy WHERE party_id=?")
+            .bind(&material.recipient_id)
+            .fetch_one(&mut **tx)
+            .await?
+            == 0
+        {
+            pack_settings
+                .pointer("/pack_policy/limits/max_rules_per_message/first_touch")
+                .and_then(Value::as_u64)
+                .unwrap_or(3)
+        } else {
+            pack_settings
+                .pointer("/pack_policy/limits/max_rules_per_message/later")
+                .and_then(Value::as_u64)
+                .unwrap_or(4)
+        } as usize;
+    let brief_reviewed = sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM brief_item WHERE kind='landmine' AND status='proposed' AND scope_kind='party' AND scope_id=?",
+    )
+    .bind(&material.recipient_id)
+    .fetch_one(&mut **tx)
+    .await?
+        == 0;
     let glossary: Vec<(String, String)> = sqlx::query_as("SELECT term,status FROM fluency")
         .fetch_all(&mut **tx)
         .await?;
@@ -501,14 +635,19 @@ pub(crate) async fn evaluate_material(
     .fetch_one(&mut **tx)
     .await?
         != 0;
+    let normalized_body = parley_domain::evidence::normalize(&material.body);
+    let normalized_slot_values: Vec<String> = slot_values
+        .iter()
+        .map(|value| parley_domain::evidence::normalize(value))
+        .collect();
     let mut input = gate::GateInput {
         exchange_complete,
         fairness_attested: attested == 1 && digest_stored.as_deref() == Some(current.as_str()),
         factual_sentences_grounded: binding_valid,
         sentence_count: sentence_list.len(),
         bound_sentence_count: material.bindings.len(),
-        slot_fills: slot_values,
-        body: material.body.clone(),
+        slot_fills: normalized_slot_values,
+        body: normalized_body,
         scarcity_claim_valid,
         identity_claims_valid: identity_valid,
         ask_count,
@@ -522,31 +661,23 @@ pub(crate) async fn evaluate_material(
         gift_delivered_before,
         anchor_used: anchor,
         rule_count: used_rules.len(),
-        rule_limit: if sqlx::query_scalar::<_, i64>(
-            "SELECT touch_count FROM party_policy WHERE party_id=?",
-        )
-        .bind(&material.recipient_id)
-        .fetch_one(&mut **tx)
-        .await?
-            == 0
-        {
-            3
-        } else {
-            4
-        },
+        rule_limit,
         fluency_ok,
         lint_error,
-        hook_fresh: !uses_hook,
+        hook_fresh,
         cadence_ok: if schedule_gates {
-            let pack_id = owner_pack_id(tx).await?;
             let context =
                 cadence_context(tx, &material.opportunity_id, &material.recipient_id).await?;
-            let cap_ok = context.touch_count < MAX_TOUCHES;
+            let cap_ok = context.touch_count < max_touches;
             let spacing_ok = match &context.last_sent_at {
                 Some(last) => {
                     let now_date = utc_date_of(&super::now_utc())?;
                     let last_date = utc_date_of(last)?;
-                    let needed = followup_days_for_touch(&pack_id, context.touch_count);
+                    let needed = followup_days_for_touch(
+                        &owner_pack_id(tx).await?,
+                        context.touch_count,
+                        &followup_sequence,
+                    );
                     let earliest = parley_domain::lifecycle::add_business_days(last_date, needed);
                     now_date >= earliest
                 }
@@ -557,13 +688,12 @@ pub(crate) async fn evaluate_material(
             true
         },
         daily_cap_ok: if schedule_gates {
-            let pack_id = owner_pack_id(tx).await?;
-            sends_today_count(tx).await? < i64::from(pack_daily_cap(&pack_id))
+            sends_today_count(tx).await? < daily_cap as i64
         } else {
             true
         },
         body_char_limit: char_limit,
-        brief_reviewed: true,
+        brief_reviewed,
         override_reasons: overrides.clone(),
     };
     if !declared_slots
@@ -603,14 +733,23 @@ pub(crate) fn pack_daily_cap(pack_id: &str) -> u32 {
 
 /// Business-day follow-up interval after `prior_touches` sends
 /// (RFC-0001 §10.6 CAD-1, pack cadence defaults).
-pub(crate) fn followup_days_for_touch(pack_id: &str, prior_touches: i64) -> i64 {
-    let sequence: &[i64] = if pack_id == "job_search" {
+pub(crate) fn followup_days_for_touch(pack_id: &str, prior_touches: i64, overrides: &[i64]) -> i64 {
+    let sequence: &[i64] = if !overrides.is_empty() {
+        overrides
+    } else if pack_id == "job_search" {
         &[4, 8]
     } else {
         &[3, 7]
     };
     let index = (prior_touches - 1).clamp(0, sequence.len() as i64 - 1) as usize;
     sequence[index]
+}
+
+async fn owner_pack_settings(tx: &mut Transaction<'_, Sqlite>) -> Result<Value, WorkspaceError> {
+    let raw: String = sqlx::query_scalar("SELECT settings_json FROM owner_profile WHERE id=1")
+        .fetch_one(&mut **tx)
+        .await?;
+    Ok(serde_json::from_str(&raw).unwrap_or_default())
 }
 
 fn utc_date_of(timestamp: &str) -> Result<chrono::NaiveDate, WorkspaceError> {
@@ -714,20 +853,47 @@ fn generic_sentence_allowed(sentence: &str, recipient_name: &str) -> bool {
     true
 }
 
+/// Grounding containment (RFC-0001 §11.3 step 2): every numeric token and
+/// every named-entity token in a claim sentence must appear as an exact token
+/// (word) in the referenced record text or the recipient/owner name — never as
+/// a bare substring. `"30 days"` therefore grounds `"30 days"` but not `"3
+/// days"`, because `3` is not a token of `"30 days"`.
+fn token_set(text: &str) -> BTreeSet<String> {
+    let spaced: String = text
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || matches!(ch, '%' | '$' | '.') {
+                ch
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    spaced
+        .split_whitespace()
+        .filter_map(|token| {
+            let token = token.trim_matches('.');
+            (!token.is_empty()).then(|| token.to_lowercase())
+        })
+        .collect()
+}
+
 fn tokens_contained(sentence: &str, source: &str, recipient_name: &str) -> bool {
-    let recipient_lower = recipient_name.to_lowercase();
-    let source_lower = source.to_lowercase();
-    for token in sentence.split_whitespace() {
-        let token = token
-            .trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '%' && ch != '$' && ch != '.');
+    let source_tokens = token_set(source);
+    let recipient_tokens = token_set(recipient_name);
+    for raw in sentence.split_whitespace() {
+        let token = raw
+            .trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '%' && ch != '$' && ch != '.')
+            .trim_matches('.');
         if token.is_empty() {
             continue;
         }
+        let token = token.to_lowercase();
         let numeric = token.chars().any(|ch| ch.is_ascii_digit());
-        let named = token.chars().next().is_some_and(char::is_uppercase) && token.len() > 1;
+        let named = raw.chars().next().is_some_and(char::is_uppercase) && raw.len() > 1;
         if (numeric || named)
-            && !source_lower.contains(&token.to_lowercase())
-            && !recipient_lower.contains(&token.to_lowercase())
+            && !source_tokens.contains(&token)
+            && !recipient_tokens.contains(&token)
         {
             return false;
         }

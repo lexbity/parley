@@ -771,8 +771,14 @@ pub(super) async fn complete_role_result_in_tx(
     if changed != 1 {
         return Err(WorkspaceError::StaleRevision);
     }
+    // Keep provisional model prose out of the immutable event log (RFC-0002
+    // S04: "Keep provisional tokens out of the event log"). The full output
+    // remains on the attempt row; the event carries counts only.
+    let event_payload =
+        json!({"status":"succeeded","attempt":attempt,"tokens_in":tokens_in,"tokens_out":tokens_out})
+            .to_string();
     sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'job',?,?, 'job.completed',?)")
-        .bind(new_id(id)).bind(&now).bind(id).bind(attempt).bind(&result_json).execute(&mut **tx).await?;
+        .bind(new_id(id)).bind(&now).bind(id).bind(attempt).bind(&event_payload).execute(&mut **tx).await?;
     Ok(())
 }
 

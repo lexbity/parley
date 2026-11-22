@@ -1,0 +1,1 @@
+s11 migration/conversion evidence: `s11_draft00_fixture_converts_party_with_stable_source_key_mapping`, `s11_open_preserves_existing_parent_permissions`, `s11_startup_backup_scheduler_catches_up_and_retention_keeps_verified_last_good` (`crates/parley-service/tests/s11.rs`). No wire operation owns these; they are proven by executed test cases.

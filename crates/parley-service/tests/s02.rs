@@ -68,8 +68,9 @@ async fn owner_session(service: &RunningService) -> Session {
 async fn post(service: &RunningService, session: &Session, text: &str) -> String {
     let address = service.address;
     let body = serde_json::json!({"text":text,"title":"Hiring update","url":"https://example.invalid/update"}).to_string();
+    let key = format!("s02-capture-{}", NEXT.fetch_add(1, Ordering::Relaxed));
     let mut stream = TcpStream::connect(address).await.unwrap();
-    stream.write_all(format!("POST /api/v1/captures HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nCookie: {}\r\nX-Parley-Token: {}\r\nX-Parley-Epoch: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", session.0, session.1, session.2, body.len()).as_bytes()).await.unwrap();
+    stream.write_all(format!("POST /api/v1/captures HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nCookie: {}\r\nX-Parley-Token: {}\r\nX-Parley-Epoch: {}\r\nIdempotency-Key: {key}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", session.0, session.1, session.2, body.len()).as_bytes()).await.unwrap();
     let mut result = String::new();
     stream.read_to_string(&mut result).await.unwrap();
     result

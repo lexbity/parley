@@ -1,0 +1,1 @@
+s11 evidence is the named s11 integration cases in `crates/parley-service/tests/s11.rs`. The fixtures are schema-free placeholder pairs documenting the covered operations; behavior is proven by the executed test cases.

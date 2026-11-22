@@ -131,19 +131,50 @@ pub fn resolve_deadline(spec: &DeadlineSpec, now_utc: DateTime<Utc>) -> Resolved
             // "Inclusive through that local date": expiry is the first
             // instant of the following local date. Civil date arithmetic
             // (`succ_opt`) is used, never a fixed 24h addition. A DST fold
-            // resolves to the earliest instant.
+            // resolves to the earliest instant; a spring-forward gap at local
+            // midnight (e.g. America/Santiago) falls through to the first
+            // instant after the gap instead of panicking.
             let next_local_midnight = date
                 .succ_opt()
                 .expect("the day after any civil date exists")
                 .and_hms_opt(0, 0, 0)
                 .expect("midnight");
-            let expiry = spec
-                .zone
-                .from_local_datetime(&next_local_midnight)
-                .earliest()
-                .or_else(|| spec.zone.from_local_datetime(&next_local_midnight).latest())
-                .expect("a local midnight always maps to an instant")
-                .with_timezone(&Utc);
+            let expiry = match spec.zone.from_local_datetime(&next_local_midnight) {
+                chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc),
+                chrono::LocalResult::Ambiguous(earliest, _) => earliest.with_timezone(&Utc),
+                chrono::LocalResult::None => {
+                    // The local time does not exist (DST gap). Find the first
+                    // instant whose local clock is at or after the target by
+                    // probing a bounded window around it.
+                    let mut probe = (next_local_midnight - ChronoDuration::hours(36)).and_utc();
+                    let deadline = (next_local_midnight + ChronoDuration::hours(36)).and_utc();
+                    while probe < deadline {
+                        if probe.with_timezone(&spec.zone).naive_local() >= next_local_midnight {
+                            break;
+                        }
+                        probe += ChronoDuration::minutes(15);
+                    }
+                    if probe >= deadline {
+                        // Unreachable for real zones: the probe window is
+                        // larger than any historical DST gap. Fall back to
+                        // the end of the window rather than panicking.
+                        return ResolvedDeadline {
+                            expiry: deadline.with_timezone(&Utc),
+                            entered_date: Some(*date),
+                            zone: spec.zone,
+                        };
+                    }
+                    let mut exact = probe;
+                    while exact > (next_local_midnight - ChronoDuration::hours(36)).and_utc() {
+                        let previous = exact - ChronoDuration::minutes(1);
+                        if previous.with_timezone(&spec.zone).naive_local() < next_local_midnight {
+                            break;
+                        }
+                        exact = previous;
+                    }
+                    exact.with_timezone(&Utc)
+                }
+            };
             ResolvedDeadline {
                 expiry,
                 entered_date: Some(*date),
@@ -333,6 +364,37 @@ mod tests {
         };
         let resolved = resolve_deadline(&spec, utc(2026, 11, 21, 12, 0, 0));
         assert_eq!(resolved.expiry, utc(2026, 11, 22, 5, 0, 0));
+    }
+
+    #[test]
+    fn date_deadline_with_local_midnight_in_dst_gap_resolves_not_panics() {
+        // America/Santiago spring-forward begins at local midnight: the local
+        // time 2026-09-06T00:00 does not exist. Resolution must return the
+        // first instant after the gap (04:00Z with UTC-3), not panic.
+        let spec = DeadlineSpec {
+            kind: DeadlineKind::Date {
+                date: NaiveDate::from_ymd_opt(2026, 9, 5).unwrap(),
+            },
+            zone: chrono_tz::America::Santiago,
+        };
+        let resolved = resolve_deadline(&spec, utc(2026, 9, 5, 12, 0, 0));
+        let local = resolved.expiry.with_timezone(&chrono_tz::America::Santiago);
+        assert!(
+            local.naive_local()
+                >= NaiveDate::from_ymd_opt(2026, 9, 6)
+                    .unwrap()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap(),
+            "expiry must be at or after the following local midnight: {resolved:?}"
+        );
+        assert!(
+            local.naive_local()
+                < NaiveDate::from_ymd_opt(2026, 9, 6)
+                    .unwrap()
+                    .and_hms_opt(2, 0, 0)
+                    .unwrap(),
+            "expiry must be the first instant after the gap, not a later time: {resolved:?}"
+        );
     }
 
     #[test]

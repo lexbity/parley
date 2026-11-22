@@ -628,3 +628,174 @@ slices:
       owner_role: owner
       package_target: rust
       evidence_path: contract/fixtures/s09/workflow/evidence.md
+
+  s10:
+    - requirement: Q-1
+      operationId: getQueue
+      test_id: s10_queue_5000_parties_meets_render_budget
+      fixture_id: queue
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s10/queue/evidence.md
+    - requirement: AN-1
+      operationId: getInsights
+      test_id: s10_queue_5000_parties_meets_render_budget
+      fixture_id: queue
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s10/queue/evidence.md
+    - requirement: COA-1
+      operationId: generateWeeklyCoachReport
+      test_id: s10_weekly_coach_enqueues_versioned_job_and_reports_event_fence
+      fixture_id: coach
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s10/coach/evidence.md
+    - requirement: COA-2
+      operationId: getWeeklyCoachReport
+      test_id: s10_weekly_coach_enqueues_versioned_job_and_reports_event_fence
+      fixture_id: coach
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s10/coach/evidence.md
+    - requirement: COA-3
+      operationId: listCoachQuestions
+      test_id: s10_coach_gap_candidates_use_per_segment_calibrated_coverage
+      fixture_id: coach
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s10/coach/evidence.md
+    - requirement: COA-4
+      operationId: generateWeeklyCoachReport
+      test_id: s10_coach_question_cap_and_priority_are_code_owned
+      fixture_id: coach
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s10/coach/evidence.md
+    - requirement: COA-5
+      operationId: answerCoachQuestion
+      test_id: s10_question_disposition_is_idempotent_and_scoped
+      fixture_id: coach
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s10/coach/evidence.md
+    - requirement: COA-6
+      operationId: dismissCoachQuestion
+      test_id: s10_question_disposition_is_idempotent_and_scoped
+      fixture_id: coach
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s10/coach/evidence.md
+    - requirement: FE-09
+      operationId: addAgentTurn
+      test_id: s10_answer_routes_through_interviewer_without_direct_promotion
+      fixture_id: interview
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s10/interview/evidence.md
+    - requirement: BE-09
+      operationId: createIdentityTag
+      test_id: s10_owner_identity_tag_is_revisioned_and_idempotent
+      fixture_id: identity
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s10/identity/evidence.md
+    - requirement: BE-10
+      operationId: acceptClaimAsHook
+      test_id: s10_hook_metadata_requires_current_reviewed_claim_revision
+      fixture_id: identity
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s10/identity/evidence.md
+  s11:
+    - requirement: OPS-1
+      operationId: createBackup
+      test_id: s11_backup_contains_verified_database_and_manifest_last
+      fixture_id: admin
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s11/admin/evidence.md
+    - requirement: OPS-2
+      operationId: listBackups
+      test_id: s11_startup_backup_scheduler_catches_up_and_retention_keeps_verified_last_good
+      fixture_id: admin
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s11/admin/evidence.md
+    - requirement: OPS-3
+      operationId: createFullExport
+      test_id: s11_full_export_import_api_roundtrip_preserves_canonical_workspace_state
+      fixture_id: admin
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s11/admin/evidence.md
+    - requirement: OPS-4
+      operationId: previewFullImport
+      test_id: s11_full_export_import_api_roundtrip_preserves_canonical_workspace_state
+      fixture_id: admin
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s11/admin/evidence.md
+    - requirement: OPS-5
+      operationId: commitFullImport
+      test_id: s11_full_export_import_api_roundtrip_preserves_canonical_workspace_state
+      fixture_id: admin
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s11/admin/evidence.md
+    - requirement: OPS-6
+      operationId: previewRestore
+      test_id: s11_restore_publishes_generation_and_revokes_old_epoch
+      fixture_id: admin
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s11/admin/evidence.md
+    - requirement: OPS-7
+      operationId: commitRestore
+      test_id: s11_restore_publishes_generation_and_revokes_old_epoch
+      fixture_id: admin
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s11/admin/evidence.md
+    - requirement: ERS-1
+      operationId: previewPartyErasure
+      test_id: s11_erasure_removes_subject_canaries_before_operation_is_complete
+      fixture_id: admin
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s11/admin/evidence.md
+    - requirement: ERS-2
+      operationId: eraseParty
+      test_id: s11_erasure_does_not_scrub_unrelated_events
+      fixture_id: admin
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s11/admin/evidence.md
+    - requirement: BE-13
+      operationId: updateMaintenanceSettings
+      test_id: s11_settings_compare_expected_revision_inside_write
+      fixture_id: admin
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s11/admin/evidence.md
+    - requirement: BE-04
+      operationId: n/a
+      test_id: s11_draft00_fixture_converts_party_with_stable_source_key_mapping
+      fixture_id: migration
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s11/migration/evidence.md
+    - requirement: OPS-8
+      operationId: n/a
+      test_id: s11_startup_backup_scheduler_catches_up_and_retention_keeps_verified_last_good
+      fixture_id: migration
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s11/migration/evidence.md
+    - requirement: OPS-9
+      operationId: n/a
+      test_id: s11_open_preserves_existing_parent_permissions
+      fixture_id: migration
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s11/migration/evidence.md

@@ -203,6 +203,15 @@ pub fn toggle(
         return Err("task line changed; reload notes before toggling");
     }
     let task = task_on_line(line, byte_start).ok_or("addressed Markdown line is not a task")?;
+    // The task index excludes fences, block quotes, indented code and escaped
+    // markers (QV/notes scope). A toggle must address a task that the index
+    // actually recognizes; otherwise a fenced checkbox would be mutable.
+    if !index(markdown)
+        .iter()
+        .any(|indexed| indexed.byte_start == byte_start && indexed.byte_end == byte_end)
+    {
+        return Err("addressed line is inside a fence, quote or code block and cannot be toggled");
+    }
     let content_start =
         list_content_start(line).ok_or("addressed Markdown line is not a list item")?;
     let current_marker_end = if line.get(content_start..content_start + 3) == Some(b"[ ]")
@@ -285,5 +294,20 @@ mod tests {
         .unwrap();
         assert_eq!(result.markdown, "- [ ]  Draft task\n");
         assert!(toggle(markdown, task.byte_start, task.byte_end, "stale", true).is_err());
+    }
+
+    #[test]
+    fn toggle_rejects_a_checkbox_inside_a_fenced_code_block() {
+        // The fence exclusion lives in index(); a toggle must not bypass it by
+        // addressing bytes directly (RFC-0004 notes fixture discipline: "a
+        // literal Markdown checkbox inside a fenced code block").
+        let markdown = "```md\n- [ ] seeded\n```\n";
+        // Locate the fenced line's bytes directly, as a malicious client would.
+        let fence_start = markdown.find("- [ ] seeded").unwrap();
+        let fence_end = fence_start + "- [ ] seeded".len();
+        let line_hash = hash(&markdown.as_bytes()[fence_start..fence_end]);
+        let err = toggle(markdown, fence_start, fence_end, &line_hash, true).unwrap_err();
+        assert!(err.contains("fence"), "{err}");
+        assert_eq!(markdown, "```md\n- [ ] seeded\n```\n");
     }
 }

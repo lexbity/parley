@@ -1363,13 +1363,18 @@ async fn erase_from_database(
             .join(" OR ");
         let table_sql = table.replace('"', "\"\"");
         if table == "event" {
+            // ERS-2 permits rewriting only party-scoped event payloads. A
+            // substring match over every TEXT column would rewrite unrelated
+            // events that merely mention the subject's name; scope the scrub
+            // to the erased subject's own events (entity_id = subject).
             let sql = format!(
-                "UPDATE \"{table_sql}\" SET entity_id='erased',payload_json='{{\"erased\":true}}' WHERE {predicate}"
+                "UPDATE \"{table_sql}\" SET entity_id='erased',payload_json='{{\"erased\":true}}' WHERE {predicate} AND entity_id=?"
             );
             let mut q = sqlx::query(AssertSqlSafe(sql));
             for _ in &text_cols {
                 q = q.bind(subject).bind(name);
             }
+            q = q.bind(subject);
             q.execute(&mut *tx)
                 .await
                 .map_err(|e| format!("scrub event stream: {e}"))?;

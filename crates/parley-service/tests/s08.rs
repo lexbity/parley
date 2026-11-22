@@ -408,3 +408,71 @@ async fn s08_owner_interviewer_and_party_briefer_histories_stay_separate() {
     drop(workspace);
     let _ = fs::remove_file(path);
 }
+
+#[tokio::test]
+async fn s08_job_events_carry_no_model_prose() {
+    let (path, workspace, port, service) = setup().await;
+    let party = workspace
+        .create_entity("s08-prose-party", "person", "Dana Lee")
+        .await
+        .unwrap();
+    let (endpoint, fake) = briefer_ollama().await;
+    let (status, configured) = request(port,"PUT","/api/v1/agent/provider",Some(json!({"endpoint":endpoint,"model":"fixture","num_ctx":8192,"num_predict":512,"locale":"en"}))).await;
+    assert_eq!(status, 204, "{configured:?}");
+    let (status, health) = request(port, "POST", "/api/v1/agent/provider/health", None).await;
+    assert_eq!(status, 200, "{health:?}");
+    let (status, chat) = request(
+        port,
+        "POST",
+        "/api/v1/agent/chats",
+        Some(json!({"role":"briefer","scope_kind":"party","scope_id":party.id})),
+    )
+    .await;
+    assert_eq!(status, 201, "{chat:?}");
+    let chat_id = chat["id"].as_str().unwrap();
+    let (status, submitted) = request(
+        port,
+        "POST",
+        &format!("/api/v1/agent/chats/{chat_id}/turns"),
+        Some(json!({"text":"What does the supplied material say about onboarding?"})),
+    )
+    .await;
+    assert_eq!(status, 202, "{submitted:?}");
+    let job_id = submitted["job_id"].as_str().unwrap();
+    let mut job = Value::Null;
+    for _ in 0..100 {
+        let (_, current) = request(port, "GET", &format!("/api/v1/jobs/{job_id}"), None).await;
+        job = current;
+        if job["status"] == "succeeded" || job["status"] == "failed" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(job["status"], "succeeded", "{job:?}");
+    let payloads: Vec<String> =
+        sqlx::query_scalar("SELECT payload_json FROM event WHERE event_type='job.completed'")
+            .fetch_all(workspace.pool())
+            .await
+            .unwrap();
+    assert!(!payloads.is_empty());
+    for payload in &payloads {
+        let value: Value = serde_json::from_str(payload).unwrap_or_default();
+        let prose_keys = [
+            "next_question",
+            "response",
+            "extracted",
+            "items",
+            "candidates",
+        ];
+        for key in prose_keys {
+            assert!(
+                value.get(key).is_none(),
+                "immutable event log carries model prose ({key}): {payload}"
+            );
+        }
+    }
+    fake.await.unwrap();
+    service.shutdown().await;
+    drop(workspace);
+    let _ = fs::remove_file(path);
+}

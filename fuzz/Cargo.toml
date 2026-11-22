@@ -1,0 +1,35 @@
+[package]
+name = "parley-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Standalone crate: cargo-fuzz needs a nightly toolchain, the main workspace
+# is pinned to stable. Keep this crate out of the workspace.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+parley-domain = { path = "../crates/parley-domain" }
+
+# Each target is a standalone bin; cargo-fuzz drives them with libFuzzer.
+[[bin]]
+name = "evidence_spans"
+path = "fuzz_targets/evidence_spans.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "notes_spans"
+path = "fuzz_targets/notes_spans.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "template_slots"
+path = "fuzz_targets/template_slots.rs"
+test = false
+doc = false

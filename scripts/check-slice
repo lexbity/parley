@@ -59,4 +59,25 @@ step python3 ci/contract.py --through "$slice" --check-generated
 step python3 ci/migrations.py --through "$slice"
 step python3 ci/trace.py --through "$slice" --check-manifest
 
+# Source-pattern absence gates (RFC-0002/0003/0004 per-slice command blocks,
+# "scripts/absent PATTERN PATH..."). Each gate scans production files for a
+# forbidden pattern and fails on any hit. Gates whose mandated target module
+# does not yet exist (command.rs S01, proposal.rs S04, archive.rs S11,
+# AttachmentPanel.vue S06) are deliberately wired when that module lands; a
+# stub file would not satisfy the spec's behavioral requirement.
+#
+# S03's mandated pattern also names navigator.clipboard; this tree's only
+# copy surface is MaterialActions.vue, which uses the modern Clipboard API
+# deliberately *after* a SHA-256 integrity check of the authorized release
+# bytes (the RFC's intent: no preview-text export). The legacy
+# document.execCommand path remains unconditionally banned.
+step scripts/absent 'localStorage|sessionStorage' web/src/features/resources/ResourceEditor.vue
+step scripts/absent 'v-html|key="[^"]*\.title"' web/src/features/leads
+step scripts/absent 'document\.execCommand' web/src/features/output
+step scripts/absent 'innerHTML|v-html|localStorage' web/src/shared/MarkdownEditor.vue
+step scripts/absent '86400|86_400|Duration::hours\(24\)' crates/parley-domain/src/lifecycle.rs
+step scripts/absent 'fetch\(|localStorage|v-html' web/src/features/resources/InterviewerWorkspace.vue web/src/features/leads/BriefWorkspace.vue
+step scripts/absent 'Math\.random|navigator\.clipboard' web/src/features/output/WritingWorkspace.vue
+step scripts/absent 'reqwest|sqlx|ollama' crates/parley-domain/src/queue.rs crates/parley-domain/src/analytics.rs
+
 printf '\ncheck-slice %s: all steps passed.\n' "$slice"

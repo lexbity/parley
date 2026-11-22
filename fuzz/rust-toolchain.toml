@@ -1,0 +1,4 @@
+# cargo-fuzz requires a nightly compiler (RFC-0002 S01: "S01 pins cargo-fuzz
+# and the nightly compiler in fuzz/rust-toolchain.toml").
+[toolchain]
+channel = "nightly-2026-09-29"

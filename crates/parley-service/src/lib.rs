@@ -1177,6 +1177,138 @@ impl Workspace {
         })
     }
 
+    /// Replay lookup for a capture command. Returns the stored success result
+    /// when the exact key+canonical pair was already committed (RFC-0004
+    /// INT-03), `None` for a fresh command, and a conflict when the key was
+    /// used for a different command.
+    pub async fn save_capture_replay(
+        &self,
+        key: &str,
+        canonical: &str,
+    ) -> Result<Option<Value>, WorkspaceError> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT canonical_digest,result_json FROM idempotency_receipt WHERE owner_id=1 AND epoch=? AND key=?",
+        )
+        .bind(&self.epoch)
+        .bind(key)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((stored, result)) = row else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        if stored != canonical {
+            return Err(WorkspaceError::IdempotencyConflict);
+        }
+        let value: Value =
+            serde_json::from_str(&result).map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
+        tx.commit().await?;
+        Ok(Some(value))
+    }
+
+    /// Commit a capture together with its event row and idempotency receipt in
+    /// one writer transaction (B-FR-1, EVT-1, BQ1: a lost-ack retry must
+    /// produce exactly one occurrence; a crash between commit and job enqueue
+    /// must never duplicate the source).
+    pub async fn save_capture_commit(
+        &self,
+        key: &str,
+        canonical: &str,
+        text: &str,
+        title: Option<&str>,
+        url: Option<&str>,
+    ) -> Result<SavedSource, WorkspaceError> {
+        if key.trim().is_empty() || key.len() > 100 {
+            return Err(WorkspaceError::Invalid(
+                "idempotency key must contain 1–100 bytes".into(),
+            ));
+        }
+        if text.trim().is_empty() {
+            return Err(WorkspaceError::Invalid("source text is empty".into()));
+        }
+        if text.len() > 2_000_000 {
+            return Err(WorkspaceError::Invalid("source exceeds 2 MB".into()));
+        }
+        let normalized = parley_domain::evidence::normalize(text);
+        let normalized_hash = digest(normalized.as_bytes());
+        let raw_hash = digest(text.as_bytes());
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let content_id = match sqlx::query_scalar::<_, String>("SELECT id FROM source_content WHERE normalized_sha256=? AND normalization_version=? ORDER BY id LIMIT 1")
+            .bind(&normalized_hash).bind(parley_domain::evidence::NORMALIZATION_VERSION as i64).fetch_optional(&mut *tx).await? {
+                Some(id) => id,
+                None => {
+                    let id = new_id(&normalized_hash);
+                    sqlx::query("INSERT INTO source_content(id,normalized_sha256,normalization_version,normalized_text,created_at) VALUES(?,?,?,?,?)")
+                        .bind(&id).bind(&normalized_hash).bind(parley_domain::evidence::NORMALIZATION_VERSION as i64).bind(&normalized).bind(now_utc()).execute(&mut *tx).await?;
+                    id
+                }
+            };
+        let variant_id = match sqlx::query_scalar::<_, String>(
+            "SELECT id FROM source_variant WHERE content_id=? AND raw_sha256=? ORDER BY id LIMIT 1",
+        )
+        .bind(&content_id)
+        .bind(&raw_hash)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            Some(id) => id,
+            None => {
+                let id = new_id(&raw_hash);
+                sqlx::query("INSERT INTO source_variant(id,content_id,raw_sha256,raw_text,title,url,captured_at) VALUES(?,?,?,?,?,?,?)")
+                        .bind(&id).bind(&content_id).bind(&raw_hash).bind(text).bind(title).bind(url).bind(now_utc()).execute(&mut *tx).await?;
+                id
+            }
+        };
+        let occurrence_id = new_id(&variant_id);
+        sqlx::query("INSERT INTO source_occurrence(id,source_variant_id,actor_kind,actor_entity_id,captured_at) VALUES(?,?, 'unknown',NULL,?)")
+            .bind(&occurrence_id).bind(&variant_id).bind(now_utc()).execute(&mut *tx).await?;
+        let event_payload = json!({
+            "content_id": content_id,
+            "variant_id": variant_id,
+            "occurrence_id": occurrence_id,
+            "normalized_sha256": normalized_hash,
+            "raw_sha256": raw_hash,
+        });
+        let cursor: i64 = sqlx::query_scalar("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'source',?,1,'source.captured',?) RETURNING cursor")
+            .bind(new_id(&occurrence_id)).bind(now_utc()).bind(&occurrence_id).bind(event_payload.to_string()).fetch_one(&mut *tx).await?;
+        sqlx::query("INSERT INTO idempotency_receipt(owner_id,epoch,key,canonical_digest,status_code,result_json,last_event_cursor,created_at) VALUES(1,?,?,?,201,?,?,?)")
+            .bind(&self.epoch).bind(key).bind(canonical).bind(event_payload.to_string()).bind(cursor).bind(now_utc()).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(SavedSource {
+            content_id,
+            variant_id,
+            occurrence_id,
+            normalized_sha256: normalized_hash,
+            raw_sha256: raw_hash,
+        })
+    }
+
+    /// After the extraction job is enqueued (outside the capture transaction),
+    /// record the final response — including the job reference — in the
+    /// receipt so a replay returns the original result verbatim.
+    pub async fn update_capture_receipt(
+        &self,
+        key: &str,
+        canonical: &str,
+        final_value: &Value,
+    ) -> Result<(), WorkspaceError> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let changed = sqlx::query("UPDATE idempotency_receipt SET result_json=? WHERE owner_id=1 AND epoch=? AND key=? AND canonical_digest=?")
+            .bind(final_value.to_string())
+            .bind(&self.epoch)
+            .bind(key)
+            .bind(canonical)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if changed != 1 {
+            return Err(WorkspaceError::Invalid("capture receipt is missing".into()));
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Create a distinct graph identity. Names are deliberately not keys: two
     /// people with the same display name remain separate records. The entity,
     /// its creation event and the receipt commit under one writer reservation.
@@ -2354,9 +2486,42 @@ async fn save_capture(
     if let Err(response) = authenticate(&headers, &state).await {
         return response.into_response();
     }
+    let key = match idempotency_key(&headers) {
+        Ok(key) => key,
+        Err(error) => {
+            return (
+                error.0,
+                Json(json!({"error":{"code":error.1,"message":error.2,"details":[]}})),
+            )
+                .into_response();
+        }
+    };
+    let canonical = digest(
+        format!(
+            "POST\n/api/v1/captures\n{}",
+            serde_json::to_string(&json!({"text":input.text,"title":input.title,"url":input.url}))
+                .unwrap_or_default()
+        )
+        .as_bytes(),
+    );
+    match state.workspace.save_capture_replay(&key, &canonical).await {
+        Ok(Some(replay)) => {
+            let mut response = (StatusCode::CREATED, Json(replay)).into_response();
+            private_headers(&mut response, state.workspace.epoch());
+            return response;
+        }
+        Ok(None) => {}
+        Err(err) => return command_error(err),
+    }
     match state
         .workspace
-        .save_source(&input.text, input.title.as_deref(), input.url.as_deref())
+        .save_capture_commit(
+            &key,
+            &canonical,
+            &input.text,
+            input.title.as_deref(),
+            input.url.as_deref(),
+        )
         .await
     {
         Ok(source) => {
@@ -2366,19 +2531,23 @@ async fn save_capture(
                 Ok(None) => (None, "not_queued"),
                 Err(_) => (None, "not_queued"),
             };
-            let mut response = (
-                StatusCode::CREATED,
-                Json(json!({
-                    "content_id": source.content_id,
-                    "variant_id": source.variant_id,
-                    "occurrence_id": source.occurrence_id,
-                    "normalized_sha256": source.normalized_sha256,
-                    "raw_sha256": source.raw_sha256,
-                    "job_id": job_id,
-                    "job_status": job_status,
-                })),
-            )
-                .into_response();
+            let full = json!({
+                "content_id": source.content_id,
+                "variant_id": source.variant_id,
+                "occurrence_id": source.occurrence_id,
+                "normalized_sha256": source.normalized_sha256,
+                "raw_sha256": source.raw_sha256,
+                "job_id": job_id,
+                "job_status": job_status,
+            });
+            if let Err(err) = state
+                .workspace
+                .update_capture_receipt(&key, &canonical, &full)
+                .await
+            {
+                return command_error(err);
+            }
+            let mut response = (StatusCode::CREATED, Json(full)).into_response();
             private_headers(&mut response, state.workspace.epoch());
             response
         }

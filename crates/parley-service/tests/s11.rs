@@ -358,6 +358,72 @@ async fn s11_erasure_removes_subject_canaries_before_operation_is_complete() {
 }
 
 #[tokio::test]
+async fn s11_erasure_does_not_scrub_unrelated_events() {
+    let root = std::env::temp_dir().join(format!("parley-s11-erase-scope-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let identity = root.join("workspace.sqlite");
+    let w = Workspace::open(&identity).await.unwrap();
+    let subject = w
+        .create_entity("erase-scope-subject", "person", "Unique Erasure Canary")
+        .await
+        .unwrap();
+    let other = w
+        .create_entity("erase-scope-other", "person", "Some Other Party")
+        .await
+        .unwrap();
+    let unrelated_payload =
+        json!({"title":"met Unique Erasure Canary at a meetup","party":other.id}).to_string();
+    sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES('evt-unrelated',?,'entity',?,1,'entity.created',?)")
+        .bind("2026-11-20T12:00:00.000Z")
+        .bind(&other.id)
+        .bind(&unrelated_payload)
+        .execute(w.pool())
+        .await
+        .unwrap();
+    drop(w);
+    let mut service = parley_service::start_workspace(&identity).await.unwrap();
+    let a = auth(service.address, &service.bootstrap_secret).await;
+    let (status, preview) = post(
+        service.address,
+        &a,
+        &format!("/api/v1/parties/{}/erase/preview", subject.id),
+        json!({}),
+        "erase-scope-preview",
+    )
+    .await;
+    assert_eq!(status, 200, "{preview}");
+    let (status, operation) = post(
+        service.address,
+        &a,
+        &format!("/api/v1/parties/{}/erase", subject.id),
+        json!({"preview_id":preview["id"],"preview_digest":preview["digest"]}),
+        "erase-scope-commit",
+    )
+    .await;
+    assert_eq!(status, 202, "{operation}");
+    service.wait_for_restart().await;
+    service.shutdown().await;
+    let w = Workspace::open(&identity).await.unwrap();
+    let payload: String =
+        sqlx::query_scalar("SELECT payload_json FROM event WHERE event_id='evt-unrelated'")
+            .fetch_one(w.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        payload, unrelated_payload,
+        "unrelated events must remain byte-identical"
+    );
+    let subject_gone: Option<String> = sqlx::query_scalar("SELECT id FROM entity WHERE id=?")
+        .bind(&subject.id)
+        .fetch_optional(w.pool())
+        .await
+        .unwrap();
+    assert!(subject_gone.is_none());
+    drop(w);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn s11_full_export_import_api_roundtrip_preserves_canonical_workspace_state() {
     let base = std::env::temp_dir().join(format!("parley-s11-roundtrip-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);

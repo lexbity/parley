@@ -88,3 +88,9 @@ CREATE TRIGGER material_lint_no_update BEFORE UPDATE ON material_lint
 BEGIN SELECT RAISE(ABORT, 'lint results are immutable for a material version'); END;
 CREATE TRIGGER material_lint_no_delete BEFORE DELETE ON material_lint
 BEGIN SELECT RAISE(ABORT, 'lint history is immutable'); END;
+
+-- Owner-submitted score labels are not evaluation evidence and must never
+-- drive deterministic matching. Only the offline E-match evaluator may set
+-- trusted after running the versioned fixture against the active embed model.
+ALTER TABLE matching_calibration
+ADD COLUMN trusted INTEGER NOT NULL DEFAULT 0 CHECK(trusted IN (0,1));

@@ -518,3 +518,320 @@ async fn s03_correction_after_approval_revokes_release_without_mutating_history(
     service.shutdown().await;
     let _ = fs::remove_file(path);
 }
+
+async fn create_ready_template(port: u16) -> String {
+    let (status, template_row) = request(
+        port,
+        "POST",
+        "/api/v1/templates",
+        Some(json!({"name":"Research note","body":"Hi."})),
+    )
+    .await;
+    assert_eq!(status, 201, "{template_row}");
+    let template_id = template_row["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        request(
+            port,
+            "POST",
+            &format!("/api/v1/templates/{template_id}/approve"),
+            None
+        )
+        .await
+        .0,
+        204
+    );
+    assert_eq!(
+        request(
+            port,
+            "POST",
+            &format!("/api/v1/templates/{template_id}/activate"),
+            None
+        )
+        .await
+        .0,
+        204
+    );
+    template_id
+}
+
+/// Ready gift resource; makes S1 pass for the surrounding material.
+async fn create_ready_gift(port: u16) -> String {
+    let (status, gift) = request(
+        port,
+        "POST",
+        "/api/v1/entities",
+        Some(json!({"kind":"gift","title":"Onboarding checklist","body":{"what":"Onboarding checklist","delivery":"on_request"}})),
+    )
+    .await;
+    assert_eq!(status, 201);
+    let (status, ready) = request(
+        port,
+        "POST",
+        &format!("/api/v1/resources/{}/ready", gift["id"].as_str().unwrap()),
+        Some(json!({"body":{"what":"Onboarding checklist","format":"template","problem_tags":["onboarding"],"delivery":"on_request","time_to_produce_minutes":20,"cost_to_me":"low"}})),
+    )
+    .await;
+    assert_eq!(status, 204, "{ready}");
+    gift["id"].as_str().unwrap().to_owned()
+}
+
+/// A party + attested exchange + activated template, ready for material create.
+async fn prepare_eligible(port: u16) -> (String, String, i64, String, String) {
+    let recipient = create_party(port, "Dana Lee").await;
+    let gift = create_ready_gift(port).await;
+    let (status, opportunity) = request(
+        port,
+        "POST",
+        "/api/v1/opportunities",
+        Some(json!({"title":"Onboarding exchange","primary_party_id":recipient})),
+    )
+    .await;
+    assert_eq!(status, 201);
+    let opportunity_id = opportunity["id"].as_str().unwrap().to_owned();
+    let (_, _, exchange_version) = prepare_exchange(port, &opportunity_id, &recipient, true).await;
+    let template_id = create_ready_template(port).await;
+    (
+        recipient,
+        opportunity_id,
+        exchange_version,
+        gift,
+        template_id,
+    )
+}
+
+#[tokio::test]
+async fn s03_proposed_landmine_blocks_approval() {
+    let (path, workspace, port, service) = setup().await;
+    let (recipient, opportunity_id, exchange_version, gift, template_id) =
+        prepare_eligible(port).await;
+    let body = "Hi Dana Lee.\nI can share an Onboarding checklist.";
+    let binding = json!([
+        {"sentence_index":0,"claim_type":"generic"},
+        {"sentence_index":1,"claim_type":"offer","ref_kind":"resource","ref_id":gift}
+    ]);
+    let (status, material) = request(
+        port,
+        "POST",
+        &format!("/api/v1/opportunities/{opportunity_id}/materials"),
+        Some(json!({"recipient_id":recipient,"kind":"outreach","template_version_id":template_id,"body":body,"exchange_version":exchange_version,"slot_fills":[],"sentence_bindings":binding})),
+    )
+    .await;
+    assert_eq!(status, 201, "{material}");
+    let material_id = material["id"].as_str().unwrap();
+    let (status, approval) = request(
+        port,
+        "POST",
+        &format!("/api/v1/materials/{material_id}/approve"),
+        Some(json!({"override_reasons":{"S2 ANCHOR":"Reviewed the anchor for this contact."}})),
+    )
+    .await;
+    assert_eq!(status, 200, "{approval}");
+    sqlx::query("INSERT INTO brief_item(id,scope_kind,scope_id,kind,text,detail_json,tier,check_suggestion,speaker_kind,status,revision,created_at,updated_at) VALUES('t1-landmine','party',?,'landmine','Dana is evaluating other offers','{}',2,'Ask the owner whether Dana is evaluating other offers.','model_prior','proposed',1,'2026-11-20T00:00:00Z','2026-11-20T00:00:00Z')").bind(&recipient).execute(workspace.pool()).await.unwrap();
+    let later_body = "Hi Dana Lee.\nI can share an Onboarding checklist too.";
+    let (status, later) = request(
+        port,
+        "POST",
+        &format!("/api/v1/opportunities/{opportunity_id}/materials"),
+        Some(json!({"recipient_id":recipient,"kind":"outreach","template_version_id":template_id,"body":later_body,"exchange_version":exchange_version,"slot_fills":[],"sentence_bindings":binding})),
+    )
+    .await;
+    assert_eq!(status, 201, "{later}");
+    let later_id = later["id"].as_str().unwrap();
+    let (status, blocked) = request(
+        port,
+        "POST",
+        &format!("/api/v1/materials/{later_id}/approve"),
+        Some(json!({"override_reasons":{"S2 ANCHOR":"Reviewed the anchor for this contact."}})),
+    )
+    .await;
+    assert_eq!(status, 422, "{blocked}");
+    assert!(
+        blocked["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("S10 BRIEF_REVIEWED"),
+        "{blocked}"
+    );
+    service.shutdown().await;
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn s03_fresh_hook_passes_s6_without_override() {
+    let (path, workspace, port, service) = setup().await;
+    let (recipient, opportunity_id, exchange_version, gift, template_id) =
+        prepare_eligible(port).await;
+    sqlx::query("INSERT INTO claim(id,subject_id,predicate,current_revision,created_at) VALUES('t2-hook-claim',?,'hook:authored_content',1,'2026-11-20T00:00:00Z')").bind(&recipient).execute(workspace.pool()).await.unwrap();
+    sqlx::query("INSERT INTO claim_revision(claim_id,revision,wording,knowledge_kind,tier,speaker_kind,speaker_entity_id,approved_wording,confirmed_by_owner,created_at) VALUES('t2-hook-claim',1,'Dana published an engineering update','owner_report',3,'owner',NULL,'Dana published an engineering update',1,'2026-11-20T00:00:00Z')").execute(workspace.pool()).await.unwrap();
+    let body = json!({"expected_revision":1,"published_at":"2026-11-19T00:00:00Z","publicness":"professional_public"});
+    let (status, accepted) = request(
+        port,
+        "POST",
+        "/api/v1/claims/t2-hook-claim/hook",
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, 200, "{accepted:?}");
+    let body = "Hi Dana Lee.\nI can share an Onboarding checklist.\nI saw Dana published an engineering update recently.";
+    let binding = json!([
+        {"sentence_index":0,"claim_type":"generic"},
+        {"sentence_index":1,"claim_type":"offer","ref_kind":"resource","ref_id":gift},
+        {"sentence_index":2,"claim_type":"hook","ref_kind":"claim","ref_id":"t2-hook-claim","ref_revision":1}
+    ]);
+    let (status, material) = request(
+        port,
+        "POST",
+        &format!("/api/v1/opportunities/{opportunity_id}/materials"),
+        Some(json!({"recipient_id":recipient,"kind":"outreach","template_version_id":template_id,"body":body,"exchange_version":exchange_version,"slot_fills":[],"sentence_bindings":binding})),
+    )
+    .await;
+    assert_eq!(status, 201, "{material}");
+    let material_id = material["id"].as_str().unwrap();
+    let (status, approval) = request(
+        port,
+        "POST",
+        &format!("/api/v1/materials/{material_id}/approve"),
+        Some(json!({"override_reasons":{}})),
+    )
+    .await;
+    assert_eq!(status, 200, "{approval}");
+    service.shutdown().await;
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn s03_verified_shared_identity_passes_h6() {
+    let (path, workspace, port, service) = setup().await;
+    let (recipient, opportunity_id, exchange_version, gift, template_id) =
+        prepare_eligible(port).await;
+    sqlx::query("INSERT INTO claim(id,subject_id,predicate,current_revision,created_at) VALUES('t3-identity-claim',?,'identity:shared_background',1,'2026-11-20T00:00:00Z')").bind(&recipient).execute(workspace.pool()).await.unwrap();
+    sqlx::query("INSERT INTO claim_revision(claim_id,revision,wording,knowledge_kind,tier,speaker_kind,speaker_entity_id,approved_wording,confirmed_by_owner,created_at) VALUES('t3-identity-claim',1,'Both work in systems design','owner_report',3,'owner',NULL,'Both work in systems design',1,'2026-11-20T00:00:00Z')").execute(workspace.pool()).await.unwrap();
+    sqlx::query("INSERT INTO owner_identity_tag(tag,confirmed_at) VALUES('systems design','2026-11-01T00:00:00Z')").execute(workspace.pool()).await.unwrap();
+    sqlx::query("INSERT INTO party_identity_tag(entity_id,tag,claim_id,claim_revision,created_at) VALUES(?,'systems design','t3-identity-claim',1,'2026-11-01T00:00:00Z')").bind(&recipient).execute(workspace.pool()).await.unwrap();
+    let body =
+        "Hi Dana Lee.\nI can share an Onboarding checklist.\nWe share a systems design background.";
+    let binding = json!([
+        {"sentence_index":0,"claim_type":"generic"},
+        {"sentence_index":1,"claim_type":"offer","ref_kind":"resource","ref_id":gift},
+        {"sentence_index":2,"claim_type":"identity","ref_kind":"claim","ref_id":"t3-identity-claim","ref_revision":1}
+    ]);
+    let (status, material) = request(
+        port,
+        "POST",
+        &format!("/api/v1/opportunities/{opportunity_id}/materials"),
+        Some(json!({"recipient_id":recipient,"kind":"outreach","template_version_id":template_id,"body":body,"exchange_version":exchange_version,"slot_fills":[],"sentence_bindings":binding})),
+    )
+    .await;
+    assert_eq!(status, 201, "{material}");
+    let material_id = material["id"].as_str().unwrap();
+    let (status, approval) = request(
+        port,
+        "POST",
+        &format!("/api/v1/materials/{material_id}/approve"),
+        Some(json!({"override_reasons":{}})),
+    )
+    .await;
+    assert_eq!(status, 200, "{approval}");
+    service.shutdown().await;
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn s03_numeric_substring_cannot_ground_a_claim() {
+    let (path, _workspace, port, service) = setup().await;
+    let (recipient, opportunity_id, exchange_version, _gift, template_id) =
+        prepare_eligible(port).await;
+    let (status, proof) = request(
+        port,
+        "POST",
+        "/api/v1/entities",
+        Some(json!({"kind":"proof","title":"Onboarding runbook","body":{"what":"Reduced onboarding from 30 days","evidence_ref":"runbook-2026"}})),
+    )
+    .await;
+    assert_eq!(status, 201);
+    let (status, ready) = request(
+        port,
+        "POST",
+        &format!("/api/v1/resources/{}/ready", proof["id"].as_str().unwrap()),
+        Some(json!({"body":{"what_i_did":"I reduced the onboarding process from 30 days","for_whom":"the hiring team at Northline","problem":"Onboarding took 30 days","result_unit":"days","period":"6 months","my_role":"lead","permission_to_name":true,"result_value":30,"format":"report","evidence_ref":"runbook-2026"}})),
+    )
+    .await;
+    assert_eq!(status, 204, "{ready}");
+    let body = "I cut onboarding from 3 days.";
+    let binding = json!([
+        {"sentence_index":0,"claim_type":"self_fact","ref_kind":"resource","ref_id":proof["id"],"approved_wording":body}
+    ]);
+    let (status, material) = request(
+        port,
+        "POST",
+        &format!("/api/v1/opportunities/{opportunity_id}/materials"),
+        Some(json!({"recipient_id":recipient,"kind":"outreach","template_version_id":template_id,"body":body,"exchange_version":exchange_version,"slot_fills":[],"sentence_bindings":binding})),
+    )
+    .await;
+    assert_eq!(status, 201, "{material}");
+    let material_id = material["id"].as_str().unwrap();
+    let (status, blocked) = request(
+        port,
+        "POST",
+        &format!("/api/v1/materials/{material_id}/approve"),
+        Some(json!({"override_reasons":{}})),
+    )
+    .await;
+    assert_eq!(status, 422, "{blocked}");
+    assert!(
+        blocked["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("H3 GROUNDED"),
+        "{blocked}"
+    );
+    service.shutdown().await;
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn s03_gate_reads_pack_limits() {
+    let (path, workspace, port, service) = setup().await;
+    let (recipient, opportunity_id, exchange_version, gift, template_id) =
+        prepare_eligible(port).await;
+    sqlx::query("UPDATE owner_profile SET settings_json=? WHERE id=1")
+        .bind(
+            json!({"pack_policy":{"limits":{"max_rules_per_message":{"first_touch":1}}}})
+                .to_string(),
+        )
+        .execute(workspace.pool())
+        .await
+        .unwrap();
+    let body = "Hi Dana Lee.\nI can share an Onboarding checklist.\nWould you take a look at it?";
+    let binding = json!([
+        {"sentence_index":0,"claim_type":"generic"},
+        {"sentence_index":1,"claim_type":"offer","ref_kind":"resource","ref_id":gift},
+        {"sentence_index":2,"claim_type":"ask","ref_kind":"ladder","ref_id":"rung-1","ask_rung":1}
+    ]);
+    let (status, material) = request(
+        port,
+        "POST",
+        &format!("/api/v1/opportunities/{opportunity_id}/materials"),
+        Some(json!({"recipient_id":recipient,"kind":"outreach","template_version_id":template_id,"body":body,"exchange_version":exchange_version,"slot_fills":[],"sentence_bindings":binding})),
+    )
+    .await;
+    assert_eq!(status, 201, "{material}");
+    let material_id = material["id"].as_str().unwrap();
+    let (status, blocked) = request(
+        port,
+        "POST",
+        &format!("/api/v1/materials/{material_id}/approve"),
+        Some(json!({"override_reasons":{"S2 ANCHOR":"Reviewed the anchor for this contact."}})),
+    )
+    .await;
+    assert_eq!(status, 422, "{blocked}");
+    assert!(
+        blocked["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("S3 STACK_LIMIT"),
+        "{blocked}"
+    );
+    service.shutdown().await;
+    let _ = fs::remove_file(path);
+}

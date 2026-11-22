@@ -545,3 +545,70 @@ async fn s01_unauthenticated_read_discloses_no_resource_fields() {
     assert!(!list.contains("Private draft"));
     stop(service, &path).await;
 }
+
+#[tokio::test]
+async fn s01_capture_retry_is_one_occurrence() {
+    let path = workspace_path();
+    let service = parley_service::start_workspace(&path)
+        .await
+        .expect("start service");
+    let session = owner_session(service.address, &service.bootstrap_secret).await;
+    let mut headers = session_headers(&session);
+    let key = "01935f20-7c00-7000-8000-0000000000ff";
+    headers.push(("Idempotency-Key", key));
+    let body = json!({"text":"The onboarding team is expanding."}).to_string();
+    let first = request(
+        service.address,
+        "POST",
+        "/api/v1/captures",
+        &headers,
+        &body,
+        false,
+    )
+    .await;
+    assert_eq!(status(&first), 201, "{first}");
+    let second = request(
+        service.address,
+        "POST",
+        "/api/v1/captures",
+        &headers,
+        &body,
+        false,
+    )
+    .await;
+    assert_eq!(status(&second), 201, "{second}");
+    assert_eq!(json_body(&first), json_body(&second));
+
+    let db = SqlitePoolOptions::new()
+        .connect(&format!(
+            "sqlite://{}",
+            parley_service::Workspace::resolve_database_path(&path)
+                .unwrap()
+                .display()
+        ))
+        .await
+        .unwrap();
+    let occurrences: i64 = sqlx::query_scalar("SELECT count(*) FROM source_occurrence")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(occurrences, 1);
+    let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM durable_job")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(jobs, 1);
+    let events: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM event WHERE event_type='source.captured'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(events, 1);
+    let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM idempotency_receipt")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(receipts, 1);
+    db.close().await;
+    stop(service, &path).await;
+}

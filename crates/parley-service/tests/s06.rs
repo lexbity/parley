@@ -449,6 +449,20 @@ async fn s06_verified_file_release_download_returns_exact_bytes_and_one_grant() 
     assert_eq!(outputs[0]["id"], material_id);
     assert_eq!(outputs[0]["attachment"]["sha256"], sha);
 
+    // HEAD-as-GET must be refused without touching the one-use grant
+    // (RFC-0004 IQ2: navigation, link preview and prefetch must not
+    // trigger issuance). A 405 means no spool verification and no grant
+    // consumption happen before the real GET.
+    let (status, _head_bytes) = raw_request(
+        port,
+        "HEAD",
+        &format!("/api/v1/materials/{material_id}/download?release_id={release_id}"),
+        "",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, 405);
+
     let (status, bytes) = download(port, material_id, release_id).await;
     assert_eq!(status, 200);
     assert_eq!(bytes, HANDOFF_BYTES);
@@ -457,7 +471,6 @@ async fn s06_verified_file_release_download_returns_exact_bytes_and_one_grant() 
     let (status, second) = download(port, material_id, release_id).await;
     assert_eq!(status, 422, "{}", String::from_utf8_lossy(&second));
     assert!(String::from_utf8_lossy(&second).contains("already consumed"));
-
     // Independent persisted observation matches the public response.
     let (blob_size, blob_mime): (i64, String) =
         sqlx::query_as("SELECT size,mime FROM blob WHERE sha256=?")
