@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/MaterialGate","body":{"material_id":"material-1","version_id":"version-1","recipient_id":"party-dana","evaluated_at":"2026-11-21T18:00:00Z","results":[{"id":"H1 EXCH_COMPLETE","severity":"hard","pass":true,"detail":"Exchange is complete."}],"hard_failures":[],"soft_failures":[],"copy_enabled":true}}

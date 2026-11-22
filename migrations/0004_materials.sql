@@ -1,206 +1,155 @@
 CREATE TABLE opportunity (
   id TEXT PRIMARY KEY,
-  title TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 500),
-  state TEXT NOT NULL CHECK(state IN ('open','resolved','dormant','closed')),
-  close_reason TEXT,
-  revision INTEGER NOT NULL CHECK(revision > 0),
+  title TEXT NOT NULL CHECK(length(trim(title)) BETWEEN 1 AND 240),
+  status TEXT NOT NULL CHECK(status IN ('open','resolved','timed_out','archived')) DEFAULT 'open',
+  revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-CREATE TABLE opportunity_party (
-  opportunity_id TEXT NOT NULL REFERENCES opportunity(id) ON DELETE RESTRICT,
-  party_id TEXT NOT NULL REFERENCES entity(id) ON DELETE RESTRICT,
-  role TEXT NOT NULL CHECK(role IN ('primary','participant')),
-  added_at TEXT NOT NULL,
-  PRIMARY KEY(opportunity_id, party_id)
+
+CREATE TABLE opportunity_participant (
+  opportunity_id TEXT NOT NULL REFERENCES opportunity(id) ON DELETE CASCADE,
+  entity_id TEXT NOT NULL REFERENCES entity(id) ON DELETE RESTRICT,
+  participant_role TEXT NOT NULL CHECK(participant_role IN ('primary','participant')) DEFAULT 'participant',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(opportunity_id, entity_id)
 );
-CREATE INDEX opportunity_party_by_party ON opportunity_party(party_id, opportunity_id);
-CREATE TABLE party_policy (
-  party_id TEXT PRIMARY KEY REFERENCES entity(id) ON DELETE RESTRICT,
-  state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','closed','dormant')),
-  do_not_contact INTEGER NOT NULL DEFAULT 0 CHECK(do_not_contact IN (0,1)),
-  highest_rung INTEGER NOT NULL DEFAULT 0 CHECK(highest_rung >= 0),
-  touch_count INTEGER NOT NULL DEFAULT 0 CHECK(touch_count >= 0),
-  revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0)
-);
-INSERT INTO party_policy(party_id) SELECT id FROM entity;
-CREATE TRIGGER source_opportunity_insert_guard
-BEFORE INSERT ON source_opportunity_link
-WHEN NOT EXISTS (SELECT 1 FROM opportunity WHERE id=NEW.opportunity_id)
-  OR NOT EXISTS (SELECT 1 FROM source_variant WHERE id=NEW.source_variant_id)
-BEGIN SELECT RAISE(ABORT, 'source or opportunity does not exist'); END;
-CREATE TRIGGER source_opportunity_update_guard
-BEFORE UPDATE OF opportunity_id,source_variant_id ON source_opportunity_link
-WHEN NOT EXISTS (SELECT 1 FROM opportunity WHERE id=NEW.opportunity_id)
-  OR NOT EXISTS (SELECT 1 FROM source_variant WHERE id=NEW.source_variant_id)
-BEGIN SELECT RAISE(ABORT, 'source or opportunity does not exist'); END;
+CREATE INDEX opportunity_participant_entity ON opportunity_participant(entity_id, opportunity_id);
+
+CREATE TRIGGER opportunity_participant_kind
+BEFORE INSERT ON opportunity_participant
+WHEN (SELECT kind FROM entity WHERE id=NEW.entity_id) NOT IN ('person','org')
+BEGIN SELECT RAISE(ABORT, 'opportunity participants must be people or organizations'); END;
 
 CREATE TABLE opportunity_interest (
   id TEXT PRIMARY KEY,
-  opportunity_id TEXT NOT NULL,
-  party_id TEXT NOT NULL,
+  opportunity_id TEXT NOT NULL REFERENCES opportunity(id) ON DELETE CASCADE,
   side TEXT NOT NULL CHECK(side IN ('them','me')),
-  statement TEXT NOT NULL CHECK(length(trim(statement)) > 0),
-  knowledge_kind TEXT NOT NULL CHECK(knowledge_kind IN ('observation','hypothesis','owner_report')),
-  check_suggestion TEXT,
-  provenance_kind TEXT NOT NULL CHECK(provenance_kind IN ('owner_report','source_claim')),
-  claim_id TEXT,
-  claim_revision INTEGER,
-  revision INTEGER NOT NULL CHECK(revision > 0),
-  status TEXT NOT NULL CHECK(status IN ('active','dismissed')),
+  statement TEXT NOT NULL CHECK(length(trim(statement)) BETWEEN 1 AND 2000),
+  provenance_tier INTEGER NOT NULL CHECK(provenance_tier IN (1,2,3)),
+  source_claim_id TEXT,
+  source_claim_revision INTEGER,
+  status TEXT NOT NULL CHECK(status IN ('active','dismissed')) DEFAULT 'active',
   created_at TEXT NOT NULL,
-  FOREIGN KEY(opportunity_id, party_id) REFERENCES opportunity_party(opportunity_id, party_id) ON DELETE RESTRICT,
-  FOREIGN KEY(claim_id, claim_revision) REFERENCES claim_revision(claim_id, revision),
-  CHECK((provenance_kind='source_claim' AND claim_id IS NOT NULL AND claim_revision IS NOT NULL)
-     OR (provenance_kind='owner_report' AND claim_id IS NULL AND claim_revision IS NULL)),
-  CHECK(knowledge_kind <> 'hypothesis' OR check_suggestion IS NOT NULL),
-  CHECK(side <> 'me' OR knowledge_kind='owner_report')
+  CHECK((provenance_tier=1 AND source_claim_id IS NOT NULL AND source_claim_revision IS NOT NULL) OR
+        (provenance_tier IN (2,3) AND ((source_claim_id IS NULL AND source_claim_revision IS NULL) OR (source_claim_id IS NOT NULL AND source_claim_revision IS NOT NULL)))),
+  FOREIGN KEY(source_claim_id,source_claim_revision) REFERENCES claim_revision(claim_id,revision)
 );
-CREATE INDEX opportunity_interest_scope ON opportunity_interest(opportunity_id,party_id,side,status);
-CREATE TRIGGER cited_interest_revision_invalidation
-AFTER UPDATE OF current_revision ON claim
-WHEN OLD.current_revision <> NEW.current_revision
-BEGIN
-  UPDATE opportunity_interest SET revision=revision+1
-    WHERE claim_id=NEW.id AND claim_revision <> NEW.current_revision;
-  UPDATE opportunity SET revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-    WHERE id IN (SELECT opportunity_id FROM opportunity_interest WHERE claim_id=NEW.id);
-  INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json)
-    SELECT lower(hex(randomblob(16))),strftime('%Y-%m-%dT%H:%M:%fZ','now'),'opportunity',o.id,o.revision,
-      'opportunity.source_claim_corrected',json_object('claim_id',NEW.id,'claim_revision',NEW.current_revision)
-    FROM opportunity o WHERE o.id IN (SELECT opportunity_id FROM opportunity_interest WHERE claim_id=NEW.id);
-END;
+CREATE INDEX opportunity_interest_active ON opportunity_interest(opportunity_id,side,status);
 
-CREATE TABLE exchange_version (
-  opportunity_id TEXT NOT NULL,
-  recipient_id TEXT NOT NULL,
-  version_no INTEGER NOT NULL CHECK(version_no > 0),
-  they_get TEXT NOT NULL,
-  i_get TEXT NOT NULL,
+CREATE TABLE opportunity_exchange (
+  id TEXT PRIMARY KEY,
+  opportunity_id TEXT NOT NULL REFERENCES opportunity(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL CHECK(version > 0),
+  they_get TEXT NOT NULL CHECK(length(trim(they_get)) BETWEEN 1 AND 4000),
+  i_get TEXT NOT NULL CHECK(length(trim(i_get)) BETWEEN 1 AND 4000),
   fairness_attested INTEGER NOT NULL DEFAULT 0 CHECK(fairness_attested IN (0,1)),
-  attestation_digest TEXT,
   attested_at TEXT,
   created_at TEXT NOT NULL,
-  PRIMARY KEY(opportunity_id,recipient_id,version_no),
-  FOREIGN KEY(opportunity_id,recipient_id) REFERENCES opportunity_party(opportunity_id,party_id) ON DELETE RESTRICT,
-  CHECK((fairness_attested=0 AND attestation_digest IS NULL AND attested_at IS NULL)
-     OR (fairness_attested=1 AND attestation_digest IS NOT NULL AND attested_at IS NOT NULL))
+  UNIQUE(opportunity_id,version),
+  CHECK((fairness_attested=1 AND attested_at IS NOT NULL) OR fairness_attested=0)
 );
-CREATE TABLE exchange_interest_link (
-  opportunity_id TEXT NOT NULL,
-  recipient_id TEXT NOT NULL,
-  exchange_version INTEGER NOT NULL,
+CREATE TABLE opportunity_exchange_interest (
+  exchange_id TEXT NOT NULL REFERENCES opportunity_exchange(id) ON DELETE CASCADE,
   interest_id TEXT NOT NULL REFERENCES opportunity_interest(id) ON DELETE RESTRICT,
-  PRIMARY KEY(opportunity_id,recipient_id,exchange_version,interest_id),
-  FOREIGN KEY(opportunity_id,recipient_id,exchange_version) REFERENCES exchange_version(opportunity_id,recipient_id,version_no) ON DELETE RESTRICT
+  PRIMARY KEY(exchange_id,interest_id)
 );
-
-CREATE TABLE template_family (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-CREATE TABLE template_version (
-  id TEXT PRIMARY KEY,
-  family_id TEXT NOT NULL REFERENCES template_family(id) ON DELETE RESTRICT,
-  version_no INTEGER NOT NULL CHECK(version_no > 0),
-  body TEXT NOT NULL,
-  fallbacks_json TEXT NOT NULL,
-  status TEXT NOT NULL CHECK(status IN ('draft','approved','active','flagged','retired')),
-  content_sha256 TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  UNIQUE(family_id,version_no)
-);
+CREATE TRIGGER exchange_interest_same_opportunity
+BEFORE INSERT ON opportunity_exchange_interest
+WHEN (SELECT opportunity_id FROM opportunity_exchange WHERE id=NEW.exchange_id) !=
+     (SELECT opportunity_id FROM opportunity_interest WHERE id=NEW.interest_id)
+BEGIN SELECT RAISE(ABORT, 'exchange interest must belong to the same opportunity'); END;
+CREATE TRIGGER exchange_immutable_update
+BEFORE UPDATE ON opportunity_exchange
+BEGIN SELECT RAISE(ABORT, 'exchange versions are immutable'); END;
+CREATE TRIGGER exchange_immutable_delete
+BEFORE DELETE ON opportunity_exchange
+BEGIN SELECT RAISE(ABORT, 'exchange versions are immutable'); END;
 
 CREATE TABLE material (
   id TEXT PRIMARY KEY,
-  opportunity_id TEXT NOT NULL,
-  recipient_id TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('outreach','followup','handoff')),
-  head_version INTEGER NOT NULL CHECK(head_version > 0),
+  opportunity_id TEXT NOT NULL REFERENCES opportunity(id) ON DELETE RESTRICT,
+  recipient_id TEXT NOT NULL REFERENCES entity(id) ON DELETE RESTRICT,
+  kind TEXT NOT NULL CHECK(kind IN ('outreach','follow_up','handoff')),
+  title TEXT NOT NULL CHECK(length(trim(title)) BETWEEN 1 AND 240),
+  current_version INTEGER NOT NULL DEFAULT 1 CHECK(current_version > 0),
+  revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+  status TEXT NOT NULL CHECK(status IN ('draft','approved','retired')) DEFAULT 'draft',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  FOREIGN KEY(opportunity_id,recipient_id) REFERENCES opportunity_party(opportunity_id,party_id) ON DELETE RESTRICT
+  UNIQUE(id,opportunity_id,recipient_id)
 );
-CREATE INDEX material_opportunity_contact ON material(opportunity_id,recipient_id,updated_at);
+CREATE INDEX material_opportunity ON material(opportunity_id,status,updated_at DESC,id);
+CREATE INDEX material_recipient ON material(recipient_id,opportunity_id,status);
+CREATE TRIGGER material_recipient_kind
+BEFORE INSERT ON material
+WHEN (SELECT kind FROM entity WHERE id=NEW.recipient_id) NOT IN ('person','org')
+BEGIN SELECT RAISE(ABORT, 'material recipient must be a person or organization'); END;
+
 CREATE TABLE material_version (
   material_id TEXT NOT NULL REFERENCES material(id) ON DELETE RESTRICT,
-  version_no INTEGER NOT NULL CHECK(version_no > 0),
-  opportunity_id TEXT NOT NULL,
-  recipient_id TEXT NOT NULL,
-  template_version_id TEXT NOT NULL REFERENCES template_version(id) ON DELETE RESTRICT,
-  exchange_version INTEGER NOT NULL,
-  body TEXT NOT NULL,
-  slot_fills_json TEXT NOT NULL,
-  sentence_bindings_json TEXT NOT NULL,
-  content_sha256 TEXT NOT NULL,
+  version INTEGER NOT NULL CHECK(version > 0),
+  body TEXT NOT NULL CHECK(length(body) BETWEEN 0 AND 20000),
+  sentences_json TEXT NOT NULL CHECK(json_valid(sentences_json)),
+  slot_fills_json TEXT NOT NULL CHECK(json_valid(slot_fills_json)),
+  protected_tokens_json TEXT NOT NULL CHECK(json_valid(protected_tokens_json)),
+  rules_json TEXT NOT NULL CHECK(json_valid(rules_json)),
+  content_sha256 TEXT NOT NULL CHECK(length(content_sha256)=64),
   created_at TEXT NOT NULL,
-  PRIMARY KEY(material_id,version_no),
-  FOREIGN KEY(material_id) REFERENCES material(id) ON DELETE RESTRICT,
-  FOREIGN KEY(opportunity_id,recipient_id) REFERENCES opportunity_party(opportunity_id,party_id) ON DELETE RESTRICT
+  PRIMARY KEY(material_id,version)
 );
-CREATE TABLE version_dependency (
-  material_id TEXT NOT NULL,
-  version_no INTEGER NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('resource','claim','exchange','template','party','opportunity')),
-  source_id TEXT NOT NULL,
-  source_revision TEXT NOT NULL,
-  PRIMARY KEY(material_id,version_no,kind,source_id),
-  FOREIGN KEY(material_id,version_no) REFERENCES material_version(material_id,version_no) ON DELETE RESTRICT
-);
-CREATE INDEX affected_versions ON version_dependency(kind,source_id,source_revision,material_id,version_no);
-CREATE TABLE approval (
-  id TEXT PRIMARY KEY,
-  material_id TEXT NOT NULL,
-  version_no INTEGER NOT NULL,
-  content_sha256 TEXT NOT NULL,
-  dependency_vector_json TEXT NOT NULL,
-  gate_snapshot_json TEXT NOT NULL,
-  overrides_json TEXT NOT NULL,
+CREATE TRIGGER material_version_immutable_update
+BEFORE UPDATE ON material_version
+BEGIN SELECT RAISE(ABORT, 'material versions are immutable'); END;
+CREATE TRIGGER material_version_immutable_delete
+BEFORE DELETE ON material_version
+BEGIN SELECT RAISE(ABORT, 'material versions are immutable'); END;
+
+CREATE TABLE material_approval (
+  material_id TEXT NOT NULL REFERENCES material(id) ON DELETE RESTRICT,
+  version INTEGER NOT NULL,
+  recipient_id TEXT NOT NULL REFERENCES entity(id) ON DELETE RESTRICT,
+  gate_snapshot_json TEXT NOT NULL CHECK(json_valid(gate_snapshot_json)),
+  override_reasons_json TEXT NOT NULL CHECK(json_valid(override_reasons_json)),
+  body_sha256 TEXT NOT NULL CHECK(length(body_sha256)=64),
   approved_at TEXT NOT NULL,
-  UNIQUE(material_id,version_no),
-  FOREIGN KEY(material_id,version_no) REFERENCES material_version(material_id,version_no) ON DELETE RESTRICT
+  PRIMARY KEY(material_id,version),
+  FOREIGN KEY(material_id,version) REFERENCES material_version(material_id,version)
 );
-CREATE TABLE release_record (
+CREATE TRIGGER material_approval_immutable_update
+BEFORE UPDATE ON material_approval
+BEGIN SELECT RAISE(ABORT, 'approval records are immutable'); END;
+CREATE TRIGGER material_approval_immutable_delete
+BEFORE DELETE ON material_approval
+BEGIN SELECT RAISE(ABORT, 'approval records are immutable'); END;
+
+CREATE TABLE copy_grant (
   id TEXT PRIMARY KEY,
-  approval_id TEXT NOT NULL REFERENCES approval(id) ON DELETE RESTRICT,
+  owner_id INTEGER NOT NULL DEFAULT 1 REFERENCES owner_profile(id),
+  epoch TEXT NOT NULL,
+  session_id TEXT NOT NULL,
   material_id TEXT NOT NULL,
-  version_no INTEGER NOT NULL,
-  content_sha256 TEXT NOT NULL,
+  opportunity_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  recipient_id TEXT NOT NULL,
+  content_sha256 TEXT NOT NULL CHECK(length(content_sha256)=64),
+  content TEXT NOT NULL,
   issued_at TEXT NOT NULL,
-  acknowledged INTEGER CHECK(acknowledged IN (0,1)),
+  expires_at TEXT NOT NULL,
   acknowledged_at TEXT,
-  FOREIGN KEY(material_id,version_no) REFERENCES material_version(material_id,version_no) ON DELETE RESTRICT
+  FOREIGN KEY(material_id,version) REFERENCES material_version(material_id,version),
+  FOREIGN KEY(material_id,opportunity_id,recipient_id) REFERENCES material(id,opportunity_id,recipient_id)
 );
-CREATE INDEX releases_by_material ON release_record(material_id,version_no,issued_at);
-CREATE TABLE release_ack (
-  release_id TEXT PRIMARY KEY REFERENCES release_record(id) ON DELETE RESTRICT,
-  succeeded INTEGER NOT NULL CHECK(succeeded IN (0,1)),
-  acknowledged_at TEXT NOT NULL
-);
+CREATE INDEX copy_grant_expiry ON copy_grant(expires_at);
 
-CREATE TABLE resource_use (
-  material_id TEXT NOT NULL,
-  version_no INTEGER NOT NULL,
-  resource_id TEXT NOT NULL REFERENCES resource(id) ON DELETE RESTRICT,
-  slot_name TEXT NOT NULL,
-  PRIMARY KEY(material_id,version_no,resource_id,slot_name),
-  FOREIGN KEY(material_id,version_no) REFERENCES material_version(material_id,version_no) ON DELETE RESTRICT
+CREATE TABLE copy_acknowledgement (
+  owner_id INTEGER NOT NULL DEFAULT 1 REFERENCES owner_profile(id),
+  epoch TEXT NOT NULL,
+  operation_key TEXT NOT NULL,
+  canonical_digest TEXT NOT NULL,
+  grant_id TEXT NOT NULL REFERENCES copy_grant(id) ON DELETE RESTRICT,
+  success INTEGER NOT NULL CHECK(success IN (0,1)),
+  acknowledged_at TEXT NOT NULL,
+  PRIMARY KEY(owner_id,epoch,operation_key)
 );
-
-CREATE TRIGGER material_version_no_update BEFORE UPDATE ON material_version
-BEGIN SELECT RAISE(ABORT, 'material versions are immutable'); END;
-CREATE TRIGGER material_version_no_delete BEFORE DELETE ON material_version
-BEGIN SELECT RAISE(ABORT, 'material versions are immutable'); END;
-CREATE TRIGGER template_content_immutable BEFORE UPDATE OF family_id,version_no,body,fallbacks_json,content_sha256,created_at ON template_version
-BEGIN SELECT RAISE(ABORT, 'template version content is immutable'); END;
-CREATE TRIGGER template_version_no_delete BEFORE DELETE ON template_version
-BEGIN SELECT RAISE(ABORT, 'template versions are immutable'); END;
-CREATE TRIGGER approval_no_update BEFORE UPDATE ON approval
-BEGIN SELECT RAISE(ABORT, 'approval records are immutable'); END;
-CREATE TRIGGER approval_no_delete BEFORE DELETE ON approval
-BEGIN SELECT RAISE(ABORT, 'approval records are immutable'); END;
-CREATE TRIGGER release_no_update BEFORE UPDATE ON release_record
-BEGIN SELECT RAISE(ABORT, 'release records are immutable'); END;
-CREATE TRIGGER release_no_delete BEFORE DELETE ON release_record
-BEGIN SELECT RAISE(ABORT, 'release records are immutable'); END;
+CREATE INDEX copy_ack_grant ON copy_acknowledgement(grant_id,acknowledged_at);

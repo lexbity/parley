@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/CaptureReviewDecisions","body":{"expected_revision":2,"decisions":[{"proposal_id":"proposal-1","action":"confirm"},{"proposal_id":"proposal-dana","action":"unresolved"}]}}

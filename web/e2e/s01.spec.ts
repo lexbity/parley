@@ -6,8 +6,9 @@ test('s01_resource_first_launch_retry_and_cross_session_conflict', async ({ page
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Resources', exact: true })).toBeVisible();
   const title = `Onboarding checklist ${randomUUID()}`;
-  await page.getByLabel('Name').fill(title);
-  await page.getByLabel('What is it?').fill('A short review guide for onboarding teams.');
+  const resources = page.getByRole('region', { name: 'Resources workspace' });
+  await resources.getByLabel('Name').fill(title);
+  await resources.getByLabel('What is it?').fill('A short review guide for onboarding teams.');
   await page.getByRole('button', { name: 'Save draft' }).click();
   await expect(page.getByRole('status')).toContainText('Draft saved to this workspace.');
 
@@ -26,13 +27,13 @@ test('s01_resource_first_launch_retry_and_cross_session_conflict', async ({ page
   const second = await browser.newPage();
   await openOwnerPage(second, await ownerSession.secondBootstrapUrl());
   await second.getByRole('button', { name: new RegExp(title) }).click();
-  await second.getByLabel('Name').fill(`Shared ${title}`);
+  await second.getByRole('region', { name: 'Resources workspace' }).getByLabel('Name').fill(`Shared ${title}`);
   await second.getByRole('button', { name: 'Save draft' }).click();
   await expect(second.getByRole('status')).toContainText('Draft saved to this workspace.');
 
   // The first session still holds the stale revision and gets the comparison.
   await page.getByRole('button', { name: new RegExp(title) }).click();
-  await page.getByLabel('Name').fill(`Mine ${title}`);
+  await resources.getByLabel('Name').fill(`Mine ${title}`);
   await page.getByRole('button', { name: 'Save draft' }).click();
   await expect(page.getByRole('alert')).toContainText('Review the conflict');
   await expect(page.getByRole('alert')).toContainText(`Shared ${title}`);

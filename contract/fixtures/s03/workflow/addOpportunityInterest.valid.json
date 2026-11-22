@@ -1,9 +1,0 @@
-{
-  "$schema": "#/components/schemas/InterestInput",
-  "body": {
-    "recipient_id": "party-fixture",
-    "side": "them",
-    "statement": "A clear handoff",
-    "knowledge_kind": "hypothesis"
-  }
-}

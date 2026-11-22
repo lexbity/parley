@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, newOperationKey, ParleyClient, type ExtractorJob, type Resource, type SavedSource } from './client';
+import { ApiError, newOperationKey, ParleyClient, type Resource, type SavedSource } from './client';
 
 const session = {
   workspace_id: 'workspace-1', epoch: 'epoch-1', wire_major: 1, wire_minor: 0,
@@ -26,108 +26,6 @@ function sessionResponse(): Response {
 afterEach(() => {
   vi.restoreAllMocks();
   history.replaceState(null, '', '/');
-});
-
-describe('ParleyClient S03 opportunity and release commands', () => {
-  it('rejects malformed opportunity, material, and release responses', async () => {
-    vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(sessionResponse())
-      .mockResolvedValueOnce(response([{}]))
-      .mockResolvedValueOnce(response([{ id: 'op', title: 'x', state: 'open', revision: 1, participant_ids: [7], source_variant_ids: [], material_ids: [] }]))
-      .mockResolvedValueOnce(response([{}]))
-      .mockResolvedValueOnce(response({}));
-    const client = new ParleyClient();
-    await client.connect();
-    await expect(client.listOpportunities()).rejects.toThrow('opportunity is malformed');
-    await expect(client.listOpportunities()).rejects.toThrow('participant_ids must be a text list');
-    await expect(client.listOutputs()).rejects.toThrow('material is malformed');
-    await expect(client.releaseMaterial('bad')).rejects.toThrow('release is malformed');
-  });
-
-  it('uses the authenticated workspace session for opportunity and Output operations', async () => {
-    const opportunity = { id: 'op-1', title: 'Onboarding', state: 'open', revision: 1, participant_ids: ['party 1'], source_variant_ids: [], material_ids: [] };
-    const material = { id: 'mat-1', opportunity_id: 'op-1', recipient_id: 'party 1', recipient_name: 'Dana Lee', kind: 'outreach', version: 1, body: 'Hello Dana.', content_sha256: 'a'.repeat(64), status: 'approved', gate: null };
-    const released = { release_id: 'release-1', material_id: 'mat-1', version: 1, recipient_id: 'party 1', body: 'Hello Dana.', content_sha256: 'a'.repeat(64), issued_at: '2026-11-21T12:00:00Z' };
-    const fetchMock = vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(sessionResponse())
-      .mockResolvedValueOnce(response(opportunity, 201))
-      .mockResolvedValueOnce(response([opportunity]))
-      .mockResolvedValueOnce(response([material]))
-      .mockResolvedValueOnce(response(released))
-      .mockResolvedValueOnce(new Response(null, { status: 204 }));
-    const client = new ParleyClient();
-    await client.connect();
-    expect(await client.createOpportunity('Onboarding', 'party 1')).toEqual(opportunity);
-    expect(await client.listOpportunities()).toEqual([opportunity]);
-    expect(await client.listOutputs()).toEqual([material]);
-    expect(await client.releaseMaterial('mat-1')).toEqual(released);
-    await client.acknowledgeRelease('release-1', true);
-    expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual([
-      '/api/v1/opportunities', '/api/v1/opportunities', '/api/v1/outputs',
-      '/api/v1/materials/mat-1/release', '/api/v1/releases/release-1/ack',
-    ]);
-    for (const [, init] of fetchMock.mock.calls.slice(1)) {
-      expect(new Headers(init?.headers).get('X-Parley-Token')).toBe(session.mutation_token);
-      expect(new Headers(init?.headers).get('X-Parley-Epoch')).toBe(session.epoch);
-    }
-  });
-});
-
-describe('ParleyClient S04 local Extractor commands', () => {
-  const job: ExtractorJob = {
-    id: 'job/1', role: 'extractor', status: 'succeeded', current_attempt: 1, max_attempts: 3,
-    progress_current: 1, progress_total: 1, injection_suspected: true,
-    last_error_code: null, last_error: null, source_occurrence_id: 'occ-1', proposal_batch_id: 'batch/1',
-    proposals: [{ id: 'proposal-1', kind: 'signal', status: 'pending', candidate: {
-      statement: 'The next engineer will work with Dana.', quote: 'The next engineer will work with Dana.', mention_name: 'Dana', mention_kind: 'person',
-    } }],
-  };
-
-  it('calls provider, capture review, cancellation, and proposal commands with session authority', async () => {
-    const provider = { endpoint: 'http://127.0.0.1:11434', model: 'local:latest', num_ctx: 8192, num_predict: 512, locale: 'en' };
-    const fetchMock = vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(sessionResponse())
-      .mockResolvedValueOnce(response({ ...source, job_id: 'job-1', job_status: 'queued' }, 201))
-      .mockResolvedValueOnce(response(job))
-      .mockResolvedValueOnce(response(job))
-      .mockResolvedValueOnce(new Response(null, { status: 204 }))
-      .mockResolvedValueOnce(response({ status: 'partially_applied' }))
-      .mockResolvedValueOnce(response(provider))
-      .mockResolvedValueOnce(new Response(null, { status: 204 }))
-      .mockResolvedValueOnce(response({ available: true, model: 'local:latest', models: ['local:latest'], message: 'Available' }));
-    const client = new ParleyClient(); await client.connect();
-    expect(await client.saveSource({ text: 'Hiring update.', title: null, url: null })).toMatchObject({ job_id: 'job-1', job_status: 'queued' });
-    expect(await client.getExtractorJob('job/1')).toEqual(job);
-    expect(await client.getCaptureProposals('occ/1')).toEqual(job);
-    await client.cancelExtractorJob('job/1');
-    expect(await client.resolveProposals('batch/1', [{ item_id: 'proposal-1', action: 'unresolved' }], 'op-1')).toEqual({ status: 'partially_applied' });
-    expect(await client.getProvider()).toEqual(provider);
-    await client.updateProvider(provider);
-    expect(await client.checkProvider()).toMatchObject({ available: true, message: 'Available' });
-    expect(fetchMock.mock.calls.map(([url]) => url).slice(1)).toEqual([
-      '/api/v1/captures', '/api/v1/jobs/job%2F1', '/api/v1/captures/occ%2F1/proposals', '/api/v1/jobs/job%2F1',
-      '/api/v1/proposals/batch%2F1/resolve', '/api/v1/agent/provider', '/api/v1/agent/provider', '/api/v1/agent/provider/health',
-    ]);
-    expect(JSON.parse(String(fetchMock.mock.calls[5]?.[1]?.body))).toEqual({ decisions: [{ item_id: 'proposal-1', action: 'unresolved' }], opportunity_id: 'op-1' });
-    expect(new Headers(fetchMock.mock.calls[7]?.[1]?.headers).get('Idempotency-Key')).toBeTruthy();
-  });
-
-  it('rejects malformed provider, proposal, and health responses', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(sessionResponse())
-      .mockResolvedValueOnce(response({ endpoint: 'http://127.0.0.1', model: '', num_ctx: 'large', num_predict: 512, locale: 'en' }))
-      .mockResolvedValueOnce(response({ id: 'job', proposals: [{}] }))
-      .mockResolvedValueOnce(response({ status: 4 }))
-      .mockResolvedValueOnce(response({ available: 'yes', model: 'local', models: [], message: 'bad' }))
-      .mockResolvedValueOnce(response({ available: true, model: 'local', models: [4], message: 'bad' }));
-    const client = new ParleyClient(); await client.connect();
-    await expect(client.getProvider()).rejects.toThrow('provider settings are malformed');
-    await expect(client.getExtractorJob('job')).rejects.toThrow('proposal is malformed');
-    await expect(client.resolveProposals('batch', [{ item_id: 'x', action: 'dismiss' }])).rejects.toThrow('review result is malformed');
-    await expect(client.checkProvider()).rejects.toThrow('provider health is malformed');
-    await expect(client.checkProvider()).rejects.toThrow('health.models must be a text list');
-    expect(fetchMock).toHaveBeenCalledTimes(6);
-  });
 });
 
 describe('ParleyClient', () => {

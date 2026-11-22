@@ -1,0 +1,1 @@
+S03 fixture set covers opportunity membership, owner-authored interests and exchange attestation, exact-version material snapshots, hard/soft gate outcomes, recipient-bound text grants and clipboard acknowledgements that do not create sends or timers. Runtime qualification evidence is recorded by `scripts/prove s03`.

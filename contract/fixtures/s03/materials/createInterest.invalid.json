@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/Error","body":{"error":{"code":"INVALID_INTEREST","message":"Interest is required","details":[]}}}

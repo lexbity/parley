@@ -1,7 +1,0 @@
-{
-  "$schema": "#/components/schemas/TemplateInput",
-  "body": {
-    "name": "One useful offer",
-    "body": "Hi {{their_name:name}}. {{gift:offer}}"
-  }
-}

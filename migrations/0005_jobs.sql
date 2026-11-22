@@ -1,101 +1,80 @@
-CREATE TABLE agent_provider (
-  singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-  endpoint TEXT NOT NULL,
-  model TEXT NOT NULL,
-  model_digest TEXT,
-  num_ctx INTEGER NOT NULL CHECK(num_ctx BETWEEN 1024 AND 131072),
-  num_predict INTEGER NOT NULL CHECK(num_predict BETWEEN 64 AND 8192),
-  locale TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-INSERT INTO agent_provider(singleton,endpoint,model,num_ctx,num_predict,locale,updated_at)
-VALUES(1,'http://127.0.0.1:11434','',8192,1024,'en','1970-01-01T00:00:00Z');
-
-CREATE TABLE durable_job (
+CREATE TABLE agent_job (
   id TEXT PRIMARY KEY,
-  role TEXT NOT NULL CHECK(role IN ('extractor')),
-  status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','invalid','failed','cancelled')),
-  input_json TEXT NOT NULL,
-  input_sha256 TEXT NOT NULL,
-  source_occurrence_id TEXT NOT NULL REFERENCES source_occurrence(id) ON DELETE CASCADE,
-  source_variant_id TEXT NOT NULL REFERENCES source_variant(id) ON DELETE CASCADE,
-  current_attempt INTEGER NOT NULL DEFAULT 0 CHECK(current_attempt BETWEEN 0 AND 3),
-  max_attempts INTEGER NOT NULL DEFAULT 3 CHECK(max_attempts BETWEEN 1 AND 3),
-  progress_current INTEGER NOT NULL DEFAULT 0 CHECK(progress_current >= 0),
-  progress_total INTEGER NOT NULL DEFAULT 0 CHECK(progress_total >= 0),
-  last_error_code TEXT,
-  last_error TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  completed_at TEXT
-);
-CREATE INDEX durable_job_queue ON durable_job(status,created_at,id);
-CREATE INDEX durable_job_source ON durable_job(source_occurrence_id,created_at);
-
-CREATE TABLE job_attempt (
-  job_id TEXT NOT NULL REFERENCES durable_job(id) ON DELETE CASCADE,
-  attempt_no INTEGER NOT NULL CHECK(attempt_no BETWEEN 1 AND 3),
-  status TEXT NOT NULL CHECK(status IN ('running','succeeded','invalid','failed','cancelled','stale')),
+  job TEXT NOT NULL CHECK(job IN ('extractor')),
   model TEXT NOT NULL,
   model_digest TEXT,
-  provider_snapshot_json TEXT NOT NULL,
   prompt_id TEXT NOT NULL,
-  prompt_sha256 TEXT NOT NULL,
-  input_sha256 TEXT NOT NULL,
-  input_json TEXT NOT NULL,
-  output_json TEXT,
-  validation_errors_json TEXT NOT NULL DEFAULT '[]',
+  prompt_version TEXT NOT NULL,
+  prompt_sha256 TEXT NOT NULL CHECK(length(prompt_sha256)=64),
+  params_json TEXT NOT NULL CHECK(json_valid(params_json)),
+  input_sha256 TEXT NOT NULL CHECK(length(input_sha256)=64),
+  input_json TEXT NOT NULL CHECK(json_valid(input_json)),
+  output_json TEXT CHECK(output_json IS NULL OR json_valid(output_json)),
+  status TEXT NOT NULL CHECK(status IN ('queued','running','ok','invalid','failed','cancelled')),
+  validation_errors_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(validation_errors_json)),
+  dropped_items INTEGER NOT NULL DEFAULT 0 CHECK(dropped_items >= 0),
+  retries INTEGER NOT NULL DEFAULT 0 CHECK(retries BETWEEN 0 AND 2),
   tokens_in INTEGER,
   tokens_out INTEGER,
-  started_at TEXT NOT NULL,
-  finished_at TEXT,
+  progress_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(progress_json)),
+  started_at TEXT,
+  completed_at TEXT,
   duration_ms INTEGER,
-  error_code TEXT,
-  error_message TEXT,
-  PRIMARY KEY(job_id,attempt_no)
+  created_at TEXT NOT NULL
 );
+CREATE INDEX agent_job_created ON agent_job(created_at DESC,id);
 
+ALTER TABLE proposal_batch ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0);
+ALTER TABLE proposal_batch ADD COLUMN status_detail TEXT;
 
--- Keep the existing proposal table and its self-referencing foreign key intact.
--- `unresolved` is a review state distinct from accepting or resolving identity.
-ALTER TABLE proposal_item ADD COLUMN review_state TEXT CHECK(review_state IN ('unresolved'));
-
-CREATE TABLE proposal_decision (
+CREATE TABLE capture_review_item (
   id TEXT PRIMARY KEY,
-  proposal_item_id TEXT NOT NULL UNIQUE REFERENCES proposal_item(id) ON DELETE CASCADE,
-  decision TEXT NOT NULL CHECK(decision IN ('confirmed','corrected','dismissed','source_only','unresolved')),
-  target_entity_id TEXT REFERENCES entity(id) ON DELETE RESTRICT,
-  approved_wording TEXT,
-  opportunity_id TEXT REFERENCES opportunity(id) ON DELETE RESTRICT,
-  decided_at TEXT NOT NULL,
-  CHECK((decision IN ('confirmed','corrected') AND target_entity_id IS NOT NULL AND approved_wording IS NOT NULL)
-     OR decision IN ('dismissed','source_only','unresolved'))
-);
-
--- A mention remains a mention until the owner resolves it. Persisting it here
--- deliberately does not create an entity or a graph edge.
-CREATE TABLE unresolved_mention (
-  id TEXT PRIMARY KEY,
-  occurrence_id TEXT NOT NULL REFERENCES source_occurrence(id) ON DELETE RESTRICT,
-  proposal_item_id TEXT NOT NULL UNIQUE REFERENCES proposal_item(id) ON DELETE RESTRICT,
-  mention_name TEXT NOT NULL,
-  mention_kind TEXT CHECK(mention_kind IN ('person','org')),
-  source_start INTEGER NOT NULL CHECK(source_start >= 0),
-  source_end INTEGER NOT NULL CHECK(source_end > source_start),
-  status TEXT NOT NULL CHECK(status IN ('unresolved','linked','ignored')),
-  resolved_entity_id TEXT REFERENCES entity(id) ON DELETE RESTRICT,
+  batch_id TEXT NOT NULL REFERENCES proposal_batch(id) ON DELETE RESTRICT,
+  action TEXT NOT NULL CHECK(action IN ('create_claim','create_entity','create_edge','link_source')),
+  target_kind TEXT NOT NULL CHECK(target_kind IN ('entity','claim','edge','opportunity','none')),
+  target_id TEXT,
+  target_revision INTEGER,
+  label TEXT NOT NULL,
+  quote TEXT NOT NULL,
+  tier INTEGER NOT NULL CHECK(tier IN (1,2,3)),
+  ambiguity TEXT,
+  unresolved INTEGER NOT NULL DEFAULT 0 CHECK(unresolved IN (0,1)),
+  candidate_json TEXT NOT NULL CHECK(json_valid(candidate_json)),
+  quote_start INTEGER NOT NULL CHECK(quote_start >= 0),
+  quote_end INTEGER NOT NULL CHECK(quote_end > quote_start),
+  normalized_start INTEGER NOT NULL CHECK(normalized_start >= 0),
+  normalized_end INTEGER NOT NULL CHECK(normalized_end > normalized_start),
+  normalization_version INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','confirmed','corrected','dismissed','unresolved','asked_in_chat')),
   created_at TEXT NOT NULL,
-  CHECK((status='linked' AND resolved_entity_id IS NOT NULL)
-     OR (status<>'linked' AND resolved_entity_id IS NULL))
+  CHECK(unresolved=0 OR target_id IS NULL)
 );
-CREATE INDEX unresolved_mention_queue ON unresolved_mention(status,created_at,id);
+CREATE INDEX capture_review_item_batch ON capture_review_item(batch_id,status,id);
 
+CREATE TABLE capture_review_decision (
+  id TEXT PRIMARY KEY,
+  batch_id TEXT NOT NULL REFERENCES proposal_batch(id) ON DELETE RESTRICT,
+  proposal_id TEXT NOT NULL REFERENCES capture_review_item(id) ON DELETE RESTRICT,
+  action TEXT NOT NULL CHECK(action IN ('confirm','correct','dismiss','unresolved','ask_in_chat')),
+  target_id TEXT,
+  corrected_fields_json TEXT CHECK(corrected_fields_json IS NULL OR json_valid(corrected_fields_json)),
+  resulting_entity_id TEXT REFERENCES entity(id) ON DELETE RESTRICT,
+  resulting_claim_id TEXT REFERENCES claim(id) ON DELETE RESTRICT,
+  revision INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(batch_id,proposal_id)
+);
+CREATE TRIGGER capture_decision_no_update BEFORE UPDATE ON capture_review_decision
+BEGIN SELECT RAISE(ABORT,'capture decisions are append-only'); END;
+CREATE TRIGGER capture_decision_no_delete BEFORE DELETE ON capture_review_decision
+BEGIN SELECT RAISE(ABORT,'capture decisions are append-only'); END;
 
-CREATE TRIGGER durable_job_terminal_guard
-BEFORE UPDATE OF status ON durable_job
-WHEN OLD.status IN ('succeeded','invalid','failed','cancelled') AND NEW.status<>OLD.status
-BEGIN SELECT RAISE(ABORT,'terminal jobs cannot be reopened'); END;
-CREATE TRIGGER job_attempt_result_immutable
-BEFORE UPDATE ON job_attempt
-WHEN OLD.status<>'running'
-BEGIN SELECT RAISE(ABORT,'terminal job attempts are immutable'); END;
+CREATE TABLE capture_batch_opportunity (
+  batch_id TEXT NOT NULL REFERENCES proposal_batch(id) ON DELETE RESTRICT,
+  opportunity_id TEXT NOT NULL REFERENCES opportunity(id) ON DELETE RESTRICT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(batch_id,opportunity_id)
+);
+
+CREATE TRIGGER agent_job_no_delete BEFORE DELETE ON agent_job
+BEGIN SELECT RAISE(ABORT,'job history is retained'); END;

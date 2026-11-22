@@ -42,11 +42,11 @@ use tokio::sync::Mutex;
 
 static IDS: AtomicU64 = AtomicU64::new(0);
 
-mod jobs;
-mod materials;
 mod web_assets {
     include!(concat!(env!("OUT_DIR"), "/web_assets.rs"));
 }
+
+mod workflows;
 
 #[derive(Debug, Error)]
 pub enum WorkspaceError {
@@ -1416,7 +1416,6 @@ pub(crate) struct AppState {
     authority: String,
     bootstrap: Arc<Mutex<HashMap<String, Instant>>>,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
-    jobs: jobs::Queue,
 }
 
 /// Initialize (or open) a private SQLite workspace and bind only to IPv4
@@ -1431,7 +1430,6 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
     let address = listener.local_addr().map_err(|error| error.to_string())?;
     let bootstrap_secret = random_hex(32);
     let workspace = Arc::new(workspace);
-    let jobs = jobs::start(workspace.clone(), 32);
     let state = AppState {
         workspace,
         authority: address.to_string(),
@@ -1440,7 +1438,6 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
             Instant::now() + Duration::from_secs(60),
         )]))),
         sessions: Arc::new(Mutex::new(HashMap::new())),
-        jobs,
     };
     let bootstrap_shared = state.bootstrap.clone();
     let app = Router::new()
@@ -1467,8 +1464,98 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         .route("/api/v1/layout", post(save_layout))
         .route("/api/v1/graph/related", post(create_related_entity))
         .route("/api/v1/graph/edges", post(link_existing_entity))
-        .merge(materials::routes())
-        .merge(jobs::routes())
+        .route(
+            "/api/v1/opportunities",
+            get(workflows::list_opportunities).post(workflows::create_opportunity),
+        )
+        .route("/api/v1/board", get(workflows::get_board))
+        .route("/api/v1/board/lists", post(workflows::create_board_list))
+        .route(
+            "/api/v1/board/lists/order",
+            axum::routing::put(workflows::reorder_board_lists),
+        )
+        .route(
+            "/api/v1/board/lists/{id}",
+            axum::routing::patch(workflows::rename_board_list),
+        )
+        .route(
+            "/api/v1/board/lists/{id}/archive",
+            post(workflows::archive_board_list),
+        )
+        .route(
+            "/api/v1/board/cards/{id}/move",
+            post(workflows::move_board_card),
+        )
+        .route(
+            "/api/v1/board/lists/{id}/cards/reorder",
+            post(workflows::reorder_board_card),
+        )
+        .route(
+            "/api/v1/opportunities/{id}/notes",
+            get(workflows::get_opportunity_notes).put(workflows::save_opportunity_notes),
+        )
+        .route(
+            "/api/v1/opportunities/{id}/notes/tasks",
+            axum::routing::patch(workflows::toggle_opportunity_task),
+        )
+        .route(
+            "/api/v1/opportunities/{id}/participants",
+            axum::routing::put(workflows::update_participants),
+        )
+        .route(
+            "/api/v1/opportunities/{id}/interests",
+            get(workflows::list_interests).post(workflows::create_interest),
+        )
+        .route(
+            "/api/v1/opportunities/{id}/exchange",
+            get(workflows::get_exchange).put(workflows::update_exchange),
+        )
+        .route(
+            "/api/v1/opportunities/{id}/materials",
+            get(workflows::list_materials).post(workflows::create_material),
+        )
+        .route("/api/v1/materials/{id}", get(workflows::get_material))
+        .route(
+            "/api/v1/materials/{id}/versions",
+            axum::routing::put(workflows::save_material_version),
+        )
+        .route(
+            "/api/v1/materials/{id}/gate",
+            get(workflows::get_material_gate),
+        )
+        .route(
+            "/api/v1/materials/{id}/approval",
+            post(workflows::approve_material_version),
+        )
+        .route(
+            "/api/v1/materials/{id}/copy-grant",
+            post(workflows::issue_copy_grant),
+        )
+        .route(
+            "/api/v1/copy-grants/{id}",
+            get(workflows::get_copy_grant_receipt),
+        )
+        .route(
+            "/api/v1/copy-grants/{id}/acknowledgement",
+            post(workflows::acknowledge_copy),
+        )
+        .route("/api/v1/capture-stages", post(workflows::stage_capture))
+        .route(
+            "/api/v1/capture-stages/{id}",
+            get(workflows::get_capture_review),
+        )
+        .route(
+            "/api/v1/capture-stages/{id}/decisions",
+            post(workflows::apply_capture_review),
+        )
+        .route(
+            "/api/v1/capture-stages/{id}/source-only",
+            post(workflows::save_capture_source_only),
+        )
+        .route(
+            "/api/v1/capture-stages/{id}/cancel",
+            post(workflows::cancel_capture_job),
+        )
         .with_state(state)
         .layer(axum::extract::DefaultBodyLimit::max(2_100_000));
     let (shutdown, receiver) = tokio::sync::oneshot::channel();
@@ -2343,25 +2430,7 @@ async fn save_capture(
         .await
     {
         Ok(source) => {
-            let queued = jobs::enqueue(&state.workspace, &state.jobs, &source).await;
-            let (job_id, job_status) = match queued {
-                Ok(Some(id)) => (Some(id), "queued"),
-                Ok(None) => (None, "not_queued"),
-                Err(_) => (None, "not_queued"),
-            };
-            let mut response = (
-                StatusCode::CREATED,
-                Json(json!({
-                    "content_id": source.content_id,
-                    "variant_id": source.variant_id,
-                    "occurrence_id": source.occurrence_id,
-                    "normalized_sha256": source.normalized_sha256,
-                    "raw_sha256": source.raw_sha256,
-                    "job_id": job_id,
-                    "job_status": job_status,
-                })),
-            )
-                .into_response();
+            let mut response = (StatusCode::CREATED, Json(source)).into_response();
             private_headers(&mut response, state.workspace.epoch());
             response
         }

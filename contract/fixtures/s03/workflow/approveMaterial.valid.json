@@ -1,6 +1,0 @@
-{
-  "$schema": "#/components/schemas/ApprovalInput",
-  "body": {
-    "override_reasons": {}
-  }
-}

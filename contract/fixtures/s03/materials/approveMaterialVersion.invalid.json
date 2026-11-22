@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/Error","body":{"error":{"code":"GATE_BLOCKED","message":"Hard failures cannot be overridden","details":[]}}}

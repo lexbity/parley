@@ -176,240 +176,163 @@ slices:
   s03:
     - requirement: APP-10
       operationId: createOpportunity
-      test_id: s03_create_opportunity_for_selected_participant_without_creating_a_send
-      fixture_id: workflow
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
       owner_role: owner
       package_target: rust+mock
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
-    - requirement: APP-02
-      operationId: getOpportunity
-      test_id: s03_one_source_can_link_to_two_opportunities_and_unlink_independently
-      fixture_id: workflow
-      owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
+      evidence_path: evidence/s03.md
     - requirement: APP-10
-      operationId: addOpportunityParticipant
-      test_id: s03_one_source_can_link_to_two_opportunities_and_unlink_independently
-      fixture_id: workflow
+      operationId: listOpportunities
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
       owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
-    - requirement: APP-08
-      operationId: linkOpportunitySource
-      test_id: s03_one_source_can_link_to_two_opportunities_and_unlink_independently
-      fixture_id: workflow
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
+    - requirement: APP-10
+      operationId: updateOpportunityParticipants
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
       owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
-    - requirement: APP-08
-      operationId: unlinkOpportunitySource
-      test_id: s03_one_source_can_link_to_two_opportunities_and_unlink_independently
-      fixture_id: workflow
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
+    - requirement: APP-10
+      operationId: createInterest
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
       owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
-    - requirement: EXCH-1
-      operationId: addOpportunityInterest
-      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
-      fixture_id: workflow
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
+    - requirement: APP-13
+      operationId: updateExchange
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
       owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
-    - requirement: EXCH-1
-      operationId: saveOpportunityExchange
-      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
-      fixture_id: workflow
-      owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
-    - requirement: EXCH-3
-      operationId: attestOpportunityExchange
-      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
-      fixture_id: workflow
-      owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
-    - requirement: TPL-1
-      operationId: createTemplate
-      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
-      fixture_id: workflow
-      owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
-    - requirement: TPL-3
-      operationId: listTemplates
-      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
-      fixture_id: workflow
-      owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
-    - requirement: TPL-3
-      operationId: approveTemplate
-      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
-      fixture_id: workflow
-      owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
-    - requirement: TPL-3
-      operationId: activateTemplate
-      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
-      fixture_id: workflow
-      owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
-    - requirement: ASSET-1
-      operationId: markResourceReady
-      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
-      fixture_id: workflow
-      owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
     - requirement: APP-12
       operationId: createMaterial
-      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
-      fixture_id: workflow
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
       owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
-    - requirement: APP-12
-      operationId: listOpportunityMaterials
-      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
-      fixture_id: workflow
-      owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
     - requirement: APP-12
       operationId: getMaterial
-      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
-      fixture_id: workflow
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
       owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
-    - requirement: APP-12
-      operationId: editMaterial
-      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
-      fixture_id: workflow
-      owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
     - requirement: APP-13
-      operationId: approveMaterial
-      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
-      fixture_id: workflow
+      operationId: saveMaterialVersion
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
       owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
     - requirement: APP-13
-      operationId: releaseMaterial
-      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
-      fixture_id: workflow
+      operationId: getMaterialGate
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
       owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
     - requirement: APP-13
-      operationId: acknowledgeRelease
-      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
-      fixture_id: workflow
+      operationId: approveMaterialVersion
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
       owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
-    - requirement: APP-12
-      operationId: listOutputs
-      test_id: s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_output
-      fixture_id: workflow
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
+    - requirement: ARCH-1
+      operationId: issueCopyGrant
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
       owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s03/workflow/evidence.md
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
+    - requirement: APP-13
+      operationId: getCopyGrantReceipt
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
+    - requirement: F-FR-4
+      operationId: acknowledgeCopy
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
+
   s04:
-    - requirement: BE-09
-      operationId: getAgentProvider
-      test_id: s04_stages_proposals_and_commits_only_the_selected_review_closure
-      fixture_id: extractor_review
-      owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s04/extractor_review/evidence.md
-    - requirement: BE-09
-      operationId: updateAgentProvider
-      test_id: s04_stages_proposals_and_commits_only_the_selected_review_closure
-      fixture_id: extractor_review
-      owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s04/extractor_review/evidence.md
-    - requirement: JOB-8
-      operationId: checkAgentProvider
-      test_id: s04_stages_proposals_and_commits_only_the_selected_review_closure
-      fixture_id: extractor_review
-      owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s04/extractor_review/evidence.md
-    - requirement: JOB-1
-      operationId: saveCapture
-      test_id: s04_stages_proposals_and_commits_only_the_selected_review_closure
-      fixture_id: extractor_review
-      owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s04/extractor_review/evidence.md
-    - requirement: JOB-2
-      operationId: getJob
-      test_id: s04_stages_proposals_and_commits_only_the_selected_review_closure
-      fixture_id: extractor_review
-      owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s04/extractor_review/evidence.md
     - requirement: APP-08
-      operationId: getCaptureProposals
-      test_id: s04_stages_proposals_and_commits_only_the_selected_review_closure
-      fixture_id: extractor_review
+      operationId: stageCapture
+      test_id: s04_partial_capture_review_preserves_unresolved_identity
+      fixture_id: capture_review
       owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s04/extractor_review/evidence.md
-    - requirement: EXT-1
-      operationId: resolveProposals
-      test_id: s04_stages_proposals_and_commits_only_the_selected_review_closure
-      fixture_id: extractor_review
+      package_target: rust+mock
+      evidence_path: evidence/s04.md
+    - requirement: APP-08
+      operationId: getCaptureReview
+      test_id: s04_partial_capture_review_preserves_unresolved_identity
+      fixture_id: capture_review
       owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s04/extractor_review/evidence.md
-    - requirement: EXT-6
-      operationId: resolveProposals
-      test_id: s04_stages_proposals_and_commits_only_the_selected_review_closure
-      fixture_id: extractor_review
+      package_target: rust+mock
+      evidence_path: evidence/s04.md
+    - requirement: APP-08
+      operationId: applyCaptureReview
+      test_id: s04_partial_capture_review_preserves_unresolved_identity
+      fixture_id: capture_review
       owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s04/extractor_review/evidence.md
-    - requirement: B-FR-5
-      operationId: cancelJob
-      test_id: s04_cancelled_attempt_cannot_install_a_late_result
-      fixture_id: cancellation
+      package_target: rust+mock
+      evidence_path: evidence/s04.md
+    - requirement: APP-08
+      operationId: saveCaptureSourceOnly
+      test_id: s04_cancelled_capture_remains_source_only
+      fixture_id: capture_review
       owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s04/cancellation/evidence.md
-    - requirement: JOB-2
-      operationId: cancelJob
-      test_id: s04_cancelled_attempt_cannot_install_a_late_result
-      fixture_id: cancellation
+      package_target: rust+mock
+      evidence_path: evidence/s04.md
+    - requirement: JOB-6
+      operationId: cancelCaptureJob
+      test_id: s04_cancelled_capture_remains_source_only
+      fixture_id: capture_review
       owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s04/cancellation/evidence.md
-    - requirement: JOB-2
-      operationId: getJob
-      test_id: s04_schema_repair_budget_is_two_retries_after_the_first_attempt
-      fixture_id: extractor_review
+      package_target: rust+mock
+      evidence_path: evidence/s04.md
+
+  s05:
+    - &s05_board
+      requirement: FE-09
+      operationId: getBoard
+      test_id: s05_board_and_markdown_share_opportunity_records
+      fixture_id: board
       owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s04/extractor_review/evidence.md
-    - requirement: EV-4
+      package_target: rust+mock
+      evidence_path: evidence/s05.md
+    - <<: *s05_board
+      operationId: createBoardList
+    - <<: *s05_board
+      operationId: reorderBoardLists
+    - <<: *s05_board
+      operationId: renameBoardList
+    - <<: *s05_board
+      operationId: archiveBoardList
+    - <<: *s05_board
+      operationId: moveBoardCard
+    - <<: *s05_board
+      operationId: reorderBoardCard
+    - <<: *s05_board
+      requirement: FE-10
+      operationId: getOpportunityNotes
+    - <<: *s05_board
+      requirement: FE-10
+      operationId: saveOpportunityNotes
+    - <<: *s05_board
+      requirement: FE-10
+      operationId: toggleOpportunityTask
+    - <<: *s05_board
+      requirement: F-FR-3
       operationId: n/a
-      test_id: s04_extractor_eval_is_machine_readable
-      fixture_id: eval
-      owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s04/eval/evidence.md
-    - requirement: FM-1
-      operationId: saveCapture
-      test_id: s04_capture_remains_saved_when_provider_is_unavailable
-      fixture_id: provider_unavailable
-      owner_role: owner
-      package_target: rust
-      evidence_path: contract/fixtures/s04/provider_unavailable/evidence.md

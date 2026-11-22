@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/Error","body":{"error":{"code":"EXCHANGE_INCOMPLETE","message":"Both interests are required","details":[]}}}

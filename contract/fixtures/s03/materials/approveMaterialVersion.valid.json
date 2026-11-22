@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/ApproveMaterial","body":{"expected_revision":2,"version_id":"version-2","override_reasons":{"S5 TONE_LINT":"The wording is intentionally direct for this known recipient."}}}

@@ -9,7 +9,7 @@ test('s02_independent_source_same_name_parties_graph_evidence_and_correction', a
   await page.getByRole('heading',{name:'Add lead'}).locator('..').getByLabel('Type').selectOption('org');
   await page.getByRole('heading',{name:'Add lead'}).locator('..').getByLabel('Name').fill(orgName);
   await page.getByRole('heading',{name:'Add lead'}).locator('..').getByRole('button',{name:'Add lead'}).click();
-  await expect(page.locator('section[aria-labelledby="leads-heading"] > div[role="status"]')).toContainText('No opportunity or outreach');
+  await expect(page.locator('section[aria-labelledby="leads-heading"] div[role="status"]')).toContainText('No opportunity or outreach');
   const addLead=page.getByRole('heading',{name:'Add lead'}).locator('..');
   await addLead.getByLabel('Type').selectOption('person');await addLead.getByLabel('Name').fill(dana);await addLead.getByRole('button',{name:'Add lead'}).click();
   const sourceText=`The next engineer ${suffix} will work with Dana on onboarding.`;
@@ -29,7 +29,7 @@ test('s02_independent_source_same_name_parties_graph_evidence_and_correction', a
   await linkExistingForm.getByLabel('Source occurrence').selectOption({index:1});
   await linkExistingForm.getByLabel('Exact cited passage').fill(`will work with Dana on onboarding`);
   await page.getByRole('button',{name:'Link existing person to organization'}).click();
-  await expect(page.locator('section[aria-labelledby="leads-heading"] > div[role="status"]')).toContainText('no identity merge occurred');
+  await expect(page.locator('section[aria-labelledby="leads-heading"] div[role="status"]')).toContainText('no identity merge occurred');
   await expect(page.getByRole('heading',{name:'Graph and relationships'})).toBeVisible();
   const relationship=page.getByRole('button',{name:new RegExp(`${dana}.*member_of.*${orgName}`)});
   await expect(relationship).toBeVisible(); await relationship.click();
