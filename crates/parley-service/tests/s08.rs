@@ -449,11 +449,12 @@ async fn s08_job_events_carry_no_model_prose() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(job["status"], "succeeded", "{job:?}");
-    let payloads: Vec<String> =
-        sqlx::query_scalar("SELECT payload_json FROM event WHERE event_type='job.completed'")
-            .fetch_all(workspace.pool())
-            .await
-            .unwrap();
+    let payloads: Vec<String> = sqlx::query_scalar(
+        "SELECT payload_json FROM event WHERE event_type IN ('job.completed','brief.items_proposed')",
+    )
+    .fetch_all(workspace.pool())
+    .await
+    .unwrap();
     assert!(!payloads.is_empty());
     for payload in &payloads {
         let value: Value = serde_json::from_str(payload).unwrap_or_default();
@@ -463,6 +464,8 @@ async fn s08_job_events_carry_no_model_prose() {
             "extracted",
             "items",
             "candidates",
+            "text",
+            "check_suggestion",
         ];
         for key in prose_keys {
             assert!(

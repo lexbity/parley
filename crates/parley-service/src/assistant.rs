@@ -938,6 +938,7 @@ async fn process_briefer_result(
             return Err("STALE: segment changed during brief generation".into());
         }
     }
+    let mut inserted_count = 0usize;
     for (item, span) in validated {
         let duplicate:Option<String>=sqlx::query_scalar("SELECT id FROM brief_item WHERE scope_kind=? AND scope_id=? AND kind=? AND lower(text)=lower(?) AND status='dismissed' LIMIT 1")
             .bind(scope_kind).bind(scope_id).bind(&item.kind).bind(&item.text).fetch_optional(&mut *tx).await.map_err(|e|e.to_string())?;
@@ -959,9 +960,19 @@ async fn process_briefer_result(
             .bind(&occurrence).bind(&variant).bind(&item.quote).bind(start).bind(end).bind(&item.check_suggestion)
             .bind(if item.tier==1 {"party"} else {"model_prior"}).bind(job_id).bind(&now).bind(&now)
             .execute(&mut *tx).await.map_err(|e|e.to_string())?;
+        inserted_count += 1;
     }
+    // Keep provisional model prose out of the immutable event log (RFC-0002
+    // S04). The proposed items themselves live on the brief_item rows and the
+    // attempt output; the event carries counts only.
+    let event_payload = json!({
+        "job_id": job_id,
+        "scope_kind": scope_kind,
+        "scope_id": scope_id,
+        "items_proposed": inserted_count,
+    });
     sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'brief',?,?, 'brief.items_proposed',?)")
-        .bind(new_id(job_id)).bind(&now).bind(scope_id).bind(1).bind(result.to_string()).execute(&mut *tx).await.map_err(|e|e.to_string())?;
+        .bind(new_id(job_id)).bind(&now).bind(scope_id).bind(1).bind(event_payload.to_string()).execute(&mut *tx).await.map_err(|e|e.to_string())?;
     jobs::complete_role_result_in_tx(
         &mut tx,
         job_id,

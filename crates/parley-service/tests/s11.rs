@@ -380,6 +380,12 @@ async fn s11_erasure_does_not_scrub_unrelated_events() {
         .execute(w.pool())
         .await
         .unwrap();
+    let other_events_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM event WHERE entity_id=?")
+            .bind(&other.id)
+            .fetch_one(w.pool())
+            .await
+            .unwrap();
     drop(w);
     let mut service = parley_service::start_workspace(&identity).await.unwrap();
     let a = auth(service.address, &service.bootstrap_secret).await;
@@ -412,6 +418,34 @@ async fn s11_erasure_does_not_scrub_unrelated_events() {
     assert_eq!(
         payload, unrelated_payload,
         "unrelated events must remain byte-identical"
+    );
+    // Positive control: the erased subject's own events are still scrubbed to
+    // the tombstone payload (ERS-2 party-scoped rewrite).
+    let subject_events_left: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM event WHERE entity_id=?")
+            .bind(&subject.id)
+            .fetch_one(w.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        subject_events_left, 0,
+        "the subject's own events must be scrubbed"
+    );
+    let erased_tombstones: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM event WHERE entity_id='erased' AND payload_json='{\"erased\":true}'",
+    )
+    .fetch_one(w.pool())
+    .await
+    .unwrap();
+    assert!(erased_tombstones >= 1);
+    let other_events_left: i64 = sqlx::query_scalar("SELECT count(*) FROM event WHERE entity_id=?")
+        .bind(&other.id)
+        .fetch_one(w.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        other_events_left, other_events_before,
+        "the unrelated party's events must survive"
     );
     let subject_gone: Option<String> = sqlx::query_scalar("SELECT id FROM entity WHERE id=?")
         .bind(&subject.id)
