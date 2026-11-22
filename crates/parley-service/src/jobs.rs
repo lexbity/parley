@@ -297,37 +297,6 @@ pub(crate) async fn enqueue_role_in_tx(
     Ok(id)
 }
 
-pub(super) async fn enqueue(
-    workspace: &Workspace,
-    queue: &Queue,
-    source: &super::SavedSource,
-) -> Result<Option<String>, WorkspaceError> {
-    let input = json!({"occurrence_id":source.occurrence_id,"source_variant_id":source.variant_id});
-    let input_json = serde_json::to_string(&input)
-        .map_err(|error| WorkspaceError::Invalid(error.to_string()))?;
-    let input_sha = digest(input_json.as_bytes());
-    let mut tx = workspace.pool().begin_with("BEGIN IMMEDIATE").await?;
-    let in_flight: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM durable_job WHERE status IN ('queued','running')")
-            .fetch_one(&mut *tx)
-            .await?;
-    if in_flight >= 32 {
-        tx.rollback().await?;
-        return Ok(None);
-    }
-    let id = new_id(&input_sha);
-    let now = now_utc();
-    sqlx::query("INSERT INTO durable_job(id,role,status,input_json,input_sha256,source_occurrence_id,source_variant_id,scope_kind,scope_id,scope_revision,current_attempt,max_attempts,created_at,updated_at) VALUES(?,'extractor','queued',?,?,?,?, 'source',?,1,0,3,?,?)")
-        .bind(&id).bind(&input_json).bind(&input_sha).bind(&source.occurrence_id).bind(&source.variant_id).bind(&source.occurrence_id).bind(&now).bind(&now).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'job',?,1,'job.queued',?)")
-        .bind(new_id(&id)).bind(&now).bind(&id).bind(json!({"role":"extractor","source_occurrence_id":source.occurrence_id}).to_string()).execute(&mut *tx).await?;
-    tx.commit().await?;
-    // A full channel leaves the durable row queued. The worker polls the store,
-    // so admission never loses a job between its SQL commit and wake-up.
-    let _ = queue.0.try_send(id.clone());
-    Ok(Some(id))
-}
-
 async fn worker(workspace: Arc<Workspace>, mut rx: mpsc::Receiver<String>) {
     recover_interrupted(&workspace).await;
     let mut poll = tokio::time::interval(Duration::from_millis(500));
@@ -1289,7 +1258,67 @@ async fn provider_health(State(state): State<super::AppState>, headers: HeaderMa
         Ok(value) => value,
         Err(error) => return super::command_error(error),
     };
-    match ollama_tags(&config).await{Ok((models,selected_digest))=>{let available=models.iter().any(|name|name==&config.model);if available{let _=sqlx::query("UPDATE agent_provider SET model_digest=?,updated_at=? WHERE singleton=1").bind(selected_digest).bind(now_utc()).execute(state.workspace.pool()).await;}Json(json!({"available":available,"model":config.model,"models":models,"message":if available{"Local model is available"}else{"Selected model is not installed"}})).into_response()},Err(error)=>Json(json!({"available":false,"model":config.model,"models":[],"message":redact_provider_error(&error)})).into_response()}
+    match ollama_tags(&config).await{
+        Ok((models, selected_digest)) => {
+            let available = models.iter().any(|name| name == &config.model);
+            if available {
+                // The digest refresh that gates dispatch must be transactional
+                // and evented, and must run only when the digest actually
+                // changed (a probe must not spam the immutable log).
+                let now = now_utc();
+                let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
+                    Ok(tx) => tx,
+                    Err(error) => return super::command_error(error.into()),
+                };
+                let current: Option<String> =
+                    sqlx::query_scalar("SELECT model_digest FROM agent_provider WHERE singleton=1")
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .unwrap_or(None);
+                if current.as_deref() != selected_digest.as_deref() {
+                    if let Err(error) = sqlx::query("UPDATE agent_provider SET model_digest=?,updated_at=? WHERE singleton=1")
+                        .bind(&selected_digest)
+                        .bind(&now)
+                        .execute(&mut *tx)
+                        .await
+                    {
+                        let _ = tx.rollback().await;
+                        return super::command_error(error.into());
+                    }
+                    let revision: i64 = match sqlx::query_scalar(
+                        "UPDATE workspace_meta SET revision=revision+1 WHERE singleton=1 RETURNING revision",
+                    )
+                    .fetch_one(&mut *tx)
+                    .await
+                    {
+                        Ok(value) => value,
+                        Err(error) => {
+                            let _ = tx.rollback().await;
+                            return super::command_error(error.into());
+                        }
+                    };
+                    if let Err(error) = sqlx::query_scalar::<_, i64>(
+                        "INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'agent_provider','extractor',?,'agent.provider_updated',?) RETURNING cursor",
+                    )
+                    .bind(new_id("provider-health"))
+                    .bind(&now)
+                    .bind(revision)
+                    .bind(json!({"model_digest":selected_digest}).to_string())
+                    .fetch_one(&mut *tx)
+                    .await
+                    {
+                        let _ = tx.rollback().await;
+                        return super::command_error(error.into());
+                    }
+                }
+                if let Err(error) = tx.commit().await {
+                    return super::command_error(error.into());
+                }
+            }
+            Json(json!({"available":available,"model":config.model,"models":models,"message":if available{"Local model is available"}else{"Selected model is not installed"}})).into_response()
+        }
+        Err(error) => Json(json!({"available":false,"model":config.model,"models":[],"message":redact_provider_error(&error)})).into_response()
+    }
 }
 #[derive(Deserialize)]
 struct TagsResponse {

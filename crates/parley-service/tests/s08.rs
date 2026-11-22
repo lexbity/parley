@@ -476,3 +476,115 @@ async fn s08_job_events_carry_no_model_prose() {
     drop(workspace);
     let _ = fs::remove_file(path);
 }
+
+async fn request_with_key(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+    key: &str,
+) -> (u16, Value) {
+    let (cookie, token, epoch) = SESSIONS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .get(&port)
+        .unwrap()
+        .clone();
+    let body = body.map(|value| value.to_string()).unwrap_or_default();
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    stream.write_all(format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\nCookie: {cookie}\r\nX-Parley-Token: {token}\r\nX-Parley-Epoch: {epoch}\r\nIdempotency-Key: {key}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    let (head, payload) = response.split_once("\r\n\r\n").unwrap();
+    let status = head
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let value = if payload.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_str(payload).unwrap()
+    };
+    (status, value.get("data").cloned().unwrap_or(value))
+}
+
+#[tokio::test]
+async fn s08_candidate_dismiss_is_idempotent_and_evented() {
+    // Dismissing a proposed candidate is a private mutation and must follow
+    // the full command discipline: one writer transaction, one event and one
+    // idempotency receipt. A same-key retry replays the original result and
+    // never touches the row twice.
+    let (path, workspace, port, service) = setup().await;
+    let now = "2026-11-22T10:00:00Z";
+    let chat_id = "chat-dismiss-test";
+    let job_id = "job-dismiss-test";
+    let candidate_id = "candidate-dismiss-test";
+    sqlx::query("INSERT INTO agent_chat(id,role,scope_kind,asset_kind,revision,created_at,updated_at) VALUES(?,'interviewer','owner','gift',1,?,?)")
+        .bind(chat_id)
+        .bind(now)
+        .bind(now)
+        .execute(workspace.pool())
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO durable_job(id,role,status,input_json,input_sha256,scope_kind,scope_id,scope_revision,current_attempt,max_attempts,created_at,updated_at) VALUES(?, 'interviewer','succeeded','{}','seed', 'owner',?,1,0,3,?,?)")
+        .bind(job_id)
+        .bind(chat_id)
+        .bind(now)
+        .bind(now)
+        .execute(workspace.pool())
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO interviewer_candidate(id,chat_id,job_id,asset_kind,fields_json,owner_quotes_json,missing_fields_json,state,created_at,updated_at) VALUES(?,?,?,'gift','{}','{}','[]','proposed',?,?)")
+        .bind(candidate_id)
+        .bind(chat_id)
+        .bind(job_id)
+        .bind(now)
+        .bind(now)
+        .execute(workspace.pool())
+        .await
+        .unwrap();
+
+    let key = "s08-candidate-dismiss";
+    let dismiss_path = format!("/api/v1/agent/candidates/{candidate_id}/dismiss");
+    let (status, first) = request_with_key(port, "POST", &dismiss_path, Some(json!({})), key).await;
+    assert_eq!(status, 200, "{first}");
+    assert_eq!(first["state"], "dismissed");
+    let (status, second) =
+        request_with_key(port, "POST", &dismiss_path, Some(json!({})), key).await;
+    assert_eq!(
+        status, 200,
+        "{second}: same-key retry must replay, not error"
+    );
+    assert_eq!(first, second, "retry must return the identical response");
+
+    let state: String = sqlx::query_scalar("SELECT state FROM interviewer_candidate WHERE id=?")
+        .bind(candidate_id)
+        .fetch_one(workspace.pool())
+        .await
+        .unwrap();
+    assert_eq!(state, "dismissed");
+    let events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM event WHERE event_type='interviewer.candidate_dismissed'",
+    )
+    .fetch_one(workspace.pool())
+    .await
+    .unwrap();
+    assert_eq!(events, 1, "dismissal must emit exactly one event");
+    let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM idempotency_receipt WHERE key=?")
+        .bind(key)
+        .fetch_one(workspace.pool())
+        .await
+        .unwrap();
+    assert_eq!(receipts, 1, "dismissal must record exactly one receipt");
+
+    service.shutdown().await;
+    drop(workspace);
+    let _ = fs::remove_file(path);
+}

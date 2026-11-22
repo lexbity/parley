@@ -493,3 +493,107 @@ async fn s04_schema_repair_budget_is_two_retries_after_the_first_attempt() {
     service.shutdown().await;
     let _ = fs::remove_file(path);
 }
+
+async fn digest_flip_ollama() -> (String, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let mut calls = 0u32;
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 8192];
+            loop {
+                let n = stream.read(&mut buffer).await.unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..n]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            calls += 1;
+            let digest = if calls <= 2 {
+                "sha256:one"
+            } else {
+                "sha256:two"
+            };
+            let payload = json!({"models":[{"name":"fixture","digest":digest}]}).to_string();
+            let _ = stream
+                .write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}", payload.len()).as_bytes())
+                .await;
+        }
+    });
+    (format!("http://{address}"), task)
+}
+
+#[tokio::test]
+async fn s04_provider_health_records_digest_change_event_once() {
+    // provider_health refreshes the stored model digest that gates dispatch.
+    // The refresh must be transactional and evented; a probe that observes
+    // the same digest again must not duplicate the event.
+    let (path, workspace, port, service) = setup().await;
+    let (endpoint, fake) = digest_flip_ollama().await;
+    let (status, configured) = request(
+        port,
+        "PUT",
+        "/api/v1/agent/provider",
+        Some(json!({"endpoint":endpoint,"model":"fixture","num_ctx":8192,"num_predict":512,"locale":"en"})),
+    )
+    .await;
+    assert_eq!(status, 204, "{configured:?}");
+
+    let events = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM event WHERE event_type='agent.provider_updated'",
+        )
+        .fetch_one(workspace.pool())
+        .await
+        .unwrap()
+    };
+    let baseline = events().await;
+
+    let (status, health) = request(port, "POST", "/api/v1/agent/provider/health", None).await;
+    assert_eq!(status, 200, "{health:?}");
+    assert_eq!(health["available"], true);
+    assert_eq!(
+        events().await,
+        baseline + 1,
+        "the first digest observation must record one event"
+    );
+    let stored: String =
+        sqlx::query_scalar("SELECT model_digest FROM agent_provider WHERE singleton=1")
+            .fetch_one(workspace.pool())
+            .await
+            .unwrap();
+    assert_eq!(stored, "sha256:one");
+
+    let (status, second) = request(port, "POST", "/api/v1/agent/provider/health", None).await;
+    assert_eq!(status, 200, "{second}");
+    assert_eq!(
+        events().await,
+        baseline + 1,
+        "an unchanged digest must not duplicate the event"
+    );
+
+    let (status, third) = request(port, "POST", "/api/v1/agent/provider/health", None).await;
+    assert_eq!(status, 200, "{third}");
+    assert_eq!(
+        events().await,
+        baseline + 2,
+        "a changed digest must record a new event"
+    );
+    let stored: String =
+        sqlx::query_scalar("SELECT model_digest FROM agent_provider WHERE singleton=1")
+            .fetch_one(workspace.pool())
+            .await
+            .unwrap();
+    assert_eq!(stored, "sha256:two");
+
+    fake.abort();
+    service.shutdown().await;
+    let _ = fs::remove_file(path);
+}
