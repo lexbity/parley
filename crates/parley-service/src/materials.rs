@@ -795,7 +795,10 @@ impl Workspace {
         validate_override_reasons(overrides)?;
         let mut tx = self.pool.begin().await?;
         let material = load_head(&mut tx, id).await?;
-        let result = evaluate_material(&mut tx, &material, overrides).await?;
+        // Gate preview (also used by approval and copy) evaluates the hard and
+        // soft content gates, not the send-time schedule gates (S7 cadence,
+        // S8 daily cap) which only Mark sent may apply.
+        let result = evaluate_material(&mut tx, &material, overrides, false).await?;
         tx.commit().await?;
         Ok(result)
     }

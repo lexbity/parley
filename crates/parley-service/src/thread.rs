@@ -40,6 +40,7 @@ pub(super) fn routes() -> Router<AppState> {
         .route("/api/v1/threads/{id}/send", post(mark_sent))
         .route("/api/v1/threads/{id}/reopen", post(reopen_thread))
         .route("/api/v1/sends/{id}/outcome", post(record_outcome))
+        .route("/api/v1/entities/{id}/clear-dnc", post(clear_party_dnc))
         .route(
             "/api/v1/opportunities/{id}/resolution",
             post(record_resolution),
@@ -58,6 +59,38 @@ pub struct ThreadRecord {
     pub next_action_at: Option<String>,
     pub sent_at: Option<String>,
     pub updated_at: String,
+    /// Per-touch send history for this thread, newest last. Each entry
+    /// carries its outcome when one is recorded, so a reloaded client can
+    /// attach later responses to a historical send (RFC-0003 FQ5).
+    pub sends: Vec<ThreadSend>,
+}
+
+/// One recorded touch with its (optional) outcome. Same fields as `SendRecord`
+/// with a nested outcome; the wire contract is `ThreadSend`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThreadSend {
+    pub id: String,
+    pub touch_no: i64,
+    pub primary_material_id: String,
+    pub primary_version_no: i64,
+    pub recipient_id: String,
+    pub content_sha256: String,
+    pub sent_at: String,
+    pub response_deadline: String,
+    pub deadline_zone: String,
+    pub next_action_at: Option<String>,
+    pub capacity_charged: bool,
+    pub outcome: Option<OutcomeRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PartyPolicyRecord {
+    pub party_id: String,
+    pub state: String,
+    pub do_not_contact: bool,
+    pub highest_rung: i64,
+    pub touch_count: i64,
+    pub revision: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -164,6 +197,11 @@ pub(crate) struct OutcomeInput {
     rung_accepted: Option<i64>,
     received_at: Option<String>,
     note: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ClearDncInput {
+    reason: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -435,6 +473,63 @@ async fn recoup_party_decline(
 }
 
 impl Workspace {
+    /// Send history for one thread, newest last, with outcomes attached.
+    async fn load_thread_sends(&self, thread_id: &str) -> Result<Vec<ThreadSend>, WorkspaceError> {
+        let rows = sqlx::query_as::<_, (String, i64, String, i64, String, String, String, String, String, bool)>(
+            "SELECT id,touch_no,primary_material_id,primary_version_no,recipient_id,content_sha256,sent_at,response_deadline,deadline_zone,capacity_charged FROM send WHERE thread_id=? ORDER BY touch_no,id",
+        )
+        .bind(thread_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut sends = Vec::with_capacity(rows.len());
+        for (
+            id,
+            touch_no,
+            primary_material_id,
+            primary_version_no,
+            recipient_id,
+            content_sha256,
+            sent_at,
+            response_deadline,
+            deadline_zone,
+            capacity_charged,
+        ) in rows
+        {
+            let outcome: Option<OutcomeRecord> = sqlx::query_as::<_, (String, String, String, Option<i64>, Option<String>, String, Option<String>)>(
+                "SELECT id,send_id,class,rung_accepted,received_at,recorded_at,note FROM outcome WHERE send_id=?",
+            )
+            .bind(&id)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|(id, send_id, class, rung_accepted, received_at, recorded_at, note)| OutcomeRecord {
+                id,
+                send_id,
+                class,
+                rung_accepted,
+                received_at,
+                recorded_at,
+                note,
+            });
+            sends.push(ThreadSend {
+                id,
+                touch_no,
+                primary_material_id,
+                primary_version_no,
+                recipient_id,
+                content_sha256,
+                sent_at,
+                response_deadline,
+                deadline_zone,
+                // The per-touch next action is a thread-level schedule, not a
+                // column on send; history entries leave it unset.
+                next_action_at: None,
+                capacity_charged,
+                outcome,
+            });
+        }
+        Ok(sends)
+    }
+
     pub async fn list_threads(
         &self,
         opportunity_id: Option<&str>,
@@ -466,34 +561,34 @@ impl Workspace {
             )>()
             .fetch_all(self.pool())
             .await?;
-        Ok(rows
-            .into_iter()
-            .map(
-                |(
-                    id,
-                    opportunity_id,
-                    recipient_id,
-                    state,
-                    current_touch,
-                    expires_at,
-                    next_action_at,
-                    sent_at,
-                    updated_at,
-                )| {
-                    ThreadRecord {
-                        id,
-                        opportunity_id,
-                        recipient_id,
-                        state,
-                        current_touch,
-                        expires_at,
-                        next_action_at,
-                        sent_at,
-                        updated_at,
-                    }
-                },
-            )
-            .collect())
+        let mut threads = Vec::with_capacity(rows.len());
+        for (
+            id,
+            opportunity_id,
+            recipient_id,
+            state,
+            current_touch,
+            expires_at,
+            next_action_at,
+            sent_at,
+            updated_at,
+        ) in rows
+        {
+            let sends = self.load_thread_sends(&id).await?;
+            threads.push(ThreadRecord {
+                id,
+                opportunity_id,
+                recipient_id,
+                state,
+                current_touch,
+                expires_at,
+                next_action_at,
+                sent_at,
+                updated_at,
+                sends,
+            });
+        }
+        Ok(threads)
     }
 
     /// Reconcile due threads. A thread whose exclusive expiry has passed is
@@ -988,6 +1083,64 @@ impl Workspace {
         })
     }
 
+    /// Explicit owner action that clears party-wide do-not-contact suppression
+    /// (RFC-0001 GATE-5, RFC-0002 BE-08). A decline closed the party; only a
+    /// separate, reason-bearing clearance re-opens its eligibility for fresh
+    /// releases. It never by itself reopens closed threads; that stays the
+    /// separate `reopen_thread` action. The reason is recorded on the event.
+    pub(crate) async fn clear_dnc(
+        &self,
+        party_id: &str,
+        reason: &str,
+    ) -> Result<PartyPolicyRecord, WorkspaceError> {
+        let reason = reason.trim();
+        if reason.len() < 10 {
+            return Err(WorkspaceError::Invalid(
+                "do-not-contact clearance requires an explicit reason of at least ten characters"
+                    .into(),
+            ));
+        }
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        let policy: Option<(String, i64, i64, i64, i64)> = sqlx::query_as(
+            "SELECT state,do_not_contact,highest_rung,touch_count,revision FROM party_policy WHERE party_id=?",
+        )
+        .bind(party_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((state, do_not_contact, highest_rung, touch_count, revision)) = policy else {
+            return Err(WorkspaceError::NotFound);
+        };
+        if do_not_contact != 1 {
+            return Err(WorkspaceError::Invalid(
+                "party has no do-not-contact suppression to clear".into(),
+            ));
+        }
+        let next_revision = revision + 1;
+        sqlx::query("UPDATE party_policy SET state='open',do_not_contact=0,revision=? WHERE party_id=? AND do_not_contact=1")
+            .bind(next_revision)
+            .bind(party_id)
+            .execute(&mut *tx)
+            .await?;
+        append_event(
+            &mut tx,
+            "party",
+            party_id,
+            next_revision,
+            "party.dnc_cleared",
+            json!({"reason": reason, "from_state": state}),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(PartyPolicyRecord {
+            party_id: party_id.to_owned(),
+            state: "open".to_owned(),
+            do_not_contact: false,
+            highest_rung,
+            touch_count,
+            revision: next_revision,
+        })
+    }
+
     pub(crate) async fn reopen_thread(
         &self,
         thread_id: &str,
@@ -1039,6 +1192,7 @@ impl Workspace {
             .await?;
         }
         tx.commit().await?;
+        let sends = self.load_thread_sends(thread_id).await?;
         Ok(ThreadRecord {
             id: thread.id,
             opportunity_id: thread.opportunity_id,
@@ -1049,6 +1203,7 @@ impl Workspace {
             next_action_at: None,
             sent_at: None,
             updated_at: now.to_owned(),
+            sends,
         })
     }
 
@@ -1276,6 +1431,21 @@ async fn record_outcome(
         return workspace_error(error);
     }
     match state.workspace.record_outcome(&send_id, &input, &now).await {
+        Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+        Err(error) => workspace_error(error),
+    }
+}
+
+async fn clear_party_dnc(
+    State(state): State<AppState>,
+    Path(party_id): Path<String>,
+    headers: HeaderMap,
+    Json(input): Json<ClearDncInput>,
+) -> Response {
+    if let Err(error) = authenticate(&headers, &state).await {
+        return (error.0, error.1).into_response();
+    }
+    match state.workspace.clear_dnc(&party_id, &input.reason).await {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
         Err(error) => workspace_error(error),
     }

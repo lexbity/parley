@@ -1012,3 +1012,201 @@ async fn s07_daily_cap_gate_is_real_and_enforced_per_day() {
     service.shutdown().await;
     let _ = fs::remove_file(path);
 }
+
+#[tokio::test]
+async fn s07_thread_list_exposes_send_ids_and_outcome_history() {
+    let (path, _workspace, port, service) = setup().await;
+    let recipient = create_party(port, "Dana Lee").await;
+    let opportunity = create_opportunity(port, "Onboarding", &recipient).await;
+    let exchange_version = prepare_exchange(port, &opportunity, &recipient).await;
+    let template = activate_template(port, "Hello", "Hello.").await;
+    let material = create_minimal_material(
+        port,
+        &opportunity,
+        &recipient,
+        &template,
+        exchange_version,
+        serde_json::from_str(K_OVERRIDES).unwrap(),
+    )
+    .await;
+    let (status, send) = mark_sent(
+        port,
+        "t-history",
+        &opportunity,
+        &recipient,
+        &material,
+        json!([]),
+        None,
+    )
+    .await;
+    assert_eq!(status, 201, "{send}");
+    let send_id = send["id"].as_str().unwrap().to_owned();
+    let (status, outcome) = record_outcome(port, &send_id, "reply_positive", None).await;
+    assert_eq!(status, 200, "{outcome}");
+
+    // A fresh read (a reloaded client) sees the send ID and its outcome so a
+    // response can be attached to the historical send, not only to the
+    // session that performed Mark sent.
+    let (status, threads) = request(port, "GET", "/api/v1/threads", None).await;
+    assert_eq!(status, 200, "{threads}");
+    let thread = threads
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == "t-history")
+        .expect("thread is listed");
+    let sends = thread["sends"].as_array().unwrap();
+    assert_eq!(sends.len(), 1);
+    assert_eq!(sends[0]["id"], send_id);
+    assert_eq!(sends[0]["touch_no"], 1);
+    assert_eq!(sends[0]["outcome"]["class"], "reply_positive");
+    assert_eq!(sends[0]["outcome"]["send_id"], send_id);
+    assert_eq!(sends[0]["primary_material_id"], material.material_id);
+
+    service.shutdown().await;
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn s07_dnc_clearance_requires_reason_and_reopens_eligibility() {
+    let (path, workspace, port, service) = setup().await;
+    let recipient = create_party(port, "Dana Lee").await;
+    let opportunity = create_opportunity(port, "Onboarding", &recipient).await;
+    let exchange_version = prepare_exchange(port, &opportunity, &recipient).await;
+    let template = activate_template(port, "Hello", "Hello.").await;
+    let material = create_minimal_material(
+        port,
+        &opportunity,
+        &recipient,
+        &template,
+        exchange_version,
+        serde_json::from_str(K_OVERRIDES).unwrap(),
+    )
+    .await;
+    let (status, send) = mark_sent(
+        port,
+        "t-dnc",
+        &opportunity,
+        &recipient,
+        &material,
+        json!([]),
+        None,
+    )
+    .await;
+    assert_eq!(status, 201, "{send}");
+    let send_id = send["id"].as_str().unwrap().to_owned();
+    let (status, _) = record_outcome(port, &send_id, "declined", None).await;
+    assert_eq!(status, 200);
+
+    let policy: (String, i64) =
+        sqlx::query_as("SELECT state,do_not_contact FROM party_policy WHERE party_id=?")
+            .bind(&recipient)
+            .fetch_one(workspace.pool())
+            .await
+            .unwrap();
+    assert_eq!(policy.0, "closed");
+    assert_eq!(policy.1, 1);
+
+    // Clearance without a reason is rejected.
+    let (status, rejected) = request(
+        port,
+        "POST",
+        &format!("/api/v1/entities/{recipient}/clear-dnc"),
+        Some(json!({"reason":""})),
+    )
+    .await;
+    assert_eq!(status, 422, "{rejected}");
+    assert!(
+        rejected["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("at least ten characters")
+    );
+
+    // Fresh release stays blocked while suppression is active: approving a
+    // fresh version also fails the gate because the party is not open.
+    let overrides_json = serde_json::from_str::<Value>(K_OVERRIDES).unwrap();
+    let (status, pre_approval) = request(
+        port,
+        "POST",
+        &format!("/api/v1/materials/{}/approve", material.material_id),
+        Some(json!({"override_reasons": overrides_json.clone()})),
+    )
+    .await;
+    assert_eq!(status, 422, "{pre_approval}");
+    let (status, blocked) = request(
+        port,
+        "POST",
+        &format!("/api/v1/materials/{}/release", material.material_id),
+        None,
+    )
+    .await;
+    assert_eq!(status, 422, "{blocked}");
+
+    // A reason-bearing clearance restores eligibility for fresh release. The
+    // party-policy revision change invalidates the earlier approval, so a
+    // fresh version must be approved and released after the clearance.
+    let (status, cleared) = request(
+        port,
+        "POST",
+        &format!("/api/v1/entities/{recipient}/clear-dnc"),
+        Some(json!({"reason":"The counterparty asked to be re-contacted after a review."})),
+    )
+    .await;
+    assert_eq!(status, 200, "{cleared}");
+    assert_eq!(cleared["state"], "open");
+    assert_eq!(cleared["do_not_contact"], false);
+    let policy_after: (String, i64) =
+        sqlx::query_as("SELECT state,do_not_contact FROM party_policy WHERE party_id=?")
+            .bind(&recipient)
+            .fetch_one(workspace.pool())
+            .await
+            .unwrap();
+    assert_eq!(policy_after.0, "open");
+    assert_eq!(policy_after.1, 0);
+    let cleared_events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM event WHERE event_type='party.dnc_cleared' AND entity_id=?",
+    )
+    .bind(&recipient)
+    .fetch_one(workspace.pool())
+    .await
+    .unwrap();
+    assert_eq!(cleared_events, 1);
+
+    let (status, revised) = request(
+        port,
+        "POST",
+        &format!("/api/v1/materials/{}/versions", material.material_id),
+        Some(json!({
+            "recipient_id": recipient,
+            "kind": "outreach",
+            "template_version_id": template,
+            "body": "Hello.",
+            "exchange_version": exchange_version,
+            "slot_fills": [],
+            "sentence_bindings": [{"sentence_index":0,"claim_type":"generic"}],
+        })),
+    )
+    .await;
+    assert_eq!(status, 201, "{revised}");
+    assert!(revised["version"].as_i64().unwrap() > material.version);
+    let (status, approval) = request(
+        port,
+        "POST",
+        &format!("/api/v1/materials/{}/approve", material.material_id),
+        Some(json!({"override_reasons": overrides_json})),
+    )
+    .await;
+    assert_eq!(status, 200, "{approval}");
+    let (status, released) = request(
+        port,
+        "POST",
+        &format!("/api/v1/materials/{}/release", material.material_id),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{released}");
+
+    service.shutdown().await;
+    let _ = fs::remove_file(path);
+}

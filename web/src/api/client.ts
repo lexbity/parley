@@ -13,9 +13,11 @@ export type GateReport = { checks: GateCheck[]; copy_enabled: boolean };
 export type Material = Omit<components['schemas']['MaterialRecord'], 'gate'> & { gate: GateReport | null };
 export type ReleasedMaterial = components['schemas']['ReleasedMaterial'];
 export type ContactThread = components['schemas']['ThreadRecord'];
+export type ThreadSend = components['schemas']['ThreadSend'];
 export type SendRecord = components['schemas']['SendRecord'];
 export type ContactOutcome = components['schemas']['OutcomeRecord'];
 export type ContactResolution = components['schemas']['ResolutionRecord'];
+export type PartyPolicyRecord = components['schemas']['PartyPolicyRecord'];
 export type CapacityRecord = components['schemas']['CapacityRecord'];
 export type BoardList = components['schemas']['BoardList'];
 export type BoardPlacement = { opportunity: Opportunity; opportunity_id: string; list_id: string; position: number; placement_revision: number; next_task: string | null };
@@ -870,6 +872,7 @@ export class ParleyClient {
         current_touch: Number(thread.current_touch), expires_at: typeof thread.expires_at === 'string' ? thread.expires_at : null,
         next_action_at: typeof thread.next_action_at === 'string' ? thread.next_action_at : null,
         sent_at: typeof thread.sent_at === 'string' ? thread.sent_at : null, updated_at: requiredString(thread.updated_at, 'thread.updated_at'),
+        sends: this.decodeSendHistory(thread.sends),
       };
     });
   }
@@ -889,7 +892,15 @@ export class ParleyClient {
   async recordOutcome(sendId: string, input: components['schemas']['OutcomeInput'], key = newOperationKey()): Promise<ContactOutcome> {
     const value = object(await this.mutate(`/sends/${encodeURIComponent(sendId)}/outcome`, 'POST', input, { 'Idempotency-Key': key }));
     if (!value) throw new Error('Invalid response: outcome receipt is malformed');
-    return { id: requiredString(value.id, 'outcome.id'), send_id: requiredString(value.send_id, 'outcome.send_id'), class: requiredString(value.class, 'outcome.class'), rung_accepted: Number.isSafeInteger(value.rung_accepted) ? Number(value.rung_accepted) : null, received_at: typeof value.received_at === 'string' ? value.received_at : null, recorded_at: requiredString(value.recorded_at, 'outcome.recorded_at'), note: typeof value.note === 'string' ? value.note : null };
+    const outcome = this.decodeOutcome(value);
+    if (!outcome) throw new Error('Invalid response: outcome receipt is malformed');
+    return outcome;
+  }
+
+  async clearPartyDnc(partyId: string, input: components['schemas']['DncClearanceInput'], key = newOperationKey()): Promise<PartyPolicyRecord> {
+    const value = object(await this.mutate(`/entities/${encodeURIComponent(partyId)}/clear-dnc`, 'POST', input, { 'Idempotency-Key': key }));
+    if (!value || typeof value.do_not_contact !== 'boolean') throw new Error('Invalid response: party policy receipt is malformed');
+    return { party_id: requiredString(value.party_id, 'policy.party_id'), state: requiredString(value.state, 'policy.state') as PartyPolicyRecord['state'], do_not_contact: value.do_not_contact, highest_rung: Number.isSafeInteger(value.highest_rung) ? Number(value.highest_rung) : 0, touch_count: Number.isSafeInteger(value.touch_count) ? Number(value.touch_count) : 0, revision: Number.isSafeInteger(value.revision) ? Number(value.revision) : 1 };
   }
 
   async recordResolution(opportunityId: string, input: components['schemas']['ResolutionInput'], key = newOperationKey()): Promise<ContactResolution> {
@@ -912,7 +923,29 @@ export class ParleyClient {
 
   private decodeSingleThread(raw: Record<string, unknown>): ContactThread {
     if (!Number.isSafeInteger(raw.current_touch)) throw new Error('Invalid response: contact thread is malformed');
-    return { id: requiredString(raw.id, 'thread.id'), opportunity_id: requiredString(raw.opportunity_id, 'thread.opportunity_id'), recipient_id: requiredString(raw.recipient_id, 'thread.recipient_id'), state: requiredString(raw.state, 'thread.state') as ContactThread['state'], current_touch: Number(raw.current_touch), expires_at: typeof raw.expires_at === 'string' ? raw.expires_at : null, next_action_at: typeof raw.next_action_at === 'string' ? raw.next_action_at : null, sent_at: typeof raw.sent_at === 'string' ? raw.sent_at : null, updated_at: requiredString(raw.updated_at, 'thread.updated_at') };
+    return { id: requiredString(raw.id, 'thread.id'), opportunity_id: requiredString(raw.opportunity_id, 'thread.opportunity_id'), recipient_id: requiredString(raw.recipient_id, 'thread.recipient_id'), state: requiredString(raw.state, 'thread.state') as ContactThread['state'], current_touch: Number(raw.current_touch), expires_at: typeof raw.expires_at === 'string' ? raw.expires_at : null, next_action_at: typeof raw.next_action_at === 'string' ? raw.next_action_at : null, sent_at: typeof raw.sent_at === 'string' ? raw.sent_at : null, updated_at: requiredString(raw.updated_at, 'thread.updated_at'), sends: this.decodeSendHistory(raw.sends) };
+  }
+
+  private decodeSendHistory(raw: unknown): ThreadSend[] {
+    if (raw === undefined || raw === null) return [];
+    if (!Array.isArray(raw)) throw new Error('Invalid response: thread send history is malformed');
+    return raw.map((entry) => {
+      const send = object(entry);
+      if (!send || !Number.isSafeInteger(send.touch_no) || !Number.isSafeInteger(send.primary_version_no) || typeof send.capacity_charged !== 'boolean' || !/^[a-f0-9]{64}$/.test(String(send.content_sha256))) throw new Error('Invalid response: thread send history is malformed');
+      return {
+        id: requiredString(send.id, 'send.id'), touch_no: Number(send.touch_no), primary_material_id: requiredString(send.primary_material_id, 'send.primary_material_id'),
+        primary_version_no: Number(send.primary_version_no), recipient_id: requiredString(send.recipient_id, 'send.recipient_id'), content_sha256: requiredString(send.content_sha256, 'send.content_sha256'),
+        sent_at: requiredString(send.sent_at, 'send.sent_at'), response_deadline: requiredString(send.response_deadline, 'send.response_deadline'),
+        deadline_zone: requiredString(send.deadline_zone, 'send.deadline_zone'), next_action_at: typeof send.next_action_at === 'string' ? send.next_action_at : null,
+        capacity_charged: send.capacity_charged, outcome: this.decodeOutcome(object(send.outcome)),
+      };
+    });
+  }
+
+  private decodeOutcome(raw: Record<string, unknown> | null): ContactOutcome | null {
+    if (!raw) return null;
+    if (!raw || !['id', 'send_id', 'class', 'recorded_at'].every((field) => typeof raw[field] === 'string')) throw new Error('Invalid response: outcome history is malformed');
+    return { id: requiredString(raw.id, 'outcome.id'), send_id: requiredString(raw.send_id, 'outcome.send_id'), class: requiredString(raw.class, 'outcome.class'), rung_accepted: Number.isSafeInteger(raw.rung_accepted) ? Number(raw.rung_accepted) : null, received_at: typeof raw.received_at === 'string' ? raw.received_at : null, recorded_at: requiredString(raw.recorded_at, 'outcome.recorded_at'), note: typeof raw.note === 'string' ? raw.note : null };
   }
 
   private async mutate(path: string, method: string, body: unknown, headers: Record<string, string>): Promise<unknown> {

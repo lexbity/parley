@@ -217,6 +217,47 @@ paths:
           $ref: '#/components/responses/Error'
         '428':
           $ref: '#/components/responses/Error'
+  /entities/{id}/clear-dnc:
+    post:
+      operationId: clearPartyDnc
+      summary: Clear party-wide do-not-contact suppression with an explicit reason
+      description: >
+        The explicit owner action that re-opens a party after a decline. The
+        reason is recorded and the cleared state is authoritative for every
+        future gate check. It does not by itself reopen closed threads;
+        reopening stays a separate explicit action (BE-08).
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DncClearanceInput'
+      responses:
+        '200':
+          description: Party suppression cleared; the party is eligible for fresh releases again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartyPolicyRecord'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
   /events:
     get:
       operationId: getEvents
@@ -2685,6 +2726,55 @@ components:
         release_id:
           type: string
       additionalProperties: false
+    ThreadSend:
+      type: object
+      required:
+      - id
+      - touch_no
+      - primary_material_id
+      - primary_version_no
+      - recipient_id
+      - content_sha256
+      - sent_at
+      - response_deadline
+      - deadline_zone
+      - capacity_charged
+      properties:
+        id:
+          type: string
+        touch_no:
+          type: integer
+          minimum: 1
+        primary_material_id:
+          type: string
+        primary_version_no:
+          type: integer
+          minimum: 1
+        recipient_id:
+          type: string
+        content_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        sent_at:
+          type: string
+          format: date-time
+        response_deadline:
+          type: string
+          format: date-time
+        deadline_zone:
+          type: string
+        next_action_at:
+          description: Not stored per touch; the thread carries the current next action.
+          type:
+          - string
+          - 'null'
+        capacity_charged:
+          type: boolean
+        outcome:
+          anyOf:
+          - $ref: '#/components/schemas/OutcomeRecord'
+          - type: 'null'
+      additionalProperties: false
     ThreadRecord:
       type: object
       required:
@@ -2729,6 +2819,11 @@ components:
           - 'null'
         updated_at:
           type: string
+        sends:
+          type: array
+          description: Per-touch send history for this thread, newest last; each entry carries its outcome when one is recorded. Idempotent after reload and shared across sessions.
+          items:
+            $ref: '#/components/schemas/ThreadSend'
       additionalProperties: false
     ThreadList:
       type: array
@@ -2910,6 +3005,49 @@ components:
           type:
           - string
           - 'null'
+      additionalProperties: false
+    DncClearanceInput:
+      type: object
+      required:
+      - reason
+      description: >
+        The explicit owner reason for clearing do-not-contact suppression.
+        The service requires a non-empty reason of at least ten characters and
+        rejects shorter input with a 422.
+      properties:
+        reason:
+          type: string
+          maxLength: 2000
+      additionalProperties: false
+    PartyPolicyRecord:
+      type: object
+      required:
+      - party_id
+      - state
+      - do_not_contact
+      - highest_rung
+      - touch_count
+      - revision
+      properties:
+        party_id:
+          type: string
+        state:
+          type: string
+          enum:
+          - open
+          - closed
+          - dormant
+        do_not_contact:
+          type: boolean
+        highest_rung:
+          type: integer
+          minimum: 0
+        touch_count:
+          type: integer
+          minimum: 0
+        revision:
+          type: integer
+          minimum: 1
       additionalProperties: false
     ResolutionInput:
       type: object

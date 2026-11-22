@@ -71,6 +71,69 @@ describe('ParleyClient S03 opportunity and release commands', () => {
       expect(new Headers(init?.headers).get('X-Parley-Epoch')).toBe(session.epoch);
     }
   });
+
+  it('reads and approves a material with its gate report', async () => {
+    const gate = { checks: [{ id: 'H3 GROUNDED', severity: 'hard', pass: true, detail: '', overridden: false }], copy_enabled: true };
+    const material = { id: 'mat-1', opportunity_id: 'op-1', recipient_id: 'party 1', recipient_name: 'Dana Lee', kind: 'outreach', version: 1, body: 'Hello Dana.', content_sha256: 'a'.repeat(64), status: 'approved', gate, attachment: null };
+    const approval = { id: 'approval-1', material_id: 'mat-1', version: 1, content_sha256: 'a'.repeat(64), gate: { checks: [], copy_enabled: true }, approved_at: '2026-11-21T12:00:00Z' };
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(sessionResponse())
+      .mockResolvedValueOnce(response(material))
+      .mockResolvedValueOnce(response(approval))
+      .mockResolvedValueOnce(response(material));
+    const client = new ParleyClient(); await client.connect();
+    expect(await client.getMaterial('mat-1')).toEqual(material);
+    expect(await client.approveMaterial('mat-1', {})).toEqual({ ...material, gate: { checks: [], copy_enabled: true } });
+    expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual([
+      '/api/v1/materials/mat-1', '/api/v1/materials/mat-1/approve', '/api/v1/materials/mat-1',
+    ]);
+  });
+
+  it('rejects a malformed thread send history and party policy receipt', async () => {
+    const thread = { id: 'thread-1', opportunity_id: 'opp-1', recipient_id: 'party 1', state: 'waiting', current_touch: 0, expires_at: null, next_action_at: null, sent_at: null, updated_at: '2026-11-21T08:00:00Z', sends: 'not-an-array' };
+    const badSend = { ...thread, sends: [{ id: 'send-1', touch_no: 1, primary_material_id: 'mat-1', primary_version_no: 1, recipient_id: 'party 1', content_sha256: 'x', sent_at: '2026-11-21T08:00:00Z', response_deadline: '2026-11-28T08:00:00Z', deadline_zone: 'UTC', capacity_charged: false, outcome: null }] };
+    const badState = { ...thread, state: 'weird', sends: [] };
+    const badTouch = { ...thread, current_touch: -1, sends: [] };
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(sessionResponse())
+      .mockResolvedValueOnce(response([thread]))
+      .mockResolvedValueOnce(response([badSend]))
+      .mockResolvedValueOnce(response([badState]))
+      .mockResolvedValueOnce(response([badTouch]))
+      .mockResolvedValueOnce(response({ party_id: 'party 1', state: 'open', do_not_contact: 'no', highest_rung: 0, touch_count: 0, revision: 2 }))
+      .mockResolvedValueOnce(response({ state: 'open', do_not_contact: false, highest_rung: 0, touch_count: 0, revision: 2 }));
+    const client = new ParleyClient(); await client.connect();
+    await expect(client.listThreads({})).rejects.toThrow('thread send history is malformed');
+    await expect(client.listThreads({})).rejects.toThrow('thread send history is malformed');
+    await expect(client.listThreads({})).rejects.toThrow('contact thread is malformed');
+    await expect(client.listThreads({})).rejects.toThrow('contact thread is malformed');
+    await expect(client.clearPartyDnc('party 1', { reason: 'A recorded clearance reason for the test.' })).rejects.toThrow('party policy receipt is malformed');
+    await expect(client.clearPartyDnc('party 2', { reason: 'A recorded clearance reason for the test.' })).rejects.toThrow('policy.party_id must be text');
+    expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual([
+      '/api/v1/threads', '/api/v1/threads', '/api/v1/threads', '/api/v1/threads', '/api/v1/entities/party%201/clear-dnc', '/api/v1/entities/party%202/clear-dnc',
+    ]);
+  });
+
+  it('decodes and rejects graph snapshots with revision checks', async () => {
+    const node = { id: 'e1', kind: 'person', name: 'Dana Lee', revision: 1, x: 0, y: 0, position_revision: 0 };
+    const edge = { id: 'ed1', from_id: 'e2', to_id: 'e1', verb: 'member_of', revision: 1, occurrence_id: 'occ-1', quote: 'works with Dana', tier: 1, speaker_kind: 'unknown', captured_at: '2026-11-21T08:00:00Z', source_title: null, source_url: null };
+    const snapshot = { nodes: [node], edges: [edge], omitted_nodes: 0, omitted_edges: 0 };
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(sessionResponse())
+      .mockResolvedValueOnce(response(snapshot))
+      .mockResolvedValueOnce(response({ ...snapshot, omitted_nodes: -1 }))
+      .mockResolvedValueOnce(response({ ...snapshot, nodes: [{ ...node, x: 'wide' }] }))
+      .mockResolvedValueOnce(response({ ...snapshot, edges: [{ ...edge, tier: 9 }] }));
+    const client = new ParleyClient(); await client.connect();
+    expect(await client.getGraph({ center_id: 'p1', view_scope: 'leads', view_id: 'p1' })).toEqual(snapshot);
+    await expect(client.getGraph({})).rejects.toThrow('graph snapshot is malformed');
+    await expect(client.getGraph({})).rejects.toThrow('graph node is malformed');
+    await expect(client.getGraph({})).rejects.toThrow('graph edge is malformed');
+    expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual([
+      '/api/v1/graph?view_scope=leads&view_id=p1&center_id=p1', '/api/v1/graph?view_scope=leads&view_id=all',
+      '/api/v1/graph?view_scope=leads&view_id=all', '/api/v1/graph?view_scope=leads&view_id=all',
+    ]);
+  });
 });
 
 describe('ParleyClient S04 local Extractor commands', () => {
@@ -132,11 +195,13 @@ describe('ParleyClient S04 local Extractor commands', () => {
 
 describe('ParleyClient S07 contact lifecycle commands', () => {
   it('uses authenticated version-bound send, thread, outcome, reopen, resolution and capacity operations', async () => {
-    const thread = { id: 'thread-1', opportunity_id: 'opp-1', recipient_id: 'party 1', state: 'waiting', current_touch: 1, expires_at: '2026-11-28T08:00:00Z', next_action_at: null, sent_at: '2026-11-21T08:00:00Z', updated_at: '2026-11-21T08:00:00Z' };
+    const sendHistory = { id: 'send-1', touch_no: 1, primary_material_id: 'mat-1', primary_version_no: 3, recipient_id: 'party 1', content_sha256: 'a'.repeat(64), sent_at: '2026-11-21T08:00:00Z', response_deadline: '2026-11-28T08:00:00Z', deadline_zone: 'America/Vancouver', next_action_at: null, capacity_charged: false, outcome: { id: 'outcome-1', send_id: 'send-1', class: 'reply_positive', rung_accepted: null, received_at: null, recorded_at: '2026-11-22T08:00:00Z', note: null } };
+    const thread = { id: 'thread-1', opportunity_id: 'opp-1', recipient_id: 'party 1', state: 'waiting', current_touch: 1, expires_at: '2026-11-28T08:00:00Z', next_action_at: null, sent_at: '2026-11-21T08:00:00Z', updated_at: '2026-11-21T08:00:00Z', sends: [sendHistory] };
     const sent = { id: 'send-1', thread_id: 'thread-1', touch_no: 1, primary_material_id: 'mat-1', primary_version_no: 3, recipient_id: 'party 1', content_sha256: 'a'.repeat(64), sent_at: '2026-11-21T08:00:00Z', response_deadline: '2026-11-28T08:00:00Z', deadline_zone: 'America/Vancouver', next_action_at: null, capacity_charged: false };
     const outcome = { id: 'outcome-1', send_id: 'send-1', class: 'reply_positive', rung_accepted: null, received_at: null, recorded_at: '2026-11-22T08:00:00Z', note: null };
     const resolution = { id: 'resolution-1', opportunity_id: 'opp-1', thread_id: null, result: 'no_deal', they_benefited: 'unknown', i_benefited: 'unknown', noted_at: '2026-11-23T08:00:00Z' };
     const capacity = { period: 'quarter', unit: 'project slots', total: 8, committed: 1, remaining: 7, updated_at: '2026-11-23T08:00:00Z' };
+    const policy = { party_id: 'party 1', state: 'open', do_not_contact: false, highest_rung: 0, touch_count: 1, revision: 2 };
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(sessionResponse())
       .mockResolvedValueOnce(response([thread]))
@@ -145,7 +210,8 @@ describe('ParleyClient S07 contact lifecycle commands', () => {
       .mockResolvedValueOnce(response(thread))
       .mockResolvedValueOnce(response(resolution, 201))
       .mockResolvedValueOnce(response([capacity]))
-      .mockResolvedValueOnce(response(capacity));
+      .mockResolvedValueOnce(response(capacity))
+      .mockResolvedValueOnce(response(policy));
     const client = new ParleyClient(); await client.connect();
     expect(await client.listThreads({ opportunity_id: 'opp-1', recipient_id: 'party 1' })).toEqual([thread]);
     expect(await client.sendOnThread('thread-1', { opportunity_id: 'opp-1', recipient_id: 'party 1', primary: { material_id: 'mat-1', version: 3, release_id: 'release-1' }, deadline: { date: '2026-11-28', zone: 'America/Vancouver' } }, 'send-key')).toEqual(sent);
@@ -154,13 +220,15 @@ describe('ParleyClient S07 contact lifecycle commands', () => {
     expect(await client.recordResolution('opp-1', { result: 'no_deal', they_benefited: 'unknown', i_benefited: 'unknown' })).toEqual(resolution);
     expect(await client.listCapacity()).toEqual([capacity]);
     expect(await client.updateCapacity({ period: 'quarter', unit: 'project slots', total: 8 })).toEqual(capacity);
+    expect(await client.clearPartyDnc('party 1', { reason: 'Recipient asked for a fresh start with a concrete proposal.' }, 'dnc-key')).toEqual(policy);
     expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual([
       '/api/v1/threads?opportunity_id=opp-1&recipient_id=party+1', '/api/v1/threads/thread-1/send',
       '/api/v1/sends/send-1/outcome', '/api/v1/threads/thread-1/reopen', '/api/v1/opportunities/opp-1/resolution',
-      '/api/v1/capacity', '/api/v1/capacity',
+      '/api/v1/capacity', '/api/v1/capacity', '/api/v1/entities/party%201/clear-dnc',
     ]);
     expect(new Headers(fetchMock.mock.calls[2]![1]?.headers).get('Idempotency-Key')).toBe('send-key');
     expect(new Headers(fetchMock.mock.calls[2]![1]?.headers).get('X-Parley-Epoch')).toBe(session.epoch);
+    expect(new Headers(fetchMock.mock.calls[8]![1]?.headers).get('Idempotency-Key')).toBe('dnc-key');
   });
 });
 

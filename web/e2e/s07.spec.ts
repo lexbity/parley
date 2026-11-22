@@ -122,10 +122,6 @@ test('s07_browser_explicit_mark_sent_deadline_outcome_and_resolution', async ({ 
   expect(sendResponse.status()).toBe(201);
   const send = await sendResponse.json();
   const threadId = String(send.thread_id);
-  const secondRelease = await (await page.request.post(`/api/v1/materials/${material.id}/release`, {
-    headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
-    data: {},
-  })).json();
   expect(Number(send.touch_no)).toBe(1);
   expect(String(send.response_deadline)).toBeTruthy();
   expect(send.capacity_charged).toBe(false);
@@ -134,6 +130,11 @@ test('s07_browser_explicit_mark_sent_deadline_outcome_and_resolution', async ({ 
   const ownThread = threads.find((thread: { id: string }) => String(thread.id) === threadId);
   expect(String(ownThread.state)).toBe('waiting');
   expect(Number(ownThread.current_touch)).toBe(1);
+  // The thread listing exposes the send ID so a reloaded client can attach a
+  // response to the historical send (RFC-0003 FQ5).
+  expect(Array.isArray(ownThread.sends)).toBe(true);
+  expect(String(ownThread.sends[0].id)).toBe(String(send.id));
+  expect(Number(ownThread.sends[0].touch_no)).toBe(1);
 
   // A nondeclining reply moves the thread into conversation.
   const outcome = await (await page.request.post(`/api/v1/sends/${send.id}/outcome`, {
@@ -145,14 +146,38 @@ test('s07_browser_explicit_mark_sent_deadline_outcome_and_resolution', async ({ 
   const threadAfterReply = afterReply.find((thread: { id: string }) => String(thread.id) === threadId);
   expect(String(threadAfterReply.state)).toBe('conversing');
 
-  // A second explicit send starts a new touch with its own deadline.
   // A second explicit send starts a new touch with its own deadline and its
-  // own one-use release grant.
+  // own one-use release grant. The first send changed the thread and party
+  // policy revisions, so the follow-up is a new reviewed material version.
+  const revised = await (await page.request.post(`/api/v1/materials/${material.id}/versions`, {
+    headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
+    data: {
+      recipient_id: recipientId, kind: 'outreach', template_version_id: template.id,
+      body: 'Hello.', exchange_version: exchange.version,
+      slot_fills: [], sentence_bindings: [{ sentence_index: 0, claim_type: 'generic' }],
+    },
+  })).json();
+  expect(Number(revised.version)).toBeGreaterThan(Number(material.version));
+  const followupApproval = await (await page.request.post(`/api/v1/materials/${material.id}/approve`, {
+    headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
+    data: {
+      override_reasons: {
+        'S1 GIVE_FIRST': 'This is a reviewed factual outreach, not a gift message.',
+        'S2 ANCHOR': 'The exact approved text is the anchor for this outreach.',
+        'S7 CADENCE': 'The follow-up is scheduled at the pack cadence.',
+      },
+    },
+  })).json();
+  expect(String(followupApproval.content_sha256)).toBe(String(revised.content_sha256));
+  const secondRelease = await (await page.request.post(`/api/v1/materials/${material.id}/release`, {
+    headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
+    data: {},
+  })).json();
   const secondSend = await (await page.request.post(`/api/v1/threads/${threadId}/send`, {
     headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
     data: {
       opportunity_id: opportunityId, recipient_id: recipientId,
-      primary: { material_id: material.id, version: material.version, release_id: secondRelease.release_id },
+      primary: { material_id: material.id, version: Number(revised.version), release_id: secondRelease.release_id },
       companions: [], deadline: { days: 7 },
     },
   })).json();
@@ -187,4 +212,145 @@ test('s07_browser_explicit_mark_sent_deadline_outcome_and_resolution', async ({ 
   })).json();
   expect(Number(capacity.total)).toBe(20);
   expect(Number(capacity.remaining)).toBe(20);
+
+  // The rung outcome is visible in the thread history after the reload, so
+  // the second touch's history is reconstructed from the wire, not memory.
+  const historyAfter = await (await page.request.get('/api/v1/threads', { headers: authHeaders(apiState) })).json();
+  const threadAfter = historyAfter.find((thread: { id: string }) => String(thread.id) === threadId);
+  const secondTouch = threadAfter.sends.find((entry: { touch_no: number }) => Number(entry.touch_no) === 2);
+  expect(String(secondTouch.id)).toBe(String(secondSend.id));
+  expect(String(secondTouch.outcome.class)).toBe('rung_accepted');
+});
+
+test('s07_browser_dnc_clearance_is_reason_bearing_and_restores_release', async ({ page }) => {
+  await page.goto('/');
+  const name = `Declining Dana ${randomUUID()}`;
+  await page.getByRole('link', { name: 'Leads' }).click();
+  const addLead = page.getByRole('heading', { name: 'Add a lead' }).locator('..');
+  await addLead.getByLabel('Name').fill(name);
+  await addLead.getByRole('button', { name: 'Add lead' }).click();
+
+  await page.getByRole('link', { name: 'Queue' }).click();
+  await page.getByLabel('Opportunity title').fill('Follow-up after decline');
+  await page.getByLabel('Participant').selectOption({ label: `${name} · person` });
+  await page.getByRole('button', { name: 'Create opportunity' }).click();
+  await expect(page.getByRole('heading', { name: 'Follow-up after decline' })).toBeVisible();
+
+  const apiState = await api(page);
+  const opportunity = await (await page.request.get('/api/v1/opportunities', { headers: authHeaders(apiState) })).json();
+  const opportunityId = String(opportunity[0].id);
+  const partyPayload = await (await page.request.get('/api/v1/entities?kind=person', { headers: authHeaders(apiState) })).json();
+  const partyList = (Array.isArray(partyPayload) ? partyPayload : partyPayload.data) as Array<{ id: string; name: string }>;
+  const recipientId = String(partyList.find((entity) => entity.name === name)?.id);
+
+  const addInterest = async (side: string, statement: string) => {
+    const response = await page.request.post(`/api/v1/opportunities/${opportunityId}/interests`, {
+      headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
+      data: {
+        recipient_id: recipientId, side, statement,
+        knowledge_kind: side === 'them' ? 'hypothesis' : 'owner_report',
+        ...(side === 'them' ? { check_suggestion: 'Ask the owner whether this is current.' } : {}),
+      },
+    });
+    expect(response.status()).toBe(201);
+    return response.json();
+  };
+  const them = await addInterest('them', 'A clearer handoff');
+  const me = await addInterest('me', 'Offer a usable checklist');
+  const exchange = await (await page.request.post(`/api/v1/opportunities/${opportunityId}/exchange`, {
+    headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
+    data: { recipient_id: recipientId, they_get: 'A practical checklist', i_get: 'A better understanding of the handoff', interest_ids: [them.id, me.id] },
+  })).json();
+  const attest = await page.request.post(`/api/v1/opportunities/${opportunityId}/exchange/${recipientId}/attest`, {
+    headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
+    data: {},
+  });
+  expect(attest.status()).toBe(200);
+
+  const template = await (await page.request.post('/api/v1/templates', {
+    headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
+    data: { name: 'Brief hello', body: 'Hello.' },
+  })).json();
+  for (const action of ['approve', 'activate']) {
+    const transition = await page.request.post(`/api/v1/templates/${template.id}/${action}`, {
+      headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
+      data: {},
+    });
+    expect(transition.status()).toBe(204);
+  }
+
+  const material = await (await page.request.post(`/api/v1/opportunities/${opportunityId}/materials`, {
+    headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
+    data: {
+      recipient_id: recipientId, kind: 'outreach', template_version_id: template.id,
+      body: 'Hello.', exchange_version: exchange.version,
+      slot_fills: [], sentence_bindings: [{ sentence_index: 0, claim_type: 'generic' }],
+    },
+  })).json();
+  const overrides = {
+    'S1 GIVE_FIRST': 'This is a reviewed factual outreach, not a gift message.',
+    'S2 ANCHOR': 'The exact approved text is the anchor for this outreach.',
+  };
+  const approval = await (await page.request.post(`/api/v1/materials/${material.id}/approve`, {
+    headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
+    data: { override_reasons: overrides },
+  })).json();
+  expect(String(approval.content_sha256)).toBe(String(material.content_sha256));
+  const released = await (await page.request.post(`/api/v1/materials/${material.id}/release`, {
+    headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
+    data: {},
+  })).json();
+  const send = await (await page.request.post(`/api/v1/threads/t-dnc-browser/send`, {
+    headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
+    data: {
+      opportunity_id: opportunityId, recipient_id: recipientId,
+      primary: { material_id: material.id, version: released.version, release_id: released.release_id },
+      companions: [], deadline: { days: 7 },
+    },
+  })).json();
+  expect(Number(send.touch_no)).toBe(1);
+
+  // An explicit decline suppresses the party; fresh release is blocked.
+  const declined = await (await page.request.post(`/api/v1/sends/${send.id}/outcome`, {
+    headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
+    data: { class: 'declined', received_at: new Date().toISOString() },
+  })).json();
+  expect(String(declined.class)).toBe('declined');
+  const blocked = await page.request.post(`/api/v1/materials/${material.id}/release`, {
+    headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
+    data: {},
+  });
+  expect(blocked.status()).toBe(422);
+
+  // Clearance without a reason is rejected; a reason-bearing clearance
+  // reopens eligibility and a fresh version becomes releasable.
+  const noReason = await page.request.post(`/api/v1/entities/${recipientId}/clear-dnc`, {
+    headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
+    data: { reason: 'short' },
+  });
+  expect(noReason.status()).toBe(422);
+  const cleared = await (await page.request.post(`/api/v1/entities/${recipientId}/clear-dnc`, {
+    headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
+    data: { reason: 'The counterparty asked to be re-contacted after a review.' },
+  })).json();
+  expect(String(cleared.state)).toBe('open');
+  expect(cleared.do_not_contact).toBe(false);
+  const revised = await (await page.request.post(`/api/v1/materials/${material.id}/versions`, {
+    headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
+    data: {
+      recipient_id: recipientId, kind: 'outreach', template_version_id: template.id,
+      body: 'Hello.', exchange_version: exchange.version,
+      slot_fills: [], sentence_bindings: [{ sentence_index: 0, claim_type: 'generic' }],
+    },
+  })).json();
+  const freshApproval = await (await page.request.post(`/api/v1/materials/${material.id}/approve`, {
+    headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
+    data: { override_reasons: overrides },
+  })).json();
+  expect(String(freshApproval.content_sha256)).toBe(String(revised.content_sha256));
+  const freshRelease = await page.request.post(`/api/v1/materials/${material.id}/release`, {
+    headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
+    data: {},
+  });
+  expect(freshRelease.status()).toBe(200);
 });

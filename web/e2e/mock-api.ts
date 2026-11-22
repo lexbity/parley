@@ -794,6 +794,9 @@ export function createMockApi(): MockApi {
     if (s06ApproveRelease && request.method === 'POST') {
       const record = materialRecords.get(s06ApproveRelease[1]!);
       if (!record) return fail(response, 404, 'MATERIAL_NOT_FOUND', 'Material does not exist');
+      if (partySuppression.get(String(record.recipient_id))) {
+        return fail(response, 422, 'PARTY_SUPPRESSED', 'The recipient is do-not-contact suppressed; approval and release require an explicit owner clearance reason');
+      }
       if (s06ApproveRelease[2] === 'approve') {
         record.status = 'approved';
         return json(response, 200, { id: randomHex(), material_id: record.id, version: record.version, content_sha256: record.content_sha256, gate: { checks: [], copy_enabled: true }, approved_at: now() });
@@ -816,6 +819,22 @@ export function createMockApi(): MockApi {
       };
       releaseRecords.set(release.release_id, release);
       return json(response, 200, { release_id: release.release_id, material_id: release.material_id, version: release.version, recipient_id: release.recipient_id, body: release.body, content_sha256: release.content_sha256, issued_at: release.issued_at, attachment: release.attachment });
+    }
+    const materialVersionsMatch = /^\/api\/v1\/materials\/([^/]+)\/versions$/.exec(url.pathname);
+    if (materialVersionsMatch && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const record = materialRecords.get(materialVersionsMatch[1]!);
+      if (!record) return fail(response, 404, 'MATERIAL_NOT_FOUND', 'Material does not exist');
+      if (String(input.recipient_id) !== String(record.recipient_id)
+        || String(input.opportunity_id ?? record.opportunity_id) !== String(record.opportunity_id)) {
+        return fail(response, 422, 'MATERIAL_RECIPIENT_MISMATCH', 'Revised material must keep its opportunity and recipient');
+      }
+      record.version = Number(record.version) + 1;
+      record.body = String(input.body ?? record.body);
+      record.updated_at = now();
+      record.status = 'draft';
+      return json(response, 201, { ...record });
     }
     const releaseAckMatch = /^\/api\/v1\/releases\/([^/]+)\/ack$/.exec(url.pathname);
     if (releaseAckMatch && request.method === 'POST') {
@@ -859,7 +878,7 @@ export function createMockApi(): MockApi {
       }
       let thread = threads.get(threadId);
       if (!thread) {
-        thread = { id: threadId, opportunity_id: opportunityId, recipient_id: recipientId, state: 'waiting', current_touch: 0, expires_at: null, next_action_at: null, sent_at: null, updated_at: now() };
+        thread = { id: threadId, opportunity_id: opportunityId, recipient_id: recipientId, state: 'waiting', current_touch: 0, expires_at: null, next_action_at: null, sent_at: null, updated_at: now(), sends: [] };
         threads.set(threadId, thread);
       }
       const touchNo = Number(thread.current_touch) + 1;
@@ -893,6 +912,7 @@ export function createMockApi(): MockApi {
       const sendRecord = { id: sendId, thread_id: threadId, touch_no: touchNo, primary_material_id: String(primary.material_id), primary_version_no: Number(primary.version), recipient_id: recipientId, content_sha256: String(release.content_sha256), sent_at: sentAt, response_deadline: responseDeadline, deadline_zone: String((deadlineInput && deadlineInput.zone) || 'UTC'), next_action_at: nextActionAt, capacity_charged: capacityCharged };
       sends.set(sendId, sendRecord);
       thread.state = 'waiting'; thread.current_touch = touchNo; thread.expires_at = responseDeadline; thread.next_action_at = nextActionAt; thread.sent_at = sentAt; thread.updated_at = sentAt;
+      thread.sends = [...(Array.isArray(thread.sends) ? thread.sends : []), { ...sendRecord, outcome: null }];
       return json(response, 201, sendRecord);
     }
     const threadReopenMatch = /^\/api\/v1\/threads\/([^/]+)\/reopen$/.exec(url.pathname);
@@ -915,6 +935,9 @@ export function createMockApi(): MockApi {
       if (existing && String(existing.class) !== String(input.class)) return fail(response, 422, 'OUTCOME_CONFLICT', 'An outcome is already recorded for this send');
       outcomes.set(String(send.id), outcome);
       const thread = threads.get(String(send.thread_id));
+      if (thread && Array.isArray(thread.sends)) {
+        thread.sends = thread.sends.map((entry: RecordData) => String(entry.id) === String(send.id) ? { ...entry, outcome } : entry);
+      }
       if (String(input.class) === 'declined' && thread) {
         thread.state = 'closed_declined'; thread.expires_at = null; thread.updated_at = now();
         partySuppression.set(String(thread.recipient_id), true);
@@ -932,6 +955,18 @@ export function createMockApi(): MockApi {
         thread.state = 'conversing'; thread.expires_at = null; thread.updated_at = now();
       }
       return json(response, 200, outcome);
+    }
+    const clearDncMatch = /^\/api\/v1\/entities\/([a-f0-9]+)\/clear-dnc$/.exec(url.pathname);
+    if (clearDncMatch && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const partyId = clearDncMatch[1]!;
+      const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
+      if (reason.length < 10) return fail(response, 422, 'DNC_CLEARANCE_REASON', 'Do-not-contact clearance requires an explicit reason of at least ten characters');
+      if (!directory.has(partyId)) return fail(response, 404, 'NOT_FOUND', 'Party does not exist');
+      if (!partySuppression.get(partyId)) return fail(response, 422, 'NO_DNC_SUPPRESSION', 'Party has no do-not-contact suppression to clear');
+      partySuppression.delete(partyId);
+      pushEvent({ event_id: randomHex(), entity_type: 'party', entity_id: partyId, revision: 1, event_type: 'party.dnc_cleared', payload: { reason } });
+      return json(response, 200, { party_id: partyId, state: 'open', do_not_contact: false, highest_rung: 0, touch_count: 0, revision: 1 });
     }
     const resolutionMatch = /^\/api\/v1\/opportunities\/([^/]+)\/resolution$/.exec(url.pathname);
     if (resolutionMatch && request.method === 'POST') {

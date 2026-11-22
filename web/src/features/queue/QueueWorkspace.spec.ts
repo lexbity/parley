@@ -127,4 +127,27 @@ describe('QueueWorkspace S05 board and card behavior', () => {
     expect(notesView(wrapper).state.doc.toString()).toBe(notes.markdown);
     wrapper.unmount();
   });
+
+  it('refreshes board and thread projections when the contact panel records a response', async () => {
+    const material = { id: 'm1', opportunity_id: 'o1', recipient_id: 'p1', recipient_name: 'Dana Lee', kind: 'outreach' as const, version: 1, body: 'Hello.', content_sha256: 'a'.repeat(64), status: 'approved' as const, gate: null, attachment: null };
+    const thread = { id: 't1', opportunity_id: 'o1', recipient_id: 'p1', state: 'waiting' as const, current_touch: 1, expires_at: '2026-11-28T08:00:00Z', next_action_at: null, sent_at: '2026-11-21T08:00:00Z', updated_at: '2026-11-21T08:00:00Z', sends: [{ id: 's1', touch_no: 1, primary_material_id: 'm1', primary_version_no: 1, recipient_id: 'p1', content_sha256: 'a'.repeat(64), sent_at: '2026-11-21T08:00:00Z', response_deadline: '2026-11-28T08:00:00Z', deadline_zone: 'UTC', capacity_charged: false, outcome: null }] };
+    vi.spyOn(parley, 'connect').mockResolvedValue();
+    vi.spyOn(parley, 'getBoard').mockResolvedValue(board);
+    vi.spyOn(parley, 'getOpportunityNotes').mockResolvedValue(notes);
+    vi.spyOn(parley, 'listThreads').mockResolvedValue([thread]);
+    vi.spyOn(parley, 'recordOutcome').mockResolvedValue({ id: 'outcome-1', send_id: 's1', class: 'reply_positive', rung_accepted: null, received_at: '2026-11-22T08:00:00Z', recorded_at: '2026-11-22T08:00:00Z', note: null });
+    const wrapper = mount(QueueWorkspace, { props: { parties, outputs: [material] } });
+    await flushPromises();
+    await wrapper.findAll('button').find((button) => button.text() === 'Open card')!.trigger('click');
+    await flushPromises();
+    expect(parley.listThreads).toHaveBeenCalledTimes(1);
+    const record = wrapper.findAll('button').find((button) => button.text().includes('Record response for touch 1'))!;
+    await record.trigger('click');
+    await flushPromises();
+    expect(parley.recordOutcome).toHaveBeenCalledWith('s1', expect.objectContaining({ class: 'reply_positive' }));
+    // The panel's change event re-reads both projections for the same card.
+    expect(parley.listThreads).toHaveBeenCalledTimes(2);
+    expect(parley.getBoard).toHaveBeenCalledTimes(2);
+    wrapper.unmount();
+  });
 });

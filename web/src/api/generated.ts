@@ -84,6 +84,26 @@ export interface paths {
         patch: operations["updateEntity"];
         trace?: never;
     };
+    "/entities/{id}/clear-dnc": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Clear party-wide do-not-contact suppression with an explicit reason
+         * @description The explicit owner action that re-opens a party after a decline. The reason is recorded and the cleared state is authoritative for every future gate check. It does not by itself reopen closed threads; reopening stays a separate explicit action (BE-08).
+         */
+        post: operations["clearPartyDnc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/events": {
         parameters: {
             query?: never;
@@ -1547,6 +1567,23 @@ export interface components {
         DownloadQuery: {
             release_id: string;
         };
+        ThreadSend: {
+            id: string;
+            touch_no: number;
+            primary_material_id: string;
+            primary_version_no: number;
+            recipient_id: string;
+            content_sha256: string;
+            /** Format: date-time */
+            sent_at: string;
+            /** Format: date-time */
+            response_deadline: string;
+            deadline_zone: string;
+            /** @description Not stored per touch; the thread carries the current next action. */
+            next_action_at?: string | null;
+            capacity_charged: boolean;
+            outcome?: components["schemas"]["OutcomeRecord"] | null;
+        };
         ThreadRecord: {
             id: string;
             opportunity_id: string;
@@ -1558,6 +1595,8 @@ export interface components {
             next_action_at?: string | null;
             sent_at: string | null;
             updated_at: string;
+            /** @description Per-touch send history for this thread, newest last; each entry carries its outcome when one is recorded. Idempotent after reload and shared across sessions. */
+            sends?: components["schemas"]["ThreadSend"][];
         };
         ThreadList: components["schemas"]["ThreadRecord"][];
         MaterialVersionRef: {
@@ -1616,6 +1655,19 @@ export interface components {
             /** Format: date-time */
             recorded_at: string;
             note: string | null;
+        };
+        /** @description The explicit owner reason for clearing do-not-contact suppression. The service requires a non-empty reason of at least ten characters and rejects shorter input with a 422. */
+        DncClearanceInput: {
+            reason: string;
+        };
+        PartyPolicyRecord: {
+            party_id: string;
+            /** @enum {string} */
+            state: "open" | "closed" | "dormant";
+            do_not_contact: boolean;
+            highest_rung: number;
+            touch_count: number;
+            revision: number;
         };
         ResolutionInput: {
             /** @enum {string} */
@@ -2089,6 +2141,40 @@ export interface operations {
             409: components["responses"]["Error"];
             412: components["responses"]["Error"];
             428: components["responses"]["Error"];
+        };
+    };
+    clearPartyDnc: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DncClearanceInput"];
+            };
+        };
+        responses: {
+            /** @description Party suppression cleared; the party is eligible for fresh releases again. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PartyPolicyRecord"];
+                };
+            };
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
         };
     };
     getEvents: {
