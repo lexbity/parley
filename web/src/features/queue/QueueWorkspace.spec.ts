@@ -5,7 +5,13 @@ import { parley, type BoardSnapshot, type GraphEntity, type OpportunityNotes } f
 import QueueWorkspace from './QueueWorkspace.vue';
 import MarkdownEditor from '../../shared/MarkdownEditor.vue';
 
-afterEach(() => vi.restoreAllMocks());
+let clipboardDescriptor: PropertyDescriptor | undefined;
+afterEach(() => {
+  vi.restoreAllMocks();
+  if (clipboardDescriptor) Object.defineProperty(navigator, 'clipboard', clipboardDescriptor);
+  else Reflect.deleteProperty(navigator, 'clipboard');
+  clipboardDescriptor = undefined;
+});
 
 function notesView(wrapper: VueWrapper): EditorView {
   const view = (wrapper.getComponent(MarkdownEditor).vm as unknown as { getView(): EditorView | null }).getView();
@@ -127,6 +133,27 @@ describe('QueueWorkspace S05 board and card behavior', () => {
     expect(wrapper.get('[role="alert"]').text()).toContain('notes changed elsewhere');
     await wrapper.findAll('button').find((button) => button.text() === 'Discard edits and reload')!.trigger('click'); await flushPromises();
     expect(notesView(wrapper).state.doc.toString()).toBe(notes.markdown);
+    wrapper.unmount();
+  });
+
+  it('quarantines dirty notes after a workspace restore and requires copy or discard before reload', async () => {
+    const wrapper = stub(); await flushPromises();
+    await wrapper.findAll('button').find((button) => button.text() === 'Open card')!.trigger('click'); await flushPromises();
+    const view = notesView(wrapper);
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: 'unacknowledged private notes' } });
+    const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+    clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: clipboardWrite } });
+    const refreshSession = vi.spyOn(parley, 'refreshSession').mockResolvedValue();
+    globalThis.dispatchEvent(new globalThis.CustomEvent('parley:workspace-changed', { detail: { operation: 'restore' } }));
+    await flushPromises();
+    expect(wrapper.get('[role="alertdialog"]').get('textarea[aria-label="Quarantined notes text"]').element).toMatchObject({ value: 'unacknowledged private notes' });
+    expect(parley.updateOpportunityNotes).not.toHaveBeenCalled();
+    await wrapper.findAll('button').find((button) => button.text() === 'Copy quarantined notes')!.trigger('click'); await flushPromises();
+    expect(clipboardWrite).toHaveBeenCalledWith('unacknowledged private notes');
+    await wrapper.findAll('button').find((button) => button.text() === 'Discard local notes and load current workspace')!.trigger('click'); await flushPromises();
+    expect(refreshSession).toHaveBeenCalledOnce();
+    expect(parley.updateOpportunityNotes).not.toHaveBeenCalled();
     wrapper.unmount();
   });
 });

@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
 import { buildDailyQueue, buildInsights, PACK_DOCUMENTS, validatePackDocument } from '../mock/coach';
+import { adminImpact, adminOverview, adminPreview as encodeAdminPreview, type AdminBackupRecord, type AdminOperation } from '../mock/admin';
 
 /**
  * The one fixture-mode implementation of the Parley local API (RFC-0003
@@ -71,7 +72,6 @@ type EventRecord = {
   payload: RecordData;
 };
 
-const epoch = 'ffeeddccbbaa99887766554433221100';
 const randomHex = (bytes = 16) => randomBytes(bytes).toString('hex');
 
 export interface MockApi {
@@ -81,6 +81,7 @@ export interface MockApi {
 }
 
 export function createMockApi(): MockApi {
+  let epoch = 'ffeeddccbbaa99887766554433221100';
   const bootstraps = new Map<string, number>();
   const sessions = new Map<string, string>();
   const resources = new Map<string, ResourceRecord>();
@@ -131,6 +132,9 @@ export function createMockApi(): MockApi {
   let provider = { endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' };
   const receipts = new Map<string, { digest: string; result: RecordData }>();
   const events: EventRecord[] = [];
+  const adminBackups: AdminBackupRecord[] = [];
+  const adminPreviews = new Map<string, { operation: AdminOperation; digest: string; epoch: string; cursor: string; expires: number; backupId: string | null; partyId: string | null }>();
+  const adminJobs = new Map<string, RecordData>();
   let testClock = Date.UTC(2026, 0, 1);
   const now = () => new Date(testClock += 1000).toISOString();
   capacityLedger.set('quarter:project slots', { period: 'quarter', unit: 'project slots', total: 15, committed: 0, updated_at: now() });
@@ -138,6 +142,65 @@ export function createMockApi(): MockApi {
   const pushEvent = (event: Omit<EventRecord, 'cursor'>) => {
     events.push({ ...event, cursor: String(events.length + 1) });
   };
+
+  function deepClone<T>(value: T): T {
+    if (Buffer.isBuffer(value)) return Buffer.from(value) as T;
+    if (value instanceof Map) return new Map([...value.entries()].map(([key, item]) => [deepClone(key), deepClone(item)])) as T;
+    if (value instanceof Set) return new Set([...value].map(deepClone)) as T;
+    if (Array.isArray(value)) return value.map(deepClone) as T;
+    if (typeof value === 'object' && value !== null) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, deepClone(item)])) as T;
+    return value;
+  }
+
+  function workspaceCollections(): Record<string, unknown> {
+    return { resources, directory, sourceTextByOccurrence, graphEdges, graphPositions, sourceGroups, captures, extractorJobs, roleJobs, agentChats, briefItems, segments, segmentMembers, fluency, writingInterests, writingExchanges, templateFamilies, writingTemplates, voiceSamples, opportunities, outputs, uploads, materialRecords, releaseRecords, threads, sends, outcomes, resolutions, capacityLedger, coachQuestions, validatedPacks, boardLists, placements, notesByOpportunity, events };
+  }
+
+  function takeWorkspaceSnapshot(): Record<string, unknown> {
+    return { collections: deepClone(workspaceCollections()), owner: { provider: deepClone(provider), questionBank: deepClone(questionBank), prompts: deepClone(prompts), embeddingModel, activePackId, activePackVersion, activePackDocument, packSettingsRevision } };
+  }
+
+  function restoreWorkspaceSnapshot(snapshot: Record<string, unknown>) {
+    const collections = snapshot.collections as Record<string, unknown>;
+    for (const [name, current] of Object.entries(workspaceCollections())) {
+      const saved = collections[name];
+      if (current instanceof Map && saved instanceof Map) { current.clear(); for (const [key, value] of saved) current.set(deepClone(key), deepClone(value)); }
+      else if (Array.isArray(current) && Array.isArray(saved)) current.splice(0, current.length, ...deepClone(saved));
+    }
+    const owner = snapshot.owner as RecordData;
+    provider = deepClone(owner.provider as typeof provider);
+    Object.assign(questionBank, deepClone(owner.questionBank as typeof questionBank));
+    prompts.clear(); for (const [key, value] of owner.prompts as Map<string, RecordData>) prompts.set(key, deepClone(value));
+    embeddingModel = String(owner.embeddingModel);
+    activePackId = String(owner.activePackId); activePackVersion = String(owner.activePackVersion); activePackDocument = String(owner.activePackDocument); packSettingsRevision = Number(owner.packSettingsRevision);
+  }
+
+  function scrubPartyFromBackup(value: unknown, partyId: string, partyName: string): unknown {
+    if (typeof value === 'string') return partyName ? value.split(partyName).join('[erased party]') : value;
+    if (value instanceof Map) {
+      const next = new Map<unknown, unknown>();
+      for (const [key, item] of value) if (key !== partyId) next.set(key, scrubPartyFromBackup(item, partyId, partyName));
+      return next;
+    }
+    if (value instanceof Set) return new Set([...value].filter((item) => item !== partyId).map((item) => scrubPartyFromBackup(item, partyId, partyName)));
+    if (Array.isArray(value)) return value.filter((item) => {
+      if (typeof item !== 'object' || item === null) return item !== partyId;
+      const row = item as RecordData;
+      return row.id !== partyId && row.party_id !== partyId && row.recipient_id !== partyId && row.scope_id !== partyId;
+    }).map((item) => scrubPartyFromBackup(item, partyId, partyName));
+    if (typeof value === 'object' && value !== null) {
+      const row = value as RecordData;
+      const next: RecordData = {};
+      for (const [key, item] of Object.entries(row)) {
+        if (key === 'participant_ids' && Array.isArray(item)) next[key] = item.filter((id) => id !== partyId);
+        else if (['entity_id', 'from_entity_id', 'to_entity_id'].includes(key) && item === partyId) next[key] = '[erased]';
+        else if (key === 'payload' && typeof item === 'object' && item !== null && (item as RecordData).party_id === partyId) next[key] = { erased: true };
+        else next[key] = scrubPartyFromBackup(item, partyId, partyName);
+      }
+      return next;
+    }
+    return value;
+  }
 
   function tasks(markdown: string) {
     const bytes = new TextEncoder().encode(markdown);
@@ -266,6 +329,124 @@ export function createMockApi(): MockApi {
     }
     if (!authorize(request)) {
       return fail(response, cookie ? 403 : 401, cookie ? 'TOKEN_INVALID' : 'SESSION_REQUIRED', 'Sign in to the local workspace');
+    }
+
+    if (url.pathname === '/api/v1/admin/overview' && request.method === 'GET') {
+      return json(response, 200, adminOverview({ asOf: now(), epoch, cursor: String(events.length), backups: adminBackups, parties: [...directory.values()] }));
+    }
+    if (url.pathname === '/api/v1/admin/backups' && request.method === 'POST') {
+      try { await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key) return fail(response, 400, 'IDEMPOTENCY_REQUIRED', 'Backup creation requires an idempotency key');
+      const receiptKey = `admin.backup:${key}`;
+      const digest = createHash('sha256').update('{}').digest('hex');
+      const previous = receipts.get(receiptKey);
+      if (previous) return previous.digest === digest ? json(response, 201, previous.result) : fail(response, 409, 'KEY_REUSED', 'Idempotency key was used for a different command');
+      const snapshot = takeWorkspaceSnapshot();
+      const createdAt = now();
+      const backup: AdminBackupRecord = { id: randomHex(), created_at: createdAt, schema_version: 1, workspace_epoch: epoch, size_bytes: Buffer.byteLength(JSON.stringify(snapshot)), integrity: 'verified', snapshot };
+      adminBackups.unshift(backup);
+      pushEvent({ event_id: randomHex(), entity_type: 'workspace', entity_id: '1', revision: events.length + 1, event_type: 'backup.verified', payload: { backup_id: backup.id, schema_version: backup.schema_version } });
+      const result = { id: backup.id, created_at: backup.created_at, schema_version: backup.schema_version, workspace_epoch: backup.workspace_epoch, size_bytes: backup.size_bytes, integrity: backup.integrity };
+      receipts.set(receiptKey, { digest, result });
+      return json(response, 201, result);
+    }
+    if (url.pathname === '/api/v1/admin/previews' && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const operation = input.operation;
+      if (!['restore', 'erase_party', 'erase_workspace'].includes(String(operation))) return fail(response, 422, 'ADMIN_OPERATION_INVALID', 'Administrative operation is unsupported');
+      const targetOperation = operation as AdminOperation;
+      const backup = targetOperation === 'restore' ? adminBackups.find((item) => item.id === input.backup_id && item.integrity === 'verified') ?? null : null;
+      const party = targetOperation === 'erase_party' ? directory.get(String(input.party_id)) ?? null : null;
+      if (targetOperation === 'restore' && !backup) return fail(response, 422, 'BACKUP_UNVERIFIED', 'Select a verified backup');
+      if (targetOperation === 'erase_party' && !party) return fail(response, 404, 'PARTY_NOT_FOUND', 'Select an existing party');
+      const id = randomHex();
+      const impactState = targetOperation === 'restore' ? { ...workspaceCollections(), restore_backup: backup } : workspaceCollections();
+      const { impact, preserved_shared: preservedShared } = adminImpact(targetOperation, impactState, party?.id);
+      const cursor = String(events.length);
+      const digestPayload = { operation: targetOperation, epoch, cursor, backup_id: backup?.id ?? null, party_id: party?.id ?? null, impact, preservedShared };
+      const digest = createHash('sha256').update(JSON.stringify(digestPayload)).digest('hex');
+      const expires = testClock + 5 * 60_000;
+      adminPreviews.set(id, { operation: targetOperation, digest, epoch, cursor, expires, backupId: backup?.id ?? null, partyId: party?.id ?? null });
+      return json(response, 201, encodeAdminPreview({ id, operation: targetOperation, digest, epoch, cursor, expiresAt: new Date(expires).toISOString(), impact, preservedShared, backup, party }));
+    }
+    const adminCommit = /^\/api\/v1\/admin\/previews\/([^/]+)\/commit$/.exec(url.pathname);
+    if (adminCommit && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key) return fail(response, 400, 'IDEMPOTENCY_REQUIRED', 'Administrative commit requires an idempotency key');
+      const receiptKey = `admin.commit:${key}`;
+      const commandDigest = createHash('sha256').update(JSON.stringify(input)).digest('hex');
+      const priorReceipt = receipts.get(receiptKey);
+      if (priorReceipt) return priorReceipt.digest === commandDigest ? json(response, 202, priorReceipt.result) : fail(response, 409, 'KEY_REUSED', 'Idempotency key was used for a different command');
+      const preview = adminPreviews.get(adminCommit[1]!);
+      if (!preview || input.digest !== preview.digest || input.preview_id !== adminCommit[1]) return fail(response, 412, 'PREVIEW_STALE', 'Review a fresh impact preview');
+      if (testClock >= preview.expires) return fail(response, 410, 'PREVIEW_EXPIRED', 'This impact preview expired');
+      if (preview.epoch !== epoch || preview.cursor !== String(events.length) || input.expected_workspace_epoch !== epoch || input.expected_event_cursor !== String(events.length)) return fail(response, 412, 'PREVIEW_STALE', 'Workspace changed after preview; review the new impact');
+      if (input.confirmation !== preview.digest.slice(-12)) return fail(response, 403, 'CONFIRMATION_REQUIRED', 'Type the exact preview confirmation token');
+      adminPreviews.delete(adminCommit[1]!);
+      let summary: string;
+      if (preview.operation === 'restore') {
+        const backup = adminBackups.find((item) => item.id === preview.backupId && item.integrity === 'verified');
+        if (!backup) return fail(response, 412, 'BACKUP_UNAVAILABLE', 'The reviewed backup is no longer available');
+        restoreWorkspaceSnapshot(deepClone(backup.snapshot));
+        receipts.clear(); adminPreviews.clear(); adminJobs.clear();
+        epoch = randomHex();
+        pushEvent({ event_id: randomHex(), entity_type: 'workspace', entity_id: '1', revision: events.length + 1, event_type: 'workspace.restored', payload: { backup_id: backup.id, schema_version: backup.schema_version } });
+        summary = `Workspace restored from the verified backup dated ${backup.created_at}.`;
+      } else if (preview.operation === 'erase_workspace') {
+        for (const value of Object.values(workspaceCollections())) {
+          if (value instanceof Map) value.clear(); else if (Array.isArray(value)) value.splice(0, value.length);
+        }
+        resources.clear(); directory.clear(); opportunities.clear(); sends.clear(); threads.clear(); outcomes.clear(); resolutions.clear(); adminBackups.splice(0, adminBackups.length);
+        partySuppression.clear(); receipts.clear(); adminPreviews.clear(); adminJobs.clear();
+        provider = { endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' };
+        Object.assign(questionBank, { version_id: 'question-bank-v1', content: { version: 1, questions: { proof: [{ id: 'result', text: 'What changed, and how did you measure the result?' }], gift: [{ id: 'offer', text: 'What useful thing could you offer?' }], artifact: [{ id: 'artifact', text: 'What have you made?' }] } } });
+        prompts.clear();
+        prompts.set('interviewer', { role: 'interviewer', version_id: 'interviewer-v1', version: 1, content: 'Bundled Interviewer policy', sha256: 'a'.repeat(64) });
+        prompts.set('briefer', { role: 'briefer', version_id: 'briefer-v1', version: 1, content: 'Bundled Briefer policy', sha256: 'b'.repeat(64) });
+        embeddingModel = ''; activePackId = PACK_DOCUMENTS[0]!.id; activePackVersion = PACK_DOCUMENTS[0]!.version; activePackDocument = PACK_DOCUMENTS[0]!.document; packSettingsRevision = 1;
+        epoch = randomHex();
+        pushEvent({ event_id: randomHex(), entity_type: 'workspace', entity_id: '1', revision: 1, event_type: 'workspace.erased', payload: { erased: true } });
+        summary = 'Workspace records and derived content were erased.';
+      } else {
+        const partyId = preview.partyId!;
+        const partyName = directory.get(partyId)?.name ?? '';
+        directory.delete(partyId);
+        for (let index = graphEdges.length - 1; index >= 0; index -= 1) if (graphEdges[index]?.from_entity_id === partyId || graphEdges[index]?.to_entity_id === partyId) graphEdges.splice(index, 1);
+        graphPositions.delete(partyId);
+        for (const opportunity of opportunities.values()) {
+          if (Array.isArray(opportunity.participant_ids) && opportunity.participant_ids.includes(partyId)) opportunity.participant_ids = opportunity.participant_ids.filter((id) => id !== partyId);
+        }
+        const removedThreads = new Set([...threads.values()].filter((thread) => thread.recipient_id === partyId).map((thread) => String(thread.id)));
+        for (const id of threads.keys()) if (removedThreads.has(id)) threads.delete(id);
+        const removedSends = new Set([...sends.values()].filter((send) => send.recipient_id === partyId || removedThreads.has(String(send.thread_id))).map((send) => String(send.id)));
+        for (const id of sends.keys()) if (removedSends.has(id)) sends.delete(id);
+        for (const [id, item] of outcomes) if (removedSends.has(String(item.send_id))) outcomes.delete(id);
+        for (const [id, item] of materialRecords) if (item.recipient_id === partyId) materialRecords.delete(id);
+        for (const [id, item] of outputs) if (item.recipient_id === partyId) outputs.delete(id);
+        for (const [id, item] of resolutions) if (item.recipient_id === partyId) resolutions.delete(id);
+        briefItems.delete(`party:${partyId}`); writingInterests.delete(partyId); writingExchanges.delete(partyId);
+        for (const [id, chat] of agentChats) if (chat.scope_kind === 'party' && chat.scope_id === partyId) agentChats.delete(id);
+        for (const event of events) if (event.entity_id === partyId || event.payload.party_id === partyId || event.payload.recipient_id === partyId) event.payload = { erased: true };
+        for (const backup of adminBackups) {
+          backup.snapshot = scrubPartyFromBackup(backup.snapshot, partyId, partyName) as Record<string, unknown>;
+          backup.size_bytes = Buffer.byteLength(JSON.stringify(backup.snapshot));
+          backup.integrity = 'verified';
+        }
+        pushEvent({ event_id: randomHex(), entity_type: 'party', entity_id: partyId, revision: 1, event_type: 'party.erased', payload: { erased: true } });
+        summary = 'Party-scoped records were erased. Independent source records remain available where they are shared.';
+      }
+      const jobId = randomHex();
+      adminJobs.set(jobId, { id: jobId, operation: preview.operation, status: 'succeeded', summary, new_epoch: epoch, last_error: null });
+      const result = { job_id: jobId, status: 'queued' };
+      receipts.set(receiptKey, { digest: commandDigest, result });
+      return json(response, 202, result);
+    }
+    const adminJobMatch = /^\/api\/v1\/admin\/jobs\/([^/]+)$/.exec(url.pathname);
+    if (adminJobMatch && request.method === 'GET') {
+      const job = adminJobs.get(adminJobMatch[1]!);
+      return job ? json(response, 200, job) : fail(response, 404, 'ADMIN_JOB_NOT_FOUND', 'Administrative job does not exist in this session');
     }
 
     if (url.pathname === '/api/v1/template-families' && request.method === 'GET') return json(response, 200, { items: templateFamilies });
