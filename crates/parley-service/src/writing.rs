@@ -2224,3 +2224,28 @@ pub(super) fn validate_match_explanations(
     }
     accepted
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn matcher_explanations_cannot_add_unknown_shortlist_ids() {
+        let explanation = json!({"explanations":[
+            {"resource_id":"r1","why":"Fits the stated onboarding need.","cites_party_field":"need","cites_asset_field":"problem"},
+            {"resource_id":"invented","why":"This fabricated item is an excellent fit.","cites_party_field":"need","cites_asset_field":"problem"}
+        ]});
+        let party_fields = BTreeSet::from(["need".to_owned()]);
+        let asset_fields =
+            BTreeMap::from([("r1".to_owned(), BTreeSet::from(["problem".to_owned()]))]);
+        let accepted = validate_match_explanations(
+            &["r1".to_owned()],
+            &explanation,
+            &party_fields,
+            &asset_fields,
+        );
+        assert_eq!(accepted.len(), 1);
+        assert!(accepted.contains_key("r1"));
+        assert!(!accepted.contains_key("invented"));
+    }
+}
