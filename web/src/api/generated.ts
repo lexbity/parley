@@ -1555,6 +1555,7 @@ export interface components {
             state: "waiting" | "conversing" | "timed_out" | "closed_declined" | "resolved" | "dormant";
             current_touch: number;
             expires_at: string | null;
+            next_action_at?: string | null;
             sent_at: string | null;
             updated_at: string;
         };
@@ -1596,6 +1597,7 @@ export interface components {
             /** Format: date-time */
             response_deadline: string;
             deadline_zone: string;
+            next_action_at: string | null;
             capacity_charged: boolean;
         };
         OutcomeInput: {

@@ -17,6 +17,7 @@ CREATE TABLE contact_thread (
     ('waiting','conversing','timed_out','closed_declined','resolved','dormant')),
   current_touch INTEGER NOT NULL DEFAULT 0 CHECK(current_touch >= 0),
   expires_at TEXT,
+  next_action_at TEXT,
   sent_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,

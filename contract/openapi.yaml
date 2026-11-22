@@ -2719,6 +2719,10 @@ components:
           type:
           - string
           - 'null'
+        next_action_at:
+          type:
+          - string
+          - 'null'
         sent_at:
           type:
           - string
@@ -2809,6 +2813,7 @@ components:
       - sent_at
       - response_deadline
       - deadline_zone
+      - next_action_at
       - capacity_charged
       properties:
         id:
@@ -2836,6 +2841,10 @@ components:
           format: date-time
         deadline_zone:
           type: string
+        next_action_at:
+          type:
+          - string
+          - 'null'
         capacity_charged:
           type: boolean
       additionalProperties: false

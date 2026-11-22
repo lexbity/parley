@@ -260,7 +260,7 @@ async function saveDraft() { if (!proposal.value || !opportunityId.value || type
         </datalist>
         <button
           type="button"
-          :disabled="busy || !recipientId || selectedTemplate?.status !== 'active' || exchange.current?.fairness_attested !== true"
+          :disabled="busy || !recipientId || !modelDigest || selectedTemplate?.status !== 'active' || exchange.current?.fairness_attested !== true"
           @click="run(compose)"
         >
           Generate recipient-bound proposal

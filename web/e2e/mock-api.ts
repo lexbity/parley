@@ -844,7 +844,7 @@ export function createMockApi(): MockApi {
       }
       let thread = threads.get(threadId);
       if (!thread) {
-        thread = { id: threadId, opportunity_id: opportunityId, recipient_id: recipientId, state: 'waiting', current_touch: 0, expires_at: null, sent_at: null, updated_at: now() };
+        thread = { id: threadId, opportunity_id: opportunityId, recipient_id: recipientId, state: 'waiting', current_touch: 0, expires_at: null, next_action_at: null, sent_at: null, updated_at: now() };
         threads.set(threadId, thread);
       }
       const touchNo = Number(thread.current_touch) + 1;
@@ -874,9 +874,10 @@ export function createMockApi(): MockApi {
         }
       }
       const sendId = randomHex();
-      const sendRecord = { id: sendId, thread_id: threadId, touch_no: touchNo, primary_material_id: String(primary.material_id), primary_version_no: Number(primary.version), recipient_id: recipientId, content_sha256: String(release.content_sha256), sent_at: sentAt, response_deadline: responseDeadline, deadline_zone: String((deadlineInput && deadlineInput.zone) || 'UTC'), capacity_charged: capacityCharged };
+      const nextActionAt = new Date(base + 4 * 86400000).toISOString();
+      const sendRecord = { id: sendId, thread_id: threadId, touch_no: touchNo, primary_material_id: String(primary.material_id), primary_version_no: Number(primary.version), recipient_id: recipientId, content_sha256: String(release.content_sha256), sent_at: sentAt, response_deadline: responseDeadline, deadline_zone: String((deadlineInput && deadlineInput.zone) || 'UTC'), next_action_at: nextActionAt, capacity_charged: capacityCharged };
       sends.set(sendId, sendRecord);
-      thread.state = 'waiting'; thread.current_touch = touchNo; thread.expires_at = responseDeadline; thread.sent_at = sentAt; thread.updated_at = sentAt;
+      thread.state = 'waiting'; thread.current_touch = touchNo; thread.expires_at = responseDeadline; thread.next_action_at = nextActionAt; thread.sent_at = sentAt; thread.updated_at = sentAt;
       return json(response, 201, sendRecord);
     }
     const threadReopenMatch = /^\/api\/v1\/threads\/([^/]+)\/reopen$/.exec(url.pathname);
@@ -884,7 +885,7 @@ export function createMockApi(): MockApi {
       const thread = threads.get(threadReopenMatch[1]!);
       if (!thread) return fail(response, 404, 'THREAD_NOT_FOUND', 'Thread does not exist');
       if (!['timed_out', 'closed_declined', 'resolved'].includes(String(thread.state))) return fail(response, 422, 'THREAD_REOPEN_INVALID', 'Thread cannot be reopened from its current state');
-      thread.state = 'waiting'; thread.expires_at = null; thread.updated_at = now();
+      thread.state = 'waiting'; thread.expires_at = null; thread.next_action_at = null; thread.updated_at = now();
       const opportunity = opportunities.get(String(thread.opportunity_id));
       if (opportunity && String(opportunity.state) === 'closed') { opportunity.state = 'open'; opportunity.close_reason = null; opportunity.revision = Number(opportunity.revision) + 1; opportunity.updated_at = now(); }
       return json(response, 200, thread);

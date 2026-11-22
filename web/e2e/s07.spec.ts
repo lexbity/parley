@@ -100,6 +100,7 @@ test('s07_browser_explicit_mark_sent_deadline_outcome_and_resolution', async ({ 
       override_reasons: {
         'S1 GIVE_FIRST': 'This is a reviewed factual outreach, not a gift message.',
         'S2 ANCHOR': 'The exact approved text is the anchor for this outreach.',
+        'S7 CADENCE': 'The follow-up is scheduled at the pack cadence.',
       },
     },
   })).json();
