@@ -5,6 +5,7 @@ import { newOperationKey, parley, type BoardList, type BoardPlacement, type Boar
 import MarkdownEditor from '../../shared/MarkdownEditor.vue';
 import MarkdownPreview from '../../shared/MarkdownPreview.vue';
 import MaterialActions from '../output/MaterialActions.vue';
+import AttachmentPanel from '../output/AttachmentPanel.vue';
 import ContactThreadPanel from './ContactThreadPanel.vue';
 import Daily from './Daily.vue';
 import Insights from './Insights.vue';
@@ -32,6 +33,11 @@ const status = ref('');
 const composing = ref(false);
 const loadingNotes = ref(false);
 const noteSequence = ref(0);
+let openGeneration = 0;
+const tagDrafts = ref<Record<string, string>>({});
+const filterTag = ref('');
+const appliedTag = ref('');
+const sortKey = ref<'title' | 'state' | 'next_task'>('title');
 let notesTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
 let notesWrite: Promise<void> | null = null;
 let pendingNotesIntent: { key: string; opportunityId: string; body: string; revision: number; sequence: number } | null = null;
@@ -47,6 +53,22 @@ const threads = ref<ContactThread[]>([]);
 let threadPollTimer: ReturnType<typeof globalThis.setInterval> | undefined;
 let threadPollInFlight = false;
 
+const sortedCards = computed(() => {
+  let cards = board.value.cards.slice();
+  if (appliedTag.value) {
+    cards = cards.filter((card) => card.opportunity.tags?.includes(appliedTag.value));
+  }
+  const key = sortKey.value;
+  if (key === 'title') {
+    cards.sort((a, b) => a.opportunity.title.localeCompare(b.opportunity.title) || a.opportunity.id.localeCompare(b.opportunity.id));
+  } else if (key === 'state') {
+    cards.sort((a, b) => a.opportunity.state.localeCompare(b.opportunity.state) || a.opportunity.title.localeCompare(b.opportunity.title));
+  } else {
+    cards.sort((a, b) => (b.next_task ? 1 : 0) - (a.next_task ? 1 : 0) || a.opportunity.title.localeCompare(b.opportunity.title));
+  }
+  return cards;
+});
+
 async function refreshBoard() {
   board.value = await parley.getBoard();
   if (!board.value.cards.some((card) => card.opportunity.id === selectedId.value)) {
@@ -57,6 +79,34 @@ async function refreshBoard() {
   renameValues.value = Object.fromEntries(board.value.lists.map((list) => [list.id, list.title]));
   moveTargets.value = Object.fromEntries(board.value.cards.map((card) => [card.opportunity.id, card.list_id]));
   archiveTargets.value = Object.fromEntries(board.value.lists.map((list) => [list.id, activeLists.value.find((candidate) => candidate.id !== list.id)?.id ?? '']));
+  for (const card of board.value.cards) {
+    if (tagDrafts.value[card.opportunity.id] === undefined) {
+      tagDrafts.value[card.opportunity.id] = (card.opportunity.tags ?? []).join(', ');
+    }
+  }
+}
+
+function applyFilters() {
+  appliedTag.value = filterTag.value.trim().toLowerCase();
+}
+
+async function saveTags(card: BoardPlacement) {
+  const tags = [...new Set(
+    (tagDrafts.value[card.opportunity.id] ?? '')
+      .split(',')
+      .map((tag) => tag.trim().toLowerCase())
+      .filter(Boolean),
+  )];
+  await run(`Tags saved for ${card.opportunity.title}.`, async () => {
+    const updated = await parley.setOpportunityTags(card.opportunity.id, {
+      expected_revision: card.opportunity.revision,
+      tags,
+    });
+    board.value.cards = board.value.cards.map((candidate) => candidate.opportunity.id === updated.id
+      ? { ...candidate, opportunity: { ...candidate.opportunity, revision: updated.revision, tags: updated.tags } }
+      : candidate);
+    tagDrafts.value[card.opportunity.id] = tags.join(', ');
+  });
 }
 
 async function refreshThreads() {
@@ -166,10 +216,18 @@ async function moveCardBy(card: BoardPlacement, direction: -1 | 1) {
 }
 
 async function openCard(card: BoardPlacement) {
+  const generation = ++openGeneration;
   await run('Card opened.', async () => {
     loadingNotes.value = true;
-    detail.value = await parley.getOpportunityNotes(card.opportunity.id);
-    markdown.value = detail.value.markdown;
+    const loaded = await parley.getOpportunityNotes(card.opportunity.id);
+    if (generation !== openGeneration) {
+      // A newer card was opened while this read was in flight; the stale
+      // response must not re-select the earlier card (F-FR-1).
+      loadingNotes.value = false;
+      return;
+    }
+    detail.value = loaded;
+    markdown.value = loaded.markdown;
     dirty.value = false;
     selectedId.value = card.opportunity.id;
     await refreshThreads();
@@ -422,6 +480,24 @@ function onThreadVisibilityChange() {
     >
       {{ error }}
     </p>
+    <div class="queue-filter-sort">
+      <label>Filter by tag<input
+        v-model="filterTag"
+        aria-label="Filter by tag"
+        maxlength="120"
+      ></label>
+      <label>Sort opportunities<select
+        v-model="sortKey"
+        aria-label="Sort opportunities"
+      ><option value="title">Title</option><option value="state">State</option><option value="next_task">Next task</option></select></label>
+      <button
+        type="button"
+        :disabled="busy"
+        @click="applyFilters"
+      >
+        Apply to board and table
+      </button>
+    </div>
     <div class="workspace-grid">
       <form @submit.prevent="createOpportunity">
         <h3>Create an opportunity</h3>
@@ -520,7 +596,7 @@ function onThreadVisibilityChange() {
           </button>
         </header>
         <article
-          v-for="(card, index) in board.cards.filter((item) => item.list_id === list.id).slice().sort((a, b) => a.position - b.position || a.opportunity.id.localeCompare(b.opportunity.id))"
+          v-for="(card, index) in sortedCards.filter((item) => item.list_id === list.id)"
           :key="card.opportunity.id"
           class="record-card"
         >
@@ -557,6 +633,20 @@ function onThreadVisibilityChange() {
           >
             Move card down
           </button>
+          <label>Edit tags for {{ card.opportunity.title }}
+            <input
+              :value="tagDrafts[card.opportunity.id] ?? ''"
+              :aria-label="`Edit tags for ${card.opportunity.title}`"
+              maxlength="500"
+              @input="tagDrafts[card.opportunity.id] = ($event.target as HTMLInputElement).value"
+            >
+          </label>
+          <button
+            :disabled="busy"
+            @click="saveTags(card)"
+          >
+            Save tags
+          </button>
           <button
             :disabled="busy"
             @click="openCard(card)"
@@ -567,7 +657,6 @@ function onThreadVisibilityChange() {
       </section>
     </div>
     <table
-      v-if="activeQueueView === 'Opportunities'"
       class="opportunity-table"
     >
       <thead>
@@ -587,8 +676,9 @@ function onThreadVisibilityChange() {
       </thead>
       <tbody>
         <tr
-          v-for="card in board.cards.slice().sort((a, b) => a.opportunity.title.localeCompare(b.opportunity.title) || a.opportunity.id.localeCompare(b.opportunity.id))"
+          v-for="card in sortedCards"
           :key="card.opportunity.id"
+          :data-opportunity-id="card.opportunity.id"
         >
           <th scope="row">
             {{ card.opportunity.title }}
@@ -679,6 +769,11 @@ function onThreadVisibilityChange() {
               @updated="materialUpdated"
               @delivered="noteDelivered(material.id, $event)"
             />
+            <AttachmentPanel
+              v-if="material.attachment"
+              :material="material"
+              :release="deliveredReleases[material.id] ?? null"
+            />
             <ContactThreadPanel
               :opportunity-id="selectedId"
               :material="material"
@@ -706,6 +801,7 @@ function onThreadVisibilityChange() {
 .card-layout > section { min-width: 0; }
 .card-actions { display: flex; gap: .5rem; }
 .queue-views { display: flex; gap: .5rem; margin-block: .75rem; }
+.queue-filter-sort { display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; margin-block: .75rem; }
 .opportunity-table { width: 100%; border-collapse: collapse; }
 .opportunity-table th, .opportunity-table td { padding: .5rem; border-bottom: 1px solid #cbd5ce; text-align: left; }
 .quarantine-dialog { position: fixed; z-index: 1000; inset: 10vh max(1rem, calc((100vw - 42rem) / 2)); max-height: 80vh; overflow: auto; background: white; border: 2px solid #80552a; border-radius: .5rem; padding: 1.25rem; box-shadow: 0 1rem 3rem #0005; }

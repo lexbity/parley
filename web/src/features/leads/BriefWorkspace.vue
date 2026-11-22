@@ -19,18 +19,28 @@ const busy = ref(false);
 const error = ref('');
 const status = ref('');
 
+let loadGeneration = 0;
+
 async function load() {
-  if (!scopeId.value) { items.value = []; return; }
+  const own = ++loadGeneration;
+  if (!scopeId.value) { if (own === loadGeneration) items.value = []; return; }
   const [loadedItems, loadedFluency, chats] = await Promise.all([
     parley.getBriefItems(scopeKind.value, scopeId.value),
     parley.listFluency(),
     parley.listAgentChats({ role: 'briefer', scope_kind: scopeKind.value, scope_id: scopeId.value }),
   ]);
+  if (own !== loadGeneration) return;
   items.value = loadedItems;
   fluency.value = loadedFluency;
   chatHistory.value = chats;
-  if (selectedChatId.value && chats.some((item) => item.id === selectedChatId.value)) chat.value = await parley.getAgentChat(selectedChatId.value);
-  else { chat.value = null; selectedChatId.value = ''; }
+  if (selectedChatId.value && chats.some((item) => item.id === selectedChatId.value)) {
+    const loadedChat = await parley.getAgentChat(selectedChatId.value);
+    if (own !== loadGeneration) return;
+    chat.value = loadedChat;
+  } else if (own === loadGeneration) {
+    chat.value = null;
+    selectedChatId.value = '';
+  }
 }
 
 async function loadSegments() { segments.value = await parley.listSegments(); }
@@ -55,6 +65,7 @@ async function addMember() {
 
 async function generate() {
   if (!scopeId.value) return;
+  const scope = { kind: scopeKind.value, id: scopeId.value };
   busy.value = true; error.value = ''; status.value = '';
   try {
     const { job_id } = await parley.generateBrief(scopeKind.value, scopeId.value);
@@ -63,14 +74,17 @@ async function generate() {
       await new Promise((resolve) => globalThis.setTimeout(resolve, 1000));
       const job: RoleJob = await parley.getRoleJob(job_id);
       if (!['queued', 'running'].includes(job.status)) {
+        // The job belongs to the scope that started it; if the owner switched
+        // scope, never attach its outcome to the current scope.
+        if (scope.kind !== scopeKind.value || scope.id !== scopeId.value) return;
         await load();
         if (job.status !== 'succeeded') error.value = job.last_error ?? 'Briefer could not validate its proposals.';
         else status.value = 'Brief proposals are ready for owner review; no proposal is accepted automatically.';
         return;
       }
     }
-    error.value = 'Briefer is still running. Its durable job can be checked again later.';
-  } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not generate a brief.'; }
+    if (scope.kind === scopeKind.value && scope.id === scopeId.value) error.value = 'Briefer is still running. Its durable job can be checked again later.';
+  } catch (reason) { if (scope.kind === scopeKind.value && scope.id === scopeId.value) error.value = reason instanceof Error ? reason.message : 'Could not generate a brief.'; }
   finally { busy.value = false; }
 }
 

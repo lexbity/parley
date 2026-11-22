@@ -55,8 +55,20 @@ pub struct BoardPlacement {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BoardOpportunity {
+    pub id: String,
+    pub title: String,
+    pub state: String,
+    pub revision: i64,
+    pub participant_ids: Vec<String>,
+    pub source_variant_ids: Vec<String>,
+    pub material_ids: Vec<String>,
+    pub tags: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BoardCard {
-    pub opportunity: super::materials::Opportunity,
+    pub opportunity: BoardOpportunity,
     pub placement: BoardPlacement,
 }
 
@@ -73,6 +85,7 @@ struct BoardPlacementRow {
     participants: String,
     sources: String,
     materials: String,
+    tags: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -175,7 +188,8 @@ impl Workspace {
             "SELECT p.opportunity_id,p.list_id,p.position,p.revision AS placement_revision,o.notes_next_task AS next_task,o.title,o.state,o.revision AS opportunity_revision, \
              (SELECT json_group_array(party_id) FROM opportunity_party op WHERE op.opportunity_id=o.id) AS participants, \
              (SELECT json_group_array(source_variant_id) FROM source_opportunity_link sl WHERE sl.opportunity_id=o.id) AS sources, \
-             (SELECT json_group_array(id) FROM material m WHERE m.opportunity_id=o.id) AS materials \
+             (SELECT json_group_array(id) FROM material m WHERE m.opportunity_id=o.id) AS materials, \
+             (SELECT json_group_array(tag) FROM opportunity_tag t WHERE t.opportunity_id=o.id) AS tags \
              FROM board_placement p JOIN opportunity o ON o.id=p.opportunity_id JOIN board_list l ON l.id=p.list_id WHERE l.archived=0 ORDER BY l.position,p.position,p.opportunity_id",
         )
         .fetch_all(&mut *tx)
@@ -194,8 +208,9 @@ impl Workspace {
                 participants,
                 sources,
                 materials,
+                tags,
             } = row;
-            let opportunity = super::materials::Opportunity {
+            let opportunity = BoardOpportunity {
                 id: opportunity_id.clone(),
                 title,
                 state,
@@ -203,6 +218,7 @@ impl Workspace {
                 participant_ids: serde_json::from_str(&participants).unwrap_or_default(),
                 source_variant_ids: serde_json::from_str(&sources).unwrap_or_default(),
                 material_ids: serde_json::from_str(&materials).unwrap_or_default(),
+                tags: serde_json::from_str(&tags).unwrap_or_default(),
             };
             cards.push(BoardCard {
                 opportunity,

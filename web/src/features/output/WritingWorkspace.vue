@@ -5,6 +5,8 @@ import { parley, type GraphEntity, type Material, type Opportunity, type Resourc
 const props = defineProps<{ opportunities: Opportunity[]; parties: GraphEntity[]; resources: Resource[]; outputs: Material[] }>();
 const opportunityId = ref(''); const recipientId = ref(''); const interests = ref<WritingInterest[]>([]); const exchange = ref<{ current: Record<string, unknown> | null; versions: Array<Record<string, unknown>> }>({ current: null, versions: [] });
 const templates = ref<WritingTemplate[]>([]); const families = ref<Array<{ id: string; name: string }>>([]); const model = ref(''); const modelDigest = ref<string | null>(null); const calibratedKinds = ref<string[]>([]); const match = ref<WritingMatch | null>(null); const jobId = ref(''); const proposal = ref<Record<string, unknown> | null>(null);
+const proposalFor = ref<{ opportunityId: string; recipientId: string } | null>(null);
+const authoringGeneration = ref(0);
 const theirInterest = ref(''); const myInterest = ref(''); const exchangeTheyGet = ref(''); const exchangeIGet = ref(''); const familyName = ref('One ask'); const templateName = ref('One ask'); const templateBody = ref('{{their_name:name}},\nI can offer {{gift:guide}}.\nWould a short review be useful {{ask:next_step}}?'); const stage = ref('identified'); const channel = ref('email'); const templateId = ref(''); const slotValues = ref<Record<string, string>>({}); const responseMessage = ref(''); const errorMessage = ref(''); const busy = ref(false);
 const selectedOpportunity = computed(() => props.opportunities.find((item) => item.id === opportunityId.value));
 const participants = computed(() => selectedOpportunity.value?.participant_ids.map((id) => props.parties.find((party) => party.id === id)).filter((party): party is GraphEntity => !!party) ?? []);
@@ -19,8 +21,8 @@ async function refreshAuthoring() {
   try { [interests.value, exchange.value] = await Promise.all([parley.getWritingInterests(opportunityId.value, recipientId.value), parley.getWritingExchange(opportunityId.value, recipientId.value)]); }
   catch (reason) { errorMessage.value = reason instanceof Error ? reason.message : 'Could not load recipient evidence.'; }
 }
-watch(opportunityId, () => { recipientId.value = ''; match.value = null; refreshAuthoring(); });
-watch(recipientId, () => { match.value = null; refreshAuthoring(); });
+watch(opportunityId, () => { authoringGeneration.value += 1; recipientId.value = ''; match.value = null; refreshAuthoring(); });
+watch(recipientId, () => { authoringGeneration.value += 1; match.value = null; refreshAuthoring(); });
 watch([selectedTemplate, recipientId], () => { const recipient = participants.value.find((item) => item.id === recipientId.value); for (const slot of slots.value) if (slot.startsWith('their_name:') && recipient) slotValues.value[slot] = recipient.name; });
 onMounted(async () => {
   try { [templates.value, families.value, voiceSamples.value] = await Promise.all([parley.listWritingTemplates(), parley.listTemplateFamilies(), parley.listVoiceSamples()]); const state = await parley.getEmbeddingModel(); model.value = state.model; modelDigest.value = state.model_digest; calibratedKinds.value = state.calibrated_kinds; }
@@ -36,13 +38,32 @@ async function transitionTemplate(status: 'approve' | 'activate') { if (!templat
 async function setModel() { await parley.setEmbeddingModel(model.value.trim()); const state = await parley.getEmbeddingModel(); modelDigest.value = state.model_digest; calibratedKinds.value = state.calibrated_kinds; responseMessage.value = 'Embedding model changed. Matching is unavailable until thresholds are calibrated for its digest.'; }
 async function addVoiceSample() { await parley.createVoiceSample(voiceText.value.trim(), voiceChannel.value); voiceSamples.value = await parley.listVoiceSamples(); voiceText.value = ''; responseMessage.value = 'Owner voice sample saved. Existing outputs were not rewritten.'; }
 async function retireVoice(id: string) { await parley.retireVoiceSample(id); voiceSamples.value = await parley.listVoiceSamples(); responseMessage.value = 'Voice sample retired; its history is preserved.'; }
-async function buildTemplateCandidate() { const job = await parley.buildWritingTemplates({ stage_class: stage.value, rungs: [1], rules: requestedRules.value, channel: channel.value, max_chars: channel.value === 'email' ? 1200 : 300, voice_sample_ids: selectedVoiceIds.value }); await poll(job.job_id); }
+async function buildTemplateCandidate() { const job = await parley.buildWritingTemplates({ stage_class: stage.value, rungs: [1], rules: requestedRules.value, channel: channel.value, max_chars: channel.value === 'email' ? 1200 : 300, voice_sample_ids: selectedVoiceIds.value }); await poll(job.job_id, false); }
 function useTemplateCandidate(candidate: Record<string, unknown>) { if (typeof candidate.name === 'string') templateName.value = candidate.name; if (typeof candidate.body === 'string') templateBody.value = candidate.body; responseMessage.value = 'Candidate copied into the editable template form. It remains a proposal until owner validation and activation.'; }
-async function poll(id: string) { jobId.value = id; proposal.value = null; for (let attempt = 0; attempt < 360; attempt += 1) { const job = await parley.getRoleJob(id); if (!['queued', 'running'].includes(job.status)) { if (job.status === 'succeeded') proposal.value = job.result; else errorMessage.value = job.last_error ?? `Agent job ended as ${job.status}.`; return; } await new Promise((resolve) => globalThis.setTimeout(resolve, 1000)); } errorMessage.value = 'Agent job is still running. Its durable job id is retained so you can reopen it.'; }
+async function poll(id: string, scoped = true) {
+  const generation = authoringGeneration.value;
+  jobId.value = id;
+  proposal.value = null;
+  for (let attempt = 0; attempt < 360; attempt += 1) {
+    const job = await parley.getRoleJob(id);
+    if (!['queued', 'running'].includes(job.status)) {
+      if (generation !== authoringGeneration.value) return;
+      if (job.status === 'succeeded') {
+        proposal.value = job.result;
+        if (scoped) proposalFor.value = { opportunityId: opportunityId.value, recipientId: recipientId.value };
+      } else {
+        errorMessage.value = job.last_error ?? `Agent job ended as ${job.status}.`;
+      }
+      return;
+    }
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 1000));
+  }
+  if (generation === authoringGeneration.value) errorMessage.value = 'Agent job is still running. Its durable job id is retained so you can reopen it.';
+}
 async function runMatch() { if (!opportunityId.value || !recipientId.value) return; if (!modelDigest.value) throw new Error('No local embedding model digest is available. Configure the model in Settings first.'); const job = await parley.startMatching(opportunityId.value, recipientId.value); await poll(job.job_id); if (proposal.value) { try { match.value = await parley.getWritingMatch(opportunityId.value, recipientId.value); } catch (reason) { errorMessage.value = reason instanceof Error ? reason.message : 'Match result is not current.'; } } }
 function matchedIds(): string[] { if (!match.value) return []; try { const value: unknown = JSON.parse(match.value.shortlist_json); if (!Array.isArray(value)) return []; return value.flatMap((entry) => typeof entry === 'object' && entry !== null && typeof (entry as { asset_id?: unknown }).asset_id === 'string' ? [(entry as { asset_id: string }).asset_id] : []); } catch { return []; } }
 async function compose() { if (!opportunityId.value || !recipientId.value || !selectedTemplate.value || !exchangeVersion.value) throw new Error('Select an active template and save and attest an exchange first.'); const fills = slots.value.map((slot) => { const value = slotValues.value[slot]?.trim(); if (!value) throw new Error(`Fill the ${slot} slot before composing.`); const resource = props.resources.find((item) => item.id === value && item.readiness === 'ready'); return { slot, value, ...(resource ? { resource_id: resource.id } : {}) }; }); const job = await parley.composeWritingMaterial(opportunityId.value, { recipient_id: recipientId.value, kind: 'outreach', template_version_id: selectedTemplate.value.id, exchange_version: exchangeVersion.value, slot_fills: fills, selected_match_ids: matchedIds() }); await poll(job.job_id); }
-async function saveDraft() { if (!proposal.value || !opportunityId.value || typeof proposal.value.body !== 'string') throw new Error('There is no completed Composer proposal to save.'); const saved = await parley.saveWritingDraft(opportunityId.value, jobId.value, proposal.value.body); responseMessage.value = `Draft saved as ${String(saved.material_id ?? 'a new material')}; it is not approved or released.`; }
+async function saveDraft() { if (!proposal.value || !opportunityId.value || typeof proposal.value.body !== 'string') throw new Error('There is no completed Composer proposal to save.'); const origin = proposalFor.value; if (!origin || origin.opportunityId !== opportunityId.value || origin.recipientId !== recipientId.value) throw new Error('This proposal belongs to the previously selected opportunity or recipient; switch back to it or generate a new proposal.'); const saved = await parley.saveWritingDraft(opportunityId.value, jobId.value, proposal.value.body); responseMessage.value = `Draft saved as ${String(saved.material_id ?? 'a new material')}; it is not approved or released.`; }
 </script>
 
 <template>

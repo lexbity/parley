@@ -63,4 +63,32 @@ describe('WritingWorkspace', () => {
     expect(wrapper.findAll('button').some((item) => item.text().includes('Release'))).toBe(false);
     wrapper.unmount();
   });
+
+  it('refuses to save a composer proposal generated for one opportunity under another', async () => {
+    const secondOpportunity: Opportunity = { id: 'opp-2', title: 'Second onboarding', state: 'open', revision: 1, participant_ids: [party.id], source_variant_ids: [], material_ids: [] };
+    vi.spyOn(parley, 'listWritingTemplates').mockResolvedValue([]);
+    vi.spyOn(parley, 'listTemplateFamilies').mockResolvedValue([]);
+    vi.spyOn(parley, 'listVoiceSamples').mockResolvedValue([]);
+    vi.spyOn(parley, 'getEmbeddingModel').mockResolvedValue({ model: 'local', model_digest: 'digest-1', calibrated_kinds: ['gift'] });
+    vi.spyOn(parley, 'getWritingInterests').mockResolvedValue([]);
+    vi.spyOn(parley, 'getWritingExchange').mockResolvedValue({ current: null, versions: [] });
+    vi.spyOn(parley, 'startMatching').mockResolvedValue({ job_id: 'job-a', role: 'matcher' });
+    vi.spyOn(parley, 'getRoleJob').mockResolvedValue({ status: 'succeeded', result: { body: 'stale proposal body' } } as unknown as Awaited<ReturnType<typeof parley.getRoleJob>>);
+    vi.spyOn(parley, 'getWritingMatch').mockResolvedValue({ id: 'match-a', opportunity_id: 'opp-1', recipient_id: party.id, embed_model_digest: 'digest-1', calibration_json: '{}', shortlist_json: '[]', why_job_id: null } as Awaited<ReturnType<typeof parley.getWritingMatch>>);
+    const save = vi.spyOn(parley, 'saveWritingDraft').mockResolvedValue({ material_id: 'mat-1' });
+    const wrapper = mount(WritingWorkspace, { props: { opportunities: [opportunity, secondOpportunity], parties: [party], resources: [], outputs: [] } });
+    await flushPromises();
+
+    await wrapper.findAll('select')[0]!.setValue('opp-1'); await wrapper.findAll('select')[1]!.setValue(party.id); await flushPromises();
+    await wrapper.findAll('button').find((item) => item.text() === 'Run exact matcher')!.trigger('click'); await flushPromises();
+    expect(wrapper.text()).toContain('stale proposal body');
+
+    // Switch to a different opportunity. The proposal belongs to opp-1 and
+    // must not be savable under opp-2 (F-FR-1).
+    await wrapper.findAll('select')[0]!.setValue('opp-2'); await flushPromises();
+    await wrapper.findAll('button').find((item) => item.text() === 'Save proposal as draft')!.trigger('click'); await flushPromises();
+    expect(save).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain('belongs to');
+    wrapper.unmount();
+  });
 });

@@ -297,7 +297,7 @@ describe('ParleyClient S09 recipient writing commands', () => {
 describe('ParleyClient S05 board and canonical notes commands', () => {
   const board = {
     lists: [{ id: 'list-a', title: 'Today', position: 0, archived: false, revision: 2 }],
-    cards: [{ opportunity: { id: 'op-1', title: 'Onboarding', state: 'open', revision: 1, participant_ids: ['party 1'], source_variant_ids: [], material_ids: [] }, placement: { opportunity_id: 'op-1', list_id: 'list-a', position: 0, revision: 3, next_task: 'Review checklist' } }],
+    cards: [{ opportunity: { id: 'op-1', title: 'Onboarding', state: 'open', revision: 1, participant_ids: ['party 1'], source_variant_ids: [], material_ids: [], tags: [] }, placement: { opportunity_id: 'op-1', list_id: 'list-a', position: 0, revision: 3, next_task: 'Review checklist' } }],
   };
   const notes = {
     opportunity_id: 'op-1', markdown: '🧭\n- [ ] Review checklist\n', revision: 2, next_task: 'Review checklist',

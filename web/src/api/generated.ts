@@ -2132,8 +2132,18 @@ export interface components {
             revision: number;
             next_task: string | null;
         };
+        BoardOpportunity: {
+            id: string;
+            title: string;
+            state: string;
+            revision: number;
+            participant_ids: string[];
+            source_variant_ids: string[];
+            material_ids: string[];
+            tags: string[];
+        };
         BoardCard: {
-            opportunity: components["schemas"]["Opportunity"];
+            opportunity: components["schemas"]["BoardOpportunity"];
             placement: components["schemas"]["BoardPlacement"];
         };
         BoardSnapshot: {

@@ -37,7 +37,8 @@ export type AdminOperation = 'restore' | 'erase_party' | 'erase_workspace';
 export type AdminPreview = { id: string; operation: AdminOperation; digest: string; workspace_epoch: string; event_cursor: string; expires_at: string; backup: AdminBackup | null; party: { id: string; name: string } | null; impact: Record<string, number>; preserved_shared: Record<string, number> };
 export type AdminJob = { id: string; operation: AdminOperation; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'; summary: string | null; new_epoch: string | null; last_error: string | null };
 export type BoardList = components['schemas']['BoardList'];
-export type BoardPlacement = { opportunity: Opportunity; opportunity_id: string; list_id: string; position: number; placement_revision: number; next_task: string | null };
+export type BoardOpportunity = Opportunity & { tags: string[] };
+export type BoardPlacement = { opportunity: BoardOpportunity; opportunity_id: string; list_id: string; position: number; placement_revision: number; next_task: string | null };
 export type BoardSnapshot = { lists: BoardList[]; cards: BoardPlacement[] };
 export type OpportunityNotes = components['schemas']['OpportunityNotes'];
 export type OpportunityTask = NonNullable<OpportunityNotes['tasks']>[number];
@@ -224,6 +225,15 @@ function decodeBoardList(value: unknown): BoardList {
   };
 }
 
+function decodeBoardOpportunity(value: unknown): BoardOpportunity {
+  const opportunity = decodeOpportunity(value);
+  const item = object(value);
+  const tags = Array.isArray(item?.tags)
+    ? item.tags.flatMap((entry) => typeof entry === 'string' ? [entry] : [])
+    : [];
+  return { ...opportunity, tags };
+}
+
 function decodeBoardPlacement(value: unknown): BoardPlacement {
   const item = object(value);
   const placement = item ? object(item.placement) : null;
@@ -232,7 +242,7 @@ function decodeBoardPlacement(value: unknown): BoardPlacement {
     throw new Error('Invalid response: board placement is malformed');
   }
   return {
-    opportunity: decodeOpportunity(item.opportunity),
+    opportunity: decodeBoardOpportunity(item.opportunity),
     opportunity_id: requiredString(placement.opportunity_id, 'placement.opportunity_id'),
     list_id: requiredString(placement.list_id, 'placement.list_id'),
     position: Number(placement.position),
@@ -790,6 +800,25 @@ export class ParleyClient {
     return decodeBoardSnapshot(await this.request('/board'));
   }
 
+  async setOpportunityTags(
+    opportunityId: string,
+    input: { expected_revision: number; tags: string[] },
+    key = newOperationKey(),
+  ): Promise<{ id: string; title: string; state: string; revision: number; tags: string[] }> {
+    const value = object(await this.mutate(`/opportunities/${encodeURIComponent(opportunityId)}/tags`, 'PUT', input, { 'Idempotency-Key': key }));
+    if (!value || !Number.isSafeInteger(value.revision) || !Array.isArray(value.tags)) {
+      throw new Error('Invalid response: updated opportunity tags are malformed');
+    }
+    const tags = value.tags.flatMap((entry) => typeof entry === 'string' ? [entry] : []);
+    return {
+      id: requiredString(value.id, 'opportunity.id'),
+      title: requiredString(value.title, 'opportunity.title'),
+      state: requiredString(value.state, 'opportunity.state'),
+      revision: Number(value.revision),
+      tags,
+    };
+  }
+
   async getDailyQueue(filters: { q?: string; party_id?: string; tag?: string; status?: string; due_before?: string; missing_material?: boolean; list_id?: string } = {}): Promise<DailyQueueSnapshot> {
     const query = new URLSearchParams({ view: 'daily' });
     for (const [key, value] of Object.entries(filters)) if (typeof value === 'string' && value.length) query.set(key, value);
@@ -1196,6 +1225,33 @@ export class ParleyClient {
     }
     if (!response.ok) throw decodeApiError(payload, response.status);
     return payload;
+  }
+
+  async downloadMaterialBytes(materialId: string, releaseId: string): Promise<{ bytes: ArrayBuffer; contentType: string; filename: string; size: number }> {
+    const headers = new Headers({ Accept: 'application/octet-stream' });
+    if (this.session) {
+      headers.set('X-Parley-Token', this.session.mutation_token);
+      headers.set('X-Parley-Epoch', this.session.epoch);
+    }
+    const response = await fetch(`/api/v1/materials/${encodeURIComponent(materialId)}/download?release_id=${encodeURIComponent(releaseId)}`, {
+      headers,
+      credentials: 'same-origin',
+      cache: 'no-store',
+    });
+    if (!response.ok) {
+      let payload: unknown = null;
+      try { payload = await response.json(); } catch { /* non-JSON error body */ }
+      throw decodeApiError(payload, response.status);
+    }
+    const disposition = response.headers.get('content-disposition') ?? '';
+    const filenameMatch = /filename="([^"]+)"/.exec(disposition);
+    const bytes = await response.arrayBuffer();
+    return {
+      bytes,
+      contentType: response.headers.get('content-type') ?? 'application/octet-stream',
+      filename: filenameMatch?.[1] ?? 'download.bin',
+      size: bytes.byteLength,
+    };
   }
 
   private async requestBlob(path: string, init: RequestInit = {}): Promise<Blob> {

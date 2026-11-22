@@ -33,7 +33,7 @@ const notes: OpportunityNotes = {
   opportunity_id: 'o1', markdown: '🧭\n- [ ] Review checklist\n', revision: 1, next_task: 'Review checklist',
   tasks: [{ byte_start: 5, byte_end: 29, line_sha256: taskHash, checked: false, text: 'Review checklist' }],
 };
-const opportunity = { id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: [] };
+const opportunity = { id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: [], tags: ['tested'] };
 const board: BoardSnapshot = {
   lists: [
     { id: 'a', title: 'Today', position: 0, archived: false, revision: 1 },
@@ -57,6 +57,7 @@ function stub(boardValue: BoardSnapshot = board) {
   vi.spyOn(parley, 'listThreads').mockResolvedValue([]);
   vi.spyOn(parley, 'updateOpportunityNotes').mockResolvedValue({ ...notes, revision: 2 });
   vi.spyOn(parley, 'toggleOpportunityTask').mockResolvedValue({ ...notes, markdown: '🧭\n- [x] Review checklist\n', revision: 2, next_task: null, tasks: [{ ...notes.tasks[0]!, checked: true }] });
+  vi.spyOn(parley, 'setOpportunityTags').mockResolvedValue({ id: 'o1', title: 'Onboarding', state: 'open', revision: 2, tags: [] });
   return mount(QueueWorkspace, { props: { parties, outputs: [] } });
 }
 
@@ -177,6 +178,104 @@ describe('QueueWorkspace S05 board and card behavior', () => {
     await wrapper.findAll('button').find((button) => button.text() === 'Discard local notes and load current workspace')!.trigger('click'); await flushPromises();
     expect(refreshSession).toHaveBeenCalledOnce();
     expect(parley.updateOpportunityNotes).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+});
+
+describe('QueueWorkspace F-FR-1 open-card race', () => {
+  it('keeps the last-clicked card when an earlier notes response resolves later', async () => {
+    const opportunityB = { id: 'o2', title: 'Onboarding B', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: [], tags: [] };
+    const boardTwo: BoardSnapshot = {
+      lists: [{ id: 'a', title: 'Today', position: 0, archived: false, revision: 1 }],
+      cards: [
+        { opportunity, opportunity_id: 'o1', list_id: 'a', position: 0, placement_revision: 1, next_task: 'Review checklist' },
+        { opportunity: opportunityB, opportunity_id: 'o2', list_id: 'a', position: 1, placement_revision: 1, next_task: null },
+      ],
+    };
+    function deferred<T>() {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>((done) => { resolve = done; });
+      return { promise, resolve };
+    }
+    const first = deferred<OpportunityNotes>();
+    const second = deferred<OpportunityNotes>();
+    vi.spyOn(parley, 'getOpportunityNotes')
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    const wrapper = stub(boardTwo);
+    await flushPromises();
+
+    // Two route-driven opens race: o1 then o2, with o1's notes resolving
+    // last and o2's resolving first. The stale o1 response must be dropped.
+    await wrapper.setProps({ routeId: 'o1' });
+    await flushPromises();
+    await wrapper.setProps({ routeId: 'o2' });
+    await flushPromises();
+    second.resolve({ ...notes, opportunity_id: 'o2', markdown: 'B notes\n' });
+    await flushPromises();
+    first.resolve({ ...notes, markdown: 'A notes\n' });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Onboarding B');
+    expect(notesView(wrapper).state.doc.toString()).toContain('B notes');
+    wrapper.unmount();
+  });
+});
+
+describe('QueueWorkspace FE-09 filters and sort', () => {
+  it('edits normalized opportunity tags and updates the card revision', async () => {
+    const wrapper = stub(); await flushPromises();
+    const tagInput = wrapper.get('input[aria-label="Edit tags for Onboarding"]');
+    await tagInput.setValue('Onboarding, tested, Onboarding');
+    await wrapper.findAll('button').find((button) => button.text() === 'Save tags')!.trigger('click');
+    await flushPromises();
+    expect(parley.setOpportunityTags).toHaveBeenCalledWith('o1', { expected_revision: 1, tags: ['onboarding', 'tested'] });
+    expect(wrapper.text()).toContain('Tags saved for Onboarding.');
+    wrapper.unmount();
+  });
+
+  it('filters the table and the board by an applied tag', async () => {
+    const opportunityB = { id: 'o2', title: 'Onboarding B', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: [], tags: [] };
+    const boardTwo: BoardSnapshot = {
+      lists: [{ id: 'a', title: 'Today', position: 0, archived: false, revision: 1 }],
+      cards: [
+        { opportunity, opportunity_id: 'o1', list_id: 'a', position: 0, placement_revision: 1, next_task: 'Review checklist' },
+        { opportunity: opportunityB, opportunity_id: 'o2', list_id: 'a', position: 1, placement_revision: 1, next_task: null },
+      ],
+    };
+    const wrapper = stub(boardTwo); await flushPromises();
+    await wrapper.get('input[aria-label="Filter by tag"]').setValue('tested');
+    await wrapper.findAll('button').find((button) => button.text() === 'Apply to board and table')!.trigger('click');
+    await flushPromises();
+    const rows = wrapper.findAll('tbody tr[data-opportunity-id]');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.attributes('data-opportunity-id')).toBe('o1');
+    expect(wrapper.get('[aria-label="Opportunity board"]').text()).toContain('Onboarding');
+    expect(wrapper.get('[aria-label="Opportunity board"]').text()).not.toContain('Onboarding B');
+    // Clearing the filter restores both views.
+    await wrapper.get('input[aria-label="Filter by tag"]').setValue('');
+    await wrapper.findAll('button').find((button) => button.text() === 'Apply to board and table')!.trigger('click');
+    await flushPromises();
+    expect(wrapper.findAll('tbody tr[data-opportunity-id]')).toHaveLength(2);
+    wrapper.unmount();
+  });
+
+  it('sorts the table by next task with actionable rows first', async () => {
+    const opportunityB = { id: 'o2', title: 'Onboarding B', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: [], tags: [] };
+    const boardTwo: BoardSnapshot = {
+      lists: [{ id: 'a', title: 'Today', position: 0, archived: false, revision: 1 }],
+      cards: [
+        { opportunity, opportunity_id: 'o1', list_id: 'a', position: 0, placement_revision: 1, next_task: 'Review checklist' },
+        { opportunity: opportunityB, opportunity_id: 'o2', list_id: 'a', position: 1, placement_revision: 1, next_task: null },
+      ],
+    };
+    const wrapper = stub(boardTwo); await flushPromises();
+    await wrapper.get('select[aria-label="Sort opportunities"]').setValue('next_task');
+    await wrapper.findAll('button').find((button) => button.text() === 'Apply to board and table')!.trigger('click');
+    await flushPromises();
+    const rows = wrapper.findAll('tbody tr[data-opportunity-id]');
+    expect(rows[0]!.attributes('data-opportunity-id')).toBe('o1');
+    expect(rows[1]!.attributes('data-opportunity-id')).toBe('o2');
     wrapper.unmount();
   });
 });

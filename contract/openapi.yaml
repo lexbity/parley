@@ -3475,11 +3475,24 @@ components:
         revision: {type: integer, minimum: 1}
         next_task: {type: string, nullable: true}
       additionalProperties: false
+    BoardOpportunity:
+      type: object
+      required: [id, title, state, revision, participant_ids, source_variant_ids, material_ids, tags]
+      properties:
+        id: {type: string}
+        title: {type: string}
+        state: {type: string}
+        revision: {type: integer, minimum: 1}
+        participant_ids: {type: array, items: {type: string}}
+        source_variant_ids: {type: array, items: {type: string}}
+        material_ids: {type: array, items: {type: string}}
+        tags: {type: array, items: {type: string}}
+      additionalProperties: false
     BoardCard:
       type: object
       required: [opportunity, placement]
       properties:
-        opportunity: {$ref: '#/components/schemas/Opportunity'}
+        opportunity: {$ref: '#/components/schemas/BoardOpportunity'}
         placement: {$ref: '#/components/schemas/BoardPlacement'}
       additionalProperties: false
     BoardSnapshot:

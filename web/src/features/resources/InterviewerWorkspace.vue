@@ -10,6 +10,7 @@ const historyId = ref('');
 const message = ref('');
 const title = ref('');
 const fieldsJson = ref('{}');
+const editing = ref(false);
 const bank = ref<Record<string, unknown>>({});
 const busy = ref(false);
 const error = ref('');
@@ -26,7 +27,7 @@ async function refreshChat() {
   if (!chatId.value) return;
   chat.value = await parley.getAgentChat(chatId.value);
   const proposed = candidate.value;
-  if (proposed) {
+  if (proposed && !editing.value) {
     title.value = String(proposed.fields.title ?? '');
     fieldsJson.value = JSON.stringify(proposed.fields, null, 2);
   }
@@ -39,6 +40,8 @@ async function loadHistory() {
 async function openHistory() {
   if (!historyId.value) return;
   chatId.value = historyId.value;
+  editing.value = false;
+  message.value = '';
   chat.value = await parley.getAgentChat(historyId.value);
   kind.value = chat.value.asset_kind ?? 'proof';
   const proposed = candidate.value;
@@ -53,6 +56,8 @@ async function start() {
   try {
     chat.value = await parley.createAgentChat({ role: 'interviewer', scope_kind: 'owner', asset_kind: kind.value });
     chatId.value = chat.value.id;
+    editing.value = false;
+    message.value = '';
     await loadHistory();
     status.value = `Interviewer started for a ${kind.value} candidate. Nothing is saved until you confirm it.`;
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not start the Interviewer.'; }
@@ -60,12 +65,20 @@ async function start() {
 }
 
 async function waitForJob(id: string) {
+  const startedChat = chatId.value;
   for (let attempt = 0; attempt < 180; attempt += 1) {
     await new Promise((resolve) => globalThis.setTimeout(resolve, 1000));
     const job: RoleJob = await parley.getRoleJob(id);
-    if (!['queued', 'running'].includes(job.status)) { await refreshChat(); if (job.status !== 'succeeded') error.value = job.last_error ?? 'Interviewer could not validate its proposal. Continue manually.'; return; }
+    if (!['queued', 'running'].includes(job.status)) {
+      // The job belongs to the chat that started it; if the owner switched
+      // chats, never attach its outcome or refresh to the current chat.
+      if (chatId.value !== startedChat) return;
+      await refreshChat();
+      if (job.status !== 'succeeded') error.value = job.last_error ?? 'Interviewer could not validate its proposal. Continue manually.';
+      return;
+    }
   }
-  error.value = 'Interviewer is still running. Your conversation is saved and can be reopened.';
+  if (chatId.value === startedChat) error.value = 'Interviewer is still running. Your conversation is saved and can be reopened.';
 }
 
 async function sendTurn() {
@@ -95,7 +108,7 @@ async function confirmCandidate() {
   try {
     const fields = JSON.parse(fieldsJson.value) as Record<string, unknown>;
     await parley.confirmInterviewerCandidate(candidate.value.id, { title: title.value.trim(), fields, expected_chat_revision: chat.value.revision });
-    await refreshChat(); status.value = 'Owner-confirmed resource saved. Its readiness follows the typed resource validator.';
+    await refreshChat(); editing.value = false; status.value = 'Owner-confirmed resource saved. Its readiness follows the typed resource validator.';
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Candidate fields must be valid JSON.'; }
   finally { busy.value = false; }
 }
@@ -103,7 +116,7 @@ async function confirmCandidate() {
 async function dismissCandidate() {
   if (!candidate.value) return;
   busy.value = true; error.value = '';
-  try { await parley.dismissInterviewerCandidate(candidate.value.id); await refreshChat(); status.value = 'Candidate dismissed; its values were not saved.'; }
+  try { await parley.dismissInterviewerCandidate(candidate.value.id); await refreshChat(); editing.value = false; status.value = 'Candidate dismissed; its values were not saved.'; }
   catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not dismiss candidate.'; }
   finally { busy.value = false; }
 }
@@ -221,11 +234,13 @@ onMounted(async () => { try { bank.value = (await parley.getQuestionBank()).cont
       <label>Title<input
         v-model="title"
         maxlength="240"
+        @input="editing = true"
       ></label>
       <label>Editable fields JSON<textarea
         v-model="fieldsJson"
         rows="8"
         spellcheck="false"
+        @input="editing = true"
       /></label>
       <details><summary>Owner quote evidence</summary><pre>{{ JSON.stringify(candidate.owner_quotes, null, 2) }}</pre></details>
       <button

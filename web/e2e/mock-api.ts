@@ -903,6 +903,27 @@ export function createMockApi(): MockApi {
       if (!opportunity) return fail(response, 404, 'NOT_FOUND', 'Opportunity does not exist');
       return json(response, 200, opportunity);
     }
+    const opportunityTags = /^\/api\/v1\/opportunities\/([^/]+)\/tags$/.exec(url.pathname);
+    if (opportunityTags && request.method === 'PUT') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const opportunity = opportunities.get(opportunityTags[1]!);
+      if (!opportunity) return fail(response, 404, 'NOT_FOUND', 'Opportunity does not exist');
+      if (input.expected_revision !== opportunity.revision) return fail(response, 409, 'REVISION_CONFLICT', 'opportunity revision changed');
+      const tags = Array.isArray(input.tags)
+        ? [...new Set(input.tags.flatMap((entry) => typeof entry === 'string' && entry.trim() ? [entry.trim().toLowerCase()] : []))].sort()
+        : [];
+      opportunity.revision = Number(opportunity.revision) + 1;
+      opportunity.tags = tags;
+      const participants = (opportunity.participant_ids as string[]).map((id: string) => {
+        const entity = directory.get(id);
+        return { id, name: entity?.name ?? id, kind: entity?.kind ?? 'person' };
+      });
+      return json(response, 200, {
+        id: opportunity.id, title: opportunity.title, state: opportunity.state, revision: opportunity.revision,
+        participants, tags, next_task: opportunity.next_task ?? null, next_deadline: null, missing_material: false,
+      });
+    }
     if (url.pathname === '/api/v1/opportunities' && request.method === 'POST') {
       let input: RecordData;
       try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
@@ -910,7 +931,7 @@ export function createMockApi(): MockApi {
       if (!participant || !['person', 'org'].includes(participant.kind) || typeof input.title !== 'string' || !input.title.trim()) {
         return fail(response, 422, 'OPPORTUNITY_INVALID', 'A title and selected participant are required');
       }
-      const record = { id: randomHex(), title: input.title.trim(), state: 'open', revision: 1, participant_ids: [participant.id], source_variant_ids: [], material_ids: [] };
+      const record = { id: randomHex(), title: input.title.trim(), state: 'open', revision: 1, participant_ids: [participant.id], source_variant_ids: [], material_ids: [], tags: [] };
       opportunities.set(record.id, record);
       const homeList = boardLists.find((list) => !list.archived)!;
       const position = [...placements.values()].filter((placement) => placement.list_id === homeList.id).length;

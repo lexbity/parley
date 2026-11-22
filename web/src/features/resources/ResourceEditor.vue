@@ -24,6 +24,10 @@ const conflict = ref<{
   local: { title: string; body: Record<string, unknown> };
 } | null>(null);
 const selected = computed(() => resources.value.find((item) => item.id === selectedId.value) ?? null);
+const workspaceQuarantined = ref(false);
+const quarantinedTitle = ref('');
+const quarantinedDescription = ref('');
+const quarantineStatus = ref('');
 
 function bodyValue(): Record<string, unknown> {
   return { description: description.value, delivery: delivery.value };
@@ -49,6 +53,7 @@ async function refresh(): Promise<void> {
 }
 
 function newResource(): void {
+  if (workspaceQuarantined.value) return;
   if (dirty.value && !globalThis.confirm('Discard this unsaved resource draft and start another?')) return;
   selectedId.value = null;
   kind.value = 'gift';
@@ -64,6 +69,7 @@ function newResource(): void {
 }
 
 function edit(resource: Resource, reviewedReplacement = false): void {
+  if (workspaceQuarantined.value) return;
   if (pending.value) return;
   if (dirty.value && !reviewedReplacement && !globalThis.confirm('Discard this unsaved resource edit?')) return;
   selectedId.value = resource.id;
@@ -102,6 +108,7 @@ function reapplyConflict(): void {
 }
 
 async function save(): Promise<void> {
+  if (workspaceQuarantined.value) return;
   missing.value = validate();
   if (missing.value.length) {
     status.value = `Draft has missing fields: ${missing.value.join(', ')}.`;
@@ -142,6 +149,15 @@ async function save(): Promise<void> {
         };
         status.value = 'This resource changed in another session. Compare both versions before applying your edit.';
       }
+    } else if (error instanceof ApiError && (error.status === 401 || (error.status === 409 && error.code === 'WORKSPACE_REPLACED'))) {
+      // The workspace epoch changed underneath this tab: the draft cannot be
+      // saved into the restored workspace and must be quarantined.
+      pending.value = null;
+      quarantinedTitle.value = intent.input.title;
+      quarantinedDescription.value = String(intent.input.body.description ?? '');
+      workspaceQuarantined.value = true;
+      quarantineStatus.value = 'The workspace epoch changed while saving; this draft is isolated and cannot be saved into the current workspace.';
+      globalThis.dispatchEvent(new globalThis.CustomEvent('parley:workspace-quarantined'));
     } else if (error instanceof TypeError) {
       status.value = 'Save status unknown. Your text is still here; retry the same save to reconcile it.';
     } else {
@@ -153,13 +169,57 @@ async function save(): Promise<void> {
 }
 
 async function reload(): Promise<void> {
+  if (workspaceQuarantined.value) return;
   if (dirty.value && !globalThis.confirm('Reloading can discard unacknowledged edits. Continue?')) return;
   dirty.value = false;
   await refresh();
 }
 
+async function onWorkspaceChanged(event: unknown): Promise<void> {
+  const detailEvent = event as { detail?: { operation?: string } };
+  if (!['restore', 'erase_workspace', 'erase_party'].includes(detailEvent.detail?.operation ?? '')) return;
+  if (dirty.value || pending.value) {
+    // Never retry a save into a replaced workspace; isolate the draft.
+    pending.value = null;
+    quarantinedTitle.value = title.value;
+    quarantinedDescription.value = description.value;
+    workspaceQuarantined.value = true;
+    quarantineStatus.value = 'This workspace was replaced. The draft buffer is isolated and cannot be saved into the restored workspace.';
+    globalThis.dispatchEvent(new globalThis.CustomEvent('parley:workspace-quarantined'));
+    return;
+  }
+  await refresh();
+}
+
+async function copyQuarantined(): Promise<void> {
+  const text = `Title: ${quarantinedTitle.value}\n\nDescription: ${quarantinedDescription.value}`;
+  try {
+    await globalThis.navigator.clipboard.writeText(text);
+    quarantineStatus.value = 'Unsaved draft copied. It remains quarantined until you discard it or close this workspace.';
+  } catch {
+    quarantineStatus.value = 'Clipboard access was denied. Select and copy the read-only text manually; it remains quarantined.';
+  }
+}
+
+async function discardQuarantined(): Promise<void> {
+  workspaceQuarantined.value = false;
+  quarantineStatus.value = '';
+  dirty.value = false;
+  pending.value = null;
+  conflict.value = null;
+  selectedId.value = null;
+  kind.value = 'gift';
+  title.value = '';
+  description.value = '';
+  delivery.value = 'on_request';
+  await parley.refreshSession();
+  await refresh();
+  globalThis.dispatchEvent(new globalThis.CustomEvent('parley:workspace-reloaded'));
+}
+
 onMounted(async () => {
   globalThis.addEventListener('beforeunload', warnAboutDirtyDraft);
+  globalThis.addEventListener('parley:workspace-changed', onWorkspaceChanged);
   try {
     await parley.connect();
     await refresh();
@@ -171,7 +231,10 @@ onMounted(async () => {
 });
 watch(() => props.routeId, () => openRoutedResource());
 
-onUnmounted(() => globalThis.removeEventListener('beforeunload', warnAboutDirtyDraft));
+onUnmounted(() => {
+  globalThis.removeEventListener('beforeunload', warnAboutDirtyDraft);
+  globalThis.removeEventListener('parley:workspace-changed', onWorkspaceChanged);
+});
 
 function warnAboutDirtyDraft(event: { preventDefault: () => void }): void {
   if (!dirty.value && !pending.value) return;
@@ -185,6 +248,42 @@ function warnAboutDirtyDraft(event: { preventDefault: () => void }): void {
     class="resources"
     aria-label="Resources workspace"
   >
+    <section
+      v-if="workspaceQuarantined"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="resource-quarantine-heading"
+      class="quarantine-dialog"
+    >
+      <h2 id="resource-quarantine-heading">
+        Unsaved resource draft quarantined
+      </h2>
+      <p>The workspace changed while this draft was unsaved. It is not being replayed into the restored data.</p>
+      <label>Copy out the isolated draft<textarea
+        readonly
+        aria-label="Quarantined draft text"
+        :value="quarantinedTitle + '\n\n' + quarantinedDescription"
+        rows="8"
+      /></label>
+      <button
+        type="button"
+        @click="copyQuarantined"
+      >
+        Copy quarantined draft
+      </button>
+      <button
+        type="button"
+        @click="discardQuarantined"
+      >
+        Discard local draft and load current workspace
+      </button>
+      <p
+        v-if="quarantineStatus"
+        role="status"
+      >
+        {{ quarantineStatus }}
+      </p>
+    </section>
     <div class="resource-list">
       <div class="resource-actions">
         <button
@@ -356,5 +455,6 @@ button { min-height: 2.5rem; padding: .4rem .75rem; }
 .field-error { color: #8a1c1c; font-weight: 400; }
 .conflict { border-left: .25rem solid #8a1c1c; padding: .5rem 1rem; background: #fff7f7; }
 .status { grid-column: 1 / -1; min-height: 1.5rem; }
+.quarantine-dialog { position: fixed; z-index: 1000; inset: 10vh max(1rem, calc((100vw - 42rem) / 2)); max-height: 80vh; overflow: auto; background: white; border: 2px solid #80552a; border-radius: .5rem; padding: 1.25rem; box-shadow: 0 1rem 3rem #0005; display: grid; gap: .75rem; }
 @media (max-width: 48rem) { .resources { grid-template-columns: 1fr; } .status { grid-column: auto; } }
 </style>

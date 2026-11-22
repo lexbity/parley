@@ -232,4 +232,41 @@ describe('ResourceEditor', () => {
     expect((wrapper.get('input').element as HTMLInputElement).value).toBe('Keep this draft');
     wrapper.unmount();
   });
+
+  it('quarantines a dirty draft on workspace replacement with copy-out and discard', async () => {
+    let clipboardDescriptor: PropertyDescriptor | undefined;
+    try {
+      vi.spyOn(parley, 'connect').mockResolvedValue();
+      vi.spyOn(parley, 'listResources').mockResolvedValue([resource]);
+      const refreshSession = vi.spyOn(parley, 'refreshSession').mockResolvedValue();
+      const wrapper = mount(ResourceEditor);
+      await flushPromises();
+      await wrapper.findAll('li button').find((button) => button.text().includes('Offer'))?.trigger('click');
+      await wrapper.get('input').setValue('Unsaved resource draft');
+
+      const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+      clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: clipboardWrite } });
+
+      globalThis.dispatchEvent(new globalThis.CustomEvent('parley:workspace-changed', { detail: { operation: 'restore' } }));
+      await flushPromises();
+
+      expect(wrapper.get('[role="alertdialog"]').text()).toContain('Unsaved resource draft quarantined');
+      expect(wrapper.get('textarea[aria-label="Quarantined draft text"]').element).toMatchObject({ value: expect.stringContaining('Unsaved resource draft') });
+
+      await wrapper.findAll('button').find((button) => button.text() === 'Copy quarantined draft')!.trigger('click');
+      await flushPromises();
+      expect(clipboardWrite).toHaveBeenCalledWith(expect.stringContaining('Unsaved resource draft'));
+
+      await wrapper.findAll('button').find((button) => button.text() === 'Discard local draft and load current workspace')!.trigger('click');
+      await flushPromises();
+      expect(refreshSession).toHaveBeenCalledOnce();
+      expect(wrapper.text()).not.toContain('Unsaved resource draft quarantined');
+      expect((wrapper.get('input').element as HTMLInputElement).value).toBe('');
+      wrapper.unmount();
+    } finally {
+      if (clipboardDescriptor) Object.defineProperty(navigator, 'clipboard', clipboardDescriptor);
+      else Reflect.deleteProperty(navigator, 'clipboard');
+    }
+  });
 });

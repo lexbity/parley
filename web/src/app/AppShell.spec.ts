@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises } from '@vue/test-utils';
-import { parley, type BoardSnapshot, type ExtractorJob, type GraphEntity, type Material, type Opportunity, type SavedSource } from '../api/client';
+import { parley, type BoardOpportunity, type BoardSnapshot, type ExtractorJob, type GraphEntity, type Material, type Opportunity, type SavedSource } from '../api/client';
 import AppShell from './AppShell.vue';
 import { tabs } from './tabs';
 
@@ -274,7 +274,7 @@ describe('AppShell', () => {
   });
 
   it('creates a selected-participant opportunity and presents shared Output records', async () => {
-    const created: Opportunity = { id: 'o1', title: 'Onboarding exchange', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: ['m1'] };
+    const created: BoardOpportunity = { id: 'o1', title: 'Onboarding exchange', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: ['m1'], tags: [] };
     const queued: Material = { id: 'm1', opportunity_id: 'o1', recipient_id: 'p1', recipient_name: 'Dana Lee', kind: 'outreach', version: 1, body: 'Hello Dana.', content_sha256: 'a'.repeat(64), status: 'draft', gate: null, attachment: null };
     stubWorkspace([{ id: 'p1', kind: 'person', name: 'Dana Lee', revision: 1 }], [], {
       lists: [{ id: 'list-default', title: 'Opportunities', position: 0, archived: false, revision: 1 }],
