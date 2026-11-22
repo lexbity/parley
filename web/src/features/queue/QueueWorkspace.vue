@@ -1,12 +1,13 @@
 <script setup lang="ts">
 /* global BeforeUnloadEvent */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { newOperationKey, parley, type BoardList, type BoardPlacement, type BoardSnapshot, type GraphEntity, type Material, type OpportunityNotes } from '../../api/client';
+import { newOperationKey, parley, type BoardList, type BoardPlacement, type BoardSnapshot, type ContactThread, type GraphEntity, type Material, type OpportunityNotes, type ReleasedMaterial } from '../../api/client';
 import MarkdownEditor from '../../shared/MarkdownEditor.vue';
 import MarkdownPreview from '../../shared/MarkdownPreview.vue';
 import MaterialActions from '../output/MaterialActions.vue';
+import ContactThreadPanel from './ContactThreadPanel.vue';
 
-const props = defineProps<{ parties: GraphEntity[]; outputs: Material[]; routeId?: string | null }>();
+const props = withDefaults(defineProps<{ parties: GraphEntity[]; outputs: Material[]; routeId?: string | null; active?: boolean }>(), { routeId: null, active: true });
 const emit = defineEmits<{ 'material-updated': [material: Material]; navigate: [path: string] }>();
 const board = ref<BoardSnapshot>({ lists: [], cards: [] });
 const selectedId = ref('');
@@ -35,6 +36,10 @@ const selectedMaterials = computed(() => props.outputs.filter((material) => mate
 const selectedParticipants = computed(() => selectedCard.value
   ? props.parties.filter((party) => selectedCard.value!.opportunity.participant_ids.includes(party.id)).map((party) => party.name)
   : []);
+const deliveredReleases = ref<Record<string, ReleasedMaterial>>({});
+const threads = ref<ContactThread[]>([]);
+let threadPollTimer: ReturnType<typeof globalThis.setInterval> | undefined;
+let threadPollInFlight = false;
 
 async function refreshBoard() {
   board.value = await parley.getBoard();
@@ -46,6 +51,24 @@ async function refreshBoard() {
   renameValues.value = Object.fromEntries(board.value.lists.map((list) => [list.id, list.title]));
   moveTargets.value = Object.fromEntries(board.value.cards.map((card) => [card.opportunity.id, card.list_id]));
   archiveTargets.value = Object.fromEntries(board.value.lists.map((list) => [list.id, activeLists.value.find((candidate) => candidate.id !== list.id)?.id ?? '']));
+}
+
+async function refreshThreads() {
+  if (!selectedId.value) { threads.value = []; return; }
+  threads.value = await parley.listThreads({ opportunity_id: selectedId.value });
+}
+
+async function refreshCurrentCard() {
+  await refreshBoard();
+  await refreshThreads();
+}
+
+async function pollThreads() {
+  if (!props.active || threadPollInFlight || !selectedId.value || globalThis.document.visibilityState !== 'visible') return;
+  threadPollInFlight = true;
+  try { await refreshThreads(); }
+  catch { /* Preserve the last acknowledged thread state through transient read failures. */ }
+  finally { threadPollInFlight = false; }
 }
 
 async function run(label: string, action: () => Promise<void>) {
@@ -143,6 +166,7 @@ async function openCard(card: BoardPlacement) {
     markdown.value = detail.value.markdown;
     dirty.value = false;
     selectedId.value = card.opportunity.id;
+    await refreshThreads();
     emit('navigate', `/queue/${encodeURIComponent(card.opportunity.id)}`);
     loadingNotes.value = false;
   });
@@ -228,6 +252,15 @@ async function toggleTask(task: NonNullable<OpportunityNotes['tasks']>[number]) 
   });
 }
 
+function noteDelivered(materialId: string, release: ReleasedMaterial) {
+  deliveredReleases.value[materialId] = release;
+}
+
+function materialUpdated(material: Material) {
+  if (deliveredReleases.value[material.id]?.version !== material.version) delete deliveredReleases.value[material.id];
+  emit('material-updated', material);
+}
+
 watch(() => props.parties, (parties) => {
   if (!partyId.value && parties.length) partyId.value = parties[0]!.id;
 }, { immediate: true });
@@ -239,13 +272,18 @@ watch(markdown, () => {
 }, { flush: 'sync' });
 watch(composing, (active) => { if (!active) scheduleNotesSave(); });
 onMounted(async () => {
-  try { await parley.connect(); await refreshBoard(); await openRoutedCard(); }
+  try {
+    await parley.connect(); await refreshBoard(); await openRoutedCard();
+    threadPollTimer = globalThis.setInterval(() => { void pollThreads(); }, 2_000);
+    globalThis.document.addEventListener('visibilitychange', onThreadVisibilityChange);
+  }
   catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not load the board.'; }
 });
 watch(() => props.routeId, (id) => {
   if (!id) return;
   void openRoutedCard();
 });
+watch(() => props.active, (active) => { if (active) void pollThreads(); });
 
 function warnDirtyNavigation(event: BeforeUnloadEvent) {
   if (!dirty.value) return;
@@ -255,8 +293,14 @@ function warnDirtyNavigation(event: BeforeUnloadEvent) {
 onMounted(() => globalThis.addEventListener('beforeunload', warnDirtyNavigation));
 onBeforeUnmount(() => {
   if (notesTimer) globalThis.clearTimeout(notesTimer);
+  if (threadPollTimer) globalThis.clearInterval(threadPollTimer);
+  globalThis.document.removeEventListener('visibilitychange', onThreadVisibilityChange);
   globalThis.removeEventListener('beforeunload', warnDirtyNavigation);
 });
+
+function onThreadVisibilityChange() {
+  if (globalThis.document.visibilityState === 'visible') void pollThreads();
+}
 </script>
 
 <template>
@@ -484,7 +528,15 @@ onBeforeUnmount(() => {
             <p>{{ material.body }}</p>
             <MaterialActions
               :material="material"
-              @updated="emit('material-updated', $event)"
+              @updated="materialUpdated"
+              @delivered="noteDelivered(material.id, $event)"
+            />
+            <ContactThreadPanel
+              :opportunity-id="selectedId"
+              :material="material"
+              :delivered="deliveredReleases[material.id] ?? null"
+              :threads="threads"
+              @changed="refreshCurrentCard"
             />
           </article>
           <p v-if="!selectedMaterials.length">

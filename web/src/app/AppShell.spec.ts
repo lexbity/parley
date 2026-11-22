@@ -16,6 +16,8 @@ function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [],
   vi.spyOn(parley, 'listSources').mockResolvedValue(sources);
   vi.spyOn(parley, 'listOpportunities').mockResolvedValue([]);
   vi.spyOn(parley, 'listOutputs').mockResolvedValue([]);
+  vi.spyOn(parley, 'listThreads').mockResolvedValue([]);
+  vi.spyOn(parley, 'listCapacity').mockResolvedValue([]);
   vi.spyOn(parley, 'getBoard').mockResolvedValue(board);
   vi.spyOn(parley, 'getOpportunityNotes').mockResolvedValue({ opportunity_id: '', markdown: '', revision: 1, next_task: null, tasks: [] });
   vi.spyOn(parley, 'getProvider').mockResolvedValue({ endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' });

@@ -12,6 +12,11 @@ export type GateCheck = { id: string; severity: 'hard' | 'soft'; pass: boolean; 
 export type GateReport = { checks: GateCheck[]; copy_enabled: boolean };
 export type Material = Omit<components['schemas']['MaterialRecord'], 'gate'> & { gate: GateReport | null };
 export type ReleasedMaterial = components['schemas']['ReleasedMaterial'];
+export type ContactThread = components['schemas']['ThreadRecord'];
+export type SendRecord = components['schemas']['SendRecord'];
+export type ContactOutcome = components['schemas']['OutcomeRecord'];
+export type ContactResolution = components['schemas']['ResolutionRecord'];
+export type CapacityRecord = components['schemas']['CapacityRecord'];
 export type BoardList = components['schemas']['BoardList'];
 export type BoardPlacement = { opportunity: Opportunity; opportunity_id: string; list_id: string; position: number; placement_revision: number; next_task: string | null };
 export type BoardSnapshot = { lists: BoardList[]; cards: BoardPlacement[] };
@@ -849,6 +854,65 @@ export class ParleyClient {
 
   async acknowledgeRelease(id: string, succeeded: boolean): Promise<void> {
     await this.request(`/releases/${encodeURIComponent(id)}/ack`, { method: 'POST', body: JSON.stringify({ succeeded }) });
+  }
+
+  async listThreads(filter: { opportunity_id?: string; recipient_id?: string } = {}): Promise<ContactThread[]> {
+    const query = new URLSearchParams(Object.entries(filter).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+    const value = await this.request(`/threads${query.size ? `?${query.toString()}` : ''}`);
+    if (!Array.isArray(value)) throw new Error('Invalid response: contact threads must be a list');
+    return value.map((raw) => {
+      const thread = object(raw);
+      if (!thread || !['waiting', 'conversing', 'timed_out', 'closed_declined', 'resolved', 'dormant'].includes(String(thread.state))
+        || !Number.isSafeInteger(thread.current_touch) || Number(thread.current_touch) < 0) throw new Error('Invalid response: contact thread is malformed');
+      return {
+        id: requiredString(thread.id, 'thread.id'), opportunity_id: requiredString(thread.opportunity_id, 'thread.opportunity_id'),
+        recipient_id: requiredString(thread.recipient_id, 'thread.recipient_id'), state: thread.state as ContactThread['state'],
+        current_touch: Number(thread.current_touch), expires_at: typeof thread.expires_at === 'string' ? thread.expires_at : null,
+        next_action_at: typeof thread.next_action_at === 'string' ? thread.next_action_at : null,
+        sent_at: typeof thread.sent_at === 'string' ? thread.sent_at : null, updated_at: requiredString(thread.updated_at, 'thread.updated_at'),
+      };
+    });
+  }
+
+  async sendOnThread(threadId: string, input: components['schemas']['SendInput'], key: string): Promise<SendRecord> {
+    const value = object(await this.mutate(`/threads/${encodeURIComponent(threadId)}/send`, 'POST', input, { 'Idempotency-Key': key }));
+    if (!value || !Number.isSafeInteger(value.touch_no) || !Number.isSafeInteger(value.primary_version_no) || typeof value.capacity_charged !== 'boolean' || !/^[a-f0-9]{64}$/.test(String(value.content_sha256))) throw new Error('Invalid response: sent touch receipt is malformed');
+    return { id: requiredString(value.id, 'send.id'), thread_id: requiredString(value.thread_id, 'send.thread_id'), touch_no: Number(value.touch_no), primary_material_id: requiredString(value.primary_material_id, 'send.primary_material_id'), primary_version_no: Number(value.primary_version_no), recipient_id: requiredString(value.recipient_id, 'send.recipient_id'), content_sha256: requiredString(value.content_sha256, 'send.content_sha256'), sent_at: requiredString(value.sent_at, 'send.sent_at'), response_deadline: requiredString(value.response_deadline, 'send.response_deadline'), deadline_zone: requiredString(value.deadline_zone, 'send.deadline_zone'), next_action_at: typeof value.next_action_at === 'string' ? value.next_action_at : null, capacity_charged: value.capacity_charged };
+  }
+
+  async reopenThread(id: string): Promise<ContactThread> {
+    const value = object(await this.mutate(`/threads/${encodeURIComponent(id)}/reopen`, 'POST', {}, { 'Idempotency-Key': newOperationKey() }));
+    if (!value || !['waiting', 'conversing', 'timed_out', 'closed_declined', 'resolved', 'dormant'].includes(String(value.state))) throw new Error('Invalid response: reopened thread is malformed');
+    return (await this.decodeSingleThread(value));
+  }
+
+  async recordOutcome(sendId: string, input: components['schemas']['OutcomeInput'], key = newOperationKey()): Promise<ContactOutcome> {
+    const value = object(await this.mutate(`/sends/${encodeURIComponent(sendId)}/outcome`, 'POST', input, { 'Idempotency-Key': key }));
+    if (!value) throw new Error('Invalid response: outcome receipt is malformed');
+    return { id: requiredString(value.id, 'outcome.id'), send_id: requiredString(value.send_id, 'outcome.send_id'), class: requiredString(value.class, 'outcome.class'), rung_accepted: Number.isSafeInteger(value.rung_accepted) ? Number(value.rung_accepted) : null, received_at: typeof value.received_at === 'string' ? value.received_at : null, recorded_at: requiredString(value.recorded_at, 'outcome.recorded_at'), note: typeof value.note === 'string' ? value.note : null };
+  }
+
+  async recordResolution(opportunityId: string, input: components['schemas']['ResolutionInput'], key = newOperationKey()): Promise<ContactResolution> {
+    const value = object(await this.mutate(`/opportunities/${encodeURIComponent(opportunityId)}/resolution`, 'POST', input, { 'Idempotency-Key': key }));
+    if (!value) throw new Error('Invalid response: resolution receipt is malformed');
+    return { id: requiredString(value.id, 'resolution.id'), opportunity_id: requiredString(value.opportunity_id, 'resolution.opportunity_id'), thread_id: typeof value.thread_id === 'string' ? value.thread_id : null, result: requiredString(value.result, 'resolution.result'), they_benefited: requiredString(value.they_benefited, 'resolution.they_benefited'), i_benefited: requiredString(value.i_benefited, 'resolution.i_benefited'), noted_at: requiredString(value.noted_at, 'resolution.noted_at') };
+  }
+
+  async listCapacity(): Promise<CapacityRecord[]> {
+    const value = await this.request('/capacity');
+    if (!Array.isArray(value)) throw new Error('Invalid response: capacity ledger must be a list');
+    return value.map((raw) => { const row = object(raw); if (!row || !['total', 'committed', 'remaining'].every((field) => typeof row[field] === 'number' && Number.isFinite(row[field]))) throw new Error('Invalid response: capacity row is malformed'); return { period: requiredString(row.period, 'capacity.period'), unit: requiredString(row.unit, 'capacity.unit'), total: Number(row.total), committed: Number(row.committed), remaining: Number(row.remaining), updated_at: requiredString(row.updated_at, 'capacity.updated_at') }; });
+  }
+
+  async updateCapacity(input: components['schemas']['CapacityInput'], key = newOperationKey()): Promise<CapacityRecord> {
+    const value = object(await this.mutate('/capacity', 'POST', input, { 'Idempotency-Key': key }));
+    if (!value || typeof value.remaining !== 'number') throw new Error('Invalid response: capacity update receipt is malformed');
+    return { period: requiredString(value.period, 'capacity.period'), unit: requiredString(value.unit, 'capacity.unit'), total: Number(value.total), committed: Number(value.committed), remaining: Number(value.remaining), updated_at: requiredString(value.updated_at, 'capacity.updated_at') };
+  }
+
+  private decodeSingleThread(raw: Record<string, unknown>): ContactThread {
+    if (!Number.isSafeInteger(raw.current_touch)) throw new Error('Invalid response: contact thread is malformed');
+    return { id: requiredString(raw.id, 'thread.id'), opportunity_id: requiredString(raw.opportunity_id, 'thread.opportunity_id'), recipient_id: requiredString(raw.recipient_id, 'thread.recipient_id'), state: requiredString(raw.state, 'thread.state') as ContactThread['state'], current_touch: Number(raw.current_touch), expires_at: typeof raw.expires_at === 'string' ? raw.expires_at : null, next_action_at: typeof raw.next_action_at === 'string' ? raw.next_action_at : null, sent_at: typeof raw.sent_at === 'string' ? raw.sent_at : null, updated_at: requiredString(raw.updated_at, 'thread.updated_at') };
   }
 
   private async mutate(path: string, method: string, body: unknown, headers: Record<string, string>): Promise<unknown> {

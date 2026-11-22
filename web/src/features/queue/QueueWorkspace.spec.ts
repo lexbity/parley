@@ -46,6 +46,7 @@ function stub(boardValue: BoardSnapshot = board) {
   vi.spyOn(parley, 'archiveBoardList').mockResolvedValue({ archived_list: { ...boardValue.lists[0]!, archived: true }, destination_list: boardValue.lists[1]!, moved: [] });
   vi.spyOn(parley, 'moveOpportunityPlacement').mockResolvedValue({ opportunity_id: 'o1', list_id: 'b', position: 0, placement_revision: 2, source_list_revision: 2, destination_list_revision: 2 });
   vi.spyOn(parley, 'getOpportunityNotes').mockResolvedValue(notes);
+  vi.spyOn(parley, 'listThreads').mockResolvedValue([]);
   vi.spyOn(parley, 'updateOpportunityNotes').mockResolvedValue({ ...notes, revision: 2 });
   vi.spyOn(parley, 'toggleOpportunityTask').mockResolvedValue({ ...notes, markdown: '🧭\n- [x] Review checklist\n', revision: 2, next_task: null, tasks: [{ ...notes.tasks[0]!, checked: true }] });
   return mount(QueueWorkspace, { props: { parties, outputs: [] } });

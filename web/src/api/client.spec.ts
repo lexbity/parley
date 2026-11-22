@@ -130,6 +130,40 @@ describe('ParleyClient S04 local Extractor commands', () => {
   });
 });
 
+describe('ParleyClient S07 contact lifecycle commands', () => {
+  it('uses authenticated version-bound send, thread, outcome, reopen, resolution and capacity operations', async () => {
+    const thread = { id: 'thread-1', opportunity_id: 'opp-1', recipient_id: 'party 1', state: 'waiting', current_touch: 1, expires_at: '2026-11-28T08:00:00Z', next_action_at: null, sent_at: '2026-11-21T08:00:00Z', updated_at: '2026-11-21T08:00:00Z' };
+    const sent = { id: 'send-1', thread_id: 'thread-1', touch_no: 1, primary_material_id: 'mat-1', primary_version_no: 3, recipient_id: 'party 1', content_sha256: 'a'.repeat(64), sent_at: '2026-11-21T08:00:00Z', response_deadline: '2026-11-28T08:00:00Z', deadline_zone: 'America/Vancouver', next_action_at: null, capacity_charged: false };
+    const outcome = { id: 'outcome-1', send_id: 'send-1', class: 'reply_positive', rung_accepted: null, received_at: null, recorded_at: '2026-11-22T08:00:00Z', note: null };
+    const resolution = { id: 'resolution-1', opportunity_id: 'opp-1', thread_id: null, result: 'no_deal', they_benefited: 'unknown', i_benefited: 'unknown', noted_at: '2026-11-23T08:00:00Z' };
+    const capacity = { period: 'quarter', unit: 'project slots', total: 8, committed: 1, remaining: 7, updated_at: '2026-11-23T08:00:00Z' };
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(sessionResponse())
+      .mockResolvedValueOnce(response([thread]))
+      .mockResolvedValueOnce(response(sent, 201))
+      .mockResolvedValueOnce(response(outcome))
+      .mockResolvedValueOnce(response(thread))
+      .mockResolvedValueOnce(response(resolution, 201))
+      .mockResolvedValueOnce(response([capacity]))
+      .mockResolvedValueOnce(response(capacity));
+    const client = new ParleyClient(); await client.connect();
+    expect(await client.listThreads({ opportunity_id: 'opp-1', recipient_id: 'party 1' })).toEqual([thread]);
+    expect(await client.sendOnThread('thread-1', { opportunity_id: 'opp-1', recipient_id: 'party 1', primary: { material_id: 'mat-1', version: 3, release_id: 'release-1' }, deadline: { date: '2026-11-28', zone: 'America/Vancouver' } }, 'send-key')).toEqual(sent);
+    expect(await client.recordOutcome('send-1', { class: 'reply_positive' }, 'outcome-key')).toEqual(outcome);
+    expect(await client.reopenThread('thread-1')).toEqual(thread);
+    expect(await client.recordResolution('opp-1', { result: 'no_deal', they_benefited: 'unknown', i_benefited: 'unknown' })).toEqual(resolution);
+    expect(await client.listCapacity()).toEqual([capacity]);
+    expect(await client.updateCapacity({ period: 'quarter', unit: 'project slots', total: 8 })).toEqual(capacity);
+    expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual([
+      '/api/v1/threads?opportunity_id=opp-1&recipient_id=party+1', '/api/v1/threads/thread-1/send',
+      '/api/v1/sends/send-1/outcome', '/api/v1/threads/thread-1/reopen', '/api/v1/opportunities/opp-1/resolution',
+      '/api/v1/capacity', '/api/v1/capacity',
+    ]);
+    expect(new Headers(fetchMock.mock.calls[2]![1]?.headers).get('Idempotency-Key')).toBe('send-key');
+    expect(new Headers(fetchMock.mock.calls[2]![1]?.headers).get('X-Parley-Epoch')).toBe(session.epoch);
+  });
+});
+
 describe('ParleyClient S09 recipient writing commands', () => {
   it('binds exchange, templates, matching, composition, lint and voice versions to one session', async () => {
     const interest = { id: 'interest-1', side: 'them', statement: 'Improve onboarding', knowledge_kind: 'hypothesis', check_suggestion: 'Verify with a source', claim_id: null, claim_revision: null, revision: 1, status: 'active' };

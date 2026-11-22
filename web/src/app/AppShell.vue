@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { newOperationKey, parley, type ExtractorJob, type ExtractorProposal, type GraphEntity, type Material, type Opportunity, type ProviderConfig, type Resource, type SavedSource } from '../api/client';
+import { newOperationKey, parley, type ContactThread, type ExtractorJob, type ExtractorProposal, type GraphEntity, type Material, type Opportunity, type ProviderConfig, type ReleasedMaterial, type Resource, type SavedSource } from '../api/client';
 import { tabs } from './tabs';
 import { resolveRoute, routeForTab } from './router';
 import ResourceEditor from '../features/resources/ResourceEditor.vue';
@@ -8,6 +8,8 @@ import InterviewerWorkspace from '../features/resources/InterviewerWorkspace.vue
 import QueueWorkspace from '../features/queue/QueueWorkspace.vue';
 import BriefWorkspace from '../features/leads/BriefWorkspace.vue';
 import AgentPolicySettings from '../features/settings/AgentPolicySettings.vue';
+import CapacitySettings from '../features/settings/CapacitySettings.vue';
+import ContactThreadPanel from '../features/queue/ContactThreadPanel.vue';
 import WritingWorkspace from '../features/output/WritingWorkspace.vue';
 import MaterialActions from '../features/output/MaterialActions.vue';
 import RelationshipGraph from '../features/leads/RelationshipGraph.vue';
@@ -28,6 +30,10 @@ const sources = ref<SavedSource[]>([]);
 const opportunities = ref<Opportunity[]>([]);
 const outputs = ref<Material[]>([]);
 const resources = ref<Resource[]>([]);
+const threads = ref<ContactThread[]>([]);
+const deliveredReleases = ref<Record<string, ReleasedMaterial>>({});
+let outputThreadTimer: ReturnType<typeof globalThis.setInterval> | undefined;
+let outputThreadReadInFlight = false;
 const status = ref('');
 const error = ref('');
 const busy = ref(false);
@@ -38,12 +44,13 @@ const provider = ref<ProviderConfig>({ endpoint: 'http://127.0.0.1:11434', model
 const providerHealth = ref('');
 
 async function refreshLeads() {
-  const [directory, savedSources, savedOpportunities, savedOutputs, savedResources] = await Promise.all([parley.listParties(), parley.listSources(), parley.listOpportunities(), parley.listOutputs(), parley.listResources()]);
+  const [directory, savedSources, savedOpportunities, savedOutputs, savedResources, savedThreads] = await Promise.all([parley.listParties(), parley.listSources(), parley.listOpportunities(), parley.listOutputs(), parley.listResources(), parley.listThreads()]);
   parties.value = directory;
   sources.value = savedSources;
   opportunities.value = savedOpportunities;
   outputs.value = savedOutputs;
   resources.value = savedResources;
+  threads.value = savedThreads;
 }
 
 function navigate(path: string, replace = false) {
@@ -159,16 +166,35 @@ async function checkProvider() {
 function installMaterial(updated: Material) {
   const index = outputs.value.findIndex((item) => item.id === updated.id);
   if (index >= 0) outputs.value[index] = updated;
+  if (deliveredReleases.value[updated.id]?.version !== updated.version) delete deliveredReleases.value[updated.id];
+}
+
+async function pollOutputThreads() {
+  if (active.value !== 'Output' || outputThreadReadInFlight || globalThis.document.visibilityState !== 'visible') return;
+  outputThreadReadInFlight = true;
+  try { threads.value = await parley.listThreads(); }
+  catch { /* Keep the latest server-confirmed thread state available during transport recovery. */ }
+  finally { outputThreadReadInFlight = false; }
+}
+
+function onOutputVisibilityChange() {
+  if (globalThis.document.visibilityState === 'visible') void pollOutputThreads();
 }
 
 onMounted(() => {
   if (route.value.path !== globalThis.location.pathname) navigate(route.value.path, true);
   globalThis.addEventListener('popstate', handlePopState);
+  outputThreadTimer = globalThis.setInterval(() => { void pollOutputThreads(); }, 2_000);
+  globalThis.document.addEventListener('visibilitychange', onOutputVisibilityChange);
   void parley.connect()
     .then(async () => { await refreshLeads(); await loadProvider(); })
     .catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Workspace is unavailable.'; });
 });
-onBeforeUnmount(() => globalThis.removeEventListener('popstate', handlePopState));
+onBeforeUnmount(() => {
+  globalThis.removeEventListener('popstate', handlePopState);
+  globalThis.document.removeEventListener('visibilitychange', onOutputVisibilityChange);
+  if (outputThreadTimer) globalThis.clearInterval(outputThreadTimer);
+});
 watch(route, () => { void focusRouteLocation(); });
 </script>
 
@@ -435,11 +461,13 @@ watch(route, () => { void focusRouteLocation(); });
         </p>
       </form>
       <AgentPolicySettings />
+      <CapacitySettings />
     </section>
     <div v-show="active === 'Queue'">
       <QueueWorkspace
         :parties="parties"
         :outputs="outputs"
+        :active="active === 'Queue'"
         :route-id="route.tab === 'Queue' ? route.recordId : null"
         @material-updated="installMaterial"
         @navigate="navigate"
@@ -487,6 +515,14 @@ watch(route, () => { void focusRouteLocation(); });
           <MaterialActions
             :material="material"
             @updated="installMaterial"
+            @delivered="deliveredReleases[material.id] = $event"
+          />
+          <ContactThreadPanel
+            :opportunity-id="material.opportunity_id"
+            :material="material"
+            :delivered="deliveredReleases[material.id] ?? null"
+            :threads="threads"
+            @changed="refreshLeads"
           />
         </li>
       </ul>

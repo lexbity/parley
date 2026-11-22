@@ -33,11 +33,12 @@ function authHeaders(apiState: Api, extra: Record<string, string> = {}) {
 test('s07_browser_explicit_mark_sent_deadline_outcome_and_resolution', async ({ page }) => {
   await page.goto('/');
   const name = `Dana Lee ${randomUUID()}`;
-  await page.getByRole('button', { name: 'Leads' }).click();
-  await page.locator('section[aria-labelledby="leads-heading"] input').fill(name);
-  await page.getByRole('button', { name: 'Add lead' }).click();
+  await page.getByRole('link', { name: 'Leads' }).click();
+  const addLead = page.getByRole('heading', { name: 'Add a lead' }).locator('..');
+  await addLead.getByLabel('Name').fill(name);
+  await addLead.getByRole('button', { name: 'Add lead' }).click();
 
-  await page.getByRole('button', { name: 'Queue' }).click();
+  await page.getByRole('link', { name: 'Queue' }).click();
   await page.getByLabel('Opportunity title').fill('Onboarding follow-up');
   await page.getByLabel('Participant').selectOption({ label: `${name} · person` });
   await page.getByRole('button', { name: 'Create opportunity' }).click();
@@ -105,30 +106,26 @@ test('s07_browser_explicit_mark_sent_deadline_outcome_and_resolution', async ({ 
     },
   })).json();
   expect(String(approval.content_sha256)).toBe(String(material.content_sha256));
-  const released = await (await page.request.post(`/api/v1/materials/${material.id}/release`, {
-    headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
-    data: {},
-  })).json();
-
-  // A follow-up touch needs its own one-use release grant; both grants are
-  // prepared before any send so their approval dependency snapshots match.
+  // Copy through the production release UI, then explicitly record delivery
+  // from the same material and recipient surface.
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.getByRole('link', { name: 'Output' }).click();
+  const outputRow = page.locator(`#output-material-${material.id}`);
+  await expect(outputRow).toBeVisible();
+  await outputRow.getByRole('button', { name: 'Copy approved text' }).click();
+  await expect(outputRow.getByRole('status')).toContainText('Copy confirmed');
+  await outputRow.getByLabel('Reply deadline (inclusive local date)').fill('2026-11-28');
+  const sendResponsePromise = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname.endsWith('/send'));
+  await outputRow.getByRole('button', { name: 'Mark this delivered version sent' }).click();
+  const sendResponse = await sendResponsePromise;
+  expect(sendResponse.status()).toBe(201);
+  const send = await sendResponse.json();
+  const threadId = String(send.thread_id);
   const secondRelease = await (await page.request.post(`/api/v1/materials/${material.id}/release`, {
     headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
     data: {},
   })).json();
-  expect(String(secondRelease.release_id)).not.toBe(String(released.release_id));
-
-  // Explicit Mark sent records a send with a response deadline.
-  const threadId = `browser-thread-${randomUUID()}`;
-  const send = await (await page.request.post(`/api/v1/threads/${threadId}/send`, {
-    headers: authHeaders(apiState, { 'Idempotency-Key': apiState.key() }),
-    data: {
-      opportunity_id: opportunityId, recipient_id: recipientId,
-      primary: { material_id: material.id, version: material.version, release_id: released.release_id },
-      companions: [], deadline: { days: 7 },
-    },
-  })).json();
-  expect(String(send.thread_id)).toBe(threadId);
   expect(Number(send.touch_no)).toBe(1);
   expect(String(send.response_deadline)).toBeTruthy();
   expect(send.capacity_charged).toBe(false);

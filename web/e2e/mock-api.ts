@@ -56,6 +56,7 @@ type ReleaseRecord = {
   issued_at: string;
   attachment: RecordData | null;
   consumed: boolean;
+  acknowledged: boolean | null;
   bytes: Buffer;
 };
 
@@ -810,10 +811,24 @@ export function createMockApi(): MockApi {
         issued_at: now(),
         attachment,
         consumed: false,
+        acknowledged: null,
         bytes,
       };
       releaseRecords.set(release.release_id, release);
       return json(response, 200, { release_id: release.release_id, material_id: release.material_id, version: release.version, recipient_id: release.recipient_id, body: release.body, content_sha256: release.content_sha256, issued_at: release.issued_at, attachment: release.attachment });
+    }
+    const releaseAckMatch = /^\/api\/v1\/releases\/([^/]+)\/ack$/.exec(url.pathname);
+    if (releaseAckMatch && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const release = releaseRecords.get(releaseAckMatch[1]!);
+      if (!release) return fail(response, 404, 'RELEASE_NOT_FOUND', 'Release receipt does not exist');
+      if (typeof input.succeeded !== 'boolean') return fail(response, 422, 'INVALID_RELEASE_ACK', 'Release acknowledgement needs an explicit success result');
+      if (release.acknowledged !== null && release.acknowledged !== input.succeeded) return fail(response, 409, 'RELEASE_ACK_CONFLICT', 'Release receipt already has a different acknowledgement');
+      release.acknowledged = input.succeeded;
+      response.writeHead(204, { 'x-parley-epoch': epoch, 'cache-control': 'no-store' });
+      response.end();
+      return;
     }
     if (url.pathname === '/api/v1/threads' && request.method === 'GET') {
       const opportunityId = url.searchParams.get('opportunity_id');

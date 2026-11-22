@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { parley, type GateCheck, type GateReport, type Material, type ReleasedMaterial } from '../../api/client';
 
 const props = defineProps<{ material: Material }>();
-const emit = defineEmits<{ updated: [material: Material] }>();
+const emit = defineEmits<{ updated: [material: Material]; delivered: [release: ReleasedMaterial] }>();
 const reasons = ref<Record<string, string>>({});
 const busy = ref(false);
 const error = ref('');
@@ -51,6 +51,7 @@ async function approve() {
 async function acknowledge(release: ReleasedMaterial, succeeded: boolean) {
   await parley.acknowledgeRelease(release.release_id, succeeded);
   pendingAck.value = null;
+  if (succeeded) emit('delivered', release);
 }
 
 async function release(mode: 'copy' | 'download') {
