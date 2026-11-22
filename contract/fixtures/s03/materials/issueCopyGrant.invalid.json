@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/Error","body":{"error":{"code":"APPROVAL_STALE","message":"The exact version is not approved","details":[]}}}

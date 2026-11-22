@@ -173,3 +173,164 @@ slices:
       owner_role: owner
       package_target: rust
       evidence_path: evidence/s02.md
+  s03:
+    - requirement: APP-10
+      operationId: createOpportunity
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
+    - requirement: APP-10
+      operationId: listOpportunities
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
+    - requirement: APP-10
+      operationId: updateOpportunityParticipants
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
+    - requirement: APP-10
+      operationId: createInterest
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
+    - requirement: APP-13
+      operationId: updateExchange
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
+    - requirement: APP-12
+      operationId: createMaterial
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
+    - requirement: APP-12
+      operationId: getMaterial
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
+    - requirement: APP-13
+      operationId: saveMaterialVersion
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
+    - requirement: APP-13
+      operationId: getMaterialGate
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
+    - requirement: APP-13
+      operationId: approveMaterialVersion
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
+    - requirement: ARCH-1
+      operationId: issueCopyGrant
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
+    - requirement: APP-13
+      operationId: getCopyGrantReceipt
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
+    - requirement: F-FR-4
+      operationId: acknowledgeCopy
+      test_id: s03_reviewed_manual_message_copy_is_recipient_and_version_bound
+      fixture_id: materials
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s03.md
+  s04:
+    - requirement: APP-08
+      operationId: stageCapture
+      test_id: s04_partial_capture_review_preserves_unresolved_identity
+      fixture_id: capture_review
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s04.md
+    - requirement: APP-08
+      operationId: getCaptureReview
+      test_id: s04_partial_capture_review_preserves_unresolved_identity
+      fixture_id: capture_review
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s04.md
+    - requirement: APP-08
+      operationId: applyCaptureReview
+      test_id: s04_partial_capture_review_preserves_unresolved_identity
+      fixture_id: capture_review
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s04.md
+    - requirement: APP-08
+      operationId: saveCaptureSourceOnly
+      test_id: s04_cancelled_capture_remains_source_only
+      fixture_id: capture_review
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s04.md
+    - requirement: JOB-6
+      operationId: cancelCaptureJob
+      test_id: s04_cancelled_capture_remains_source_only
+      fixture_id: capture_review
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s04.md
+  s05:
+    - &s05_board
+      requirement: FE-09
+      operationId: getBoard
+      test_id: s05_board_and_markdown_share_opportunity_records
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s05.md
+    - <<: *s05_board
+      operationId: createBoardList
+    - <<: *s05_board
+      operationId: reorderBoardLists
+    - <<: *s05_board
+      operationId: renameBoardList
+    - <<: *s05_board
+      operationId: archiveBoardList
+    - <<: *s05_board
+      operationId: moveBoardCard
+    - <<: *s05_board
+      operationId: reorderBoardCard
+    - <<: *s05_board
+      requirement: FE-10
+      operationId: getOpportunityNotes
+    - <<: *s05_board
+      requirement: FE-10
+      operationId: saveOpportunityNotes
+    - <<: *s05_board
+      requirement: FE-10
+      operationId: toggleOpportunityTask
+    - <<: *s05_board
+      requirement: F-FR-3
+      operationId: n/a

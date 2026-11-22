@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/CopyGrantReceipt","body":{"grant_id":"grant-1","material_id":"material-1","version_id":"version-2","recipient_id":"party-dana","digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"acknowledged","acknowledged_at":"2026-11-21T18:01:00Z"}}

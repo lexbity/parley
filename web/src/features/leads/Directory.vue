@@ -2,8 +2,10 @@
 import { onMounted, ref, watch } from 'vue';
 import { newOperationKey, parley, type DirectoryEntity, type Neighborhood as NeighborhoodData, type SavedSource, type SourceDetail } from '../../api/client';
 import Neighborhood from '../../shared/graph/Neighborhood.vue';
+import CaptureInbox from './CaptureInbox.vue';
 defineOptions({ name: 'LeadsDirectory' });
 
+const showCaptureInbox=ref(false);
 const q=ref(''); const kind=ref('');const tag=ref(''); const directory=ref<DirectoryEntity[]>([]); const sources=ref<SavedSource[]>([]);
 const selected=ref(''); const graph=ref<NeighborhoodData|null>(null); const detail=ref<SourceDetail|null>(null);
 const page=ref(1);const total=ref(0);const hasMore=ref(false);
@@ -32,233 +34,252 @@ onMounted(()=>{void parley.connect().then(loadDirectory).catch(e=>error.value=e 
     aria-labelledby="leads-heading"
     aria-label="Lead directory and sources"
   >
-    <div
-      v-if="status"
-      role="status"
-    >
-      {{ status }}
-    </div><div
-      v-if="error"
-      role="alert"
-    >
-      {{ error }}
-    </div>
-    <div class="leads-layout">
-      <aside
-        class="panel"
-        aria-label="Directory"
+    <nav aria-label="Lead workspaces">
+      <button
+        type="button"
+        :aria-current="!showCaptureInbox?'page':undefined"
+        @click="showCaptureInbox=false"
       >
-        <h2 id="leads-heading">
-          Leads
-        </h2>
-        <label>Search name or alias<input
-          v-model="q"
-          type="search"
-          autocomplete="off"
-        ></label>
-        <label>Type<select v-model="kind"><option value="">People and organizations</option><option value="person">People</option><option value="org">Organizations</option></select></label>
-        <label>Topic or tag<input
-          v-model="tag"
-          type="search"
-          autocomplete="off"
-        ></label>
-        <ul class="directory-list">
-          <li
-            v-for="entity in directory"
-            :key="entity.id"
-          >
-            <button
-              type="button"
-              :aria-current="selected===entity.id?'true':undefined"
-              @click="selected=entity.id"
-            >
-              {{ entity.name }} <small>{{ entity.kind }}<span v-if="entity.descriptor"> · {{ entity.descriptor }}</span><span v-else> · {{ entity.id.slice(0,8) }}</span></small>
-            </button>
-          </li>
-        </ul>
-        <nav aria-label="Directory pages">
-          <button
-            type="button"
-            :disabled="page<=1"
-            @click="page--"
-          >
-            Previous
-          </button>
-          <span>Page {{ page }} · {{ total }} matches</span>
-          <button
-            type="button"
-            :disabled="!hasMore"
-            @click="page++"
-          >
-            Next
-          </button>
-        </nav>
-        <p v-if="!directory.length">
-          No leads match. Add a person or organization; a person can stand alone.
-        </p>
-        <form @submit.prevent="addParty">
-          <h3>Add lead</h3><label>Type<select v-model="newKind"><option value="person">Person</option><option value="org">Organization</option></select></label><label>Name<input
-            v-model="name"
-            required
-            maxlength="500"
-          ></label><button
-            :disabled="busy"
-            type="submit"
-          >
-            Add lead
-          </button>
-        </form>
-        <form
-          v-if="selected && directory.find(x=>x.id===selected)?.kind==='org'"
+        Directory and graph
+      </button>
+      <button
+        type="button"
+        :aria-current="showCaptureInbox?'page':undefined"
+        @click="showCaptureInbox=true"
+      >
+        Sources inbox
+      </button>
+    </nav>
+    <CaptureInbox v-if="showCaptureInbox" />
+    <div v-else>
+      <div
+        v-if="status"
+        role="status"
+      >
+        {{ status }}
+      </div><div
+        v-if="error"
+        role="alert"
+      >
+        {{ error }}
+      </div>
+      <div class="leads-layout">
+        <aside
           class="panel"
-          @submit.prevent="linkExisting"
+          aria-label="Directory"
         >
-          <h2>Link an existing person</h2>
-          <p>Links two chosen record IDs. It never merges identities.</p>
-          <label>Person<select
-            v-model="existingRelated"
-            required
-          ><option
-            value=""
-            disabled
-          >Choose a person</option><option
-            v-for="entity in directory.filter(x=>x.kind==='person')"
-            :key="entity.id"
-            :value="entity.id"
-          >{{ entity.name }} · {{ entity.id.slice(0,8) }}</option></select></label>
-          <label>Source occurrence<select
-            v-model="existingSource"
-            required
-          ><option
-            value=""
-            disabled
-          >Choose a saved source</option><option
-            v-for="source in sources"
-            :key="source.occurrence_id"
-            :value="source.occurrence_id"
-          >{{ source.content_id.slice(0,12) }} · {{ source.occurrence_id.slice(0,8) }}</option></select></label>
-          <label>Exact cited passage<textarea
-            v-model="existingQuote"
-            required
-            rows="2"
-          /></label>
-          <button
-            :disabled="busy"
-            type="submit"
-          >
-            Link existing person to organization
-          </button>
-        </form>
-      </aside>
-      <div class="detail-column">
-        <Neighborhood
-          v-if="selected"
-          :focus-id="selected"
-          :graph="graph"
-          @refresh="loadGraph"
-          @source="openSource"
-        />
-        <section
-          v-else
-          class="panel"
-        >
-          <h2>Choose a lead</h2><p>Select a directory row to open its scoped graph and evidence.</p>
-        </section>
-        <form
-          v-if="selected"
-          class="panel"
-          @submit.prevent="addRelated"
-        >
-          <h2>Add a person to this organization</h2><p>The related person and source-backed edge are committed atomically. No name matching is performed.</p><label>Person name<input
-            v-model="relatedName"
-            required
-          ></label><label>Source occurrence<select
-            v-model="relationSource"
-            required
-          ><option
-            value=""
-            disabled
-          >Choose a saved source</option><option
-            v-for="source in sources"
-            :key="source.occurrence_id"
-            :value="source.occurrence_id"
-          >{{ source.content_id.slice(0,12) }} · {{ source.occurrence_id.slice(0,8) }}</option></select></label><label>Exact cited passage<textarea
-            v-model="relationQuote"
-            required
-            rows="2"
-          /></label><button
-            :disabled="busy || directory.find(x=>x.id===selected)?.kind!=='org'"
-            type="submit"
-          >
-            Save related person and relationship
-          </button>
-        </form>
-        <form
-          v-if="selected"
-          class="panel"
-          @submit.prevent="saveProfile"
-        >
-          <h2>Edit selected directory entry</h2>
-          <label>Name<input
-            v-model="profileName"
-            required
-            maxlength="500"
+          <h2 id="leads-heading">
+            Leads
+          </h2>
+          <label>Search name or alias<input
+            v-model="q"
+            type="search"
+            autocomplete="off"
           ></label>
-          <label>Disambiguating descriptor<input
-            v-model="profileDescriptor"
-            maxlength="1000"
+          <label>Type<select v-model="kind"><option value="">People and organizations</option><option value="person">People</option><option value="org">Organizations</option></select></label>
+          <label>Topic or tag<input
+            v-model="tag"
+            type="search"
+            autocomplete="off"
           ></label>
-          <label>Aliases, comma separated<input v-model="profileAliases"></label>
-          <label>Tags, comma separated<input v-model="profileTags"></label>
-          <button
-            :disabled="busy"
-            type="submit"
-          >
-            Save profile
-          </button>
-        </form>
-        <section class="panel">
-          <h2>Sources inbox</h2><p>Paste is always available. Speaker and identity links are separate owner decisions.</p><form @submit.prevent="saveSource">
-            <label>Speaker attribution<select v-model="sourceSpeaker"><option value="unknown">Unknown</option><option value="owner">Owner</option><option
+          <ul class="directory-list">
+            <li
               v-for="entity in directory"
               :key="entity.id"
-              :value="`party:${entity.id}`"
-            >{{ entity.name }} · {{ entity.kind }} · {{ entity.id.slice(0,8) }}</option></select></label>
-            <label>Title<input v-model="captureTitle"></label><label>URL<input
-              v-model="captureUrl"
-              type="url"
-            ></label><label>Captured text<textarea
-              v-model="capture"
-              required
-              rows="5"
-            /></label><button
-              :disabled="busy"
-              type="submit"
-            >
-              Save source
-            </button>
-          </form><ul>
-            <li
-              v-for="source in sources"
-              :key="source.occurrence_id"
             >
               <button
                 type="button"
-                @click="openSource(source.occurrence_id)"
+                :aria-current="selected===entity.id?'true':undefined"
+                @click="selected=entity.id"
               >
-                Open source {{ source.content_id.slice(0,12) }} · {{ source.occurrence_id.slice(0,8) }}
+                {{ entity.name }} <small>{{ entity.kind }}<span v-if="entity.descriptor"> · {{ entity.descriptor }}</span><span v-else> · {{ entity.id.slice(0,8) }}</span></small>
               </button>
             </li>
           </ul>
-          <article
-            v-if="detail"
-            aria-label="Original source"
+          <nav aria-label="Directory pages">
+            <button
+              type="button"
+              :disabled="page<=1"
+              @click="page--"
+            >
+              Previous
+            </button>
+            <span>Page {{ page }} · {{ total }} matches</span>
+            <button
+              type="button"
+              :disabled="!hasMore"
+              @click="page++"
+            >
+              Next
+            </button>
+          </nav>
+          <p v-if="!directory.length">
+            No leads match. Add a person or organization; a person can stand alone.
+          </p>
+          <form @submit.prevent="addParty">
+            <h3>Add lead</h3><label>Type<select v-model="newKind"><option value="person">Person</option><option value="org">Organization</option></select></label><label>Name<input
+              v-model="name"
+              required
+              maxlength="500"
+            ></label><button
+              :disabled="busy"
+              type="submit"
+            >
+              Add lead
+            </button>
+          </form>
+          <form
+            v-if="selected && directory.find(x=>x.id===selected)?.kind==='org'"
+            class="panel"
+            @submit.prevent="linkExisting"
           >
-            <h3>{{ detail.title || 'Untitled source' }}</h3><p v-if="detail.url">
-              {{ detail.url }}
-            </p><p>Captured {{ detail.captured_at }} · raw SHA-256 {{ detail.raw_sha256 }} · normalization v{{ detail.normalization_version }}</p><pre>{{ detail.text }}</pre>
-          </article>
-        </section>
+            <h2>Link an existing person</h2>
+            <p>Links two chosen record IDs. It never merges identities.</p>
+            <label>Person<select
+              v-model="existingRelated"
+              required
+            ><option
+              value=""
+              disabled
+            >Choose a person</option><option
+              v-for="entity in directory.filter(x=>x.kind==='person')"
+              :key="entity.id"
+              :value="entity.id"
+            >{{ entity.name }} · {{ entity.id.slice(0,8) }}</option></select></label>
+            <label>Source occurrence<select
+              v-model="existingSource"
+              required
+            ><option
+              value=""
+              disabled
+            >Choose a saved source</option><option
+              v-for="source in sources"
+              :key="source.occurrence_id"
+              :value="source.occurrence_id"
+            >{{ source.content_id.slice(0,12) }} · {{ source.occurrence_id.slice(0,8) }}</option></select></label>
+            <label>Exact cited passage<textarea
+              v-model="existingQuote"
+              required
+              rows="2"
+            /></label>
+            <button
+              :disabled="busy"
+              type="submit"
+            >
+              Link existing person to organization
+            </button>
+          </form>
+        </aside>
+        <div class="detail-column">
+          <Neighborhood
+            v-if="selected"
+            :focus-id="selected"
+            :graph="graph"
+            @refresh="loadGraph"
+            @source="openSource"
+          />
+          <section
+            v-else
+            class="panel"
+          >
+            <h2>Choose a lead</h2><p>Select a directory row to open its scoped graph and evidence.</p>
+          </section>
+          <form
+            v-if="selected"
+            class="panel"
+            @submit.prevent="addRelated"
+          >
+            <h2>Add a person to this organization</h2><p>The related person and source-backed edge are committed atomically. No name matching is performed.</p><label>Person name<input
+              v-model="relatedName"
+              required
+            ></label><label>Source occurrence<select
+              v-model="relationSource"
+              required
+            ><option
+              value=""
+              disabled
+            >Choose a saved source</option><option
+              v-for="source in sources"
+              :key="source.occurrence_id"
+              :value="source.occurrence_id"
+            >{{ source.content_id.slice(0,12) }} · {{ source.occurrence_id.slice(0,8) }}</option></select></label><label>Exact cited passage<textarea
+              v-model="relationQuote"
+              required
+              rows="2"
+            /></label><button
+              :disabled="busy || directory.find(x=>x.id===selected)?.kind!=='org'"
+              type="submit"
+            >
+              Save related person and relationship
+            </button>
+          </form>
+          <form
+            v-if="selected"
+            class="panel"
+            @submit.prevent="saveProfile"
+          >
+            <h2>Edit selected directory entry</h2>
+            <label>Name<input
+              v-model="profileName"
+              required
+              maxlength="500"
+            ></label>
+            <label>Disambiguating descriptor<input
+              v-model="profileDescriptor"
+              maxlength="1000"
+            ></label>
+            <label>Aliases, comma separated<input v-model="profileAliases"></label>
+            <label>Tags, comma separated<input v-model="profileTags"></label>
+            <button
+              :disabled="busy"
+              type="submit"
+            >
+              Save profile
+            </button>
+          </form>
+          <section class="panel">
+            <h2>Sources inbox</h2><p>Paste is always available. Speaker and identity links are separate owner decisions.</p><form @submit.prevent="saveSource">
+              <label>Speaker attribution<select v-model="sourceSpeaker"><option value="unknown">Unknown</option><option value="owner">Owner</option><option
+                v-for="entity in directory"
+                :key="entity.id"
+                :value="`party:${entity.id}`"
+              >{{ entity.name }} · {{ entity.kind }} · {{ entity.id.slice(0,8) }}</option></select></label>
+              <label>Title<input v-model="captureTitle"></label><label>URL<input
+                v-model="captureUrl"
+                type="url"
+              ></label><label>Captured text<textarea
+                v-model="capture"
+                required
+                rows="5"
+              /></label><button
+                :disabled="busy"
+                type="submit"
+              >
+                Save source
+              </button>
+            </form><ul>
+              <li
+                v-for="source in sources"
+                :key="source.occurrence_id"
+              >
+                <button
+                  type="button"
+                  @click="openSource(source.occurrence_id)"
+                >
+                  Open source {{ source.content_id.slice(0,12) }} · {{ source.occurrence_id.slice(0,8) }}
+                </button>
+              </li>
+            </ul>
+            <article
+              v-if="detail"
+              aria-label="Original source"
+            >
+              <h3>{{ detail.title || 'Untitled source' }}</h3><p v-if="detail.url">
+                {{ detail.url }}
+              </p><p>Captured {{ detail.captured_at }} · raw SHA-256 {{ detail.raw_sha256 }} · normalization v{{ detail.normalization_version }}</p><pre>{{ detail.text }}</pre>
+            </article>
+          </section>
+        </div>
       </div>
     </div>
   </section>

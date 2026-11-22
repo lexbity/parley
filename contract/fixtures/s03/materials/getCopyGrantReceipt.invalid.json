@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/Error","body":{"error":{"code":"NOT_FOUND","message":"Copy grant not found","details":[]}}}

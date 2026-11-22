@@ -244,6 +244,422 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/opportunities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listOpportunities"];
+        put?: never;
+        post: operations["createOpportunity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/board": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getBoard"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/board/lists": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createBoardList"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/board/lists/order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["reorderBoardLists"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/board/lists/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["renameBoardList"];
+        trace?: never;
+    };
+    "/board/lists/{id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["archiveBoardList"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/board/cards/{id}/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["moveBoardCard"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/board/lists/{id}/cards/reorder": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reorderBoardCard"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/opportunities/{id}/participants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["updateOpportunityParticipants"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/opportunities/{id}/interests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listOpportunityInterests"];
+        put?: never;
+        post: operations["createInterest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/opportunities/{id}/exchange": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getOpportunityExchange"];
+        put: operations["updateExchange"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/opportunities/{id}/materials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listOpportunityMaterials"];
+        put?: never;
+        post: operations["createMaterial"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/opportunities/{id}/notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getOpportunityNotes"];
+        put: operations["saveOpportunityNotes"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/opportunities/{id}/notes/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["toggleOpportunityTask"];
+        trace?: never;
+    };
+    "/materials/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getMaterial"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/materials/{id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["saveMaterialVersion"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/materials/{id}/gate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getMaterialGate"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/materials/{id}/approval": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["approveMaterialVersion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/materials/{id}/copy-grant": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["issueCopyGrant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/copy-grants/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getCopyGrantReceipt"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/copy-grants/{id}/acknowledgement": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["acknowledgeCopy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/capture-stages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["stageCapture"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/capture-stages/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getCaptureReview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/capture-stages/{id}/decisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["applyCaptureReview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/capture-stages/{id}/source-only": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["saveCaptureSourceOnly"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/capture-stages/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["cancelCaptureJob"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -311,12 +727,18 @@ export interface components {
             aliases: string[];
             tags: string[];
         };
-        SourceDetail: components["schemas"]["SavedSource"] & {
+        SourceDetail: {
+            content_id: string;
+            variant_id: string;
+            occurrence_id: string;
+            normalized_sha256: string;
+            raw_sha256: string;
             text: string;
             title: string | null;
             url: string | null;
             captured_at: string;
-            actor_kind: string;
+            /** @enum {unknown} */
+            actor_kind: "owner" | "party" | "unknown";
             actor_entity_id: string | null;
             normalization_version: number;
         };
@@ -364,6 +786,352 @@ export interface components {
         };
         EdgeReceipt: {
             edge_id: string;
+        };
+        OpportunityParticipant: {
+            id: string;
+            /** @enum {unknown} */
+            kind: "person" | "org";
+            name: string;
+        };
+        Opportunity: {
+            id: string;
+            title: string;
+            /** @enum {unknown} */
+            status: "open" | "resolved" | "timed_out" | "archived";
+            revision: number;
+            participants: components["schemas"]["OpportunityParticipant"][];
+            created_at: string;
+            updated_at: string;
+        };
+        OpportunityList: {
+            data: components["schemas"]["Opportunity"][];
+            cursor: string;
+        };
+        BoardList: {
+            id: string;
+            name: string;
+            position: number;
+            revision: number;
+            archived: boolean;
+        };
+        OpportunityBoardItem: {
+            id: string;
+            title: string;
+            /** @enum {unknown} */
+            status: "open" | "resolved" | "timed_out" | "archived";
+            revision: number;
+            participants: components["schemas"]["OpportunityParticipant"][];
+            list_id: string;
+            position: number;
+            tags: string[];
+            next_task: string | null;
+            deadline: string | null;
+            missing_material: boolean;
+        };
+        BoardSnapshot: {
+            lists: components["schemas"]["BoardList"][];
+            items: components["schemas"]["OpportunityBoardItem"][];
+            board_revision: number;
+        };
+        CreateBoardList: {
+            name: string;
+            expected_revision: number;
+        };
+        RenameBoardList: {
+            name: string;
+            expected_revision: number;
+        };
+        ReorderBoardLists: {
+            ordered_ids: string[];
+            expected_revision: number;
+        };
+        ArchiveBoardList: {
+            destination_list_id: string;
+            expected_revision: number;
+        };
+        MoveBoardCard: {
+            destination_list_id: string;
+            anchor_opportunity_id: string | null;
+            expected_board_revision: number;
+            expected_source_revision: number;
+            expected_destination_revision: number;
+        };
+        ReorderBoardCard: {
+            opportunity_id: string;
+            anchor_opportunity_id: string | null;
+            expected_revision: number;
+        };
+        OpportunityNotes: {
+            opportunity_id: string;
+            markdown: string;
+            revision: number;
+        };
+        SaveOpportunityNotes: {
+            expected_revision: number;
+            markdown: string;
+        };
+        ToggleOpportunityTask: {
+            expected_revision: number;
+            start_byte: number;
+            end_byte: number;
+            line_hash: string;
+            checked: boolean;
+        };
+        CreateOpportunity: {
+            title: string;
+            participant_ids: string[];
+        };
+        OpportunityParticipantsInput: {
+            expected_revision: number;
+            participant_ids: string[];
+        };
+        CreateInterest: {
+            /** @enum {unknown} */
+            side: "me" | "them";
+            statement: string;
+        };
+        Interest: {
+            id: string;
+            opportunity_id: string;
+            /** @enum {unknown} */
+            side: "me" | "them";
+            statement: string;
+            /** @constant */
+            tier: 3;
+            /** @enum {unknown} */
+            status: "active" | "dismissed";
+            revision: number;
+        };
+        InterestList: {
+            data: components["schemas"]["Interest"][];
+        };
+        ExchangeInput: {
+            expected_revision: number;
+            they_get: string;
+            i_get: string;
+            interest_ids: string[];
+            fairness_attested: boolean;
+        };
+        Exchange: {
+            id: string;
+            opportunity_id: string;
+            version: number;
+            they_get: string;
+            i_get: string;
+            interest_ids: string[];
+            fairness_attested: boolean;
+            attested_at: string | null;
+        };
+        ExchangeResponse: components["schemas"]["Exchange"] | null;
+        CreateMaterial: {
+            recipient_id: string;
+            /** @enum {unknown} */
+            kind: "outreach" | "follow_up" | "handoff";
+            title: string;
+        };
+        SentenceClaim: {
+            /** @enum {unknown} */
+            type: "self_fact" | "other_fact" | "offer" | "question" | "ask" | "generic";
+            ref_kind?: string | null;
+            ref_id?: string | null;
+        };
+        MaterialSentence: {
+            text: string;
+            claims: components["schemas"]["SentenceClaim"][];
+            rules: string[];
+        };
+        ClaimReference: {
+            kind: string;
+            id: string;
+            label: string;
+            tier: number;
+        };
+        MaterialVersion: {
+            id: string;
+            material_id: string;
+            sequence: number;
+            body: string;
+            sentences: components["schemas"]["MaterialSentence"][];
+            slot_fills: {
+                [key: string]: string;
+            };
+            protected_tokens: string[];
+            digest: string;
+            created_at: string;
+        };
+        Material: {
+            id: string;
+            opportunity_id: string;
+            recipient_id: string;
+            /** @enum {unknown} */
+            recipient_kind: "person" | "org";
+            recipient_name: string;
+            /** @enum {unknown} */
+            kind: "outreach" | "follow_up" | "handoff";
+            title: string;
+            revision: number;
+            current_version: components["schemas"]["MaterialVersion"] | null;
+            versions: components["schemas"]["MaterialVersion"][];
+            claim_references: components["schemas"]["ClaimReference"][];
+            approval: components["schemas"]["MaterialApproval"] | null;
+            updated_at: string;
+        };
+        MaterialList: {
+            data: components["schemas"]["Material"][];
+        };
+        SaveMaterialVersion: {
+            expected_revision: number;
+            body: string;
+            sentences: components["schemas"]["MaterialSentence"][];
+            slot_fills: {
+                [key: string]: string;
+            };
+            protected_tokens: string[];
+        };
+        GateResult: {
+            id: string;
+            /** @enum {unknown} */
+            severity: "hard" | "soft";
+            pass: boolean;
+            detail: string;
+        };
+        MaterialGate: {
+            material_id: string;
+            version_id: string;
+            recipient_id: string;
+            evaluated_at: string;
+            results: components["schemas"]["GateResult"][];
+            hard_failures: string[];
+            soft_failures: string[];
+            copy_enabled: boolean;
+        };
+        ApproveMaterial: {
+            expected_revision: number;
+            version_id: string;
+            override_reasons: {
+                [key: string]: string;
+            };
+        };
+        MaterialApproval: {
+            id: string;
+            material_id: string;
+            version_id: string;
+            recipient_id: string;
+            digest: string;
+            approved_at: string;
+            gate_snapshot: components["schemas"]["MaterialGate"];
+        };
+        CopyGrantRequest: {
+            version_id: string;
+            recipient_id: string;
+        };
+        CopyGrant: {
+            grant_id: string;
+            material_id: string;
+            version_id: string;
+            recipient_id: string;
+            digest: string;
+            body: string;
+            expires_at: string;
+        };
+        CopyAcknowledgement: {
+            success: boolean;
+        };
+        CopyGrantReceipt: {
+            grant_id: string;
+            material_id: string;
+            version_id: string;
+            recipient_id: string;
+            digest: string;
+            /** @enum {unknown} */
+            status: "issued" | "acknowledged" | "failed" | "expired";
+            acknowledged_at: string | null;
+        };
+        StageCapture: {
+            text: string;
+            title: string | null;
+            url: string | null;
+            opportunity_ids: string[];
+            /** @enum {unknown} */
+            actor_kind: "owner" | "party" | "unknown";
+            actor_entity_id: string | null;
+        };
+        CaptureStage: {
+            batch_id: string;
+            job_id: string;
+            /** @enum {unknown} */
+            status: "queued" | "running" | "ok" | "invalid" | "failed" | "cancelled";
+            revision: number;
+            source: components["schemas"]["SourceDetail"];
+            opportunity_ids: string[];
+        };
+        CaptureProposal: {
+            id: string;
+            /** @enum {unknown} */
+            action: "create" | "link" | "update";
+            target_kind: string;
+            target_id: string | null;
+            target_label: string;
+            candidate_targets: {
+                id: string;
+                /** @enum {unknown} */
+                kind: "person" | "org" | "project" | "artifact" | "capture" | "resource";
+                label: string;
+            }[];
+            statement: string;
+            quote: string;
+            tier: number;
+            ambiguity: string | null;
+            unresolved: boolean;
+            candidate: {
+                [key: string]: unknown;
+            } | null;
+            target_revision: number | null;
+            quote_start: number | null;
+            quote_end: number | null;
+            /** @enum {unknown} */
+            review_state: "proposed" | "confirmed" | "corrected" | "dismissed" | "unresolved" | "asked" | "source_only";
+        };
+        CaptureReview: {
+            batch_id: string;
+            job_id: string;
+            /** @enum {unknown} */
+            status: "queued" | "running" | "ok" | "invalid" | "failed" | "cancelled";
+            revision: number;
+            injection_suspected: boolean;
+            source: components["schemas"]["SourceDetail"];
+            opportunity_ids: string[];
+            proposals: components["schemas"]["CaptureProposal"][];
+        };
+        CaptureReviewDecision: {
+            proposal_id: string;
+            /** @enum {unknown} */
+            action: "confirm" | "correct" | "dismiss" | "unresolved";
+            target_id?: string | null;
+            corrected_statement?: string | null;
+        };
+        CaptureReviewDecisions: {
+            expected_revision: number;
+            decisions: components["schemas"]["CaptureReviewDecision"][];
+        };
+        ReviewRevisionInput: {
+            expected_revision: number;
+        };
+        CancelCaptureJob: {
+            job_id: string;
+        };
+        CaptureDecisionState: {
+            proposal_id: string;
+            /** @enum {unknown} */
+            review_state: "confirmed" | "corrected" | "dismissed" | "unresolved" | "source_only";
+        };
+        CaptureDecisionReceipt: {
+            batch_id: string;
+            revision: number;
+            /** @enum {unknown} */
+            status: "queued" | "running" | "ok" | "invalid" | "failed" | "cancelled" | "source_only" | "partially_applied" | "applied";
+            committed: components["schemas"]["CaptureDecisionState"][];
+            source: components["schemas"]["SourceDetail"];
         };
         Entity: components["schemas"]["Resource"] | components["schemas"]["GraphEntity"];
         EntityList: {
@@ -976,6 +1744,905 @@ export interface operations {
             };
             401: components["responses"]["Error"];
             422: components["responses"]["Error"];
+        };
+    };
+    listOpportunities: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Opportunities with canonical participant IDs */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpportunityList"];
+                };
+            };
+        };
+    };
+    createOpportunity: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateOpportunity"];
+            };
+        };
+        responses: {
+            /** @description Opportunity and owner event committed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Opportunity"];
+                };
+            };
+            422: components["responses"]["Error"];
+        };
+    };
+    getBoard: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Ordered custom lists and canonical opportunity cards */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BoardSnapshot"];
+                };
+            };
+        };
+    };
+    createBoardList: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateBoardList"];
+            };
+        };
+        responses: {
+            /** @description Board with the new active list */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BoardSnapshot"];
+                };
+            };
+            412: components["responses"]["Error"];
+        };
+    };
+    reorderBoardLists: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReorderBoardLists"];
+            };
+        };
+        responses: {
+            /** @description Lists reordered */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BoardSnapshot"];
+                };
+            };
+            412: components["responses"]["Error"];
+        };
+    };
+    renameBoardList: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenameBoardList"];
+            };
+        };
+        responses: {
+            /** @description Board with the renamed list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BoardSnapshot"];
+                };
+            };
+            412: components["responses"]["Error"];
+        };
+    };
+    archiveBoardList: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ArchiveBoardList"];
+            };
+        };
+        responses: {
+            /** @description Cards moved and list archived atomically */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BoardSnapshot"];
+                };
+            };
+            412: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    moveBoardCard: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MoveBoardCard"];
+            };
+        };
+        responses: {
+            /** @description Card moved without changing opportunity state or deadlines */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BoardSnapshot"];
+                };
+            };
+            412: components["responses"]["Error"];
+        };
+    };
+    reorderBoardCard: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReorderBoardCard"];
+            };
+        };
+        responses: {
+            /** @description Card reordered within its list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BoardSnapshot"];
+                };
+            };
+            412: components["responses"]["Error"];
+        };
+    };
+    updateOpportunityParticipants: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpportunityParticipantsInput"];
+            };
+        };
+        responses: {
+            /** @description Participant set and opportunity revision */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Opportunity"];
+                };
+            };
+            412: components["responses"]["Error"];
+        };
+    };
+    listOpportunityInterests: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Owner-confirmed interests for the opportunity */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InterestList"];
+                };
+            };
+        };
+    };
+    createInterest: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateInterest"];
+            };
+        };
+        responses: {
+            /** @description Owner-authored interest */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Interest"];
+                };
+            };
+            422: components["responses"]["Error"];
+        };
+    };
+    getOpportunityExchange: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current versioned exchange or null */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExchangeResponse"];
+                };
+            };
+        };
+    };
+    updateExchange: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExchangeInput"];
+            };
+        };
+        responses: {
+            /** @description New exchange version */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Exchange"];
+                };
+            };
+            412: components["responses"]["Error"];
+        };
+    };
+    listOpportunityMaterials: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Canonical materials in this opportunity */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaterialList"];
+                };
+            };
+        };
+    };
+    createMaterial: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateMaterial"];
+            };
+        };
+        responses: {
+            /** @description Material bound to one opportunity and recipient */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Material"];
+                };
+            };
+            422: components["responses"]["Error"];
+        };
+    };
+    getOpportunityNotes: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Canonical Markdown and revision */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpportunityNotes"];
+                };
+            };
+        };
+    };
+    saveOpportunityNotes: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaveOpportunityNotes"];
+            };
+        };
+        responses: {
+            /** @description Canonical Markdown saved with new revision */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpportunityNotes"];
+                };
+            };
+            412: components["responses"]["Error"];
+        };
+    };
+    toggleOpportunityTask: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ToggleOpportunityTask"];
+            };
+        };
+        responses: {
+            /** @description One exact task marker changed in canonical Markdown */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpportunityNotes"];
+                };
+            };
+            412: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    getMaterial: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current output version and canonical lineage */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Material"];
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    saveMaterialVersion: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaveMaterialVersion"];
+            };
+        };
+        responses: {
+            /** @description Immutable output version created; historical versions remain unchanged */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Material"];
+                };
+            };
+            412: components["responses"]["Error"];
+        };
+    };
+    getMaterialGate: {
+        parameters: {
+            query: {
+                version_id: string;
+            };
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deterministic server gate results for exact current version and recipient */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaterialGate"];
+                };
+            };
+        };
+    };
+    approveMaterialVersion: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApproveMaterial"];
+            };
+        };
+        responses: {
+            /** @description Version-bound approval and gate snapshot */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaterialApproval"];
+                };
+            };
+            412: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    issueCopyGrant: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CopyGrantRequest"];
+            };
+        };
+        responses: {
+            /** @description Authorized exact approved text for one recipient and version */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CopyGrant"];
+                };
+            };
+            403: components["responses"]["Error"];
+            410: components["responses"]["Error"];
+        };
+    };
+    getCopyGrantReceipt: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Receipt status without reissuing content bytes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CopyGrantReceipt"];
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    acknowledgeCopy: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CopyAcknowledgement"];
+            };
+        };
+        responses: {
+            /** @description Browser-reported clipboard promise outcome only; creates no send or timer */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CopyGrantReceipt"];
+                };
+            };
+            409: components["responses"]["Error"];
+        };
+    };
+    stageCapture: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StageCapture"];
+            };
+        };
+        responses: {
+            /** @description Raw source occurrence and durable Extractor job staged; no proposal is accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptureStage"];
+                };
+            };
+            422: components["responses"]["Error"];
+        };
+    };
+    getCaptureReview: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Staged source */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptureReview"];
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    applyCaptureReview: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaptureReviewDecisions"];
+            };
+        };
+        responses: {
+            /** @description Selected review decisions committed atomically */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptureDecisionReceipt"];
+                };
+            };
+            412: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    saveCaptureSourceOnly: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReviewRevisionInput"];
+            };
+        };
+        responses: {
+            /** @description Raw source retained with no proposals applied */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptureDecisionReceipt"];
+                };
+            };
+            412: components["responses"]["Error"];
+        };
+    };
+    cancelCaptureJob: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CancelCaptureJob"];
+            };
+        };
+        responses: {
+            /** @description Job cancellation recorded; source and staged decisions remain durable */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptureStage"];
+                };
+            };
+            409: components["responses"]["Error"];
         };
     };
 }
