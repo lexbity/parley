@@ -39,6 +39,8 @@ const board: BoardSnapshot = {
 function stub(boardValue: BoardSnapshot = board) {
   vi.spyOn(parley, 'connect').mockResolvedValue();
   vi.spyOn(parley, 'getBoard').mockResolvedValue(boardValue);
+  vi.spyOn(parley, 'getDailyQueue').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', pack_id: 'job_search', pack_version: '1.0.0', daily_cap: 12, actionable_count: 0, deferred_count: 0, items: [] });
+  vi.spyOn(parley, 'getInsights').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', period_start: '2026-11-14', period_end: '2026-11-21', pack_id: 'job_search', pack_version: '1.0.0', sample_size: 0, metrics: [], comparisons: [], gaps: [], questions: [] });
   vi.spyOn(parley, 'createOpportunity').mockResolvedValue(opportunity);
   vi.spyOn(parley, 'createBoardList').mockResolvedValue({ list: boardValue.lists[0]!, board_revision: 1 });
   vi.spyOn(parley, 'renameBoardList').mockResolvedValue(boardValue.lists[0]!);

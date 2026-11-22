@@ -9,6 +9,7 @@ import QueueWorkspace from '../features/queue/QueueWorkspace.vue';
 import BriefWorkspace from '../features/leads/BriefWorkspace.vue';
 import AgentPolicySettings from '../features/settings/AgentPolicySettings.vue';
 import CapacitySettings from '../features/settings/CapacitySettings.vue';
+import Packs from '../features/settings/Packs.vue';
 import ContactThreadPanel from '../features/queue/ContactThreadPanel.vue';
 import WritingWorkspace from '../features/output/WritingWorkspace.vue';
 import MaterialActions from '../features/output/MaterialActions.vue';
@@ -462,6 +463,7 @@ watch(route, () => { void focusRouteLocation(); });
       </form>
       <AgentPolicySettings />
       <CapacitySettings />
+      <Packs />
     </section>
     <div v-show="active === 'Queue'">
       <QueueWorkspace

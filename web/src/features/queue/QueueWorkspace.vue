@@ -6,11 +6,14 @@ import MarkdownEditor from '../../shared/MarkdownEditor.vue';
 import MarkdownPreview from '../../shared/MarkdownPreview.vue';
 import MaterialActions from '../output/MaterialActions.vue';
 import ContactThreadPanel from './ContactThreadPanel.vue';
+import Daily from './Daily.vue';
+import Insights from './Insights.vue';
 
 const props = withDefaults(defineProps<{ parties: GraphEntity[]; outputs: Material[]; routeId?: string | null; active?: boolean }>(), { routeId: null, active: true });
 const emit = defineEmits<{ 'material-updated': [material: Material]; navigate: [path: string] }>();
 const board = ref<BoardSnapshot>({ lists: [], cards: [] });
 const selectedId = ref('');
+const activeQueueView = ref<'Board' | 'Opportunities' | 'Daily' | 'Insights'>('Board');
 const detail = ref<OpportunityNotes | null>(null);
 const markdown = ref('');
 const dirty = ref(false);
@@ -308,6 +311,20 @@ function onThreadVisibilityChange() {
     <h2 id="queue-heading">
       Opportunities
     </h2>
+    <nav
+      aria-label="Queue views"
+      class="queue-views"
+    >
+      <button
+        v-for="view in ['Board', 'Opportunities', 'Daily', 'Insights'] as const"
+        :key="view"
+        type="button"
+        :aria-pressed="activeQueueView === view"
+        @click="activeQueueView = view"
+      >
+        {{ view }}
+      </button>
+    </nav>
     <p
       v-if="status"
       role="status"
@@ -362,11 +379,11 @@ function onThreadVisibilityChange() {
         </button>
       </form>
     </div>
-    <p v-if="!board.cards.length">
+    <p v-if="activeQueueView !== 'Daily' && activeQueueView !== 'Insights' && !board.cards.length">
       No opportunities yet. Select a lead to bring records together.
     </p>
     <div
-      v-if="board.lists.length"
+      v-if="activeQueueView === 'Board' && board.lists.length"
       class="board-lists"
       aria-label="Opportunity board"
     >
@@ -464,6 +481,52 @@ function onThreadVisibilityChange() {
         </article>
       </section>
     </div>
+    <table
+      v-if="activeQueueView === 'Opportunities'"
+      class="opportunity-table"
+    >
+      <thead>
+        <tr>
+          <th scope="col">
+            Opportunity
+          </th><th scope="col">
+            Participants
+          </th><th scope="col">
+            State
+          </th><th scope="col">
+            Next task
+          </th><th scope="col">
+            Action
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr
+          v-for="card in board.cards.slice().sort((a, b) => a.opportunity.title.localeCompare(b.opportunity.title) || a.opportunity.id.localeCompare(b.opportunity.id))"
+          :key="card.opportunity.id"
+        >
+          <th scope="row">
+            {{ card.opportunity.title }}
+          </th><td>{{ parties.filter((party) => card.opportunity.participant_ids.includes(party.id)).map((party) => party.name).join(', ') }}</td><td>{{ card.opportunity.state }}</td><td>{{ card.next_task || '—' }}</td><td>
+            <button
+              type="button"
+              @click="openCard(card)"
+            >
+              Open
+            </button>
+          </td>
+        </tr>
+      </tbody>
+      <caption v-if="!board.cards.length">
+        No opportunities yet.
+      </caption>
+    </table>
+    <div v-show="activeQueueView === 'Daily'">
+      <Daily @navigate="emit('navigate', $event)" />
+    </div>
+    <div v-show="activeQueueView === 'Insights'">
+      <Insights @navigate="emit('navigate', $event)" />
+    </div>
     <section
       v-if="selectedCard && detail"
       aria-label="Opportunity card detail"
@@ -557,6 +620,9 @@ function onThreadVisibilityChange() {
 .card-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; }
 .card-layout > section { min-width: 0; }
 .card-actions { display: flex; gap: .5rem; }
+.queue-views { display: flex; gap: .5rem; margin-block: .75rem; }
+.opportunity-table { width: 100%; border-collapse: collapse; }
+.opportunity-table th, .opportunity-table td { padding: .5rem; border-bottom: 1px solid #cbd5ce; text-align: left; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 input[type="checkbox"] { width: auto; }
 @media (max-width: 700px) { .card-layout { grid-template-columns: 1fr; } }
