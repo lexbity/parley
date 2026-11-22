@@ -7,10 +7,11 @@ use std::{
         Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
+    net::{TcpListener, TcpStream},
 };
 
 type OwnerSession = (String, String, String);
@@ -100,6 +101,46 @@ async fn setup() -> (PathBuf, Workspace, u16, RunningService) {
     (path, workspace, port, service)
 }
 
+async fn briefer_ollama() -> (String, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        for index in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 8192];
+            loop {
+                let read = stream.read(&mut buffer).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(split) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..split]);
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|value| value.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    if request.len() >= split + 4 + length {
+                        break;
+                    }
+                }
+            }
+            let body = if index == 0 {
+                json!({"models":[{"name":"fixture","digest":"sha256:s08"}]}).to_string()
+            } else {
+                json!({"message":{"content":json!({"response":"I found no direct source excerpt about that yet. What should I help you inspect next?","items":[{"kind":"jargon","text":"Onboarding is a term used for helping a new user get started.","detail":{"term":"onboarding","plain_meaning":"Helping a new user get started.","use_or_avoid":"owner_decides","applies_to":"role"},"tier":2,"quote":null,"check_suggestion":"Check the party's own wording in the supplied professional material."}]}).to_string()},"prompt_eval_count":20,"eval_count":15}).to_string()
+            };
+            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+        }
+    });
+    (format!("http://{address}"), task)
+}
+
 #[tokio::test]
 async fn s08_seeds_versioned_defaults_and_keeps_prompt_and_question_versions_immutable() {
     let (path, workspace, port, service) = setup().await;
@@ -184,6 +225,28 @@ async fn s08_seeds_versioned_defaults_and_keeps_prompt_and_question_versions_imm
             .unwrap();
     assert!(!old_prompt.contains("Owner override"));
 
+    let (status, fluency) = request(
+        port,
+        "PUT",
+        "/api/v1/fluency/onboarding",
+        Some(json!({"status":"learning","expected_revision":0})),
+    )
+    .await;
+    assert_eq!(status, 200, "{fluency:?}");
+    assert_eq!(fluency["status"], "learning");
+    assert_eq!(fluency["revision"], 1);
+    let (status, terms) = request(port, "GET", "/api/v1/fluency", None).await;
+    assert_eq!(status, 200, "{terms:?}");
+    assert_eq!(terms.as_array().unwrap().len(), 1);
+    let (status, stale) = request(
+        port,
+        "PUT",
+        "/api/v1/fluency/onboarding",
+        Some(json!({"status":"fluent","expected_revision":0})),
+    )
+    .await;
+    assert_eq!(status, 409, "{stale:?}");
+
     service.shutdown().await;
     drop(workspace);
     fs::remove_file(path).unwrap();
@@ -244,6 +307,96 @@ async fn s08_owner_chat_scope_and_segment_scope_are_distinct_and_revisioned() {
     ).fetch_one(workspace.pool()).await.unwrap();
     assert_eq!((owner_chats, segment_chats), (1, 1));
 
+    service.shutdown().await;
+    drop(workspace);
+    fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn s08_owner_interviewer_and_party_briefer_histories_stay_separate() {
+    let (path, workspace, port, service) = setup().await;
+    let party = workspace
+        .create_entity("s08-dana", "person", "Dana Lee")
+        .await
+        .unwrap();
+    let (endpoint, fake) = briefer_ollama().await;
+    let (status, configured) = request(port,"PUT","/api/v1/agent/provider",Some(json!({"endpoint":endpoint,"model":"fixture","num_ctx":8192,"num_predict":512,"locale":"en"}))).await;
+    assert_eq!(status, 204, "{configured:?}");
+    let (status, health) = request(port, "POST", "/api/v1/agent/provider/health", None).await;
+    assert_eq!(status, 200, "{health:?}");
+
+    let (status, owner_chat) = request(
+        port,
+        "POST",
+        "/api/v1/agent/chats",
+        Some(json!({"role":"interviewer","scope_kind":"owner","asset_kind":"proof"})),
+    )
+    .await;
+    assert_eq!(status, 201, "{owner_chat:?}");
+    let (status, lead_chat) = request(
+        port,
+        "POST",
+        "/api/v1/agent/chats",
+        Some(json!({"role":"briefer","scope_kind":"party","scope_id":party.id})),
+    )
+    .await;
+    assert_eq!(status, 201, "{lead_chat:?}");
+    let chat_id = lead_chat["id"].as_str().unwrap();
+    let (status, submitted) = request(
+        port,
+        "POST",
+        &format!("/api/v1/agent/chats/{chat_id}/turns"),
+        Some(json!({"text":"What does the supplied material say about onboarding?"})),
+    )
+    .await;
+    assert_eq!(status, 202, "{submitted:?}");
+    let job_id = submitted["job_id"].as_str().unwrap();
+    let mut job = Value::Null;
+    for _ in 0..100 {
+        let (_, current) = request(port, "GET", &format!("/api/v1/jobs/{job_id}"), None).await;
+        job = current;
+        if job["status"] == "succeeded" || job["status"] == "failed" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(job["status"], "succeeded", "{job:?}");
+    let (status, lead_history) =
+        request(port, "GET", &format!("/api/v1/agent/chats/{chat_id}"), None).await;
+    assert_eq!(status, 200, "{lead_history:?}");
+    assert_eq!(lead_history["turns"].as_array().unwrap().len(), 2);
+    assert_eq!(lead_history["turns"][0]["speaker"], "owner");
+    assert_eq!(lead_history["turns"][1]["speaker"], "agent");
+    let (status, items) = request(
+        port,
+        "GET",
+        &format!("/api/v1/briefs/party/{}/items", party.id),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{items:?}");
+    assert_eq!(items.as_array().unwrap().len(), 1);
+    assert_eq!(items[0]["tier"], 2);
+    let fluency: Option<(String, String)> =
+        sqlx::query_as("SELECT term,status FROM fluency WHERE term='onboarding'")
+            .fetch_optional(workspace.pool())
+            .await
+            .unwrap();
+    assert_eq!(fluency, Some(("onboarding".into(), "unknown".into())));
+    let (status, owner_history) = request(
+        port,
+        "GET",
+        &format!("/api/v1/agent/chats/{}", owner_chat["id"].as_str().unwrap()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{owner_history:?}");
+    assert!(owner_history["turns"].as_array().unwrap().is_empty());
+    let stored_counts:(i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM agent_turn WHERE chat_id=?),(SELECT count(*) FROM agent_turn WHERE chat_id=?)")
+        .bind(chat_id).bind(owner_chat["id"].as_str().unwrap()).fetch_one(workspace.pool()).await.unwrap();
+    assert_eq!(stored_counts, (2, 0));
+
+    fake.await.unwrap();
     service.shutdown().await;
     drop(workspace);
     fs::remove_file(path).unwrap();

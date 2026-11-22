@@ -1823,6 +1823,12 @@ async fn evaluate_material(
         .iter()
         .any(|phrase| material.body.to_lowercase().contains(phrase));
     let char_limit = 1200usize;
+    let glossary: Vec<(String, String)> = sqlx::query_as("SELECT term,status FROM fluency")
+        .fetch_all(&mut **tx)
+        .await?;
+    let fluency_ok = glossary
+        .iter()
+        .all(|(term, status)| status == "fluent" || !contains_glossary_term(&material.body, term));
     let mut input = gate::GateInput {
         exchange_complete,
         fairness_attested: attested == 1 && digest_stored.as_deref() == Some(current.as_str()),
@@ -1856,7 +1862,7 @@ async fn evaluate_material(
         } else {
             4
         },
-        fluency_ok: true,
+        fluency_ok,
         lint_error,
         hook_fresh: !uses_hook,
         cadence_ok: sqlx::query_scalar::<_, i64>(
@@ -1878,6 +1884,21 @@ async fn evaluate_material(
         input.factual_sentences_grounded = false;
     }
     Ok(gate::evaluate(&input))
+}
+
+fn contains_glossary_term(body: &str, term: &str) -> bool {
+    let body = body.to_lowercase();
+    let term = term.trim().to_lowercase();
+    if term.is_empty() {
+        return false;
+    }
+    body.match_indices(&term).any(|(start, matched)| {
+        let end = start + matched.len();
+        let before = body[..start].chars().next_back();
+        let after = body[end..].chars().next();
+        let word_edge = |ch: Option<char>| ch.is_none_or(|value| !value.is_alphanumeric());
+        word_edge(before) && word_edge(after)
+    })
 }
 
 async fn persist_material_references(

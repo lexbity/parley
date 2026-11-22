@@ -173,6 +173,14 @@ CREATE TABLE segment_party (
 );
 CREATE INDEX segment_party_by_party ON segment_party(party_id,segment_id);
 
+CREATE TABLE fluency (
+  term TEXT PRIMARY KEY COLLATE NOCASE CHECK(length(trim(term)) BETWEEN 1 AND 120),
+  status TEXT NOT NULL CHECK(status IN ('unknown','learning','fluent')),
+  revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX fluency_status ON fluency(status,term COLLATE NOCASE);
+
 CREATE TABLE brief_item (
   id TEXT PRIMARY KEY,
   scope_kind TEXT NOT NULL CHECK(scope_kind IN ('party','segment')),
