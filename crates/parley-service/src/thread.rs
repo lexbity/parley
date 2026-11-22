@@ -41,11 +41,205 @@ pub(super) fn routes() -> Router<AppState> {
         .route("/api/v1/threads/{id}/reopen", post(reopen_thread))
         .route("/api/v1/sends/{id}/outcome", post(record_outcome))
         .route("/api/v1/entities/{id}/clear-dnc", post(clear_party_dnc))
+        .route("/api/v1/sends", get(list_sends))
+        .route(
+            "/api/v1/sends/{id}/outcome/correction",
+            post(correct_outcome),
+        )
         .route(
             "/api/v1/opportunities/{id}/resolution",
             post(record_resolution),
         )
         .route("/api/v1/capacity", get(list_capacity).post(set_capacity))
+}
+
+#[derive(Debug, Deserialize)]
+struct SendHistoryQuery {
+    opportunity_id: String,
+    recipient_id: Option<String>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutcomeCorrectionInput {
+    expected_revision: i64,
+    class: String,
+    rung_accepted: Option<i64>,
+    received_at: Option<String>,
+    note: Option<String>,
+    reason: String,
+}
+
+async fn correct_outcome(
+    State(state): State<AppState>,
+    Path(send_id): Path<String>,
+    headers: HeaderMap,
+    Json(input): Json<OutcomeCorrectionInput>,
+) -> Response {
+    if let Err(e) = authenticate(&headers, &state).await {
+        return (e.0, e.1).into_response();
+    }
+    if input.reason.trim().chars().count() < 10
+        || !matches!(
+            input.class.as_str(),
+            "no_reply"
+                | "reply_positive"
+                | "reply_neutral"
+                | "reply_negative"
+                | "declined"
+                | "rung_accepted"
+                | "call_scheduled"
+        )
+        || (input.class == "rung_accepted" && input.rung_accepted.is_none())
+        || (input.class != "rung_accepted" && input.rung_accepted.is_some())
+    {
+        return super::error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "CORRECTION_INVALID",
+            "Outcome class/rung invalid or correction reason shorter than ten characters",
+        );
+    }
+    let key = match headers
+        .get("idempotency-key")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty() && v.len() <= 200)
+    {
+        Some(v) => v.to_owned(),
+        None => {
+            return super::error(
+                StatusCode::BAD_REQUEST,
+                "IDEMPOTENCY_KEY_REQUIRED",
+                "Idempotency-Key is required",
+            );
+        }
+    };
+    let canonical = super::digest(
+        format!(
+            "outcome-correction\0{send_id}\0{}\0{}\0{}",
+            input.expected_revision,
+            input.class,
+            input.reason.trim()
+        )
+        .as_bytes(),
+    );
+    let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
+        Ok(v) => v,
+        Err(e) => return super::command_error(e.into()),
+    };
+    if let Some(r) =
+        super::assistant::receipt_response(&mut tx, state.workspace.epoch(), &key, &canonical).await
+    {
+        return r;
+    }
+    let row:Option<(i64,String)>=match sqlx::query_as("SELECT (SELECT coalesce(max(revision),0) FROM outcome_revision WHERE send_id=s.id),s.recipient_id FROM send s WHERE s.id=? AND EXISTS(SELECT 1 FROM outcome WHERE send_id=s.id)").bind(&send_id).fetch_optional(&mut *tx).await{Ok(v)=>v,Err(e)=>return super::command_error(e.into())};
+    let Some((revision, party)) = row else {
+        return super::error(
+            StatusCode::NOT_FOUND,
+            "OUTCOME_NOT_FOUND",
+            "No outcome is recorded for this send",
+        );
+    };
+    if revision != input.expected_revision {
+        return super::error(
+            StatusCode::CONFLICT,
+            "OUTCOME_REVISION_CONFLICT",
+            "Outcome changed; reload history",
+        );
+    }
+    let next = revision + 1;
+    let now = now_utc();
+    if let Err(e)=sqlx::query("INSERT INTO outcome_revision(send_id,revision,class,rung_accepted,received_at,recorded_at,note,correction_reason) VALUES(?,?,?,?,?,?,?,?)").bind(&send_id).bind(next).bind(&input.class).bind(input.rung_accepted).bind(&input.received_at).bind(&now).bind(&input.note).bind(input.reason.trim()).execute(&mut *tx).await{return super::command_error(e.into())}
+    if input.class == "declined"
+        && let Err(e)=sqlx::query("UPDATE party_policy SET do_not_contact=1,state='closed',revision=revision+1 WHERE party_id=?").bind(&party).execute(&mut *tx).await
+    {
+        return super::command_error(e.into());
+    }
+    let result = json!({"send_id":send_id,"revision":next,"class":input.class,"rung_accepted":input.rung_accepted,"received_at":input.received_at,"recorded_at":now,"note":input.note,"reason":input.reason.trim()});
+    if let Err(e) = append_event(
+        &mut tx,
+        "outcome",
+        &send_id,
+        next,
+        "outcome.corrected",
+        result.clone(),
+    )
+    .await
+    {
+        return workspace_error(e);
+    }
+    let cursor: i64 = match sqlx::query_scalar("SELECT max(cursor) FROM event")
+        .fetch_one(&mut *tx)
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => return super::command_error(e.into()),
+    };
+    if let Err(e) = super::assistant::write_receipt(
+        &mut tx,
+        state.workspace.epoch(),
+        &key,
+        &canonical,
+        200,
+        &result,
+        cursor,
+    )
+    .await
+    {
+        return workspace_error(e);
+    }
+    if let Err(e) = tx.commit().await {
+        return super::command_error(e.into());
+    }
+    let mut r = Json(result).into_response();
+    super::private_headers(&mut r, state.workspace.epoch());
+    r
+}
+
+#[allow(clippy::type_complexity)]
+async fn list_sends(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SendHistoryQuery>,
+) -> Response {
+    if let Err(e) = authenticate(&headers, &state).await {
+        return (e.0, e.1).into_response();
+    }
+    if query.opportunity_id.trim().is_empty() {
+        return super::error(
+            StatusCode::BAD_REQUEST,
+            "OPPORTUNITY_REQUIRED",
+            "opportunity_id is required",
+        );
+    }
+    let rows:Vec<(String,String,i64,String,i64,String,String,String,String,String,i64,Option<String>,Option<String>)>=match sqlx::query_as("SELECT s.id,t.opportunity_id,s.touch_no,s.primary_material_id,s.primary_version_no,s.recipient_id,s.content_sha256,s.sent_at,s.response_deadline,s.gate_snapshot_json,s.capacity_charged,s.deadline_entered_date,s.deadline_zone FROM send s JOIN contact_thread t ON t.id=s.thread_id WHERE t.opportunity_id=? AND (? IS NULL OR s.recipient_id=?) ORDER BY s.sent_at,s.id").bind(&query.opportunity_id).bind(&query.recipient_id).bind(&query.recipient_id).fetch_all(state.workspace.pool()).await{Ok(v)=>v,Err(e)=>return super::command_error(e.into())};
+    let mut sends = Vec::new();
+    for (
+        id,
+        opportunity_id,
+        touch,
+        material_id,
+        version,
+        recipient,
+        digest,
+        sent,
+        deadline,
+        gate,
+        charged,
+        entered,
+        zone,
+    ) in rows
+    {
+        let original:Option<(String,Option<i64>,Option<String>,String,Option<String>)>=match sqlx::query_as("SELECT class,rung_accepted,received_at,recorded_at,note FROM outcome WHERE send_id=?").bind(&id).fetch_optional(state.workspace.pool()).await{Ok(v)=>v,Err(e)=>return super::command_error(e.into())};
+        let revisions:Vec<(i64,String,Option<i64>,Option<String>,String,Option<String>,Option<String>)>=match sqlx::query_as("SELECT revision,class,rung_accepted,received_at,recorded_at,correction_reason,note FROM outcome_revision WHERE send_id=? ORDER BY revision").bind(&id).fetch_all(state.workspace.pool()).await{Ok(v)=>v,Err(e)=>return super::command_error(e.into())};
+        let corrections=revisions.iter().skip(1).map(|(revision,class,rung,received,recorded,reason,note)|json!({"revision":revision,"class":class,"rung_accepted":rung,"received_at":received,"recorded_at":recorded,"reason":reason,"note":note})).collect::<Vec<_>>();
+        let effective=revisions.last().map(|(_,class,rung,received,recorded,_,note)|json!({"class":class,"rung_accepted":rung,"received_at":received,"recorded_at":recorded,"note":note}));
+        let parts:Vec<(String,i64,String,String)>=match sqlx::query_as("SELECT sp.material_id,sp.version_no,sp.kind,mv.content_sha256 FROM send_part sp JOIN material_version mv ON mv.material_id=sp.material_id AND mv.version_no=sp.version_no WHERE sp.send_id=? ORDER BY sp.kind,sp.material_id,sp.version_no").bind(&id).fetch_all(state.workspace.pool()).await{Ok(v)=>v,Err(e)=>return super::command_error(e.into())};
+        let parts=parts.into_iter().map(|(material_id,version_no,kind,content_sha256)|json!({"material_id":material_id,"version_no":version_no,"kind":kind,"content_sha256":content_sha256})).collect::<Vec<_>>();
+        let original=original.map(|(class,rung,received,recorded,note)|json!({"class":class,"rung_accepted":rung,"received_at":received,"recorded_at":recorded,"note":note}));
+        sends.push(json!({"send":{"id":id,"opportunity_id":opportunity_id,"touch_no":touch,"primary_material_id":material_id,"primary_version_no":version,"recipient_id":recipient,"content_sha256":digest,"sent_at":sent,"response_deadline":deadline,"deadline_entered_date":entered,"deadline_zone":zone,"capacity_charged":charged!=0,"gate_snapshot":serde_json::from_str::<serde_json::Value>(&gate).unwrap_or_default(),"parts":parts},"original_outcome":original,"effective_outcome":effective,"corrections":corrections}));
+    }
+    let mut response = Json(json!({"items":sends})).into_response();
+    super::private_headers(&mut response, state.workspace.epoch());
+    response
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -854,8 +1048,16 @@ impl Workspace {
             .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
         let overrides_json = serde_json::to_string(&primary_overrides)
             .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
+        let segment_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT segment_id FROM segment_party WHERE party_id=? ORDER BY segment_id",
+        )
+        .bind(&thread.recipient_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let segment_snapshot = serde_json::to_string(&segment_ids)
+            .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
         sqlx::query(
-            "INSERT INTO send(id,thread_id,touch_no,primary_material_id,primary_version_no,recipient_id,gate_snapshot_json,overrides_json,content_sha256,sent_at,response_deadline,deadline_entered_date,deadline_zone,capacity_charged) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO send(id,thread_id,touch_no,primary_material_id,primary_version_no,recipient_id,gate_snapshot_json,overrides_json,content_sha256,sent_at,response_deadline,deadline_entered_date,deadline_zone,capacity_charged,segment_ids_snapshot_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(&send_id)
         .bind(&thread.id)
@@ -871,6 +1073,7 @@ impl Workspace {
         .bind(resolved.entered_date.map(|date| date.format("%Y-%m-%d").to_string()))
         .bind(resolved.zone.to_string())
         .bind(capacity_charged)
+        .bind(segment_snapshot)
         .execute(&mut *tx)
         .await?;
         for (kind, material_id, version, release_id, _hash) in &parts {

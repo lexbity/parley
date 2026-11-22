@@ -256,7 +256,7 @@ async fn s08_seeds_versioned_defaults_and_keeps_prompt_and_question_versions_imm
 
     service.shutdown().await;
     drop(workspace);
-    fs::remove_file(path).unwrap();
+    let _ = fs::remove_file(path);
 }
 
 #[tokio::test]
@@ -316,7 +316,7 @@ async fn s08_owner_chat_scope_and_segment_scope_are_distinct_and_revisioned() {
 
     service.shutdown().await;
     drop(workspace);
-    fs::remove_file(path).unwrap();
+    let _ = fs::remove_file(path);
 }
 
 #[tokio::test]
@@ -406,5 +406,5 @@ async fn s08_owner_interviewer_and_party_briefer_histories_stay_separate() {
     fake.await.unwrap();
     service.shutdown().await;
     drop(workspace);
-    fs::remove_file(path).unwrap();
+    let _ = fs::remove_file(path);
 }

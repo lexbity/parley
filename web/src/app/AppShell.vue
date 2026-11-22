@@ -8,9 +8,9 @@ import InterviewerWorkspace from '../features/resources/InterviewerWorkspace.vue
 import QueueWorkspace from '../features/queue/QueueWorkspace.vue';
 import BriefWorkspace from '../features/leads/BriefWorkspace.vue';
 import AgentPolicySettings from '../features/settings/AgentPolicySettings.vue';
+import MaintenanceSettings from '../features/settings/MaintenanceSettings.vue';
 import CapacitySettings from '../features/settings/CapacitySettings.vue';
 import Packs from '../features/settings/Packs.vue';
-import DataControls from '../features/settings/DataControls.vue';
 import ContactThreadPanel from '../features/queue/ContactThreadPanel.vue';
 import WritingWorkspace from '../features/output/WritingWorkspace.vue';
 import MaterialActions from '../features/output/MaterialActions.vue';
@@ -181,10 +181,6 @@ async function applyWorkspaceChange(operation: AdminOperation, epoch: string, an
     if (operation === 'restore' || operation === 'erase_workspace') await parley.refreshSession();
     await Promise.all([refreshLeads(), parley.listResources().then((next) => { resources.value = next; })]);
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Workspace records changed; reload the current workspace before continuing.'; }
-}
-
-function announceWorkspaceChange(operation: AdminOperation, epoch: string) {
-  void applyWorkspaceChange(operation, epoch, true);
 }
 
 async function pollOutputThreads() {
@@ -504,7 +500,10 @@ watch(route, () => { void focusRouteLocation(); });
       <AgentPolicySettings />
       <CapacitySettings />
       <Packs />
-      <DataControls @workspace-changed="announceWorkspaceChange" />
+      <MaintenanceSettings
+        :parties="parties"
+        @erased="refreshLeads"
+      />
     </section>
     <div v-show="active === 'Queue'">
       <QueueWorkspace

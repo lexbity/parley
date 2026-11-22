@@ -12,12 +12,13 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use parley_domain::{gate, template};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sqlx::QueryBuilder;
 use sqlx::{Sqlite, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -76,6 +77,10 @@ pub(super) fn routes() -> Router<AppState> {
         .route(
             "/api/v1/opportunities",
             get(list_opportunities).post(create_opportunity),
+        )
+        .route(
+            "/api/v1/opportunities/{id}/tags",
+            axum::routing::put(set_opportunity_tags),
         )
         .route("/api/v1/opportunities/{id}", get(get_opportunity))
         .route(
@@ -252,14 +257,206 @@ async fn create_opportunity(
 async fn list_opportunities(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(filters): Query<OpportunityFilters>,
 ) -> impl IntoResponse {
     if let Err(error) = authenticate(&headers, &state).await {
         return (error.0, error.1).into_response();
     }
-    match state.workspace.list_opportunities().await {
+    match state.workspace.opportunity_summaries(&filters).await {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
         Err(error) => workspace_error(error),
     }
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct OpportunityFilters {
+    pub(super) q: Option<String>,
+    #[serde(default)]
+    pub(super) party_id: Vec<String>,
+    #[serde(default)]
+    pub(super) tag: Vec<String>,
+    pub(super) status: Option<String>,
+    pub(super) missing_material: Option<bool>,
+    pub(super) deadline_before: Option<String>,
+    pub(super) sort: Option<String>,
+    pub(super) order: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct OpportunityParticipant {
+    id: String,
+    name: String,
+    kind: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct OpportunitySummary {
+    pub id: String,
+    pub title: String,
+    pub state: String,
+    pub revision: i64,
+    pub participants: Vec<OpportunityParticipant>,
+    pub tags: Vec<String>,
+    pub next_task: Option<String>,
+    pub next_deadline: Option<String>,
+    pub missing_material: bool,
+}
+
+#[derive(sqlx::FromRow)]
+struct OpportunitySummaryRow {
+    id: String,
+    title: String,
+    state: String,
+    revision: i64,
+    participants: String,
+    tags: String,
+    next_task: Option<String>,
+    next_deadline: Option<String>,
+    missing_material: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct OpportunityTagsInput {
+    expected_revision: i64,
+    tags: Vec<String>,
+}
+
+async fn set_opportunity_tags(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(input): Json<OpportunityTagsInput>,
+) -> Response {
+    if let Err(e) = authenticate(&headers, &state).await {
+        return (e.0, e.1).into_response();
+    }
+    if input.tags.len() > 100
+        || input
+            .tags
+            .iter()
+            .any(|t| t.trim().is_empty() || t.trim().len() > 120)
+    {
+        return error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "TAGS_INVALID",
+            "tags must be nonempty and at most 120 bytes",
+        );
+    }
+    let mut tags = input
+        .tags
+        .iter()
+        .map(|t| t.trim().to_lowercase())
+        .collect::<Vec<_>>();
+    tags.sort();
+    tags.dedup();
+    if tags.len() != input.tags.len() {
+        return error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "TAGS_DUPLICATE",
+            "tags must be unique after normalization",
+        );
+    }
+    let key = match headers
+        .get("idempotency-key")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty() && v.len() <= 200)
+    {
+        Some(k) => k.to_owned(),
+        None => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "IDEMPOTENCY_REQUIRED",
+                "Idempotency-Key is required",
+            );
+        }
+    };
+    let canonical = materials_canonical(&format!("/api/v1/opportunities/{id}/tags"), &input);
+    let epoch = state.workspace.epoch().to_owned();
+    let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
+        Ok(tx) => tx,
+        Err(e) => return workspace_error(e.into()),
+    };
+    match material_receipt_replay(&mut tx, &epoch, &key, &canonical).await {
+        Ok(Some(v)) => {
+            let _ = tx.commit().await;
+            let mut r = Json(v).into_response();
+            super::private_headers(&mut r, state.workspace.epoch());
+            return r;
+        }
+        Err(e) => return workspace_error(e),
+        _ => {}
+    }
+    let current: Option<i64> =
+        match sqlx::query_scalar("SELECT revision FROM opportunity WHERE id=?")
+            .bind(&id)
+            .fetch_optional(&mut *tx)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => return workspace_error(e.into()),
+        };
+    let Some(revision) = current else {
+        return error_response(StatusCode::NOT_FOUND, "NOT_FOUND", "opportunity not found");
+    };
+    if revision != input.expected_revision {
+        return error_response(
+            StatusCode::CONFLICT,
+            "REVISION_CONFLICT",
+            "opportunity revision changed",
+        );
+    }
+    let next = revision + 1;
+    if let Err(e) =
+        sqlx::query("UPDATE opportunity SET revision=?,updated_at=? WHERE id=? AND revision=?")
+            .bind(next)
+            .bind(now_utc())
+            .bind(&id)
+            .bind(revision)
+            .execute(&mut *tx)
+            .await
+    {
+        return workspace_error(e.into());
+    }
+    if let Err(e) = sqlx::query("DELETE FROM opportunity_tag WHERE opportunity_id=?")
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+    {
+        return workspace_error(e.into());
+    }
+    for tag in &tags {
+        if let Err(e) = sqlx::query("INSERT INTO opportunity_tag(opportunity_id,tag) VALUES(?,?)")
+            .bind(&id)
+            .bind(tag)
+            .execute(&mut *tx)
+            .await
+        {
+            return workspace_error(e.into());
+        }
+    }
+    if let Err(e) = event(
+        &mut tx,
+        "opportunity",
+        &id,
+        next,
+        "opportunity.tags_changed",
+        json!({"tags":tags}),
+    )
+    .await
+    {
+        return workspace_error(e);
+    }
+    let result = json!({"id":id,"revision":next,"tags":tags});
+    if let Err(e) = material_receipt_store(&mut tx, &epoch, &key, &canonical, 200, &result).await {
+        return workspace_error(e);
+    }
+    if let Err(e) = tx.commit().await {
+        return workspace_error(e.into());
+    }
+    let mut r = Json(result).into_response();
+    super::private_headers(&mut r, state.workspace.epoch());
+    r
 }
 
 async fn get_opportunity(
@@ -876,18 +1073,110 @@ impl Workspace {
             .ok_or_else(|| WorkspaceError::Invalid("created opportunity is not readable".into()))
     }
 
-    async fn list_opportunities(&self) -> Result<Vec<Opportunity>, WorkspaceError> {
-        let ids: Vec<String> =
-            sqlx::query_scalar("SELECT id FROM opportunity ORDER BY updated_at DESC,id")
-                .fetch_all(&self.pool)
-                .await?;
-        let mut rows = Vec::with_capacity(ids.len());
-        for id in ids {
-            if let Some(row) = self.get_opportunity(&id).await? {
-                rows.push(row);
-            }
+    pub(super) async fn opportunity_summaries(
+        &self,
+        f: &OpportunityFilters,
+    ) -> Result<Vec<OpportunitySummary>, WorkspaceError> {
+        if f.status
+            .as_deref()
+            .is_some_and(|s| !matches!(s, "open" | "resolved" | "dormant" | "closed"))
+            || f.sort
+                .as_deref()
+                .is_some_and(|s| !matches!(s, "title" | "next_task" | "deadline"))
+            || f.order
+                .as_deref()
+                .is_some_and(|s| !matches!(s, "asc" | "desc"))
+        {
+            return Err(WorkspaceError::Invalid(
+                "invalid opportunity filter or sort".into(),
+            ));
         }
-        Ok(rows)
+        let mut q = QueryBuilder::<Sqlite>::new(
+            "SELECT o.id,o.title,o.state,o.revision, \
+          (SELECT json_group_array(json_object('id',e.id,'name',e.name,'kind',e.kind)) FROM opportunity_party op JOIN entity e ON e.id=op.party_id WHERE op.opportunity_id=o.id ORDER BY op.role,e.id) AS participants, \
+          (SELECT json_group_array(tag) FROM opportunity_tag ot WHERE ot.opportunity_id=o.id ORDER BY tag) AS tags, \
+          o.notes_next_task AS next_task, (SELECT min(t.expires_at) FROM contact_thread t WHERE t.opportunity_id=o.id AND t.state='waiting') AS next_deadline, \
+          NOT EXISTS(SELECT 1 FROM material m WHERE m.opportunity_id=o.id) AS missing_material \
+          FROM opportunity o WHERE 1=1",
+        );
+        if let Some(s) = &f.status {
+            q.push(" AND o.state=").push_bind(s);
+        }
+        if let Some(term) = f.q.as_deref().filter(|s| !s.trim().is_empty()) {
+            let like = format!("%{}%", term.trim());
+            q.push(" AND (o.title LIKE ").push_bind(like.clone()).push(" OR EXISTS(SELECT 1 FROM opportunity_party x JOIN entity e ON e.id=x.party_id WHERE x.opportunity_id=o.id AND e.name LIKE ").push_bind(like).push(")");
+        }
+        if !f.party_id.is_empty() {
+            q.push(" AND EXISTS(SELECT 1 FROM opportunity_party x WHERE x.opportunity_id=o.id AND x.party_id IN (");
+            for (i, id) in f.party_id.iter().enumerate() {
+                if i > 0 {
+                    q.push(",");
+                }
+                q.push_bind(id);
+            }
+            q.push("))");
+        }
+        if !f.tag.is_empty() {
+            q.push(" AND EXISTS(SELECT 1 FROM opportunity_tag x WHERE x.opportunity_id=o.id AND x.tag IN (");
+            for (i, t) in f.tag.iter().enumerate() {
+                if i > 0 {
+                    q.push(",");
+                }
+                q.push_bind(t);
+            }
+            q.push("))");
+        }
+        if let Some(missing) = f.missing_material {
+            q.push(if missing {
+                " AND NOT EXISTS(SELECT 1 FROM material m WHERE m.opportunity_id=o.id)"
+            } else {
+                " AND EXISTS(SELECT 1 FROM material m WHERE m.opportunity_id=o.id)"
+            });
+        }
+        if let Some(before) = &f.deadline_before {
+            q.push(" AND EXISTS(SELECT 1 FROM contact_thread t WHERE t.opportunity_id=o.id AND t.state='waiting' AND t.expires_at<=").push_bind(before);
+        }
+        // Close the deadline predicate only when present (kept explicit to avoid
+        // accidentally broadening the query on malformed dates).
+        if f.deadline_before.is_some() {
+            q.push(")");
+        }
+        let sort = match f.sort.as_deref() {
+            Some("title") => "o.title",
+            Some("next_task") => "o.notes_next_task",
+            Some("deadline") => {
+                "(SELECT min(t.expires_at) FROM contact_thread t WHERE t.opportunity_id=o.id AND t.state='waiting')"
+            }
+            _ => "o.updated_at",
+        };
+        q.push(" ORDER BY ")
+            .push(sort)
+            .push(if f.order.as_deref() == Some("desc") {
+                " DESC"
+            } else {
+                " ASC"
+            })
+            .push(",o.id ASC");
+        let rows: Vec<OpportunitySummaryRow> = q.build_query_as().fetch_all(&self.pool).await?;
+        rows.into_iter()
+            .map(|row| {
+                let participants = serde_json::from_str(&row.participants).map_err(|e| {
+                    WorkspaceError::Invalid(format!("participant projection invalid: {e}"))
+                })?;
+                let tags = serde_json::from_str(&row.tags).unwrap_or_default();
+                Ok(OpportunitySummary {
+                    id: row.id,
+                    title: row.title,
+                    state: row.state,
+                    revision: row.revision,
+                    participants,
+                    tags,
+                    next_task: row.next_task,
+                    next_deadline: row.next_deadline,
+                    missing_material: row.missing_material != 0,
+                })
+            })
+            .collect()
     }
 
     async fn get_opportunity(&self, id: &str) -> Result<Option<Opportunity>, WorkspaceError> {

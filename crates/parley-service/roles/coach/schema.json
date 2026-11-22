@@ -1,0 +1,1 @@
+{"type":"object","additionalProperties":false,"required":["summary","questions"],"properties":{"summary":{"type":"string","maxLength":2000},"questions":{"type":"array","maxItems":5,"items":{"type":"object","additionalProperties":false,"required":["question_key","text"],"properties":{"question_key":{"type":"string"},"text":{"type":"string","minLength":1,"maxLength":1200}}}}}}

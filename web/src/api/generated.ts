@@ -314,6 +314,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/opportunities/{id}/tags": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["setOpportunityTags"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/identity-tags": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createIdentityTag"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/claims/{id}/hook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["acceptClaimAsHook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/opportunities/{id}/sources/{source_id}": {
         parameters: {
             query?: never;
@@ -813,6 +861,134 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/queue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getQueue"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/insights": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getInsights"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/coach/weekly": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getWeeklyCoachReport"];
+        put?: never;
+        post: operations["generateWeeklyCoachReport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/coach/questions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listCoachQuestions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/coach/questions/{id}/answer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["answerCoachQuestion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/coach/questions/{id}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["dismissCoachQuestion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sends": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSends"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sends/{id}/outcome/correction": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["correctOutcome"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/board": {
         parameters: {
             query?: never;
@@ -1255,6 +1431,166 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["lintMaterial"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/settings/maintenance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getMaintenanceSettings"];
+        put: operations["updateMaintenanceSettings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/backups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listBackups"];
+        put?: never;
+        post: operations["createBackup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/exports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createFullExport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/imports/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["previewFullImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/imports/commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["commitFullImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/restore/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["previewRestore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/restore/commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["commitRestore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/parties/{id}/erase/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["previewPartyErasure"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/parties/{id}/erase": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["eraseParty"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/maintenance/operations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getMaintenanceOperation"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1875,6 +2211,82 @@ export interface components {
             line_sha256: string;
             checked: boolean;
         };
+        MaintenanceSettings: {
+            backup_directory: string;
+            interval_hours: number;
+            retention_count: number;
+            /** Format: date-time */
+            last_successful_at: string | null;
+            revision: number;
+        };
+        MaintenanceSettingsInput: {
+            backup_directory: string;
+            interval_hours: number;
+            retention_count: number;
+            expected_revision: number;
+        };
+        BackupRecord: {
+            id: string;
+            /** Format: date-time */
+            created_at: string;
+            /** @enum {string} */
+            status: "verified" | "damaged";
+            manifest_sha256: string;
+            workspace_id: string;
+            format_version: number;
+        };
+        BackupList: {
+            items: components["schemas"]["BackupRecord"][];
+            /** Format: date-time */
+            last_successful_at: string | null;
+        };
+        RestorePreviewInput: {
+            backup_id: string;
+        };
+        RestorePreview: {
+            id: string;
+            digest: string;
+            backup: components["schemas"]["BackupRecord"];
+            current_cursor: string;
+            erasure_resurrections: number;
+            required_bytes: number;
+        };
+        RestoreCommitInput: {
+            preview_id: string;
+            preview_digest: string;
+            acknowledge_erasure_resurrection?: boolean;
+        };
+        ImportPreview: components["schemas"]["RestorePreview"];
+        ImportCommitInput: {
+            preview_id: string;
+            preview_digest: string;
+            /** @constant */
+            target_must_be_empty: true;
+        };
+        ErasePreview: {
+            id: string;
+            digest: string;
+            domain_cursor: string;
+            affected_counts: {
+                [key: string]: number;
+            };
+            shared_sources: number;
+            owner_managed_backups: number;
+        };
+        EraseCommitInput: {
+            preview_id: string;
+            preview_digest: string;
+        };
+        MaintenanceOperation: {
+            id: string;
+            /** @enum {string} */
+            kind: "restore" | "import" | "erase";
+            /** @enum {string} */
+            state: "pending_restart" | "cleaning" | "complete" | "failed";
+            epoch: string;
+            external_copies_requiring_disposal: number;
+            error_code?: string;
+        };
         Opportunity: {
             id: string;
             title: string;
@@ -1883,6 +2295,130 @@ export interface components {
             participant_ids: string[];
             source_variant_ids: string[];
             material_ids: string[];
+        };
+        OpportunitySummary: {
+            id: string;
+            title: string;
+            state: string;
+            revision: number;
+            participants: {
+                id: string;
+                name: string;
+                /** @enum {string} */
+                kind: "person" | "org";
+            }[];
+            tags: string[];
+            next_task: string | null;
+            /** Format: date-time */
+            next_deadline: string | null;
+            missing_material: boolean;
+        };
+        OpportunityTagsInput: {
+            expected_revision: number;
+            tags: string[];
+        };
+        QueueItem: {
+            id: string;
+            opportunity_id: string;
+            party_id: string;
+            title: string;
+            recipient_name: string;
+            /** @enum {string} */
+            kind: "followup_due" | "ready_to_send" | "blocked" | "needs_input" | "review_stale";
+            /** Format: date-time */
+            due_at: string | null;
+            blocked_reasons: string[];
+            ammo_score: number;
+            coach_question_id?: string | null;
+        };
+        QueueSnapshot: {
+            event_cursor: string;
+            actionable: components["schemas"]["QueueItem"][];
+            blocked: components["schemas"]["QueueItem"][];
+            suggested_send_count: number;
+        };
+        QueuedJob: {
+            job_id: string;
+            status: string;
+            period?: string;
+            event_cursor?: string;
+            question_id?: string;
+            chat_id?: string;
+        };
+        CoachQuestion: {
+            id: string;
+            kind: string;
+            target: Record<string, never>;
+            text: string;
+            priority: number;
+            impact?: number;
+            /** @enum {string} */
+            status?: "open" | "answered" | "dismissed" | "expired";
+        };
+        CoachQuestionList: {
+            items: components["schemas"]["CoachQuestion"][];
+            open_count?: number;
+            /** @constant */
+            max_open?: 5;
+        };
+        CoachAnswerInput: {
+            answer: string;
+            interviewer_chat_id: string;
+        };
+        CoachReport: {
+            report: Record<string, never> | null;
+            questions: string[];
+            period: string | null;
+            input_digest: string | null;
+        };
+        RateEstimate: {
+            numerator: number;
+            denominator: number;
+            rate: number | null;
+            lower_95: number | null;
+            upper_95: number | null;
+            /** @enum {string} */
+            status: "measured" | "insufficient_observations";
+        };
+        InsightsReport: {
+            [key: string]: unknown;
+        };
+        OutcomeCorrectionInput: {
+            expected_revision: number;
+            /** @enum {string} */
+            class: "no_reply" | "reply_positive" | "reply_neutral" | "reply_negative" | "declined" | "rung_accepted" | "call_scheduled";
+            reason: string;
+            /** Format: date-time */
+            received_at?: string;
+            note?: string;
+        };
+        OutcomeHistory: {
+            [key: string]: unknown;
+        };
+        SendHistorySnapshot: {
+            [key: string]: unknown;
+        };
+        IdentityTagInput: {
+            /** @enum {string} */
+            scope: "owner" | "party";
+            entity_id?: string;
+            tag: string;
+            claim_id?: string;
+            claim_revision?: number;
+            expected_revision: number;
+        };
+        IdentityTag: {
+            [key: string]: unknown;
+        };
+        HookMetadataInput: {
+            expected_revision: number;
+            /** Format: date-time */
+            published_at: string;
+            /** @constant */
+            publicness: "professional_public";
+        };
+        HookRecord: {
+            [key: string]: unknown;
         };
         MaterialRecord: {
             id: string;
@@ -1921,7 +2457,7 @@ export interface components {
             issued_at: string;
             attachment: components["schemas"]["AttachmentInfo"] | null;
         };
-        OpportunityList: components["schemas"]["Opportunity"][];
+        OpportunityList: components["schemas"]["OpportunitySummary"][];
         MaterialList: components["schemas"]["MaterialRecord"][];
     };
     responses: {
@@ -2578,7 +3114,16 @@ export interface operations {
     };
     listOpportunities: {
         parameters: {
-            query?: never;
+            query?: {
+                q?: string;
+                party_id?: string[];
+                tag?: string[];
+                status?: "open" | "resolved" | "dormant" | "closed";
+                missing_material?: boolean;
+                deadline_before?: string;
+                sort?: "title" | "next_task" | "deadline";
+                order?: "asc" | "desc";
+            };
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
                 "X-Parley-Epoch": components["parameters"]["Epoch"];
@@ -2656,6 +3201,99 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    setOpportunityTags: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpportunityTagsInput"];
+            };
+        };
+        responses: {
+            /** @description Opportunity tags updated with an independent revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpportunitySummary"];
+                };
+            };
+            409: components["responses"]["Error"];
+        };
+    };
+    createIdentityTag: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IdentityTagInput"];
+            };
+        };
+        responses: {
+            /** @description Owner or party identity tag with tiered provenance. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityTag"];
+                };
+            };
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    acceptClaimAsHook: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HookMetadataInput"];
+            };
+        };
+        responses: {
+            /** @description Claim marked as a professional-public hook with published date and source. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HookRecord"];
+                };
+            };
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
         };
     };
     linkOpportunitySource: {
@@ -3789,9 +4427,255 @@ export interface operations {
             422: components["responses"]["Error"];
         };
     };
-    getBoard: {
+    getQueue: {
         parameters: {
             query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deterministic queue and blocked lane from one snapshot; no agent dispatch. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueueSnapshot"];
+                };
+            };
+        };
+    };
+    getInsights: {
+        parameters: {
+            query?: {
+                period?: string;
+            };
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deterministic rates with counts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InsightsReport"];
+                };
+            };
+        };
+    };
+    getWeeklyCoachReport: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Latest Coach report and pending questions. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoachReport"];
+                };
+            };
+        };
+    };
+    generateWeeklyCoachReport: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    period: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Bounded Coach job queued from deterministic evidence. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueuedJob"];
+                };
+            };
+            409: components["responses"]["Error"];
+        };
+    };
+    listCoachQuestions: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Open Coach questions in impact order. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoachQuestionList"];
+                };
+            };
+        };
+    };
+    answerCoachQuestion: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoachAnswerInput"];
+            };
+        };
+        responses: {
+            /** @description Owner answer routed into the relevant Interviewer context. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueuedJob"];
+                };
+            };
+            409: components["responses"]["Error"];
+        };
+    };
+    dismissCoachQuestion: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Question disposition recorded. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoachQuestion"];
+                };
+            };
+        };
+    };
+    listSends: {
+        parameters: {
+            query: {
+                opportunity_id: string;
+                recipient_id?: string;
+            };
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Immutable send snapshots and append-only outcome revisions. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SendHistorySnapshot"];
+                };
+            };
+        };
+    };
+    correctOutcome: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OutcomeCorrectionInput"];
+            };
+        };
+        responses: {
+            /** @description Correction appended without changing the original outcome or send snapshot. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutcomeHistory"];
+                };
+            };
+            409: components["responses"]["Error"];
+        };
+    };
+    getBoard: {
+        parameters: {
+            query?: {
+                q?: string;
+                party_id?: string[];
+                tag?: string[];
+                status?: "open" | "resolved" | "dormant" | "closed";
+                missing_material?: boolean;
+                deadline_before?: string;
+            };
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
                 "X-Parley-Epoch": components["parameters"]["Epoch"];
@@ -4783,6 +5667,323 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    getMaintenanceSettings: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Owner-selected backup and retention settings. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaintenanceSettings"];
+                };
+            };
+        };
+    };
+    updateMaintenanceSettings: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MaintenanceSettingsInput"];
+            };
+        };
+        responses: {
+            /** @description Settings updated with revision check. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaintenanceSettings"];
+                };
+            };
+            409: components["responses"]["Error"];
+        };
+    };
+    listBackups: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Verified and damaged snapshots with manifest details. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupList"];
+                };
+            };
+        };
+    };
+    createBackup: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Consistent SQLite snapshot and pinned referenced blobs published manifest-last. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupRecord"];
+                };
+            };
+        };
+    };
+    createFullExport: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Owner data archive */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/zip": string;
+                };
+            };
+        };
+    };
+    previewFullImport: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/zip": string;
+            };
+        };
+        responses: {
+            /** @description Format */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportPreview"];
+                };
+            };
+            422: components["responses"]["Error"];
+        };
+    };
+    commitFullImport: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportCommitInput"];
+            };
+        };
+        responses: {
+            /** @description Verified archive committed to a fresh generation; client reconnects after restart. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaintenanceOperation"];
+                };
+            };
+            409: components["responses"]["Error"];
+        };
+    };
+    previewRestore: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RestorePreviewInput"];
+            };
+        };
+        responses: {
+            /** @description Backup hashes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestorePreview"];
+                };
+            };
+        };
+    };
+    commitRestore: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RestoreCommitInput"];
+            };
+        };
+        responses: {
+            /** @description Verified replacement generation published; rotate epoch and restart before completion. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaintenanceOperation"];
+                };
+            };
+            409: components["responses"]["Error"];
+        };
+    };
+    previewPartyErasure: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Erasure closure */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErasePreview"];
+                };
+            };
+        };
+    };
+    eraseParty: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EraseCommitInput"];
+            };
+        };
+        responses: {
+            /** @description Erasure committed to a replacement generation; poll after reconnect until old bytes are retired and checked. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaintenanceOperation"];
+                };
+            };
+            409: components["responses"]["Error"];
+        };
+    };
+    getMaintenanceOperation: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Operation status; complete erasure means retired bytes and canary validation passed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaintenanceOperation"];
+                };
+            };
+            404: components["responses"]["Error"];
         };
     };
 }

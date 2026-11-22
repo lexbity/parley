@@ -5,7 +5,7 @@ use super::{
 };
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, patch, post},
@@ -58,6 +58,21 @@ pub struct BoardPlacement {
 pub struct BoardCard {
     pub opportunity: super::materials::Opportunity,
     pub placement: BoardPlacement,
+}
+
+#[derive(sqlx::FromRow)]
+struct BoardPlacementRow {
+    opportunity_id: String,
+    list_id: String,
+    position: i64,
+    placement_revision: i64,
+    next_task: Option<String>,
+    title: String,
+    state: String,
+    opportunity_revision: i64,
+    participants: String,
+    sources: String,
+    materials: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -156,17 +171,39 @@ impl Workspace {
                 revision,
             })
             .collect();
-        let placements: Vec<(String, String, i64, i64, Option<String>)> = sqlx::query_as(
-            "SELECT p.opportunity_id,p.list_id,p.position,p.revision,o.notes_next_task FROM board_placement p JOIN opportunity o ON o.id=p.opportunity_id JOIN board_list l ON l.id=p.list_id WHERE l.archived=0 ORDER BY l.position,p.position,p.opportunity_id",
+        let placements: Vec<BoardPlacementRow> = sqlx::query_as(
+            "SELECT p.opportunity_id,p.list_id,p.position,p.revision AS placement_revision,o.notes_next_task AS next_task,o.title,o.state,o.revision AS opportunity_revision, \
+             (SELECT json_group_array(party_id) FROM opportunity_party op WHERE op.opportunity_id=o.id) AS participants, \
+             (SELECT json_group_array(source_variant_id) FROM source_opportunity_link sl WHERE sl.opportunity_id=o.id) AS sources, \
+             (SELECT json_group_array(id) FROM material m WHERE m.opportunity_id=o.id) AS materials \
+             FROM board_placement p JOIN opportunity o ON o.id=p.opportunity_id JOIN board_list l ON l.id=p.list_id WHERE l.archived=0 ORDER BY l.position,p.position,p.opportunity_id",
         )
         .fetch_all(&mut *tx)
         .await?;
         let mut cards = Vec::with_capacity(placements.len());
-        for (opportunity_id, list_id, position, revision, next_task) in placements {
-            let opportunity = self
-                .get_opportunity_in_tx(&mut tx, &opportunity_id)
-                .await?
-                .ok_or(WorkspaceError::NotFound)?;
+        for row in placements {
+            let BoardPlacementRow {
+                opportunity_id,
+                list_id,
+                position,
+                placement_revision: revision,
+                next_task,
+                title,
+                state,
+                opportunity_revision: op_revision,
+                participants,
+                sources,
+                materials,
+            } = row;
+            let opportunity = super::materials::Opportunity {
+                id: opportunity_id.clone(),
+                title,
+                state,
+                revision: op_revision,
+                participant_ids: serde_json::from_str(&participants).unwrap_or_default(),
+                source_variant_ids: serde_json::from_str(&sources).unwrap_or_default(),
+                material_ids: serde_json::from_str(&materials).unwrap_or_default(),
+            };
             cards.push(BoardCard {
                 opportunity,
                 placement: BoardPlacement {
@@ -180,49 +217,6 @@ impl Workspace {
         }
         tx.commit().await?;
         Ok(BoardSnapshot { lists, cards })
-    }
-
-    async fn get_opportunity_in_tx(
-        &self,
-        tx: &mut Transaction<'_, Sqlite>,
-        id: &str,
-    ) -> Result<Option<super::materials::Opportunity>, WorkspaceError> {
-        let row = sqlx::query_as::<_, (String, String, String, i64)>(
-            "SELECT id,title,state,revision FROM opportunity WHERE id=?",
-        )
-        .bind(id)
-        .fetch_optional(&mut **tx)
-        .await?;
-        let Some((id, title, state, revision)) = row else {
-            return Ok(None);
-        };
-        let participant_ids: Vec<String> = sqlx::query_scalar(
-            "SELECT party_id FROM opportunity_party WHERE opportunity_id=? ORDER BY role,party_id",
-        )
-        .bind(&id)
-        .fetch_all(&mut **tx)
-        .await?;
-        let source_variant_ids: Vec<String> = sqlx::query_scalar(
-            "SELECT source_variant_id FROM source_opportunity_link WHERE opportunity_id=? ORDER BY source_variant_id",
-        )
-        .bind(&id)
-        .fetch_all(&mut **tx)
-        .await?;
-        let material_ids: Vec<String> = sqlx::query_scalar(
-            "SELECT id FROM material WHERE opportunity_id=? ORDER BY updated_at DESC,id",
-        )
-        .bind(&id)
-        .fetch_all(&mut **tx)
-        .await?;
-        Ok(Some(super::materials::Opportunity {
-            id,
-            title,
-            state,
-            revision,
-            participant_ids,
-            source_variant_ids,
-            material_ids,
-        }))
     }
 
     async fn read_notes(&self, id: &str) -> Result<OpportunityNotes, WorkspaceError> {
@@ -858,12 +852,25 @@ impl Workspace {
     }
 }
 
-async fn get_board(State(state): State<AppState>, headers: HeaderMap) -> Response {
+async fn get_board(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(filters): Query<super::materials::OpportunityFilters>,
+) -> Response {
     if let Err(error) = authenticate(&headers, &state).await {
         return error.into_response();
     }
+    let matching = match state.workspace.opportunity_summaries(&filters).await {
+        Ok(rows) => rows.into_iter().map(|r| r.id).collect::<BTreeSet<_>>(),
+        Err(error) => return board_error(error),
+    };
     match state.workspace.board_snapshot().await {
-        Ok(board) => (StatusCode::OK, Json(board)).into_response(),
+        Ok(mut board) => {
+            board
+                .cards
+                .retain(|card| matching.contains(&card.opportunity.id));
+            (StatusCode::OK, Json(board)).into_response()
+        }
         Err(error) => board_error(error),
     }
 }

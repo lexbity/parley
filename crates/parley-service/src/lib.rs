@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{
-    SqlitePool,
+    Connection, Row, SqlitePool,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
 };
 use std::fmt;
@@ -42,11 +42,208 @@ use tokio::sync::Mutex;
 
 static IDS: AtomicU64 = AtomicU64::new(0);
 
+/// Move a Draft-00 database out of the namespace used by current migrations.
+/// Its rows remain intact as an audit source; conversion below only promotes
+/// unambiguous party identities and records explicit source-key mappings.
+async fn quarantine_draft00_schema(pool: &SqlitePool) -> Result<bool, WorkspaceError> {
+    let has_party: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='party'",
+    )
+    .fetch_one(pool)
+    .await?;
+    let has_meta: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='workspace_meta'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if has_party == 0 || has_meta != 0 {
+        return Ok(false);
+    }
+
+    let mut connection = pool.acquire().await?;
+    sqlx::query("PRAGMA foreign_keys=OFF")
+        .execute(&mut *connection)
+        .await?;
+    let result = async {
+        let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
+        let triggers: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND name NOT LIKE 'sqlite_%'",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        for trigger in triggers {
+            let quoted = trigger.replace('"', "\"\"");
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP TRIGGER IF EXISTS \"{quoted}\"")))
+                .execute(&mut *tx)
+                .await?;
+        }
+        let indexes: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type='index' AND sql IS NOT NULL AND name NOT LIKE 'sqlite_%'",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        for index in indexes {
+            let quoted = index.replace('"', "\"\"");
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP INDEX IF EXISTS \"{quoted}\"")))
+                .execute(&mut *tx)
+                .await?;
+        }
+        let tables: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        for table in tables {
+            if table.starts_with("draft00_") {
+                return Err(WorkspaceError::Invalid(
+                    "legacy Draft-00 conversion namespace already exists".into(),
+                ));
+            }
+            let quoted = table.replace('"', "\"\"");
+            let renamed = format!("draft00_{table}").replace('"', "\"\"");
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!("ALTER TABLE \"{quoted}\" RENAME TO \"{renamed}\"")))
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok::<(), WorkspaceError>(())
+    }
+    .await;
+    let enable = sqlx::query("PRAGMA foreign_keys=ON")
+        .execute(&mut *connection)
+        .await;
+    result?;
+    enable?;
+    Ok(true)
+}
+
+/// Deterministic Draft-00 party conversion. Legacy bytes are retained in
+/// draft00_* tables; incomplete/unrecognized rows remain visible as diagnostics.
+async fn convert_draft00_parties(pool: &SqlitePool) -> Result<(), WorkspaceError> {
+    let present: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='draft00_party'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if present == 0 {
+        return Ok(());
+    }
+    let columns: Vec<String> = sqlx::query("PRAGMA table_info(draft00_party)")
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|r| r.get::<String, _>("name"))
+        .collect();
+    let rows = sqlx::query("SELECT * FROM draft00_party")
+        .fetch_all(pool)
+        .await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    for row in rows {
+        let source_key = legacy_value(&row, &columns, "id").unwrap_or_default();
+        let name = legacy_value(&row, &columns, "name").unwrap_or_default();
+        let kind = legacy_value(&row, &columns, "kind").unwrap_or_else(|| "person".into());
+        if source_key.is_empty()
+            || name.trim().is_empty()
+            || !["person", "org"].contains(&kind.as_str())
+        {
+            sqlx::query("INSERT INTO legacy_conversion_diagnostic(source_format,source_table,source_key,code,detail,created_at) VALUES('draft-00','party',?,'AMBIGUOUS_PARTY','Missing stable key/name or unsupported party kind',?)")
+                .bind(source_key).bind(now_utc()).execute(&mut *tx).await?;
+            continue;
+        }
+        let identity = format!("draft-00\0party\0{source_key}");
+        let entity_id = format!(
+            "legacy-{}",
+            hex::encode(Sha256::digest(identity.as_bytes()))
+        );
+        let opportunity_id = format!(
+            "legacy-opportunity-{}",
+            hex::encode(Sha256::digest(
+                format!("draft-00\0opportunity\0{source_key}").as_bytes()
+            ))
+        );
+        let stage_class =
+            legacy_value(&row, &columns, "stage_class").unwrap_or_else(|| "identified".into());
+        let state = match stage_class.as_str() {
+            "resolved" => "resolved",
+            "dormant" => "dormant",
+            "closed" => "closed",
+            _ => "open",
+        };
+        let dnc = legacy_value(&row, &columns, "do_not_contact")
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0)
+            .clamp(0, 1);
+        let rung = legacy_value(&row, &columns, "highest_rung")
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0)
+            .max(0);
+        let touches = legacy_value(&row, &columns, "touches")
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0)
+            .max(0);
+        let stamp = now_utc();
+        sqlx::query(
+            "INSERT INTO entity(id,kind,name,revision,created_at,updated_at) VALUES(?,?,?,1,?,?)",
+        )
+        .bind(&entity_id)
+        .bind(&kind)
+        .bind(name.trim())
+        .bind(&stamp)
+        .bind(&stamp)
+        .execute(&mut *tx)
+        .await?;
+        let policy_state = if state == "resolved" { "closed" } else { state };
+        sqlx::query("INSERT INTO party_policy(party_id,state,do_not_contact,highest_rung,touch_count,revision) VALUES(?,?,?,?,?,1)")
+            .bind(&entity_id).bind(policy_state).bind(dnc).bind(rung).bind(touches).execute(&mut *tx).await?;
+        let title = format!("Legacy: {}", name.trim());
+        sqlx::query("INSERT INTO opportunity(id,title,state,close_reason,revision,created_at,updated_at) VALUES(?,?,?, ?,1,?,?)")
+            .bind(&opportunity_id).bind(title).bind(state).bind(if state == "open" { None } else { Some("draft00_migration") }).bind(&stamp).bind(&stamp).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO opportunity_party(opportunity_id,party_id,role,added_at) VALUES(?,?,'primary',?)")
+            .bind(&opportunity_id).bind(&entity_id).bind(&stamp).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO legacy_key_map(source_format,source_table,source_key,destination_id,status) VALUES('draft-00','party',?,?,'converted')")
+            .bind(&source_key).bind(&entity_id).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO legacy_key_map(source_format,source_table,source_key,destination_id,status) VALUES('draft-00','opportunity',?,?,'converted')")
+            .bind(source_key).bind(opportunity_id).execute(&mut *tx).await?;
+    }
+    // Mark untranslated legacy tables explicitly, without inventing facts,
+    // provenance, recipient consent, or reply deadlines.
+    let tables: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'draft00_%'",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    for table in tables.into_iter().filter(|t| t != "draft00_party") {
+        sqlx::query("INSERT INTO legacy_conversion_diagnostic(source_format,source_table,code,detail,created_at) VALUES('draft-00',?,'RETAINED_UNMAPPED','Original rows retained; no safe automatic semantic conversion is defined for this record type',?)")
+            .bind(table.trim_start_matches("draft00_")).bind(now_utc()).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+fn legacy_value(row: &sqlx::sqlite::SqliteRow, columns: &[String], field: &str) -> Option<String> {
+    if !columns.iter().any(|c| c == field) {
+        return None;
+    }
+    if let Ok(value) = row.try_get::<String, _>(field) {
+        return Some(value);
+    }
+    if let Ok(value) = row.try_get::<i64, _>(field) {
+        return Some(value.to_string());
+    }
+    None
+}
+
 mod assistant;
 mod blob;
 mod board;
+mod generation;
 mod jobs;
+mod maintenance;
+pub use maintenance::{MaintenanceSettings, MaintenanceSettingsInput};
+#[doc(hidden)]
+pub use maintenance::{create_backup_for_test, prune_backups_for_test};
 mod materials;
+mod queueing;
 mod release;
 mod thread;
 mod writing;
@@ -192,6 +389,9 @@ pub struct RunningService {
     bootstrap: Arc<Mutex<HashMap<String, Instant>>>,
     shutdown: tokio::sync::oneshot::Sender<()>,
     task: tokio::task::JoinHandle<()>,
+    restart: tokio::sync::watch::Receiver<bool>,
+    restart_sender: tokio::sync::watch::Sender<bool>,
+    background: Vec<tokio::task::JoinHandle<()>>,
 }
 
 #[derive(Clone)]
@@ -215,8 +415,15 @@ impl RunningService {
     }
 
     pub async fn shutdown(self) {
+        self.restart_sender.send_replace(true);
         let _ = self.shutdown.send(());
         let _ = self.task.await;
+        for task in self.background {
+            let _ = task.await;
+        }
+    }
+    pub async fn wait_for_restart(&mut self) {
+        let _ = self.restart.changed().await;
     }
 }
 
@@ -247,16 +454,32 @@ pub struct Workspace {
     pub(crate) blob_root: PathBuf,
     pub(crate) maintenance_lock: Arc<Mutex<()>>,
     pub(crate) spool: blob::ReleaseSpool,
+    root: generation::WorkspaceRoot,
+    database_path: PathBuf,
 }
 
 impl Workspace {
+    pub fn resolve_database_path(identity: &Path) -> Result<PathBuf, WorkspaceError> {
+        let root = generation::WorkspaceRoot::new(identity).map_err(WorkspaceError::Invalid)?;
+        let id = root.read_selector().map_err(WorkspaceError::Invalid)?;
+        root.database_path(&id).map_err(WorkspaceError::Invalid)
+    }
+    pub fn control_directory(identity: &Path) -> Result<PathBuf, WorkspaceError> {
+        let r = generation::WorkspaceRoot::new(identity).map_err(WorkspaceError::Invalid)?;
+        r.ensure_control().map_err(WorkspaceError::Invalid)?;
+        Ok(r.control_path().to_path_buf())
+    }
     /// Open and migrate a private SQLite workspace. Every connection enables
     /// foreign keys and uses FULL synchronous durability in WAL mode.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, WorkspaceError> {
-        let path = path.as_ref();
-        let mut created_parent = false;
+        let identity = path.as_ref();
+        let root = generation::WorkspaceRoot::new(identity).map_err(WorkspaceError::Invalid)?;
+        let active = root
+            .prepare_active()
+            .await
+            .map_err(WorkspaceError::Invalid)?;
+        let path = active.database.as_path();
         if let Some(parent) = path.parent() {
-            created_parent = !parent.exists();
             std::fs::create_dir_all(parent).map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
         }
         let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))?
@@ -277,21 +500,23 @@ impl Workspace {
             // directory) protects the database file itself.
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
                 .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
-            if created_parent && let Some(parent) = path.parent() {
-                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-                    .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
-            }
         }
+        let legacy_draft00 = quarantine_draft00_schema(&pool).await?;
         sqlx::migrate!("../../migrations")
             .run(&pool)
             .await
             .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
+        if legacy_draft00 {
+            convert_draft00_parties(&pool).await?;
+        }
         assistant::initialize_defaults(&pool).await?;
         let (epoch, workspace_id): (String, String) =
             sqlx::query_as("SELECT epoch, workspace_id FROM workspace_meta WHERE singleton=1")
                 .fetch_one(&pool)
                 .await?;
-        let blob_root = PathBuf::from(format!("{}.blobs", path.display()));
+        let blob_root = root
+            .blob_path(&active.id)
+            .map_err(WorkspaceError::Invalid)?;
         std::fs::create_dir_all(&blob_root)
             .map_err(|e| WorkspaceError::Invalid(format!("create blob store: {e}")))?;
         std::fs::create_dir_all(blob_root.join(".staging"))
@@ -307,18 +532,36 @@ impl Workspace {
             )
             .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
         }
-        Ok(Self {
+        if active.needs_publish {
+            root.publish_initial(&active.id)
+                .map_err(WorkspaceError::Invalid)?;
+        }
+        let removed_generation_bytes = root
+            .reconcile_unselected()
+            .map_err(WorkspaceError::Invalid)?;
+        let workspace = Self {
             pool,
             epoch,
             workspace_id,
             blob_root,
             maintenance_lock: Arc::new(Mutex::new(())),
             spool: blob::ReleaseSpool::new(),
-        })
+            root,
+            database_path: path.to_path_buf(),
+        };
+        maintenance::initialize_settings(&workspace).await?;
+        maintenance::complete_startup_operations(&workspace, removed_generation_bytes).await?;
+        Ok(workspace)
     }
 
     pub fn blob_root(&self) -> &Path {
         &self.blob_root
+    }
+    pub fn database_path(&self) -> &Path {
+        &self.database_path
+    }
+    pub(crate) fn generation_root(&self) -> &generation::WorkspaceRoot {
+        &self.root
     }
 
     pub fn spool(&self) -> blob::ReleaseSpool {
@@ -1175,6 +1418,7 @@ pub(crate) struct AppState {
     bootstrap: Arc<Mutex<HashMap<String, Instant>>>,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
     pub(crate) jobs: jobs::Queue,
+    pub(crate) restart: tokio::sync::watch::Sender<bool>,
 }
 
 /// Initialize (or open) a private SQLite workspace and bind only to IPv4
@@ -1194,18 +1438,20 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
     // and no deadline-sensitive read should return an expired thread as
     // actionable.
     let _ = workspace.reconcile_deadlines(&now_utc()).await;
-    let jobs = jobs::start(workspace.clone(), 32);
-    let _reconcile_loop = {
+    let (restart_sender, restart_receiver) = tokio::sync::watch::channel(false);
+    let restart_wait = restart_receiver.clone();
+    let (jobs, job_task) = jobs::start(workspace.clone(), 32);
+    let reconcile_task = {
         let workspace = workspace.clone();
+        let mut stop = restart_receiver.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(15));
             loop {
-                interval.tick().await;
-                let now = now_utc();
-                let _ = workspace.reconcile_deadlines(&now).await;
+                tokio::select! {_ = interval.tick()=>{let now=now_utc();let _=workspace.reconcile_deadlines(&now).await;},r=stop.changed()=>{if r.is_ok(){break;}}}
             }
         })
     };
+    let backup_task = maintenance::start_scheduler(workspace.clone(), restart_receiver.clone());
     let state = AppState {
         workspace,
         authority: address.to_string(),
@@ -1215,6 +1461,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         )]))),
         sessions: Arc::new(Mutex::new(HashMap::new())),
         jobs,
+        restart: restart_sender.clone(),
     };
     let bootstrap_shared = state.bootstrap.clone();
     let app = Router::new()
@@ -1241,13 +1488,16 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         .merge(jobs::routes())
         .merge(assistant::routes())
         .merge(writing::routes())
+        .merge(queueing::routes())
+        .merge(maintenance::routes())
         .with_state(state)
         .layer(axum::extract::DefaultBodyLimit::max(2_100_000));
     let (shutdown, receiver) = tokio::sync::oneshot::channel();
+    let mut restart_rx = restart_receiver;
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                let _ = receiver.await;
+            .with_graceful_shutdown(async move {
+                tokio::select! {_ = receiver=>{},_ = restart_rx.changed()=>{}}
             })
             .await;
     });
@@ -1257,6 +1507,9 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         bootstrap: bootstrap_shared,
         shutdown,
         task,
+        restart: restart_wait,
+        restart_sender,
+        background: vec![job_task, reconcile_task, backup_task],
     })
 }
 
@@ -1356,7 +1609,7 @@ fn error(status: StatusCode, code: &'static str, message: impl Into<String>) -> 
     response
 }
 
-fn private_headers(response: &mut Response, epoch: &str) {
+pub(crate) fn private_headers(response: &mut Response, epoch: &str) {
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));

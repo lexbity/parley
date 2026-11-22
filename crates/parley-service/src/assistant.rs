@@ -17,6 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 const DEFAULT_QUESTIONS: &str = include_str!("../roles/interviewer/questions.json");
 const INTERVIEWER_PROMPT: &str = include_str!("../roles/interviewer/prompt.md");
 const BRIEFER_PROMPT: &str = include_str!("../roles/briefer/prompt.md");
+const COACH_PROMPT: &str = include_str!("../roles/coach/prompt.md");
 const MAX_TURN_BYTES: usize = 16_000;
 const MAX_PROMPT_BYTES: usize = 40_000;
 
@@ -267,6 +268,7 @@ pub(super) async fn initialize_defaults(pool: &SqlitePool) -> Result<(), Workspa
     let defaults = [
         ("interviewer", INTERVIEWER_PROMPT, "interviewer-v1"),
         ("briefer", BRIEFER_PROMPT, "briefer-v1"),
+        ("coach", COACH_PROMPT, "coach-v1"),
     ];
     for (role, prompt, id) in defaults {
         let hash = digest(prompt.as_bytes());
@@ -324,7 +326,7 @@ pub(super) fn routes() -> Router<AppState> {
 }
 
 pub(super) async fn process_role(workspace: &Workspace, id: &str, role: &str) {
-    if !matches!(role, "interviewer" | "briefer") {
+    if !matches!(role, "interviewer" | "briefer" | "coach") {
         jobs::finish_job_error(
             workspace,
             id,
@@ -476,6 +478,18 @@ pub(super) async fn process_role(workspace: &Workspace, id: &str, role: &str) {
             )
             .await
         }
+        "coach" => {
+            process_coach_result(
+                workspace,
+                id,
+                &attempt,
+                &payload,
+                &response.message.content,
+                tokens_in,
+                tokens_out,
+            )
+            .await
+        }
         _ => unreachable!(),
     };
     if let Err(error) = result {
@@ -504,6 +518,107 @@ pub(super) async fn process_role(workspace: &Workspace, id: &str, role: &str) {
         )
         .await;
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CoachOutput {
+    summary: String,
+    questions: Vec<CoachQuestionOutput>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CoachQuestionOutput {
+    question_key: String,
+    text: String,
+}
+
+async fn process_coach_result(
+    workspace: &Workspace,
+    job_id: &str,
+    attempt: &Attempt,
+    input: &Value,
+    output_text: &str,
+    tokens_in: u32,
+    tokens_out: u32,
+) -> Result<Value, String> {
+    let output: CoachOutput = serde_json::from_str(output_text)
+        .map_err(|e| format!("SCHEMA: invalid Coach JSON: {e}"))?;
+    if output.summary.chars().count() > 2000 || output.questions.len() > 5 {
+        return Err("SCHEMA: Coach output over limit".into());
+    }
+    let candidates = input["candidates"]
+        .as_array()
+        .ok_or("ROLE_INPUT: Coach candidates missing")?;
+    let map: BTreeMap<&str, &Value> = candidates
+        .iter()
+        .filter_map(|v| v["question_key"].as_str().map(|k| (k, v)))
+        .collect();
+    let mut seen = BTreeSet::new();
+    for q in &output.questions {
+        if !seen.insert(q.question_key.as_str())
+            || !map.contains_key(q.question_key.as_str())
+            || q.text.trim().is_empty()
+            || q.text.chars().count() > 1200
+        {
+            return Err("SCHEMA: Coach question is duplicate, unknown or outside bounds".into());
+        }
+    }
+    let period = input["period"]
+        .as_str()
+        .ok_or("ROLE_INPUT: Coach period missing")?;
+    let now = now_utc();
+    let mut tx = workspace
+        .pool()
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
+    let current: String = sqlx::query_scalar(
+        "SELECT input_json FROM durable_job WHERE id=? AND status='running' AND current_attempt=?",
+    )
+    .bind(job_id)
+    .bind(attempt.number)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or("STALE: Coach attempt changed")?;
+    if digest(current.as_bytes()) != attempt.input_sha256 {
+        return Err("STALE: Coach input changed".into());
+    }
+    let open: i64 = sqlx::query_scalar("SELECT count(*) FROM coach_question WHERE status='open'")
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    if open + output.questions.len() as i64 > 5 {
+        return Err("STALE: Coach question cap changed while report was generated".into());
+    }
+    let cursor = input["event_cursor"]
+        .as_str()
+        .unwrap_or("0")
+        .parse::<i64>()
+        .unwrap_or(0);
+    let report = json!({"period":period,"event_cursor":cursor.to_string(),"summary":output.summary,"evidence":input["evidence"]});
+    let report_id = new_id(job_id);
+    sqlx::query("INSERT INTO coach_report(id,period,input_digest,event_cursor,job_id,report_json,created_at) VALUES(?,?,?,?,?,?,?)").bind(&report_id).bind(period).bind(&attempt.input_sha256).bind(cursor).bind(job_id).bind(report.to_string()).bind(&now).execute(&mut *tx).await.map_err(|e|format!("STALE: {e}"))?;
+    for q in output.questions {
+        let c = map[q.question_key.as_str()];
+        let id = new_id(&format!("{job_id}:{}", q.question_key));
+        sqlx::query("INSERT INTO coach_question(id,job_id,question_key,kind,target_json,answer_schema_json,priority,impact,text,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'open',?,?)").bind(&id).bind(job_id).bind(&q.question_key).bind(c["kind"].as_str().unwrap_or("insight")).bind(c["target_ref"].to_string()).bind(c["answer_schema"].to_string()).bind(c["priority"].as_i64().unwrap_or(0)).bind(c["impact"].as_i64().unwrap_or(0)).bind(q.text.trim()).bind(&now).bind(&now).execute(&mut *tx).await.map_err(|e|format!("STALE: {e}"))?;
+    }
+    let result = json!({"report_id":report_id,"period":period,"event_cursor":cursor.to_string()});
+    jobs::complete_role_result_in_tx(
+        &mut tx,
+        job_id,
+        attempt.number,
+        &attempt.input_sha256,
+        &result,
+        tokens_in,
+        tokens_out,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(result)
 }
 
 async fn process_interviewer_result(
@@ -2881,7 +2996,7 @@ fn idempotency_key(headers: &HeaderMap) -> Result<String, &'static str> {
     Ok(key.to_owned())
 }
 
-async fn receipt_response(
+pub(super) async fn receipt_response(
     tx: &mut Transaction<'_, Sqlite>,
     epoch: &str,
     key: &str,
@@ -2911,7 +3026,7 @@ async fn receipt_response(
     ))
 }
 
-async fn write_receipt(
+pub(super) async fn write_receipt(
     tx: &mut Transaction<'_, Sqlite>,
     epoch: &str,
     key: &str,
@@ -2926,7 +3041,7 @@ async fn write_receipt(
     Ok(())
 }
 
-async fn append_event(
+pub(super) async fn append_event(
     tx: &mut Transaction<'_, Sqlite>,
     entity_id: &str,
     event_type: &str,

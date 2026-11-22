@@ -2,54 +2,66 @@ import { randomUUID } from 'node:crypto';
 import { expect } from '@playwright/test';
 import { test } from './fixtures';
 
-async function confirmPreview(region: import('@playwright/test').Locator, buttonName: string) {
-  const panel = region.getByRole('article', { name: /Review before/ });
-  const digest = await panel.locator('code').innerText();
-  await panel.getByLabel(new RegExp('Confirm digest')).fill(digest.slice(-12));
-  await panel.getByRole('button', { name: buttonName }).click();
-}
-
-test('s11_verified_backup_preview_restore_and_party_erasure', async ({ page }) => {
+test('s11_backup_destination_schedule_and_verified_snapshot_are_saved', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('status')).toContainText('Workspace ready');
-  const partyName = `Dana Lee ${randomUUID()}`;
-  await page.getByRole('link', { name: 'Leads' }).click();
-  const addLead = page.getByRole('heading', { name: 'Add a lead' }).locator('..');
-  await addLead.getByLabel('Name').fill(partyName);
-  await addLead.getByRole('button', { name: 'Add lead' }).click();
-  await expect(page.getByRole('button', { name: new RegExp(partyName) })).toBeVisible();
-
   await page.getByRole('link', { name: 'Settings' }).click();
-  const data = page.getByRole('region', { name: 'Workspace backup, restore and erasure' });
-  await data.getByRole('button', { name: 'Create and verify backup' }).click();
-  await expect(data.getByRole('status').filter({ hasText: 'Verified backup created' })).toBeVisible();
-  const backupSelect = data.locator('select').nth(1);
-  const backupOption = await backupSelect.locator('option').first().getAttribute('value');
+  const settings = page.getByRole('region', { name: 'Backup, export, restore, and erasure' });
+  await settings.getByLabel('Owner-selected backup directory').fill('/tmp/parley-test-backups');
+  await settings.getByLabel('Backup interval in hours').fill('24');
+  await settings.getByLabel('Verified backups to retain').fill('14');
+  await settings.getByRole('button', { name: 'Save backup settings' }).click();
+  await expect(settings.getByRole('status')).toContainText('schedule saved');
+  await settings.getByRole('button', { name: 'Create verified backup now' }).click();
+  await expect(settings.getByRole('region', { name: 'Verified backups' })).toContainText('verified');
+});
 
-  await data.getByLabel('Operation').selectOption('erase_party');
-  const partyOption = data.getByLabel('Party to erase').locator('option').filter({ hasText: partyName }).first();
-  await data.getByLabel('Party to erase').selectOption(await partyOption.getAttribute('value') ?? '');
-  await data.getByRole('button', { name: 'Preview exact impact' }).click();
-  await expect(data.getByText('Party: ' + partyName)).toBeVisible();
-  await confirmPreview(data, 'Confirm erase this party');
-  await expect(data.getByRole('status').filter({ hasText: 'Party-scoped records were erased' })).toBeVisible();
-
-  await page.getByRole('link', { name: 'Queue' }).click();
-  await page.getByRole('button', { name: 'Daily' }).click();
-  await expect(page.getByRole('heading', { name: 'Daily priorities' })).toBeVisible();
-  await expect(page.getByText(new RegExp(partyName))).toHaveCount(0);
-  await page.getByRole('button', { name: 'Insights' }).click();
-  await expect(page.getByRole('heading', { name: 'Weekly Coach and insights' })).toBeVisible();
-  await expect(page.getByText(new RegExp(partyName))).toHaveCount(0);
-
+test('s11_personal_export_and_empty_target_import_are_distinct_from_recipient_material', async ({ page }) => {
+  await page.goto('/');
   await page.getByRole('link', { name: 'Settings' }).click();
-  await data.getByLabel('Operation').selectOption('restore');
-  await backupSelect.selectOption(backupOption!);
-  await data.getByRole('button', { name: 'Preview exact impact' }).click();
-  await expect(data.getByText(/Restore source:/)).toBeVisible();
-  await confirmPreview(data, 'Confirm restore this backup');
-  await expect(data.getByRole('status').filter({ hasText: 'Workspace restored and verified' })).toBeVisible();
+  const settings = page.getByRole('region', { name: 'Backup, export, restore, and erasure' });
+  await expect(settings.getByRole('region', { name: 'Personal data export' })).toContainText('does not approve or release recipient-facing content');
+  await settings.getByRole('button', { name: 'Download personal data export' }).click();
+  await expect(settings.getByRole('status')).toContainText('Personal export downloaded');
+  await settings.getByLabel('Parley export archive').setInputFiles({ name: 'owner-data.zip', mimeType: 'application/zip', buffer: Buffer.from('fixture archive') });
+  await settings.getByRole('button', { name: 'Validate import archive' }).click();
+  await expect(settings).toContainText('Preview import-preview-1');
+  await settings.getByLabel('I confirm this target workspace is empty.').check();
+  await settings.getByRole('button', { name: 'Commit full data import' }).click();
+  await expect(settings.getByRole('status')).toContainText('session reset is required');
+});
 
+test('s11_restore_preview_commit_rotates_session_and_reports_erasure_effects', async ({ page }) => {
+  await page.route('**/api/v1/settings/maintenance', async (route) => {
+    await page.waitForTimeout(500);
+    await route.continue();
+  });
+  await page.goto('/');
+  await page.getByRole('link', { name: 'Settings' }).click();
+  const settings = page.getByRole('region', { name: 'Backup, export, restore, and erasure' });
+  await settings.getByLabel('Owner-selected backup directory').fill('/tmp/parley-test-backups');
+  await settings.getByRole('button', { name: 'Save backup settings' }).click();
+  await settings.getByRole('button', { name: 'Create verified backup now' }).click();
+  await settings.getByRole('button', { name: 'Verify restore preview' }).click();
+  await expect(settings).toContainText('1 erased records may return');
+  await settings.getByLabel('I understand this replaces current data and may restore erased information.').check();
+  await settings.getByRole('button', { name: 'Commit verified restore' }).click();
+  await expect(settings.getByRole('status')).toContainText('epoch changed');
+});
+
+test('s11_party_erasure_is_preview_bound_and_reports_external_copies', async ({ page }) => {
+  await page.goto('/');
+  const name = `S11 erase ${randomUUID()}`;
   await page.getByRole('link', { name: 'Leads' }).click();
-  await expect(page.getByRole('button', { name: new RegExp(partyName) })).toHaveCount(0);
+  const leads = page.getByRole('region', { name: 'Lead directory and sources' });
+  await leads.locator('form').filter({ hasText: 'Add a lead' }).getByLabel('Name').fill(name);
+  await leads.getByRole('button', { name: 'Add lead' }).click();
+  await page.getByRole('link', { name: 'Settings' }).click();
+  const settings = page.getByRole('region', { name: 'Backup, export, restore, and erasure' });
+  await settings.getByRole('region', { name: 'Erase a party', exact: true }).getByLabel('Party').selectOption({ label: `${name} · person` });
+  await settings.getByRole('button', { name: 'Preview erasure' }).click();
+  await expect(settings).toContainText('1 shared sources');
+  await settings.getByLabel('Type exact party name').fill(name);
+  await settings.getByRole('button', { name: `Erase ${name}` }).click();
+  await expect(settings.getByRole('status')).toContainText('Erasure completed');
+  await expect(settings.getByRole('status')).toContainText('2 owner-managed copies');
 });

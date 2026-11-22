@@ -24,6 +24,8 @@ const INTERVIEWER_PROMPT: &str = include_str!("../roles/interviewer/prompt.md");
 const INTERVIEWER_SCHEMA: &str = include_str!("../roles/interviewer/schema.json");
 const BRIEFER_PROMPT: &str = include_str!("../roles/briefer/prompt.md");
 const BRIEFER_SCHEMA: &str = include_str!("../roles/briefer/schema.json");
+const COACH_PROMPT: &str = include_str!("../roles/coach/prompt.md");
+const COACH_SCHEMA: &str = include_str!("../roles/coach/schema.json");
 const MATCHER_PROMPT: &str = include_str!("../roles/matcher/prompt.md");
 const MATCHER_SCHEMA: &str = include_str!("../roles/matcher/schema.json");
 const BUILDER_PROMPT: &str = include_str!("../roles/template_builder/prompt.md");
@@ -166,10 +168,13 @@ pub(super) fn routes() -> Router<super::AppState> {
         )
 }
 
-pub(super) fn start(workspace: Arc<Workspace>, depth: usize) -> Queue {
+pub(super) fn start(
+    workspace: Arc<Workspace>,
+    depth: usize,
+) -> (Queue, tokio::task::JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(depth);
-    tokio::spawn(worker(workspace, rx));
-    Queue(tx)
+    let handle = tokio::spawn(worker(workspace, rx));
+    (Queue(tx), handle)
 }
 
 pub(super) fn role_allowed(role: &str) -> bool {
@@ -178,6 +183,7 @@ pub(super) fn role_allowed(role: &str) -> bool {
         "extractor"
             | "interviewer"
             | "briefer"
+            | "coach"
             | "matcher"
             | "template_builder"
             | "composer"
@@ -692,6 +698,7 @@ fn role_defaults(role: &str) -> Option<(&'static str, &'static str)> {
         "extractor" => Some((PROMPT, SCHEMA)),
         "interviewer" => Some((INTERVIEWER_PROMPT, INTERVIEWER_SCHEMA)),
         "briefer" => Some((BRIEFER_PROMPT, BRIEFER_SCHEMA)),
+        "coach" => Some((COACH_PROMPT, COACH_SCHEMA)),
         "matcher" => Some((MATCHER_PROMPT, MATCHER_SCHEMA)),
         "template_builder" => Some((BUILDER_PROMPT, BUILDER_SCHEMA)),
         "composer" => Some((COMPOSER_PROMPT, COMPOSER_SCHEMA)),
