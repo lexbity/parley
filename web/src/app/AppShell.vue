@@ -1,4 +1,5 @@
 <script setup lang="ts">
+/* global MouseEvent */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { newOperationKey, parley, type AdminOperation, type ContactThread, type ExtractorJob, type ExtractorProposal, type GraphEntity, type Material, type Opportunity, type ProviderConfig, type ReleasedMaterial, type Resource, type SavedSource } from '../api/client';
 import { tabs } from './tabs';
@@ -28,9 +29,25 @@ const partyName = ref('');
 const captureText = ref('');
 const parties = ref<GraphEntity[]>([]);
 const selectedPartyId = ref('');
+const resourceEditor = ref<InstanceType<typeof ResourceEditor> | null>(null);
+const directoryQuery = ref('');
+const visibleParties = computed(() => {
+  const query = directoryQuery.value.trim().toLocaleLowerCase();
+  return parties.value.filter(party => party.name.toLocaleLowerCase().includes(query));
+});
+const lastTabPaths = new Map<string, string>();
 const sources = ref<SavedSource[]>([]);
 const opportunities = ref<Opportunity[]>([]);
 const outputs = ref<Material[]>([]);
+const materialQuery = ref('');
+const visibleOutputs = computed(() => {
+  const query = materialQuery.value.trim().toLocaleLowerCase();
+  return outputs.value.filter(material => {
+    const opportunity = opportunities.value.find(item => item.id === material.opportunity_id);
+    return [material.recipient_name, opportunity?.title, material.kind, material.status]
+      .some(field => field?.toLocaleLowerCase().includes(query));
+  });
+});
 const resources = ref<Resource[]>([]);
 const threads = ref<ContactThread[]>([]);
 const deliveredReleases = ref<Record<string, ReleasedMaterial>>({});
@@ -39,6 +56,7 @@ let outputThreadReadInFlight = false;
 const status = ref('');
 const error = ref('');
 const busy = ref(false);
+const connected = ref(false);
 const reviewJob = ref<ExtractorJob | null>(null);
 const reviewTargetId = ref('');
 const reviewOpportunityId = ref('');
@@ -58,20 +76,24 @@ async function refreshLeads() {
 }
 
 function navigate(path: string, replace = false) {
+  lastTabPaths.set(route.value.tab, route.value.path);
   const next = resolveRoute(path);
   if (replace) globalThis.history.replaceState(null, '', next.path);
   else if (next.path !== route.value.path) globalThis.history.pushState(null, '', next.path);
   route.value = next;
 }
 
-function selectTab(tab: (typeof tabs)[number]) {
-  navigate(routeForTab(tab));
+function selectTab(tab: (typeof tabs)[number], event: MouseEvent) {
+  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+  event.preventDefault();
+  navigate(lastTabPaths.get(tab) ?? routeForTab(tab));
   if (tab === 'Output') void refreshLeads().catch((reason: unknown) => {
     error.value = reason instanceof Error ? reason.message : 'Could not refresh Output records.';
   });
 }
 
 function handlePopState() {
+  lastTabPaths.set(route.value.tab, route.value.path);
   route.value = resolveRoute(globalThis.location.pathname);
   if (route.value.path !== globalThis.location.pathname) globalThis.history.replaceState(null, '', route.value.path);
   if (route.value.tab === 'Output') void refreshLeads().catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Could not refresh Output records.'; });
@@ -79,7 +101,10 @@ function handlePopState() {
 
 async function focusRouteLocation() {
   if (route.value.tab === 'Leads' && route.value.recordId) selectedPartyId.value = route.value.recordId;
-  if (route.value.tab === 'Output' && route.value.recordId) await refreshLeads().catch(() => undefined);
+  if (route.value.tab === 'Output' && route.value.recordId) {
+    await refreshLeads().catch(() => undefined);
+    if (!visibleOutputs.value.some(item => item.id === route.value.recordId)) materialQuery.value = '';
+  }
   await nextTick();
   const targetId = route.value.location === 'inbox' ? 'leads-inbox'
     : route.value.location === 'templates' ? 'output-templates'
@@ -199,6 +224,7 @@ function onWorkspaceQuarantined() { workspaceRefreshRequired.value = true; }
 function onWorkspaceReloaded() { workspaceRefreshRequired.value = false; }
 
 onMounted(() => {
+  const connection = parley.connect();
   if (route.value.path !== globalThis.location.pathname) navigate(route.value.path, true);
   globalThis.addEventListener('popstate', handlePopState);
   outputThreadTimer = globalThis.setInterval(() => { void pollOutputThreads(); }, 2_000);
@@ -214,8 +240,8 @@ onMounted(() => {
       }
     };
   }
-  void parley.connect()
-    .then(async () => { await refreshLeads(); await loadProvider(); })
+  void connection
+    .then(async () => { connected.value = true; await refreshLeads(); await focusRouteLocation(); await loadProvider(); })
     .catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Workspace is unavailable.'; });
 });
 onBeforeUnmount(() => {
@@ -230,15 +256,15 @@ watch(route, () => { void focusRouteLocation(); });
 </script>
 
 <template>
-  <header>
+  <header class="app-header">
     <strong>Parley</strong>
     <nav aria-label="Main navigation">
       <a
         v-for="tab in qualifiedTabs"
         :key="tab"
-        :href="routeForTab(tab)"
+        :href="lastTabPaths.get(tab) ?? routeForTab(tab)"
         :aria-current="active === tab ? 'page' : undefined"
-        @click.prevent="selectTab(tab)"
+        @click="selectTab(tab, $event)"
       >
         {{ tab }}
       </a>
@@ -264,321 +290,382 @@ watch(route, () => { void focusRouteLocation(); });
     >
       {{ error }}
     </p>
-    <div v-show="active === 'Resources'">
-      <ResourceEditor
-        :route-id="route.tab === 'Resources' ? route.recordId : null"
-        @navigate="navigate"
-      />
-      <InterviewerWorkspace />
-    </div>
-    <section
-      v-if="active === 'Leads'"
-      aria-labelledby="leads-heading"
-    >
-      <h2 id="leads-heading">
-        Lead directory and sources
-      </h2>
-      <div class="workspace-grid">
-        <form @submit.prevent="saveParty">
-          <h3>Add a lead</h3>
-          <label>Type<select v-model="partyKind"><option value="person">Person</option><option value="org">Organization</option></select></label>
-          <label>Name<input
-            v-model="partyName"
+    <template v-if="connected">
+      <div
+        v-show="active === 'Resources'"
+        class="resource-workspace"
+      >
+        <ResourceEditor
+          ref="resourceEditor"
+          :route-id="route.tab === 'Resources' ? route.recordId : null"
+          @navigate="navigate"
+        />
+        <InterviewerWorkspace @saved="resourceEditor?.refresh()" />
+      </div>
+      <section
+        v-if="active === 'Leads'"
+        aria-labelledby="leads-heading"
+      >
+        <h2 id="leads-heading">
+          Lead directory and sources
+        </h2>
+        <div class="lead-desk">
+          <aside>
+            <section>
+              <h3>Directory</h3>
+              <label>Find a lead<input
+                v-model="directoryQuery"
+                type="search"
+              ></label><p v-if="!parties.length">
+                No leads yet. Add a person or organization. People do not need an organization.
+              </p>
+              <p v-else-if="!visibleParties.length">
+                No matching leads.
+              </p>
+              <ul class="directory-rows">
+                <li
+                  v-for="party in visibleParties"
+                  :key="party.id"
+                >
+                  <button
+                    type="button"
+                    :aria-pressed="selectedPartyId === party.id"
+                    @click="navigate(`/leads/${encodeURIComponent(party.id)}`)"
+                  >
+                    {{ party.name }} <small>{{ party.kind }}</small>
+                  </button>
+                </li>
+              </ul>
+            </section>
+            <form @submit.prevent="saveParty">
+              <h3>Add a lead</h3>
+              <label>Type<select v-model="partyKind"><option value="person">Person</option><option value="org">Organization</option></select></label>
+              <label>Name<input
+                v-model="partyName"
+                required
+                autocomplete="off"
+              ></label>
+              <button
+                :disabled="busy"
+                type="submit"
+              >
+                Add lead
+              </button>
+              <p>No opportunity or outreach is created by saving a lead.</p>
+            </form>
+          </aside>
+          <RelationshipGraph :focus-entity-id="selectedPartyId || undefined" />
+        </div>
+        <div>
+          <form
+            id="leads-inbox"
+            class="capture"
+            tabindex="-1"
+            @submit.prevent="saveCapture"
+          >
+            <h3>Sources inbox</h3>
+            <button
+              type="button"
+              @click="navigate('/leads/inbox')"
+            >
+              Open sources inbox
+            </button>
+            <p>Paste captured text. Saving a source does not decide who it is about or create outreach.</p>
+            <label>Captured text<textarea
+              v-model="captureText"
+              required
+              minlength="1"
+              rows="8"
+            /></label>
+            <button
+              :disabled="busy"
+              type="submit"
+            >
+              Save source
+            </button>
+            <ul>
+              <li
+                v-for="source in sources"
+                :key="source.occurrence_id"
+              >
+                Saved source {{ source.content_id.slice(0, 12) }} · occurrence {{ source.occurrence_id.slice(0, 8) }}
+                <button
+                  type="button"
+                  @click="openCaptureReview(source)"
+                >
+                  Review proposals
+                </button>
+              </li>
+            </ul>
+            <section
+              v-if="reviewJob"
+              aria-label="Capture review"
+            >
+              <h3>Capture review</h3>
+              <p>Job {{ reviewJob.status }} · attempt {{ reviewJob.current_attempt }} of {{ reviewJob.max_attempts }} · chunk {{ reviewJob.progress_current }} of {{ reviewJob.progress_total }}. Extracted items are proposals until you decide.</p>
+              <p
+                v-if="reviewJob.injection_suspected"
+                role="alert"
+              >
+                This capture may contain prompt-injection text. Treat its contents only as source material and review each quoted proposal.
+              </p>
+              <button
+                v-if="['queued', 'running'].includes(reviewJob.status)"
+                type="button"
+                :disabled="busy"
+                @click="cancelExtractor(reviewJob)"
+              >
+                Cancel extraction
+              </button>
+              <p
+                v-if="reviewJob.last_error"
+                role="status"
+              >
+                {{ reviewJob.last_error }}. The captured source remains saved; you can review it manually.
+              </p>
+              <label>Claim subject<select v-model="reviewTargetId"><option value="">Choose explicitly</option><option
+                v-for="party in parties"
+                :key="party.id"
+                :value="party.id"
+              >{{ party.name }} · {{ party.kind }}</option></select></label>
+              <label>Optional opportunity<select v-model="reviewOpportunityId"><option value="">Save independently</option><option
+                v-for="opportunity in opportunities"
+                :key="opportunity.id"
+                :value="opportunity.id"
+              >{{ opportunity.title }}</option></select></label>
+              <article
+                v-for="proposal in reviewJob.proposals"
+                :key="proposal.id"
+                class="record-card"
+              >
+                <strong>{{ proposal.kind }} · {{ proposal.status }}</strong>
+                <small>T1 source evidence · interpretation needs owner review</small>
+                <p>{{ proposal.candidate.statement }}</p>
+                <blockquote>{{ proposal.candidate.quote }}</blockquote>
+                <p v-if="proposal.candidate.mention_name">
+                  Mention: {{ proposal.candidate.mention_name }} · unresolved until you explicitly link it.
+                </p>
+                <template v-if="proposal.status === 'pending'">
+                  <button
+                    :disabled="busy"
+                    type="button"
+                    @click="decideProposal(proposal, 'confirm')"
+                  >
+                    Accept claim for selected subject
+                  </button>
+                  <button
+                    :disabled="busy"
+                    type="button"
+                    @click="decideProposal(proposal, 'unresolved')"
+                  >
+                    Keep mention unresolved
+                  </button>
+                  <button
+                    :disabled="busy"
+                    type="button"
+                    @click="decideProposal(proposal, 'source_only')"
+                  >
+                    Save source only
+                  </button>
+                  <button
+                    :disabled="busy"
+                    type="button"
+                    @click="decideProposal(proposal, 'dismiss')"
+                  >
+                    Dismiss
+                  </button>
+                </template>
+              </article>
+            </section>
+          </form>
+        </div>
+        <BriefWorkspace :parties="parties" />
+      </section>
+      <section
+        v-if="active === 'Settings'"
+        aria-labelledby="settings-heading"
+      >
+        <h2 id="settings-heading">
+          Local agent settings
+        </h2>
+        <p>Extractor runs only through a loopback provider. Manual capture, review, and other workspace actions remain available when the model is unavailable.</p>
+        <form @submit.prevent="saveProvider">
+          <label>Local endpoint<input
+            v-model="provider.endpoint"
             required
             autocomplete="off"
           ></label>
+          <label>Installed model tag<input
+            v-model="provider.model"
+            required
+            autocomplete="off"
+          ></label>
+          <label>Context budget<input
+            v-model.number="provider.num_ctx"
+            type="number"
+            min="2048"
+            max="131072"
+            required
+          ></label>
+          <label>Output budget<input
+            v-model.number="provider.num_predict"
+            type="number"
+            min="64"
+            max="8192"
+            required
+          ></label>
+          <label>Evaluated language tag<input
+            v-model="provider.locale"
+            required
+            maxlength="40"
+          ></label>
           <button
-            :disabled="busy"
             type="submit"
+            :disabled="busy"
           >
-            Add lead
+            Save provider
           </button>
-          <p>No opportunity or outreach is created by saving a lead.</p>
-        </form>
-        <section>
-          <h3>Directory</h3><p v-if="!parties.length">
-            No leads yet. Add a person or organization. People do not need an organization.
-          </p>
-          <ul>
-            <li
-              v-for="party in parties"
-              :key="party.id"
-            >
-              <button
-                type="button"
-                :aria-pressed="selectedPartyId === party.id"
-                @click="navigate(`/leads/${encodeURIComponent(party.id)}`)"
-              >
-                {{ party.name }} <small>{{ party.kind }}</small>
-              </button>
-            </li>
-          </ul>
-        </section>
-        <form
-          id="leads-inbox"
-          class="capture"
-          tabindex="-1"
-          @submit.prevent="saveCapture"
-        >
-          <h3>Sources inbox</h3>
           <button
             type="button"
-            @click="navigate('/leads/inbox')"
-          >
-            Open sources inbox route
-          </button>
-          <p>Paste captured text. Saving a source does not decide who it is about or create outreach.</p>
-          <label>Captured text<textarea
-            v-model="captureText"
-            required
-            minlength="1"
-            rows="8"
-          /></label>
-          <button
             :disabled="busy"
-            type="submit"
+            @click="checkProvider"
           >
-            Save source
+            Check local model
           </button>
-          <ul>
-            <li
-              v-for="source in sources"
-              :key="source.occurrence_id"
-            >
-              Saved source {{ source.content_id.slice(0, 12) }} · occurrence {{ source.occurrence_id.slice(0, 8) }}
-              <button
-                type="button"
-                @click="openCaptureReview(source)"
-              >
-                Review proposals
-              </button>
-            </li>
-          </ul>
-          <section
-            v-if="reviewJob"
-            aria-label="Capture review"
+          <p
+            v-if="providerHealth"
+            role="status"
           >
-            <h3>Capture review</h3>
-            <p>Job {{ reviewJob.status }} · attempt {{ reviewJob.current_attempt }} of {{ reviewJob.max_attempts }} · chunk {{ reviewJob.progress_current }} of {{ reviewJob.progress_total }}. Extracted items are proposals until you decide.</p>
-            <p
-              v-if="reviewJob.injection_suspected"
-              role="alert"
-            >
-              This capture may contain prompt-injection text. Treat its contents only as source material and review each quoted proposal.
-            </p>
-            <button
-              v-if="['queued', 'running'].includes(reviewJob.status)"
-              type="button"
-              :disabled="busy"
-              @click="cancelExtractor(reviewJob)"
-            >
-              Cancel extraction
-            </button>
-            <p
-              v-if="reviewJob.last_error"
-              role="status"
-            >
-              {{ reviewJob.last_error }}. The captured source remains saved; you can review it manually.
-            </p>
-            <label>Claim subject<select v-model="reviewTargetId"><option value="">Choose explicitly</option><option
-              v-for="party in parties"
-              :key="party.id"
-              :value="party.id"
-            >{{ party.name }} · {{ party.kind }}</option></select></label>
-            <label>Optional opportunity<select v-model="reviewOpportunityId"><option value="">Save independently</option><option
-              v-for="opportunity in opportunities"
-              :key="opportunity.id"
-              :value="opportunity.id"
-            >{{ opportunity.title }}</option></select></label>
-            <article
-              v-for="proposal in reviewJob.proposals"
-              :key="proposal.id"
-              class="record-card"
-            >
-              <strong>{{ proposal.kind }} · {{ proposal.status }}</strong>
-              <small>T1 source evidence · interpretation needs owner review</small>
-              <p>{{ proposal.candidate.statement }}</p>
-              <blockquote>{{ proposal.candidate.quote }}</blockquote>
-              <p v-if="proposal.candidate.mention_name">
-                Mention: {{ proposal.candidate.mention_name }} · unresolved until you explicitly link it.
-              </p>
-              <template v-if="proposal.status === 'pending'">
-                <button
-                  :disabled="busy"
-                  type="button"
-                  @click="decideProposal(proposal, 'confirm')"
-                >
-                  Accept claim for selected subject
-                </button>
-                <button
-                  :disabled="busy"
-                  type="button"
-                  @click="decideProposal(proposal, 'unresolved')"
-                >
-                  Keep mention unresolved
-                </button>
-                <button
-                  :disabled="busy"
-                  type="button"
-                  @click="decideProposal(proposal, 'source_only')"
-                >
-                  Save source only
-                </button>
-                <button
-                  :disabled="busy"
-                  type="button"
-                  @click="decideProposal(proposal, 'dismiss')"
-                >
-                  Dismiss
-                </button>
-              </template>
-            </article>
-          </section>
+            {{ providerHealth }}
+          </p>
         </form>
+        <AgentPolicySettings />
+        <CapacitySettings />
+        <Packs />
+        <MaintenanceSettings
+          :parties="parties"
+          @erased="refreshLeads"
+        />
+      </section>
+      <div v-show="active === 'Queue'">
+        <QueueWorkspace
+          :parties="parties"
+          :outputs="outputs"
+          :active="active === 'Queue'"
+          :route-id="route.tab === 'Queue' ? route.recordId : null"
+          @material-updated="installMaterial"
+          @navigate="navigate"
+        />
       </div>
-      <RelationshipGraph :focus-entity-id="selectedPartyId || undefined" />
-      <BriefWorkspace :parties="parties" />
-    </section>
-    <section
-      v-if="active === 'Settings'"
-      aria-labelledby="settings-heading"
-    >
-      <h2 id="settings-heading">
-        Local agent settings
-      </h2>
-      <p>Extractor runs only through a loopback provider. Manual capture, review, and other workspace actions remain available when the model is unavailable.</p>
-      <form @submit.prevent="saveProvider">
-        <label>Local endpoint<input
-          v-model="provider.endpoint"
-          required
-          autocomplete="off"
+      <section
+        v-if="active === 'Output'"
+        aria-labelledby="output-heading"
+      >
+        <h2 id="output-heading">
+          Approved materials
+        </h2>
+        <p>Each material is bound to one opportunity, recipient and immutable version. Release checks run against current evidence.</p>
+        <p v-if="!outputs.length">
+          No materials yet. Create an opportunity, prepare its exchange, then author material for a named participant.
+        </p>
+        <label>Find materials<input
+          v-model="materialQuery"
+          type="search"
+          placeholder="Recipient, opportunity, kind or status"
         ></label>
-        <label>Installed model tag<input
-          v-model="provider.model"
-          required
-          autocomplete="off"
-        ></label>
-        <label>Context budget<input
-          v-model.number="provider.num_ctx"
-          type="number"
-          min="2048"
-          max="131072"
-          required
-        ></label>
-        <label>Output budget<input
-          v-model.number="provider.num_predict"
-          type="number"
-          min="64"
-          max="8192"
-          required
-        ></label>
-        <label>Evaluated language tag<input
-          v-model="provider.locale"
-          required
-          maxlength="40"
-        ></label>
-        <button
-          type="submit"
-          :disabled="busy"
-        >
-          Save provider
-        </button>
+        <p v-if="outputs.length && !visibleOutputs.length">
+          No matching materials.
+        </p>
+        <ul class="output-list">
+          <li
+            v-for="material in visibleOutputs"
+            :id="`output-material-${material.id}`"
+            :key="material.id"
+            tabindex="-1"
+            class="record-card"
+          >
+            <strong>{{ material.recipient_name }}</strong> · {{ material.kind }} · v{{ material.version }} · {{ material.status }}
+            <p>Opportunity {{ material.opportunity_id }} · SHA-256 {{ material.content_sha256 }}</p>
+            <button
+              type="button"
+              @click="navigate(`/output/${encodeURIComponent(material.id)}`)"
+            >
+              Open material version
+            </button>
+            <MaterialActions
+              :material="material"
+              @updated="installMaterial"
+              @delivered="deliveredReleases[material.id] = $event"
+            />
+            <ContactThreadPanel
+              :opportunity-id="material.opportunity_id"
+              :material="material"
+              :delivered="deliveredReleases[material.id] ?? null"
+              :threads="threads"
+              @changed="refreshLeads"
+            />
+          </li>
+        </ul>
+        <WritingWorkspace
+          :opportunities="opportunities"
+          :parties="parties"
+          :resources="resources"
+          :outputs="outputs"
+        />
         <button
           type="button"
-          :disabled="busy"
-          @click="checkProvider"
+          @click="navigate('/output/templates')"
         >
-          Check local model
+          Open template library
         </button>
-        <p
-          v-if="providerHealth"
-          role="status"
-        >
-          {{ providerHealth }}
-        </p>
-      </form>
-      <AgentPolicySettings />
-      <CapacitySettings />
-      <Packs />
-      <MaintenanceSettings
-        :parties="parties"
-        @erased="refreshLeads"
-      />
-    </section>
-    <div v-show="active === 'Queue'">
-      <QueueWorkspace
-        :parties="parties"
-        :outputs="outputs"
-        :active="active === 'Queue'"
-        :route-id="route.tab === 'Queue' ? route.recordId : null"
-        @material-updated="installMaterial"
-        @navigate="navigate"
-      />
-    </div>
-    <section
-      v-if="active === 'Output'"
-      aria-labelledby="output-heading"
+      </section>
+    </template>
+    <p
+      v-else-if="!error"
+      role="status"
     >
-      <h2 id="output-heading">
-        Approved materials
-      </h2>
-      <p>Each material is bound to one opportunity, recipient and immutable version. Release checks run against current evidence.</p>
-      <WritingWorkspace
-        :opportunities="opportunities"
-        :parties="parties"
-        :resources="resources"
-        :outputs="outputs"
-      />
-      <button
-        type="button"
-        @click="navigate('/output/templates')"
-      >
-        Open template library route
-      </button>
-      <p v-if="!outputs.length">
-        No materials yet. Create an opportunity, prepare its exchange, then author material for a named participant.
-      </p>
-      <ul class="output-list">
-        <li
-          v-for="material in outputs"
-          :id="`output-material-${material.id}`"
-          :key="material.id"
-          tabindex="-1"
-          class="record-card"
-        >
-          <strong>{{ material.recipient_name }}</strong> · {{ material.kind }} · v{{ material.version }} · {{ material.status }}
-          <p>Opportunity {{ material.opportunity_id }} · SHA-256 {{ material.content_sha256 }}</p>
-          <button
-            type="button"
-            @click="navigate(`/output/${encodeURIComponent(material.id)}`)"
-          >
-            Open material version
-          </button>
-          <MaterialActions
-            :material="material"
-            @updated="installMaterial"
-            @delivered="deliveredReleases[material.id] = $event"
-          />
-          <ContactThreadPanel
-            :opportunity-id="material.opportunity_id"
-            :material="material"
-            :delivered="deliveredReleases[material.id] ?? null"
-            :threads="threads"
-            @changed="refreshLeads"
-          />
-        </li>
-      </ul>
-    </section>
+      Opening workspace…
+    </p>
   </main>
 </template>
 
 <style>
-:root { color: #18221f; background: #f4f6f3; font: 16px/1.5 system-ui, sans-serif; }
-body { margin: 0; } header { display: flex; align-items: center; gap: 2rem; padding: .75rem 2rem; background: white; border-bottom: 1px solid #d7dfd9; }
-nav { display: flex; gap: .5rem; } nav a { display:inline-block; padding:.45rem .8rem; border-radius:.25rem; color:inherit; } nav a[aria-current="page"] { background: #173e32; color: white; } button, input, select, textarea { font: inherit; } button { cursor: pointer; padding: .45rem .8rem; }
-button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline:3px solid #32735b; outline-offset:2px; } main { max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
-.workspace-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(300px,1fr)); gap: 1.5rem; align-items: start; }
-form, section section { background: white; border: 1px solid #d7dfd9; border-radius: .5rem; padding: 1rem; }
-label { display: grid; gap: .3rem; margin: .8rem 0; } input, select, textarea { width: 100%; box-sizing: border-box; padding: .5rem; border: 1px solid #82918a; border-radius: .25rem; }
-small { color: #58665f; } .capture { grid-column: 1 / -1; } .record-card { background:white; border:1px solid #d7dfd9; border-radius:.5rem; margin:.75rem 0; padding:1rem; } .output-list { padding:0; list-style:none; } @media(max-width:650px) { header { align-items: start; flex-direction: column; gap: .5rem; padding: 1rem; } nav { flex-wrap: wrap; } }
+:root { color: #182d25; background: #f4f6f2; font: 14px/1.45 system-ui, sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+.app-header { display: flex; align-items: stretch; gap: clamp(1rem, 4vw, 4rem); padding-inline: 3vw; background: white; border-bottom: 1px solid #cdd7cf; }
+.app-header > strong { align-self: center; font: italic 1.8rem Georgia, serif; }
+.app-header nav { display: flex; overflow-x: auto; }
+.app-header a { display: grid; align-items: center; padding: .95rem clamp(.45rem, 1.3vw, 1.4rem); text-decoration: none; color: #4c5b53; border-bottom: 3px solid transparent; }
+.app-header a[aria-current="page"] { border-color: #28664f; color: #194e39; font-weight: 650; }
+main { max-width: 1640px; margin: auto; padding: 1rem 3vw 3rem; }
+h1 { margin: 0 0 .75rem; font: normal clamp(2rem, 3vw, 3rem)/1.15 Georgia, serif; letter-spacing: -.035em; }
+h2, h3, h4 { margin: .15em 0 .5em; line-height: 1.25; }
+h2 { font-size: 1.18rem; } h3 { font-size: 1.04rem; } p { margin: .55rem 0; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button, summary { cursor: pointer; }
+button { padding: .35rem .65rem; border-radius: .36rem; border: 1px solid #abbcb0; background: #fff; }
+button:disabled { cursor: default; opacity: .58; }
+button:not(:disabled):hover, .app-header a:hover { background: #eaf0eb; }
+button:not(:disabled):active { background: #d6e5da; }
+button[aria-pressed="true"], button[aria-current="true"] { background: #deebe2; box-shadow: inset 3px 0 #367757; }
+:focus-visible { outline: 2px solid #32735b; outline-offset: 2px; }
+.workspace-grid, .lead-desk, .resource-workspace { display: grid; gap: .85rem; align-items: start; }
+.workspace-grid { grid-template-columns: repeat(auto-fit,minmax(min(100%, 19rem),1fr)); }
+.resource-workspace { grid-template-columns: minmax(0,2fr) minmax(17rem,1fr); }
+.lead-desk { grid-template-columns: minmax(14rem, 1fr) minmax(0, 3fr); }
+.resource-workspace > section, .lead-desk > section, .lead-desk aside, form, section section, .record-card { min-width: 0; background: white; border: 1px solid #d1dbd2; border-radius: .45rem; padding: .8rem; }
+.directory-rows, .output-list { list-style: none; padding: 0; }
+.directory-rows { max-height: 40vh; overflow: auto; }
+.directory-rows button { width: 100%; text-align: left; }
+label { display: grid; gap: .2rem; margin: .48rem 0; }
+input, select, textarea { min-width: 0; width: 100%; padding: .38rem .5rem; border: 1px solid #95a59a; border-radius: .32rem; background: white; }
+input:is([type="checkbox"],[type="radio"]) { width: auto; justify-self: start; accent-color: #276348; }
+small { color: #58665f; } .record-card { margin: .55rem 0; overflow-wrap: anywhere; }
+@media (prefers-reduced-motion: no-preference) {
+  button, .app-header a, input, textarea, select { transition: background-color 120ms ease-out, border-color 120ms ease-out, box-shadow 120ms ease-out; }
+}
+@media (max-width: 68rem) { .resource-workspace { grid-template-columns: 1fr; } }
+@media (max-width: 54rem) { .lead-desk { grid-template-columns: 1fr; } }
+@media (max-width: 38rem) { .app-header { flex-wrap: wrap; gap: 0; } .app-header nav { flex-basis: 100%; } .app-header > strong { margin-top: .35rem; } }
 </style>

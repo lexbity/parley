@@ -78,9 +78,8 @@ describe('AppShell', () => {
     await flushPromises();
     expect(createEntity).toHaveBeenCalledWith({ kind: 'person', name: 'Dana Lee' }, expect.any(String));
     expect(wrapper.text()).toContain('No opportunity or outreach was created');
-    const areas = leads.findAll('textarea');
-    await areas[0]!.setValue('Hiring update with an unresolved Dana mention.');
-    await leads.findAll('form')[1]!.trigger('submit');
+    await leads.get('#leads-inbox textarea').setValue('Hiring update with an unresolved Dana mention.');
+    await leads.get('#leads-inbox').trigger('submit');
     await flushPromises();
     expect(saveSource).toHaveBeenCalledWith({ text: 'Hiring update with an unresolved Dana mention.', title: null, url: null });
     expect(wrapper.text()).toContain('No person was inferred or linked');
@@ -379,8 +378,8 @@ describe('AppShell', () => {
     await leads.findAll('form')[0]!.trigger('submit');
     await flushPromises();
     expect(wrapper.text()).toContain('write denied');
-    await leads.findAll('textarea')[0]!.setValue('A source');
-    await leads.findAll('form')[1]!.trigger('submit');
+    await leads.get('#leads-inbox textarea').setValue('A source');
+    await leads.get('#leads-inbox').trigger('submit');
     await flushPromises();
     expect(wrapper.text()).toContain('capture denied');
     const labels = wrapper.findAll('nav[aria-label="Main navigation"] a').map((link) => link.text());

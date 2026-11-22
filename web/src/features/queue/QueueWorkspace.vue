@@ -556,44 +556,47 @@ function onThreadVisibilityChange() {
       >
         <header>
           <h3>{{ list.title }}</h3>
-          <label>Rename {{ list.title }}<input
-            v-model="renameValues[list.id]"
-            :aria-label="`Rename ${list.title}`"
-          ></label>
-          <button
-            :disabled="busy || renameValues[list.id] === list.title"
-            @click="renameList(list)"
-          >
-            Save list name
-          </button>
-          <button
-            :disabled="busy || activeLists.indexOf(list) === 0"
-            :aria-label="`Move ${list.title} up`"
-            @click="reorderList(list, -1)"
-          >
-            Move list up
-          </button>
-          <button
-            :disabled="busy || activeLists.indexOf(list) === activeLists.length - 1"
-            :aria-label="`Move ${list.title} down`"
-            @click="reorderList(list, 1)"
-          >
-            Move list down
-          </button>
-          <label v-if="activeLists.length > 1">Archive destination for {{ list.title }}<select
-            v-model="archiveTargets[list.id]"
-            :aria-label="`Archive destination for ${list.title}`"
-          ><option
-            v-for="candidate in activeLists.filter((item) => item.id !== list.id)"
-            :key="candidate.id"
-            :value="candidate.id"
-          >{{ candidate.title }}</option></select></label>
-          <button
-            :disabled="busy || activeLists.length < 2"
-            @click="archiveList(list)"
-          >
-            Archive list
-          </button>
+          <details>
+            <summary>List options</summary>
+            <label>Rename {{ list.title }}<input
+              v-model="renameValues[list.id]"
+              :aria-label="`Rename ${list.title}`"
+            ></label>
+            <button
+              :disabled="busy || renameValues[list.id] === list.title"
+              @click="renameList(list)"
+            >
+              Save list name
+            </button>
+            <button
+              :disabled="busy || activeLists.indexOf(list) === 0"
+              :aria-label="`Move ${list.title} up`"
+              @click="reorderList(list, -1)"
+            >
+              Move {{ list.title }} up
+            </button>
+            <button
+              :disabled="busy || activeLists.indexOf(list) === activeLists.length - 1"
+              :aria-label="`Move ${list.title} down`"
+              @click="reorderList(list, 1)"
+            >
+              Move {{ list.title }} down
+            </button>
+            <label v-if="activeLists.length > 1">Archive destination for {{ list.title }}<select
+              v-model="archiveTargets[list.id]"
+              :aria-label="`Archive destination for ${list.title}`"
+            ><option
+              v-for="candidate in activeLists.filter((item) => item.id !== list.id)"
+              :key="candidate.id"
+              :value="candidate.id"
+            >{{ candidate.title }}</option></select></label>
+            <button
+              :disabled="busy || activeLists.length < 2"
+              @click="archiveList(list)"
+            >
+              Archive list
+            </button>
+          </details>
         </header>
         <article
           v-for="(card, index) in sortedCards.filter((item) => item.list_id === list.id)"
@@ -605,48 +608,51 @@ function onThreadVisibilityChange() {
           <p v-if="card.next_task">
             Next task: {{ card.next_task }}
           </p>
-          <label>Move to list<select
-            v-model="moveTargets[card.opportunity.id]"
-            :aria-label="`Move ${card.opportunity.title} to list`"
-          ><option
-            v-for="candidate in activeLists"
-            :key="candidate.id"
-            :value="candidate.id"
-          >{{ candidate.title }}</option></select></label>
-          <button
-            :disabled="busy || moveTargets[card.opportunity.id] === list.id"
-            @click="moveCard(card)"
-          >
-            Move card
-          </button>
-          <button
-            :disabled="busy || index === 0"
-            :aria-label="`Move ${card.opportunity.title} up`"
-            @click="moveCardBy(card, -1)"
-          >
-            Move card up
-          </button>
-          <button
-            :disabled="busy || index === board.cards.filter((item) => item.list_id === list.id).length - 1"
-            :aria-label="`Move ${card.opportunity.title} down`"
-            @click="moveCardBy(card, 1)"
-          >
-            Move card down
-          </button>
-          <label>Edit tags for {{ card.opportunity.title }}
-            <input
-              :value="tagDrafts[card.opportunity.id] ?? ''"
-              :aria-label="`Edit tags for ${card.opportunity.title}`"
-              maxlength="500"
-              @input="tagDrafts[card.opportunity.id] = ($event.target as HTMLInputElement).value"
+          <details>
+            <summary>Organize card</summary>
+            <label>Move to list<select
+              v-model="moveTargets[card.opportunity.id]"
+              :aria-label="`Move ${card.opportunity.title} to list`"
+            ><option
+              v-for="candidate in activeLists"
+              :key="candidate.id"
+              :value="candidate.id"
+            >{{ candidate.title }}</option></select></label>
+            <button
+              :disabled="busy || moveTargets[card.opportunity.id] === list.id"
+              @click="moveCard(card)"
             >
-          </label>
-          <button
-            :disabled="busy"
-            @click="saveTags(card)"
-          >
-            Save tags
-          </button>
+              Move card
+            </button>
+            <button
+              :disabled="busy || index === 0"
+              :aria-label="`Move ${card.opportunity.title} up`"
+              @click="moveCardBy(card, -1)"
+            >
+              Move {{ card.opportunity.title }} up
+            </button>
+            <button
+              :disabled="busy || index === board.cards.filter((item) => item.list_id === list.id).length - 1"
+              :aria-label="`Move ${card.opportunity.title} down`"
+              @click="moveCardBy(card, 1)"
+            >
+              Move {{ card.opportunity.title }} down
+            </button>
+            <label>Edit tags for {{ card.opportunity.title }}
+              <input
+                :value="tagDrafts[card.opportunity.id] ?? ''"
+                :aria-label="`Edit tags for ${card.opportunity.title}`"
+                maxlength="500"
+                @input="tagDrafts[card.opportunity.id] = ($event.target as HTMLInputElement).value"
+              >
+            </label>
+            <button
+              :disabled="busy"
+              @click="saveTags(card)"
+            >
+              Save tags
+            </button>
+          </details>
           <button
             :disabled="busy"
             @click="openCard(card)"
@@ -657,6 +663,7 @@ function onThreadVisibilityChange() {
       </section>
     </div>
     <table
+      v-show="activeQueueView === 'Opportunities'"
       class="opportunity-table"
     >
       <thead>
@@ -796,6 +803,8 @@ function onThreadVisibilityChange() {
 .board-lists { display: grid; grid-auto-columns: minmax(18rem, 1fr); grid-auto-flow: column; gap: 1rem; overflow-x: auto; align-items: start; margin: 1rem 0; }
 .board-list { background: #eef2ef; border: 1px solid #cbd5ce; border-radius: .5rem; min-width: 18rem; padding: .75rem; }
 .board-list header { display: block; background: transparent; border: 0; padding: 0; }
+.board-list details { margin-block: .4rem; }
+.board-list summary { color: #365741; }
 .board-list header h3 { margin-top: 0; }
 .card-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; }
 .card-layout > section { min-width: 0; }

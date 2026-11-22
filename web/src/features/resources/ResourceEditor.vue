@@ -241,6 +241,7 @@ function warnAboutDirtyDraft(event: { preventDefault: () => void }): void {
   event.preventDefault();
   (event as unknown as { returnValue: string }).returnValue = '';
 }
+defineExpose({ refresh });
 </script>
 
 <template>
@@ -441,17 +442,17 @@ function warnAboutDirtyDraft(event: { preventDefault: () => void }): void {
 </template>
 
 <style scoped>
-.resources { display: grid; grid-template-columns: minmax(15rem, 0.8fr) minmax(20rem, 1.2fr); gap: 1.5rem; max-width: 70rem; }
+.resources { display: grid; grid-template-columns: minmax(11rem, .8fr) minmax(15rem, 1.2fr); gap: .7rem; }
 .resource-list, .resource-form { border: 1px solid #c8ced5; border-radius: .5rem; padding: 1rem; }
 .resource-list ul { list-style: none; margin: 0; padding: 0; }
 .resource-list li + li { border-top: 1px solid #e0e4e8; }
-.resource-list li button { display: grid; gap: .25rem; width: 100%; padding: .8rem .25rem; text-align: left; border: 0; background: transparent; }
+.resource-list li button { display: grid; gap: .12rem; width: 100%; padding: .8rem .25rem; text-align: left; border: 0; background: transparent; }
 .resource-list li span, .readiness { color: #4b5563; font-size: .9rem; }
-.resource-form { display: grid; gap: 1rem; }
+.resource-form { display: grid; gap: .3rem; }
 .resource-form label { display: grid; gap: .35rem; font-weight: 600; }
 input, textarea, select { box-sizing: border-box; width: 100%; padding: .55rem; font: inherit; }
 .resource-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
-button { min-height: 2.5rem; padding: .4rem .75rem; }
+button { min-height: 2.15rem; padding: .4rem .75rem; }
 .field-error { color: #8a1c1c; font-weight: 400; }
 .conflict { border-left: .25rem solid #8a1c1c; padding: .5rem 1rem; background: #fff7f7; }
 .status { grid-column: 1 / -1; min-height: 1.5rem; }

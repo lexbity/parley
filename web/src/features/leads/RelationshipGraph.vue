@@ -1,11 +1,11 @@
 <script setup lang="ts">
-/* global document, HTMLElement */
-import { computed, onMounted, ref, watch } from 'vue';
-import { Background, Controls, MiniMap, VueFlow, type Edge, type Node } from '@xyflow/vue';
+import { computed, onMounted, ref, shallowRef, watch } from 'vue';
+import { Background, Controls, MiniMap, VueFlow, type Edge, type Node, type VueFlowInstance } from '@xyflow/vue';
 import { newOperationKey, parley, type GraphSnapshot, type SavedSource } from '../../api/client';
 
 const props = defineProps<{ focusEntityId?: string }>();
 const snapshot = ref<GraphSnapshot>({ nodes: [], edges: [], omitted_nodes: 0, omitted_edges: 0 });
+const flow = shallowRef<VueFlowInstance | null>(null);
 const selectedEdgeId = ref('');
 const loading = ref(false);
 const error = ref('');
@@ -91,10 +91,9 @@ async function savePosition(event: { node: { id: string; position: { x: number; 
 }
 
 function focusNode(id: string) {
-  const node = snapshot.value.nodes.find((candidate) => candidate.id === id);
-  if (!node) return;
-  const canvas = document.querySelector<HTMLElement>('[data-testid="relationship-canvas"]');
-  canvas?.focus();
+  relatedEntityId.value = id;
+  const duration = globalThis.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 160;
+  void flow.value?.fitView({ nodes: [{ id }], maxZoom: 1, duration });
 }
 
 watch(() => props.focusEntityId, () => { void load(); });
@@ -140,7 +139,9 @@ onMounted(() => { void load(); });
           elements-selectable
           aria-label="Relationship graph"
           @node-drag-stop="savePosition"
-          @edge-click="(_, edge) => selectedEdgeId = edge.id"
+          @init="instance => flow = instance"
+          @node-click="({ node }) => relatedEntityId = node.id"
+          @edge-click="({ edge }) => selectedEdgeId = edge.id"
         >
           <Background />
           <Controls />
@@ -190,6 +191,7 @@ onMounted(() => { void load(); });
           >
             <button
               type="button"
+              :aria-pressed="relatedEntityId === node.id"
               @click="focusNode(node.id)"
             >
               {{ node.name }} · {{ node.kind }}

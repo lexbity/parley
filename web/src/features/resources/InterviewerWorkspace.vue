@@ -102,12 +102,15 @@ async function askQuestion(questionId: string, action: 'ask' | 'skip' | 'defer' 
   finally { busy.value = false; }
 }
 
+const emit = defineEmits<{ saved: [] }>();
+
 async function confirmCandidate() {
   if (!chat.value || !candidate.value) return;
   busy.value = true; error.value = '';
   try {
     const fields = JSON.parse(fieldsJson.value) as Record<string, unknown>;
     await parley.confirmInterviewerCandidate(candidate.value.id, { title: title.value.trim(), fields, expected_chat_revision: chat.value.revision });
+    emit('saved');
     await refreshChat(); editing.value = false; status.value = 'Owner-confirmed resource saved. Its readiness follows the typed resource validator.';
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Candidate fields must be valid JSON.'; }
   finally { busy.value = false; }

@@ -6,12 +6,20 @@ test('s05_keyboard_board_list_card_order_and_archive', async ({ page }) => {
   await page.goto('/');
   const suffix = randomUUID();
   const partyName = `Dana Lee ${suffix}`;
-  await page.getByRole('button', { name: 'Leads' }).click();
+  await page.getByRole('link', { name: 'Leads' }).click();
   const leads = page.getByRole('region', { name: 'Lead directory and sources' });
-  await leads.getByLabel('Name').fill(partyName);
+  await leads.getByRole('complementary').getByLabel('Name').fill(partyName);
   await leads.getByRole('button', { name: 'Add lead' }).click();
 
-  await page.getByRole('button', { name: 'Queue' }).click();
+  await expect(leads.getByRole('button', { name: partyName + ' person' })).toBeVisible();
+  await leads.getByLabel('Find a lead').fill(suffix);
+  await leads.getByRole('button', { name: partyName + ' person' }).click();
+  const leadUrl = page.url();
+  await page.getByRole('link', { name: 'Resources' }).click();
+  await page.getByRole('link', { name: 'Leads' }).click();
+  await expect(page).toHaveURL(leadUrl);
+  await expect(leads.getByLabel('Find a lead')).toHaveValue(suffix);
+  await page.getByRole('link', { name: 'Queue' }).click();
   const queue = page.getByRole('region', { name: 'Opportunities' });
   await queue.getByLabel('Opportunity title').fill('Onboarding map');
   await queue.getByLabel('Participant').selectOption({ label: `${partyName} · person` });
@@ -20,11 +28,13 @@ test('s05_keyboard_board_list_card_order_and_archive', async ({ page }) => {
 
   await queue.getByLabel('New list').fill('Friday follow-ups');
   await queue.getByRole('button', { name: 'Add list' }).click();
+  await queue.getByText('Organize card').click();
   const moveToList = queue.getByLabel('Move Onboarding map to list');
   await moveToList.selectOption({ label: 'Friday follow-ups' });
   await queue.getByRole('button', { name: 'Move card' }).click();
   await expect(queue.getByRole('region', { name: 'Friday follow-ups list' })).toContainText('Onboarding map');
 
+  await queue.getByRole('region', { name: 'Friday follow-ups list' }).getByText('List options').click();
   await queue.getByLabel('Rename Friday follow-ups').fill('Friday');
   await queue.getByRole('button', { name: 'Save list name' }).last().click();
   await queue.getByRole('button', { name: 'Move Friday up' }).click();
@@ -35,11 +45,12 @@ test('s05_keyboard_board_list_card_order_and_archive', async ({ page }) => {
   const notes = queue.getByRole('region', { name: 'Notes and tasks' });
   await notes.getByLabel('Markdown notes').fill(markdown);
   await notes.getByRole('button', { name: 'Save notes' }).click();
-  await expect(notes.locator('pre')).toContainText(markdown.trimEnd());
-  await expect(notes.getByRole('checkbox')).toHaveCount(1);
-  await notes.getByRole('checkbox').check();
-  await expect(notes.locator('pre')).toContainText('- [x] Prepare map');
-  await expect(notes.locator('pre')).toContainText('```md\n- [ ] Literal example\n```');
+  await expect(notes.locator('.cm-line')).toHaveText(markdown.split('\n'));
+  await expect(notes.locator('pre')).toContainText('- [ ] Literal example');
+  await expect(notes.getByRole('checkbox', { name: 'Prepare map', exact: true })).toHaveCount(1);
+  await notes.getByRole('checkbox', { name: 'Prepare map', exact: true }).check();
+  await expect(notes.locator('.cm-line')).toHaveText(markdown.replace('[ ] Prepare', '[x] Prepare').split('\n'));
+  await expect(notes.locator('.cm-content')).toContainText('- [ ] Literal example');
 
   const archiveDestination = queue.getByLabel('Archive destination for Friday');
   await archiveDestination.selectOption({ label: 'Inbox' });
