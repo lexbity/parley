@@ -37,7 +37,7 @@ describe('AppShell', () => {
     expect([...tabs]).toEqual(['Resources', 'Leads', 'Queue', 'Output', 'Settings']);
     stubWorkspace();
     const wrapper = mount(AppShell);
-    const labels = wrapper.findAll('nav[aria-label="Main navigation"] button').map((button) => button.text());
+    const labels = wrapper.findAll('nav[aria-label="Main navigation"] a').map((link) => link.text());
     expect(labels).toEqual(['Resources', 'Leads', 'Queue', 'Output', 'Settings']);
     expect(wrapper.get('h1').text()).toBe('Resources');
     wrapper.unmount();
@@ -49,9 +49,9 @@ describe('AppShell', () => {
     await flushPromises();
     const editorInput = wrapper.get('section[aria-label="Resources workspace"] input');
     await editorInput.setValue('unsent resource title');
-    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(2)').trigger('click');
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
     expect(wrapper.get('h1').text()).toBe('Leads');
-    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(1)').trigger('click');
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(1)').trigger('click');
     expect((wrapper.get('section[aria-label="Resources workspace"] input').element as HTMLInputElement).value)
       .toBe('unsent resource title');
     wrapper.unmount();
@@ -66,7 +66,7 @@ describe('AppShell', () => {
     });
     const wrapper = mount(AppShell);
     await flushPromises();
-    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(2)').trigger('click');
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
     const leads = leadsSection(wrapper);
     await leads.get('select').setValue('org');
     await leads.get('select').setValue('person');
@@ -90,7 +90,7 @@ describe('AppShell', () => {
     const health = vi.spyOn(parley, 'checkProvider').mockResolvedValue({ available: true, model: 'local:latest', models: ['local:latest'], message: 'Local model is available' });
     const wrapper = mount(AppShell);
     await flushPromises();
-    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(5)').trigger('click');
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(5)').trigger('click');
     await wrapper.get('input[required][autocomplete="off"]').setValue('http://127.0.0.1:11434');
     await wrapper.findAll('input[required][autocomplete="off"]')[1]!.setValue('local:latest');
     const numericInputs = wrapper.findAll('input[type="number"]');
@@ -126,7 +126,7 @@ describe('AppShell', () => {
     vi.spyOn(parley, 'getExtractorJob').mockResolvedValue(job);
     const wrapper = mount(AppShell);
     await flushPromises();
-    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(2)').trigger('click');
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
     await wrapper.findAll('button').find((element) => element.text() === 'Review proposals')!.trigger('click');
     await flushPromises();
     expect(openReview).toHaveBeenCalledWith('o1');
@@ -160,13 +160,13 @@ describe('AppShell', () => {
     const save = vi.spyOn(parley, 'saveSource').mockResolvedValueOnce(saved).mockRejectedValueOnce(new Error('capture denied'));
     const getReview = vi.spyOn(parley, 'getCaptureProposals').mockRejectedValue(new Error('review not ready'));
     const wrapper = mount(AppShell); await flushPromises();
-    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(2)').trigger('click');
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
     const captureForm = wrapper.get('form.capture');
     await captureForm.get('textarea').setValue('A source without queue capacity.');
     await captureForm.trigger('submit'); await flushPromises();
     expect(save).toHaveBeenCalledTimes(1);
     expect(wrapper.text()).toContain('Extractor is unavailable or at capacity');
-    await wrapper.get('form.capture button[type="button"]').trigger('click'); await flushPromises();
+    await wrapper.findAll('button').find((button) => button.text() === 'Review proposals')!.trigger('click'); await flushPromises();
     expect(getReview).toHaveBeenCalledWith('o2');
     expect(wrapper.get('[role="alert"]').text()).toContain('review not ready');
     await captureForm.get('textarea').setValue('Failed source post.');
@@ -192,7 +192,7 @@ describe('AppShell', () => {
     const cancel = vi.spyOn(parley, 'cancelExtractorJob').mockResolvedValue();
     const wrapper = mount(AppShell);
     await flushPromises();
-    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(2)').trigger('click');
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
     await wrapper.get('form.capture textarea').setValue('A durable local capture.');
     await wrapper.get('form.capture').trigger('submit');
     await flushPromises();
@@ -200,7 +200,7 @@ describe('AppShell', () => {
     await flushPromises();
     expect(getJob).toHaveBeenCalledTimes(2);
     expect(wrapper.text()).toContain('Job succeeded');
-    await wrapper.get('form.capture button[type="button"]').trigger('click');
+    await wrapper.findAll('button').find((button) => button.text() === 'Review proposals')!.trigger('click');
     await flushPromises();
     await wrapper.get('section[aria-label="Capture review"] button').trigger('click');
     await flushPromises();
@@ -229,7 +229,7 @@ describe('AppShell', () => {
     vi.spyOn(parley, 'resolveProposals').mockRejectedValue('decision unavailable');
     const wrapper = mount(AppShell);
     await flushPromises();
-    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(2)').trigger('click');
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
     await wrapper.get('form.capture textarea').setValue('A source whose local job needs manual review.');
     await wrapper.get('form.capture').trigger('submit');
     await flushPromises();
@@ -257,7 +257,7 @@ describe('AppShell', () => {
       .mockRejectedValueOnce('health exception');
     const wrapper = mount(AppShell); await flushPromises();
     expect(wrapper.get('[role="alert"]').text()).toContain('settings unavailable');
-    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(5)').trigger('click');
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(5)').trigger('click');
     await wrapper.get('section[aria-labelledby="settings-heading"] form').trigger('submit'); await flushPromises();
     expect(update).toHaveBeenCalledOnce();
     expect(wrapper.get('[role="alert"]').text()).toContain('save denied');
@@ -281,7 +281,7 @@ describe('AppShell', () => {
     const createOpportunity = vi.spyOn(parley, 'createOpportunity').mockResolvedValue(created);
     const wrapper = mount(AppShell);
     await flushPromises();
-    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(3)').trigger('click');
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(3)').trigger('click');
     await wrapper.get('input[maxlength="500"]').setValue('Onboarding exchange');
     await wrapper.get('select[required]').setValue('p1');
     await wrapper.get('section[aria-labelledby="queue-heading"] form').trigger('submit');
@@ -292,14 +292,14 @@ describe('AppShell', () => {
     await wrapper.findAll('button').find((button) => button.text() === 'Open card')!.trigger('click');
     await flushPromises();
     expect(wrapper.text()).toContain('Dana Lee · outreach · v1 · draft');
-    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(4)').trigger('click');
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(4)').trigger('click');
     expect(wrapper.text()).toContain('Approved materials');
     expect(wrapper.text()).toContain('Dana Lee · outreach · v1 · draft');
     wrapper.unmount();
   });
 
   it('reports opportunity creation errors and copies a released approved version', async () => {
-    const approved: Material = { id: 'm1', opportunity_id: 'o1', recipient_id: 'p1', recipient_name: 'Dana Lee', kind: 'outreach', version: 1, body: 'Hi Dana.', content_sha256: 'a'.repeat(64), status: 'approved', gate: null, attachment: null };
+    const approved: Material = { id: 'm1', opportunity_id: 'o1', recipient_id: 'p1', recipient_name: 'Dana Lee', kind: 'outreach', version: 1, body: 'Hi Dana.', content_sha256: 'c42a55643d4c6762196d5271afcb9f8ed6beb3a828f1b201a321cfcb6b89aad2', status: 'approved', gate: null, attachment: null };
     stubWorkspace([{ id: 'p1', kind: 'person', name: 'Dana Lee', revision: 1 }]);
     vi.spyOn(parley, 'listOutputs').mockResolvedValue([approved]);
     vi.spyOn(parley, 'createOpportunity').mockRejectedValueOnce(new Error('opportunity denied'));
@@ -309,38 +309,41 @@ describe('AppShell', () => {
     Object.defineProperty(globalThis.navigator, 'clipboard', { configurable: true, value: { writeText } });
     const wrapper = mount(AppShell);
     await flushPromises();
-    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(3)').trigger('click');
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(3)').trigger('click');
     await wrapper.get('input[maxlength="500"]').setValue('Onboarding');
     await wrapper.get('select[required]').setValue('p1');
     await wrapper.get('section[aria-labelledby="queue-heading"] form').trigger('submit');
     await flushPromises();
     expect(wrapper.text()).toContain('opportunity denied');
-    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(4)').trigger('click');
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(4)').trigger('click');
     await wrapper.findAll('button').find((button) => button.text() === 'Copy approved text')!.trigger('click');
     await flushPromises();
     expect(release).toHaveBeenCalledWith('m1');
     expect(writeText).toHaveBeenCalledWith('Hi Dana.');
     expect(acknowledge).toHaveBeenCalledWith('r1', true);
-    expect(wrapper.text()).toContain('Marking it sent is a separate action');
+    expect(wrapper.text()).toContain('Mark sent remains a separate action');
     wrapper.unmount();
   });
 
   it('records failed clipboard handoff after issuance and keeps unapproved copy disabled', async () => {
-    const approved: Material = { id: 'm2', opportunity_id: 'o1', recipient_id: 'p1', recipient_name: 'Dana Lee', kind: 'outreach', version: 2, body: 'Hi Dana.', content_sha256: 'b'.repeat(64), status: 'approved', gate: null, attachment: null };
+    const approved: Material = { id: 'm2', opportunity_id: 'o1', recipient_id: 'p1', recipient_name: 'Dana Lee', kind: 'outreach', version: 2, body: 'Hi Dana.', content_sha256: 'c42a55643d4c6762196d5271afcb9f8ed6beb3a828f1b201a321cfcb6b89aad2', status: 'approved', gate: null, attachment: null };
     const draft: Material = { ...approved, id: 'm3', version: 1, status: 'draft', gate: null, attachment: null };
     stubWorkspace();
     vi.spyOn(parley, 'listOutputs').mockResolvedValue([approved, draft]);
+    vi.spyOn(parley, 'evaluateMaterialGate').mockResolvedValue({ checks: [], copy_enabled: true });
     vi.spyOn(parley, 'releaseMaterial').mockResolvedValue({ release_id: 'r2', material_id: 'm2', version: 2, recipient_id: 'p1', body: 'Hi Dana.', content_sha256: approved.content_sha256, issued_at: '2026-11-21T12:00:00Z', attachment: null });
     const acknowledge = vi.spyOn(parley, 'acknowledgeRelease').mockResolvedValue();
     Object.defineProperty(globalThis.navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error('clipboard unavailable')) } });
     const wrapper = mount(AppShell);
     await flushPromises();
-    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(4)').trigger('click');
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(4)').trigger('click');
     const copyButtons = wrapper.findAll('button').filter((button) => button.text() === 'Copy approved text');
-    expect(copyButtons[1]?.attributes('disabled')).toBeDefined();
+    expect(copyButtons).toHaveLength(1);
+    expect(wrapper.text()).toContain('Approve this exact version');
     await copyButtons[0]!.trigger('click');
-    await flushPromises();
-    expect(acknowledge).toHaveBeenCalledWith('r2', false);
+    // The failure ack runs after the rejected clipboard promise settles, one
+    // microtask cycle behind the other work flushed above; wait for it.
+    await vi.waitFor(() => expect(acknowledge).toHaveBeenCalledWith('r2', false));
     expect(wrapper.text()).toContain('clipboard unavailable');
     wrapper.unmount();
   });
@@ -367,7 +370,7 @@ describe('AppShell', () => {
     vi.spyOn(parley, 'saveSource').mockRejectedValueOnce(new Error('capture denied'));
     const wrapper = mount(AppShell);
     await flushPromises();
-    await wrapper.get('nav[aria-label="Main navigation"] button:nth-child(2)').trigger('click');
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
     const leads = leadsSection(wrapper);
     await leads.get('input[required]').setValue('Noah');
     await leads.findAll('form')[0]!.trigger('submit');
@@ -377,7 +380,7 @@ describe('AppShell', () => {
     await leads.findAll('form')[1]!.trigger('submit');
     await flushPromises();
     expect(wrapper.text()).toContain('capture denied');
-    const labels = wrapper.findAll('nav[aria-label="Main navigation"] button').map((button) => button.text());
+    const labels = wrapper.findAll('nav[aria-label="Main navigation"] a').map((link) => link.text());
     expect(labels).toEqual(['Resources', 'Leads', 'Queue', 'Output', 'Settings']);
     wrapper.unmount();
   });

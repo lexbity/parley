@@ -214,6 +214,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/graph": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getGraph"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/graph/layout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["updateGraphLayout"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/resources": {
         parameters: {
             query?: never;
@@ -547,6 +579,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["approveMaterial"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/materials/{id}/gate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["evaluateMaterialGate"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1235,6 +1283,52 @@ export interface components {
             name: string;
             revision: number;
         };
+        GraphNode: components["schemas"]["GraphEntity"] & {
+            x: number;
+            y: number;
+            position_revision: number;
+        };
+        GraphEdge: {
+            id: string;
+            from_id: string;
+            to_id: string;
+            verb: string;
+            revision: number;
+            occurrence_id: string;
+            quote: string;
+            /** @enum {integer} */
+            tier: 1 | 2 | 3;
+            /** @enum {string} */
+            speaker_kind: "owner" | "party" | "unknown";
+            /** Format: date-time */
+            captured_at: string;
+            source_title: string | null;
+            source_url: string | null;
+        };
+        GraphSnapshot: {
+            nodes: components["schemas"]["GraphNode"][];
+            edges: components["schemas"]["GraphEdge"][];
+            omitted_nodes: number;
+            omitted_edges: number;
+        };
+        GraphLayoutInput: {
+            view_scope: string;
+            view_id: string;
+            positions: {
+                entity_id: string;
+                x: number;
+                y: number;
+                expected_revision: number;
+            }[];
+        };
+        GraphLayoutResult: {
+            positions: {
+                entity_id: string;
+                x: number;
+                y: number;
+                revision: number;
+            }[];
+        };
         Entity: components["schemas"]["Resource"] | components["schemas"]["GraphEntity"];
         EntityList: {
             data: components["schemas"]["Entity"][];
@@ -1747,8 +1841,20 @@ export interface components {
             content_sha256: string;
             /** @enum {string} */
             status: "draft" | "approved" | "released";
-            gate: Record<string, never> | null;
+            gate: components["schemas"]["GateResult"] | null;
             attachment: components["schemas"]["AttachmentInfo"] | null;
+        };
+        GateCheck: {
+            id: string;
+            /** @enum {string} */
+            severity: "hard" | "soft";
+            pass: boolean;
+            detail: string;
+            overridden: boolean;
+        };
+        GateResult: {
+            checks: components["schemas"]["GateCheck"][];
+            copy_enabled: boolean;
         };
         ReleasedMaterial: {
             release_id: string;
@@ -2272,6 +2378,61 @@ export interface operations {
             };
             401: components["responses"]["Error"];
             422: components["responses"]["Error"];
+        };
+    };
+    getGraph: {
+        parameters: {
+            query?: {
+                center_id?: string;
+                view_scope?: string;
+                view_id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded graph neighborhood and attributed active edges. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GraphSnapshot"];
+                };
+            };
+            401: components["responses"]["Error"];
+        };
+    };
+    updateGraphLayout: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GraphLayoutInput"];
+            };
+        };
+        responses: {
+            /** @description View-scoped positions saved with revision checks. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GraphLayoutResult"];
+                };
+            };
+            409: components["responses"]["Error"];
+            412: components["responses"]["Error"];
         };
     };
     listResources: {
@@ -3103,7 +3264,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["MaterialRecord"];
+                };
             };
             /** @description Hard gate or unoverridden soft gate blocks approval */
             422: {
@@ -3112,6 +3275,36 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    evaluateMaterialGate: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalInput"];
+            };
+        };
+        responses: {
+            /** @description Current deterministic gate report; no state is changed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GateResult"];
+                };
+            };
+            404: components["responses"]["Error"];
         };
     };
     releaseMaterial: {

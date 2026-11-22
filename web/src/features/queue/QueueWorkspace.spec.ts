@@ -1,10 +1,25 @@
-import { mount } from '@vue/test-utils';
+import { mount, flushPromises, type VueWrapper } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { flushPromises } from '@vue/test-utils';
+import type { EditorView } from '@codemirror/view';
 import { parley, type BoardSnapshot, type GraphEntity, type OpportunityNotes } from '../../api/client';
 import QueueWorkspace from './QueueWorkspace.vue';
+import MarkdownEditor from '../../shared/MarkdownEditor.vue';
 
 afterEach(() => vi.restoreAllMocks());
+
+function notesView(wrapper: VueWrapper): EditorView {
+  const view = (wrapper.getComponent(MarkdownEditor).vm as unknown as { getView(): EditorView | null }).getView();
+  if (!view) throw new Error('CodeMirror editor was not mounted');
+  return view;
+}
+
+// The rendered preview also renders checkboxes for task items, but they are
+// disabled and labelled; the card's interactive toggle has neither.
+function taskToggle(wrapper: VueWrapper) {
+  const box = wrapper.findAll('input[type="checkbox"]').find((box) => box.attributes('aria-label') === undefined);
+  if (!box) throw new Error('card task checkbox not found');
+  return box;
+}
 
 const parties: GraphEntity[] = [{ id: 'p1', kind: 'person', name: 'Dana Lee', revision: 1 }];
 const taskHash = 'c'.repeat(64);
@@ -65,7 +80,7 @@ describe('QueueWorkspace S05 board and card behavior', () => {
     const wrapper = stub(); await flushPromises();
     await wrapper.findAll('button').find((button) => button.text() === 'Open card')!.trigger('click'); await flushPromises();
     expect(parley.getOpportunityNotes).toHaveBeenCalledWith('o1');
-    const editor = wrapper.get('textarea[rows="18"]');
+    const view = notesView(wrapper);
     const edited = '🧭\n- [ ] Review checklist\n\n```md\n- [ ] example\n```\n';
     const savedNotes = { ...notes, markdown: edited, revision: 2 };
     vi.mocked(parley.updateOpportunityNotes).mockResolvedValueOnce(savedNotes);
@@ -76,32 +91,39 @@ describe('QueueWorkspace S05 board and card behavior', () => {
       next_task: null,
       tasks: [{ ...notes.tasks[0]!, checked: true }],
     });
-    await editor.setValue(edited);
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: edited } });
+    await flushPromises();
     await wrapper.findAll('button').find((button) => button.text() === 'Save notes')!.trigger('click'); await flushPromises();
-    expect(parley.updateOpportunityNotes).toHaveBeenCalledWith('o1', edited, 1);
-    expect(wrapper.get('pre').text()).toBe(edited.trimEnd());
-    const checkbox = wrapper.get('input[type="checkbox"]');
+    expect(parley.updateOpportunityNotes).toHaveBeenCalledWith('o1', edited, 1, expect.any(String));
+    const preview = wrapper.get('.markdown-preview');
+    expect(preview.text()).toContain('🧭');
+    expect(preview.findAll('input[type="checkbox"]')).toHaveLength(1);
+    expect(preview.get('pre').text()).toBe('- [ ] example');
+    const checkbox = taskToggle(wrapper);
     await checkbox.setValue(true); await flushPromises();
     expect(parley.toggleOpportunityTask).toHaveBeenCalledWith('o1', {
       notes_revision: 2, byte_start: 5, byte_end: 29, line_sha256: taskHash, checked: true,
     });
-    expect(wrapper.get('pre').text()).toContain('- [x] Review checklist');
-    expect(wrapper.get('pre').text()).toContain('```md\n- [ ] example\n```');
+    const previewAfter = wrapper.get('.markdown-preview');
+    expect(previewAfter.findAll('input[type="checkbox"]').filter((box) => (box.element as HTMLInputElement).checked)).toHaveLength(1);
+    expect(previewAfter.get('pre').text()).toBe('- [ ] example');
     wrapper.unmount();
   });
 
   it('blocks card task toggles while the canonical notes buffer is dirty and reports stale writes', async () => {
     const wrapper = stub(); await flushPromises();
     await wrapper.findAll('button').find((button) => button.text() === 'Open card')!.trigger('click'); await flushPromises();
-    await wrapper.get('textarea[rows="18"]').setValue('local changes');
-    await wrapper.get('input[type="checkbox"]').trigger('change');
+    const view = notesView(wrapper);
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: 'local changes' } });
+    await flushPromises();
+    await taskToggle(wrapper).trigger('change');
     expect(parley.toggleOpportunityTask).not.toHaveBeenCalled();
-    expect(wrapper.get('input[type="checkbox"]').attributes('disabled')).toBeDefined();
+    expect(taskToggle(wrapper).attributes('disabled')).toBeDefined();
     vi.mocked(parley.updateOpportunityNotes).mockRejectedValueOnce(new Error('notes changed elsewhere'));
     await wrapper.findAll('button').find((button) => button.text() === 'Save notes')!.trigger('click'); await flushPromises();
     expect(wrapper.get('[role="alert"]').text()).toContain('notes changed elsewhere');
     await wrapper.findAll('button').find((button) => button.text() === 'Discard edits and reload')!.trigger('click'); await flushPromises();
-    expect((wrapper.get('textarea[rows="18"]').element as HTMLTextAreaElement).value).toBe(notes.markdown);
+    expect(notesView(wrapper).state.doc.toString()).toBe(notes.markdown);
     wrapper.unmount();
   });
 });

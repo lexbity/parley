@@ -1,24 +1,29 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { newOperationKey, parley, type ExtractorJob, type ExtractorProposal, type GraphEntity, type Material, type Opportunity, type ProviderConfig, type Resource, type SavedSource } from '../api/client';
 import { tabs } from './tabs';
+import { resolveRoute, routeForTab } from './router';
 import ResourceEditor from '../features/resources/ResourceEditor.vue';
 import InterviewerWorkspace from '../features/resources/InterviewerWorkspace.vue';
 import QueueWorkspace from '../features/queue/QueueWorkspace.vue';
 import BriefWorkspace from '../features/leads/BriefWorkspace.vue';
 import AgentPolicySettings from '../features/settings/AgentPolicySettings.vue';
 import WritingWorkspace from '../features/output/WritingWorkspace.vue';
+import MaterialActions from '../features/output/MaterialActions.vue';
+import RelationshipGraph from '../features/leads/RelationshipGraph.vue';
 
 /**
  * Tabs whose owner journey is qualified stay discoverable (RFC-0003 S01);
  * the mandated order and the full destination set come from tabs.ts (APP-01).
  */
 const qualifiedTabs = tabs;
-const active = ref<(typeof tabs)[number]>('Resources');
+const route = ref(resolveRoute(globalThis.location.pathname));
+const active = computed(() => route.value.tab);
 const partyKind = ref<'person' | 'org'>('person');
 const partyName = ref('');
 const captureText = ref('');
 const parties = ref<GraphEntity[]>([]);
+const selectedPartyId = ref('');
 const sources = ref<SavedSource[]>([]);
 const opportunities = ref<Opportunity[]>([]);
 const outputs = ref<Material[]>([]);
@@ -41,11 +46,37 @@ async function refreshLeads() {
   resources.value = savedResources;
 }
 
+function navigate(path: string, replace = false) {
+  const next = resolveRoute(path);
+  if (replace) globalThis.history.replaceState(null, '', next.path);
+  else if (next.path !== route.value.path) globalThis.history.pushState(null, '', next.path);
+  route.value = next;
+}
+
 function selectTab(tab: (typeof tabs)[number]) {
-  active.value = tab;
+  navigate(routeForTab(tab));
   if (tab === 'Output') void refreshLeads().catch((reason: unknown) => {
     error.value = reason instanceof Error ? reason.message : 'Could not refresh Output records.';
   });
+}
+
+function handlePopState() {
+  route.value = resolveRoute(globalThis.location.pathname);
+  if (route.value.path !== globalThis.location.pathname) globalThis.history.replaceState(null, '', route.value.path);
+  if (route.value.tab === 'Output') void refreshLeads().catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Could not refresh Output records.'; });
+}
+
+async function focusRouteLocation() {
+  if (route.value.tab === 'Leads' && route.value.recordId) selectedPartyId.value = route.value.recordId;
+  if (route.value.tab === 'Output' && route.value.recordId) await refreshLeads().catch(() => undefined);
+  await nextTick();
+  const targetId = route.value.location === 'inbox' ? 'leads-inbox'
+    : route.value.location === 'templates' ? 'output-templates'
+      : route.value.tab === 'Output' && route.value.recordId ? `output-material-${route.value.recordId}` : null;
+  if (!targetId) return;
+  const target = globalThis.document.getElementById(targetId);
+  target?.scrollIntoView({ block: 'center' });
+  target?.focus();
 }
 
 async function saveParty() {
@@ -125,41 +156,35 @@ async function checkProvider() {
   finally { busy.value = false; }
 }
 
-async function copyMaterial(material: Material) {
-  busy.value = true; error.value = ''; status.value = '';
-  let releaseId: string | undefined;
-  try {
-    const release = await parley.releaseMaterial(material.id);
-    releaseId = release.release_id;
-    await globalThis.navigator.clipboard.writeText(release.body);
-    await parley.acknowledgeRelease(release.release_id, true);
-    status.value = `Approved version ${release.version} copied for ${material.recipient_name}. Marking it sent is a separate action.`;
-  } catch (reason) {
-    if (releaseId) await parley.acknowledgeRelease(releaseId, false).catch(() => undefined);
-    error.value = reason instanceof Error ? reason.message : 'Could not copy this material.';
-  } finally { busy.value = false; }
+function installMaterial(updated: Material) {
+  const index = outputs.value.findIndex((item) => item.id === updated.id);
+  if (index >= 0) outputs.value[index] = updated;
 }
 
 onMounted(() => {
+  if (route.value.path !== globalThis.location.pathname) navigate(route.value.path, true);
+  globalThis.addEventListener('popstate', handlePopState);
   void parley.connect()
     .then(async () => { await refreshLeads(); await loadProvider(); })
     .catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Workspace is unavailable.'; });
 });
+onBeforeUnmount(() => globalThis.removeEventListener('popstate', handlePopState));
+watch(route, () => { void focusRouteLocation(); });
 </script>
 
 <template>
   <header>
     <strong>Parley</strong>
     <nav aria-label="Main navigation">
-      <button
+      <a
         v-for="tab in qualifiedTabs"
         :key="tab"
-        type="button"
+        :href="routeForTab(tab)"
         :aria-current="active === tab ? 'page' : undefined"
-        @click="selectTab(tab)"
+        @click.prevent="selectTab(tab)"
       >
         {{ tab }}
-      </button>
+      </a>
     </nav>
   </header>
   <main>
@@ -177,7 +202,10 @@ onMounted(() => {
       {{ error }}
     </p>
     <div v-show="active === 'Resources'">
-      <ResourceEditor />
+      <ResourceEditor
+        :route-id="route.tab === 'Resources' ? route.recordId : null"
+        @navigate="navigate"
+      />
       <InterviewerWorkspace />
     </div>
     <section
@@ -213,15 +241,29 @@ onMounted(() => {
               v-for="party in parties"
               :key="party.id"
             >
-              {{ party.name }} <small>{{ party.kind }}</small>
+              <button
+                type="button"
+                :aria-pressed="selectedPartyId === party.id"
+                @click="navigate(`/leads/${encodeURIComponent(party.id)}`)"
+              >
+                {{ party.name }} <small>{{ party.kind }}</small>
+              </button>
             </li>
           </ul>
         </section>
         <form
+          id="leads-inbox"
           class="capture"
+          tabindex="-1"
           @submit.prevent="saveCapture"
         >
           <h3>Sources inbox</h3>
+          <button
+            type="button"
+            @click="navigate('/leads/inbox')"
+          >
+            Open sources inbox route
+          </button>
           <p>Paste captured text. Saving a source does not decide who it is about or create outreach.</p>
           <label>Captured text<textarea
             v-model="captureText"
@@ -331,6 +373,7 @@ onMounted(() => {
           </section>
         </form>
       </div>
+      <RelationshipGraph :focus-entity-id="selectedPartyId || undefined" />
       <BriefWorkspace :parties="parties" />
     </section>
     <section
@@ -397,6 +440,9 @@ onMounted(() => {
       <QueueWorkspace
         :parties="parties"
         :outputs="outputs"
+        :route-id="route.tab === 'Queue' ? route.recordId : null"
+        @material-updated="installMaterial"
+        @navigate="navigate"
       />
     </div>
     <section
@@ -413,24 +459,35 @@ onMounted(() => {
         :resources="resources"
         :outputs="outputs"
       />
+      <button
+        type="button"
+        @click="navigate('/output/templates')"
+      >
+        Open template library route
+      </button>
       <p v-if="!outputs.length">
         No materials yet. Create an opportunity, prepare its exchange, then author material for a named participant.
       </p>
       <ul class="output-list">
         <li
           v-for="material in outputs"
+          :id="`output-material-${material.id}`"
           :key="material.id"
+          tabindex="-1"
           class="record-card"
         >
           <strong>{{ material.recipient_name }}</strong> · {{ material.kind }} · v{{ material.version }} · {{ material.status }}
           <p>Opportunity {{ material.opportunity_id }} · SHA-256 {{ material.content_sha256 }}</p>
           <button
             type="button"
-            :disabled="busy || material.status !== 'approved'"
-            @click="copyMaterial(material)"
+            @click="navigate(`/output/${encodeURIComponent(material.id)}`)"
           >
-            Copy approved text
+            Open material version
           </button>
+          <MaterialActions
+            :material="material"
+            @updated="installMaterial"
+          />
         </li>
       </ul>
     </section>
@@ -440,8 +497,8 @@ onMounted(() => {
 <style>
 :root { color: #18221f; background: #f4f6f3; font: 16px/1.5 system-ui, sans-serif; }
 body { margin: 0; } header { display: flex; align-items: center; gap: 2rem; padding: .75rem 2rem; background: white; border-bottom: 1px solid #d7dfd9; }
-nav { display: flex; gap: .5rem; } button, input, select, textarea { font: inherit; } button { cursor: pointer; padding: .45rem .8rem; }
-button[aria-current="page"] { background: #173e32; color: white; } main { max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+nav { display: flex; gap: .5rem; } nav a { display:inline-block; padding:.45rem .8rem; border-radius:.25rem; color:inherit; } nav a[aria-current="page"] { background: #173e32; color: white; } button, input, select, textarea { font: inherit; } button { cursor: pointer; padding: .45rem .8rem; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline:3px solid #32735b; outline-offset:2px; } main { max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
 .workspace-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(300px,1fr)); gap: 1.5rem; align-items: start; }
 form, section section { background: white; border: 1px solid #d7dfd9; border-radius: .5rem; padding: 1rem; }
 label { display: grid; gap: .3rem; margin: .8rem 0; } input, select, textarea { width: 100%; box-sizing: border-box; padding: .5rem; border: 1px solid #82918a; border-radius: .25rem; }

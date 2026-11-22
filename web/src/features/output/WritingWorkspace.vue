@@ -142,7 +142,11 @@ async function saveDraft() { if (!proposal.value || !opportunityId.value || type
           No eligible resource exceeded its calibrated threshold; no slot was filled.
         </p>
       </section>
-      <section aria-label="Immutable templates">
+      <section
+        id="output-templates"
+        tabindex="-1"
+        aria-label="Immutable templates"
+      >
         <h3>3. Template versions</h3>
         <form @submit.prevent="run(addVoiceSample)">
           <label>Owner voice sample<textarea

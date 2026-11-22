@@ -1,8 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
-import { parley, type BoardList, type BoardPlacement, type BoardSnapshot, type GraphEntity, type Material, type OpportunityNotes } from '../../api/client';
+/* global BeforeUnloadEvent */
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { newOperationKey, parley, type BoardList, type BoardPlacement, type BoardSnapshot, type GraphEntity, type Material, type OpportunityNotes } from '../../api/client';
+import MarkdownEditor from '../../shared/MarkdownEditor.vue';
+import MarkdownPreview from '../../shared/MarkdownPreview.vue';
+import MaterialActions from '../output/MaterialActions.vue';
 
-const props = defineProps<{ parties: GraphEntity[]; outputs: Material[] }>();
+const props = defineProps<{ parties: GraphEntity[]; outputs: Material[]; routeId?: string | null }>();
+const emit = defineEmits<{ 'material-updated': [material: Material]; navigate: [path: string] }>();
 const board = ref<BoardSnapshot>({ lists: [], cards: [] });
 const selectedId = ref('');
 const detail = ref<OpportunityNotes | null>(null);
@@ -17,6 +22,12 @@ const archiveTargets = ref<Record<string, string>>({});
 const busy = ref(false);
 const error = ref('');
 const status = ref('');
+const composing = ref(false);
+const loadingNotes = ref(false);
+const noteSequence = ref(0);
+let notesTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
+let notesWrite: Promise<void> | null = null;
+let pendingNotesIntent: { key: string; opportunityId: string; body: string; revision: number; sequence: number } | null = null;
 
 const activeLists = computed(() => board.value.lists.filter((list) => !list.archived).slice().sort((a, b) => a.position - b.position || a.id.localeCompare(b.id)));
 const selectedCard = computed(() => board.value.cards.find((card) => card.opportunity.id === selectedId.value) ?? null);
@@ -127,29 +138,76 @@ async function moveCardBy(card: BoardPlacement, direction: -1 | 1) {
 
 async function openCard(card: BoardPlacement) {
   await run('Card opened.', async () => {
+    loadingNotes.value = true;
     detail.value = await parley.getOpportunityNotes(card.opportunity.id);
     markdown.value = detail.value.markdown;
     dirty.value = false;
     selectedId.value = card.opportunity.id;
+    emit('navigate', `/queue/${encodeURIComponent(card.opportunity.id)}`);
+    loadingNotes.value = false;
   });
+}
+
+async function openRoutedCard() {
+  if (!props.routeId) return;
+  const card = board.value.cards.find((item) => item.opportunity.id === props.routeId);
+  if (!card || selectedId.value === props.routeId) return;
+  await openCard(card);
 }
 
 async function saveNotes() {
   if (!detail.value) return;
-  await run('Markdown notes saved.', async () => {
-    detail.value = await parley.updateOpportunityNotes(detail.value!.opportunity_id, markdown.value, detail.value!.revision);
-    markdown.value = detail.value.markdown;
-    dirty.value = false;
-    await refreshBoard();
-  });
+  if (composing.value || notesWrite) return;
+  if (notesTimer) globalThis.clearTimeout(notesTimer);
+  pendingNotesIntent ??= {
+    key: newOperationKey(), opportunityId: detail.value.opportunity_id, body: markdown.value,
+    revision: detail.value.revision, sequence: noteSequence.value,
+  };
+  const intent = pendingNotesIntent;
+  busy.value = true; error.value = ''; status.value = 'Saving notes…';
+  notesWrite = (async () => {
+    try {
+      const saved = await parley.updateOpportunityNotes(intent.opportunityId, intent.body, intent.revision, intent.key);
+      pendingNotesIntent = null;
+      if (detail.value?.opportunity_id !== intent.opportunityId) return;
+      detail.value = saved;
+      if (noteSequence.value === intent.sequence) {
+        loadingNotes.value = true;
+        markdown.value = saved.markdown;
+        dirty.value = false;
+        loadingNotes.value = false;
+        status.value = 'Markdown notes saved.';
+      } else {
+        status.value = 'Earlier notes saved; newer edits are still being saved.';
+      }
+      await refreshBoard();
+    } catch (reason) {
+      error.value = reason instanceof Error ? reason.message : 'Save status unknown. Your local notes remain available; retry the same edit after checking the current server version.';
+      status.value = 'Notes were not acknowledged as saved.';
+    } finally {
+      notesWrite = null;
+      busy.value = false;
+      if (noteSequence.value !== intent.sequence && dirty.value && !composing.value) scheduleNotesSave();
+    }
+  })();
+  await notesWrite;
+}
+
+function scheduleNotesSave() {
+  if (!detail.value || loadingNotes.value || composing.value || !dirty.value) return;
+  if (notesTimer) globalThis.clearTimeout(notesTimer);
+  notesTimer = globalThis.setTimeout(() => { void saveNotes(); }, 750);
 }
 
 async function reloadNotes() {
   if (!selectedId.value) return;
   await run('Latest notes loaded.', async () => {
+    loadingNotes.value = true;
     detail.value = await parley.getOpportunityNotes(selectedId.value);
     markdown.value = detail.value.markdown;
     dirty.value = false;
+    pendingNotesIntent = null;
+    loadingNotes.value = false;
   });
 }
 
@@ -163,30 +221,41 @@ async function toggleTask(task: NonNullable<OpportunityNotes['tasks']>[number]) 
       line_sha256: task.line_sha256,
       checked: !task.checked,
     });
+    loadingNotes.value = true;
     markdown.value = detail.value.markdown;
+    loadingNotes.value = false;
     await refreshBoard();
-  });
-}
-
-async function copyMaterial(material: Material) {
-  await run('Approved version copied. Marking it sent remains a separate owner action.', async () => {
-    const release = await parley.releaseMaterial(material.id);
-    try {
-      await globalThis.navigator.clipboard.writeText(release.body);
-      await parley.acknowledgeRelease(release.release_id, true);
-    } catch (reason) {
-      await parley.acknowledgeRelease(release.release_id, false).catch(() => undefined);
-      throw reason;
-    }
   });
 }
 
 watch(() => props.parties, (parties) => {
   if (!partyId.value && parties.length) partyId.value = parties[0]!.id;
 }, { immediate: true });
+watch(markdown, () => {
+  if (loadingNotes.value || !detail.value) return;
+  noteSequence.value += 1;
+  dirty.value = true;
+  scheduleNotesSave();
+}, { flush: 'sync' });
+watch(composing, (active) => { if (!active) scheduleNotesSave(); });
 onMounted(async () => {
-  try { await parley.connect(); await refreshBoard(); }
+  try { await parley.connect(); await refreshBoard(); await openRoutedCard(); }
   catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not load the board.'; }
+});
+watch(() => props.routeId, (id) => {
+  if (!id) return;
+  void openRoutedCard();
+});
+
+function warnDirtyNavigation(event: BeforeUnloadEvent) {
+  if (!dirty.value) return;
+  event.preventDefault();
+  event.returnValue = '';
+}
+onMounted(() => globalThis.addEventListener('beforeunload', warnDirtyNavigation));
+onBeforeUnmount(() => {
+  if (notesTimer) globalThis.clearTimeout(notesTimer);
+  globalThis.removeEventListener('beforeunload', warnDirtyNavigation);
 });
 </script>
 
@@ -359,14 +428,14 @@ onMounted(async () => {
       <div class="card-layout">
         <section aria-label="Notes and tasks">
           <h4>Canonical Markdown</h4>
-          <label>Markdown notes<textarea
+          <label>Markdown notes<MarkdownEditor
             v-model="markdown"
-            rows="18"
-            @input="dirty = true"
+            label="Markdown notes"
+            @composition="composing = $event"
           /></label>
           <div class="card-actions">
             <button
-              :disabled="busy || !dirty"
+              :disabled="busy || !dirty || composing"
               @click="saveNotes"
             >
               Save notes
@@ -378,7 +447,13 @@ onMounted(async () => {
               Discard edits and reload
             </button>
           </div>
-          <h4>Rendered preview</h4><pre>{{ markdown }}</pre>
+          <h4>Rendered preview</h4><MarkdownPreview :source="markdown" />
+          <p
+            role="status"
+            aria-live="polite"
+          >
+            {{ dirty ? 'Unsaved notes' : status }}
+          </p>
           <h4>Tasks</h4>
           <ul>
             <li
@@ -407,12 +482,10 @@ onMounted(async () => {
           >
             <strong>{{ material.recipient_name }}</strong> · {{ material.kind }} · v{{ material.version }} · {{ material.status }}
             <p>{{ material.body }}</p>
-            <button
-              :disabled="busy || material.status !== 'approved'"
-              @click="copyMaterial(material)"
-            >
-              Copy approved text
-            </button>
+            <MaterialActions
+              :material="material"
+              @updated="emit('material-updated', $event)"
+            />
           </article>
           <p v-if="!selectedMaterials.length">
             No material is linked to this opportunity yet.

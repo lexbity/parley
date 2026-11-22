@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ApiError, newOperationKey, parley, type Resource } from '../../api/client';
 
 type ResourceKind = Resource['kind'];
+const props = defineProps<{ routeId?: string | null }>();
+const emit = defineEmits<{ navigate: [path: string] }>();
 const resources = ref<Resource[]>([]);
 const selectedId = ref<string | null>(null);
 const kind = ref<ResourceKind>('gift');
@@ -58,6 +60,7 @@ function newResource(): void {
   conflict.value = null;
   pending.value = null;
   status.value = 'New resource. Save a draft now, or complete the fields and mark it ready later.';
+  emit('navigate', '/resources');
 }
 
 function edit(resource: Resource, reviewedReplacement = false): void {
@@ -71,6 +74,18 @@ function edit(resource: Resource, reviewedReplacement = false): void {
   missing.value = [];
   dirty.value = false;
   conflict.value = null;
+  emit('navigate', `/resources/${encodeURIComponent(resource.id)}`);
+}
+
+function openRoutedResource(): void {
+  if (!props.routeId || loading.value) return;
+  const resource = resources.value.find((item) => item.id === props.routeId);
+  if (!resource || selectedId.value === resource.id) return;
+  if (dirty.value && !globalThis.confirm('Keep the route change and discard this unsaved resource edit?')) {
+    emit('navigate', selectedId.value ? `/resources/${encodeURIComponent(selectedId.value)}` : '/resources');
+    return;
+  }
+  edit(resource, true);
 }
 
 function markDirty(): void {
@@ -148,11 +163,13 @@ onMounted(async () => {
   try {
     await parley.connect();
     await refresh();
+    openRoutedResource();
   } catch (error) {
     loading.value = false;
     status.value = error instanceof Error ? error.message : 'The local workspace is unavailable.';
   }
 });
+watch(() => props.routeId, () => openRoutedResource());
 
 onUnmounted(() => globalThis.removeEventListener('beforeunload', warnAboutDirtyDraft));
 
