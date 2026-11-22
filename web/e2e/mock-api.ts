@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
+import { buildDailyQueue, buildInsights, PACK_DOCUMENTS, validatePackDocument } from '../mock/coach';
 
 /**
  * The one fixture-mode implementation of the Parley local API (RFC-0003
@@ -115,6 +116,12 @@ export function createMockApi(): MockApi {
   const outcomes = new Map<string, RecordData>();
   const resolutions = new Map<string, RecordData>();
   const capacityLedger = new Map<string, RecordData>();
+  const coachQuestions = new Map<string, RecordData>();
+  const validatedPacks = new Map<string, RecordData>();
+  let activePackId = PACK_DOCUMENTS[0]!.id;
+  let activePackVersion = PACK_DOCUMENTS[0]!.version;
+  let activePackDocument = PACK_DOCUMENTS[0]!.document;
+  let packSettingsRevision = 1;
   const partySuppression = new Map<string, boolean>();
   const boardLists: Array<{ id: string; title: string; position: number; archived: boolean; revision: number }> = [
     { id: 'list-default', title: 'Inbox', position: 0, archived: false, revision: 1 },
@@ -582,6 +589,65 @@ export function createMockApi(): MockApi {
         next_cursor: events.at(-1)?.cursor ?? afterCursor,
         observed_cursor: String(events.length),
       });
+    }
+    if (url.pathname === '/api/v1/queue' && request.method === 'GET') {
+      if (url.searchParams.get('view') !== 'daily') return fail(response, 422, 'QUEUE_VIEW_UNSUPPORTED', 'The S10 queue endpoint requires view=daily');
+      const cap = activePackId === 'lead_gen' ? 15 : 12;
+      const result = buildDailyQueue([...opportunities.values()], [...threads.values()], [...materialRecords.values()], cap, now(), activePackId, activePackVersion);
+      const query = (url.searchParams.get('q') ?? '').trim().toLocaleLowerCase();
+      const status = url.searchParams.get('status');
+      const items = result.items.filter((item) => (!query || `${item.title} ${item.party_name ?? ''} ${item.reason}`.toLocaleLowerCase().includes(query))
+        && (!status || [...opportunities.values()].find((opportunity) => opportunity.id === item.opportunity_id)?.state === status));
+      return json(response, 200, { ...result, items });
+    }
+    if (url.pathname === '/api/v1/insights' && request.method === 'GET') {
+      const end = new Date(testClock);
+      const start = new Date(end);
+      start.setUTCDate(start.getUTCDate() - ((start.getUTCDay() + 6) % 7));
+      const periodStart = start.toISOString().slice(0, 10);
+      const periodEndDate = new Date(start); periodEndDate.setUTCDate(periodEndDate.getUTCDate() + 6);
+      return json(response, 200, buildInsights([...sends.values()], outcomes, resolutions, periodStart, periodEndDate.toISOString().slice(0, 10), now(), activePackId, activePackVersion, [...coachQuestions.values()]));
+    }
+    if (url.pathname === '/api/v1/coach/run' && request.method === 'POST') {
+      const open = [...coachQuestions.values()].filter((question) => question.state === 'open');
+      if (!open.length && opportunities.size && [...materialRecords.values()].filter((material) => material.status === 'approved').length === 0) {
+        const id = randomHex();
+        coachQuestions.set(id, { id, kind: 'missing_material', text: 'Which useful material could be prepared for an active opportunity?', target_kind: 'opportunity', target_id: String(opportunities.keys().next().value), impact: opportunities.size, state: 'open' });
+      }
+      const jobId = randomHex();
+      roleJobs.set(jobId, { id: jobId, role: 'coach', status: 'succeeded', result: { snapshot: now() }, last_error: null });
+      return json(response, 202, { job_id: jobId, status: 'queued' });
+    }
+    if (url.pathname === '/api/v1/settings' && request.method === 'GET') {
+      const available = PACK_DOCUMENTS.map((pack) => ({ ...pack }));
+      if (!available.some((pack) => pack.id === activePackId && pack.version === activePackVersion)) available.push({ id: activePackId, name: activePackId, version: activePackVersion, document: activePackDocument });
+      return json(response, 200, { revision: packSettingsRevision, active_pack_id: activePackId, active_pack_version: activePackVersion, active_document: activePackDocument, available_packs: available });
+    }
+    if (url.pathname === '/api/v1/packs/validate' && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const result = validatePackDocument(String(input.document ?? ''));
+      if (result.valid && result.normalized_document) validatedPacks.set(createHash('sha256').update(result.normalized_document).digest('hex'), result);
+      return json(response, 200, result);
+    }
+    if (url.pathname === '/api/v1/packs/activate' && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      if (input.expected_settings_revision !== packSettingsRevision) return fail(response, 412, 'SETTINGS_STALE', 'Pack settings changed; reload and review the current selection');
+      const document = typeof input.document === 'string' ? input.document : '';
+      const digest = createHash('sha256').update(document.replace(/\r\n/g, '\n').trimEnd() + '\n').digest('hex');
+      const validated = validatedPacks.get(digest);
+      if (!validated || !validated.valid || validated.pack_id !== input.pack_id || validated.version !== input.version) return fail(response, 422, 'PACK_NOT_VALIDATED', 'Activate only the exact validated pack version');
+      const changed = input.pack_id !== activePackId || input.version !== activePackVersion;
+      const mapping = input.stage_mapping;
+      if (changed && (!mapping || typeof mapping !== 'object' || Array.isArray(mapping) || Object.keys(mapping).length === 0)) return fail(response, 422, 'STAGE_MAPPING_REQUIRED', 'Map existing stage names before activating this pack version');
+      activePackId = String(input.pack_id); activePackVersion = String(input.version); activePackDocument = validated.normalized_document as string; packSettingsRevision += 1;
+      return json(response, 200, { revision: packSettingsRevision, active_pack_id: activePackId, active_pack_version: activePackVersion, active_document: activePackDocument, available_packs: [...PACK_DOCUMENTS.map((pack) => ({ ...pack })), ...(PACK_DOCUMENTS.some((pack) => pack.id === activePackId && pack.version === activePackVersion) ? [] : [{ id: activePackId, name: activePackId, version: activePackVersion, document: activePackDocument }])] });
+    }
+    const questionDismissMatch = /^\/api\/v1\/questions\/([^/]+)\/dismiss$/.exec(url.pathname);
+    if (questionDismissMatch && request.method === 'POST') {
+      const question = coachQuestions.get(questionDismissMatch[1]!);
+      if (!question) return fail(response, 404, 'QUESTION_NOT_FOUND', 'Coach question does not exist');
+      question.state = 'dismissed';
+      return json(response, 200, { id: question.id, state: question.state });
     }
     if (url.pathname === '/api/v1/board' && request.method === 'GET') return json(response, 200, boardSnapshot());
     if (url.pathname === '/api/v1/board/lists' && request.method === 'POST') {

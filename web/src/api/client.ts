@@ -17,6 +17,18 @@ export type SendRecord = components['schemas']['SendRecord'];
 export type ContactOutcome = components['schemas']['OutcomeRecord'];
 export type ContactResolution = components['schemas']['ResolutionRecord'];
 export type CapacityRecord = components['schemas']['CapacityRecord'];
+export type DailyQueueItem = {
+  id: string; opportunity_id: string; title: string; type: 'followup_due' | 'ready_to_send' | 'blocked' | 'needs_input' | 'review_stale';
+  party_id: string | null; party_name: string | null; due_at: string | null; reason: string; blocking_reason: string | null;
+  remediation_target: { kind: 'opportunity' | 'question' | 'material'; id: string } | null;
+};
+export type DailyQueueSnapshot = { as_of: string; pack_id: string; pack_version: string; daily_cap: number; actionable_count: number; deferred_count: number; items: DailyQueueItem[] };
+export type InsightMetric = { id: string; label: string; numerator: number; denominator: number; rate: number | null; lower: number | null; upper: number | null; state: 'measured' | 'insufficient_observations' };
+export type InsightComparison = { label: string; left: InsightMetric; right: InsightMetric; state: 'distinguishable' | 'inconclusive' | 'exploratory' };
+export type CoachQuestion = { id: string; kind: string; text: string; target_kind: string; target_id: string; impact: number; state: 'open' | 'answered' | 'dismissed' };
+export type InsightsReport = { as_of: string; period_start: string; period_end: string; pack_id: string; pack_version: string; sample_size: number; metrics: InsightMetric[]; comparisons: InsightComparison[]; gaps: Array<{ id: string; label: string; covered: number; total: number; blocked_count: number; suggested_kind: string }>; questions: CoachQuestion[] };
+export type PackSettings = { revision: number; active_pack_id: string; active_pack_version: string; active_document: string; available_packs: Array<{ id: string; name: string; version: string; document: string }> };
+export type PackValidation = { valid: boolean; pack_id: string | null; version: string | null; normalized_document: string | null; errors: Array<{ line: number | null; field: string | null; message: string }> };
 export type BoardList = components['schemas']['BoardList'];
 export type BoardPlacement = { opportunity: Opportunity; opportunity_id: string; list_id: string; position: number; placement_revision: number; next_task: string | null };
 export type BoardSnapshot = { lists: BoardList[]; cards: BoardPlacement[] };
@@ -252,6 +264,42 @@ function decodeOpportunityNotes(value: unknown): OpportunityNotes {
     next_task: typeof notes.next_task === 'string' ? notes.next_task : null,
     tasks,
   };
+}
+
+function decodeDailyQueue(value: unknown): DailyQueueSnapshot {
+  const snapshot = object(value);
+  if (!snapshot || !Array.isArray(snapshot.items) || !Number.isSafeInteger(snapshot.daily_cap) || !Number.isSafeInteger(snapshot.actionable_count) || !Number.isSafeInteger(snapshot.deferred_count)) throw new Error('Invalid response: Daily queue snapshot is malformed');
+  const items = snapshot.items.map((raw): DailyQueueItem => {
+    const item = object(raw);
+    if (!item || !['followup_due', 'ready_to_send', 'blocked', 'needs_input', 'review_stale'].includes(String(item.type))) throw new Error('Invalid response: Daily queue item is malformed');
+    const target = item.remediation_target === null ? null : object(item.remediation_target);
+    if (item.remediation_target !== null && (!target || !['opportunity', 'question', 'material'].includes(String(target.kind)))) throw new Error('Invalid response: Daily remediation target is malformed');
+    return {
+      id: requiredString(item.id, 'daily_item.id'), opportunity_id: requiredString(item.opportunity_id, 'daily_item.opportunity_id'),
+      title: requiredString(item.title, 'daily_item.title'), type: item.type as DailyQueueItem['type'],
+      party_id: typeof item.party_id === 'string' ? item.party_id : null, party_name: typeof item.party_name === 'string' ? item.party_name : null,
+      due_at: typeof item.due_at === 'string' ? item.due_at : null, reason: requiredString(item.reason, 'daily_item.reason'),
+      blocking_reason: typeof item.blocking_reason === 'string' ? item.blocking_reason : null,
+      remediation_target: target ? { kind: target.kind as NonNullable<DailyQueueItem['remediation_target']>['kind'], id: requiredString(target.id, 'remediation_target.id') } : null,
+    };
+  });
+  return { as_of: requiredString(snapshot.as_of, 'daily.as_of'), pack_id: requiredString(snapshot.pack_id, 'daily.pack_id'), pack_version: requiredString(snapshot.pack_version, 'daily.pack_version'), daily_cap: Number(snapshot.daily_cap), actionable_count: Number(snapshot.actionable_count), deferred_count: Number(snapshot.deferred_count), items };
+}
+
+function decodeInsightMetric(value: unknown): InsightMetric {
+  const metric = object(value);
+  if (!metric || !['measured', 'insufficient_observations'].includes(String(metric.state)) || !Number.isSafeInteger(metric.numerator) || !Number.isSafeInteger(metric.denominator)) throw new Error('Invalid response: insight metric is malformed');
+  for (const field of ['rate', 'lower', 'upper'] as const) if (metric[field] !== null && (typeof metric[field] !== 'number' || !Number.isFinite(metric[field]))) throw new Error(`Invalid response: insight ${field} is malformed`);
+  return { id: requiredString(metric.id, 'metric.id'), label: requiredString(metric.label, 'metric.label'), numerator: Number(metric.numerator), denominator: Number(metric.denominator), rate: typeof metric.rate === 'number' ? metric.rate : null, lower: typeof metric.lower === 'number' ? metric.lower : null, upper: typeof metric.upper === 'number' ? metric.upper : null, state: metric.state as InsightMetric['state'] };
+}
+
+function decodeInsights(value: unknown): InsightsReport {
+  const report = object(value);
+  if (!report || !Array.isArray(report.metrics) || !Array.isArray(report.comparisons) || !Array.isArray(report.gaps) || !Array.isArray(report.questions) || !Number.isSafeInteger(report.sample_size)) throw new Error('Invalid response: insights report is malformed');
+  const comparisons = report.comparisons.map((raw) => { const item = object(raw); if (!item || !['distinguishable', 'inconclusive', 'exploratory'].includes(String(item.state))) throw new Error('Invalid response: insight comparison is malformed'); return { label: requiredString(item.label, 'comparison.label'), left: decodeInsightMetric(item.left), right: decodeInsightMetric(item.right), state: item.state as InsightComparison['state'] }; });
+  const gaps = report.gaps.map((raw) => { const item = object(raw); if (!item || !Number.isSafeInteger(item.covered) || !Number.isSafeInteger(item.total) || !Number.isSafeInteger(item.blocked_count)) throw new Error('Invalid response: Coach gap is malformed'); return { id: requiredString(item.id, 'gap.id'), label: requiredString(item.label, 'gap.label'), covered: Number(item.covered), total: Number(item.total), blocked_count: Number(item.blocked_count), suggested_kind: requiredString(item.suggested_kind, 'gap.suggested_kind') }; });
+  const questions = report.questions.map((raw): CoachQuestion => { const item = object(raw); if (!item || !['open', 'answered', 'dismissed'].includes(String(item.state))) throw new Error('Invalid response: Coach question is malformed'); return { id: requiredString(item.id, 'question.id'), kind: requiredString(item.kind, 'question.kind'), text: requiredString(item.text, 'question.text'), target_kind: requiredString(item.target_kind, 'question.target_kind'), target_id: requiredString(item.target_id, 'question.target_id'), impact: Number(item.impact), state: item.state as CoachQuestion['state'] }; });
+  return { as_of: requiredString(report.as_of, 'insights.as_of'), period_start: requiredString(report.period_start, 'insights.period_start'), period_end: requiredString(report.period_end, 'insights.period_end'), pack_id: requiredString(report.pack_id, 'insights.pack_id'), pack_version: requiredString(report.pack_version, 'insights.pack_version'), sample_size: Number(report.sample_size), metrics: report.metrics.map(decodeInsightMetric), comparisons, gaps, questions };
 }
 
 function decodeWrappedBoardList(value: unknown): { list: BoardList } {
@@ -692,6 +740,45 @@ export class ParleyClient {
 
   async getBoard(): Promise<BoardSnapshot> {
     return decodeBoardSnapshot(await this.request('/board'));
+  }
+
+  async getDailyQueue(filters: { q?: string; party_id?: string; tag?: string; status?: string; due_before?: string; missing_material?: boolean; list_id?: string } = {}): Promise<DailyQueueSnapshot> {
+    const query = new URLSearchParams({ view: 'daily' });
+    for (const [key, value] of Object.entries(filters)) if (typeof value === 'string' && value.length) query.set(key, value);
+    if (filters.missing_material) query.set('missing_material', 'true');
+    return decodeDailyQueue(await this.request(`/queue?${query.toString()}`));
+  }
+
+  async getInsights(): Promise<InsightsReport> {
+    return decodeInsights(await this.request('/insights'));
+  }
+
+  async runCoach(input: { period_start?: string; period_end?: string } = {}, key = newOperationKey()): Promise<{ job_id: string }> {
+    const result = object(await this.mutate('/coach/run', 'POST', input, { 'Idempotency-Key': key }));
+    if (!result) throw new Error('Invalid response: Coach run receipt is malformed');
+    return { job_id: requiredString(result.job_id, 'coach.job_id') };
+  }
+
+  async getPackSettings(): Promise<PackSettings> {
+    const value = object(await this.request('/settings'));
+    if (!value || !Number.isSafeInteger(value.revision) || !Array.isArray(value.available_packs)) throw new Error('Invalid response: pack settings are malformed');
+    const available_packs = value.available_packs.map((raw) => { const pack = object(raw); if (!pack) throw new Error('Invalid response: available pack is malformed'); return { id: requiredString(pack.id, 'pack.id'), name: requiredString(pack.name, 'pack.name'), version: requiredString(pack.version, 'pack.version'), document: requiredString(pack.document, 'pack.document') }; });
+    return { revision: Number(value.revision), active_pack_id: requiredString(value.active_pack_id, 'settings.active_pack_id'), active_pack_version: requiredString(value.active_pack_version, 'settings.active_pack_version'), active_document: requiredString(value.active_document, 'settings.active_document'), available_packs };
+  }
+
+  async validatePack(document: string): Promise<PackValidation> {
+    const value = object(await this.mutate('/packs/validate', 'POST', { document }, { 'Idempotency-Key': newOperationKey() }));
+    if (!value || typeof value.valid !== 'boolean' || !Array.isArray(value.errors)) throw new Error('Invalid response: pack validation result is malformed');
+    return { valid: value.valid, pack_id: typeof value.pack_id === 'string' ? value.pack_id : null, version: typeof value.version === 'string' ? value.version : null, normalized_document: typeof value.normalized_document === 'string' ? value.normalized_document : null, errors: value.errors.map((raw) => { const item = object(raw); if (!item) throw new Error('Invalid response: pack validation error is malformed'); return { line: Number.isSafeInteger(item.line) ? Number(item.line) : null, field: typeof item.field === 'string' ? item.field : null, message: requiredString(item.message, 'pack_error.message') }; }) };
+  }
+
+  async activatePack(input: { pack_id: string; version: string; document: string; expected_settings_revision: number; stage_mapping: Record<string, string> }, key = newOperationKey()): Promise<PackSettings> {
+    await this.mutate('/packs/activate', 'POST', input, { 'Idempotency-Key': key });
+    return this.getPackSettings();
+  }
+
+  async decideCoachQuestion(id: string, key = newOperationKey()): Promise<void> {
+    await this.mutate(`/questions/${encodeURIComponent(id)}/dismiss`, 'POST', {}, { 'Idempotency-Key': key });
   }
 
   async createBoardList(input: components['schemas']['CreateBoardList'], key = newOperationKey()): Promise<components['schemas']['CreatedBoardList']> {
