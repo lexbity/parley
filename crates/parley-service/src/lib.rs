@@ -994,7 +994,9 @@ impl Workspace {
     /// Conditional typed party edit. `name` and `focus` are the editable sheet
     /// fields; the strong entity ETag is the write scope. Blank names and
     /// missing update fields are rejected; subtype transitions stay out of
-    /// ordinary label editing.
+    /// ordinary label editing. The mutation rules live in the shared typed
+    /// operation `application::party_edit`; this adapter keeps the REST
+    /// idempotency envelope and its published error mapping.
     pub async fn update_entity(
         &self,
         idempotency_key: &str,
@@ -1013,29 +1015,6 @@ impl Workspace {
                 "If-Match must be a strong entity ETag".into(),
             ));
         }
-        let name = match name {
-            Some(name) => {
-                let trimmed = name.trim();
-                if trimmed.is_empty() || trimmed.len() > 500 {
-                    return Err(WorkspaceError::Invalid(
-                        "entity name must contain 1–500 bytes".into(),
-                    ));
-                }
-                Some(trimmed.to_owned())
-            }
-            None => None,
-        };
-        let focus = match focus {
-            Some(focus) => {
-                if focus.chars().count() > 250 {
-                    return Err(WorkspaceError::Invalid(
-                        "focus exceeds 250 characters".into(),
-                    ));
-                }
-                Some(focus)
-            }
-            None => None,
-        };
         if name.is_none() && focus.is_none() {
             return Err(WorkspaceError::Invalid("no entity fields to update".into()));
         }
@@ -1069,49 +1048,120 @@ impl Workspace {
         if if_match != entity_etag(&self.epoch, id, revision) {
             return Err(WorkspaceError::StaleRevision);
         }
-        let next_name = name.unwrap_or(current_name);
-        let next_focus = focus.unwrap_or(current_focus);
-        let next_revision = revision + 1;
-        let now = now_utc();
         let resource: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM resource WHERE id=?)")
             .bind(id)
             .fetch_one(&mut *tx)
             .await?;
-        if resource && next_name.chars().count() > 240 {
-            return Err(WorkspaceError::Invalid(
-                "Resource title exceeds 240 characters.".into(),
-            ));
-        }
         if resource {
+            let next_name = match name {
+                Some(name) => {
+                    let trimmed = name.trim();
+                    if trimmed.is_empty() || trimmed.len() > 500 {
+                        return Err(WorkspaceError::Invalid(
+                            "entity name must contain 1–500 bytes".into(),
+                        ));
+                    }
+                    trimmed.to_owned()
+                }
+                None => current_name,
+            };
+            let next_focus = match focus {
+                Some(focus) => {
+                    if focus.chars().count() > 250 {
+                        return Err(WorkspaceError::Invalid(
+                            "focus exceeds 250 characters".into(),
+                        ));
+                    }
+                    focus
+                }
+                None => current_focus,
+            };
+            let next_revision = revision + 1;
+            let now = now_utc();
+            if next_name.chars().count() > 240 {
+                return Err(WorkspaceError::Invalid(
+                    "Resource title exceeds 240 characters.".into(),
+                ));
+            }
             sqlx::query("UPDATE resource SET title=?,revision=revision+1,updated_at=? WHERE id=? AND title<>?").bind(&next_name).bind(&now).bind(id).bind(&next_name).execute(&mut *tx).await?;
+            sqlx::query("UPDATE entity SET name=CASE WHEN EXISTS(SELECT 1 FROM resource r WHERE r.id=entity.id) THEN '' ELSE ? END,focus=?,revision=?,updated_at=? WHERE id=?")
+                .bind(&next_name)
+                .bind(&next_focus)
+                .bind(next_revision)
+                .bind(&now)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("UPDATE workspace_meta SET revision=revision+1 WHERE singleton=1")
+                .execute(&mut *tx)
+                .await?;
+            let updated = EntityRecord {
+                id: id.to_owned(),
+                kind,
+                name: next_name,
+                focus: next_focus,
+                revision: next_revision,
+            };
+            let result_json = serde_json::to_string(&updated)
+                .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
+            sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?,'entity',?,?,'entity.updated','{}')")
+                .bind(new_id(id)).bind(&now).bind(id).bind(next_revision).execute(&mut *tx).await?;
+            let cursor: i64 = sqlx::query_scalar("SELECT last_insert_rowid()")
+                .fetch_one(&mut *tx)
+                .await?;
+            sqlx::query("INSERT INTO idempotency_receipt(owner_id,epoch,key,canonical_digest,status_code,result_json,last_event_cursor,created_at) VALUES(1,?,?,?,200,?,?,?)")
+                .bind(&self.epoch).bind(idempotency_key).bind(canonical).bind(&result_json).bind(cursor).bind(now).execute(&mut *tx).await?;
+            tx.commit().await?;
+            return Ok(updated);
         }
-        sqlx::query("UPDATE entity SET name=CASE WHEN EXISTS(SELECT 1 FROM resource r WHERE r.id=entity.id) THEN '' ELSE ? END,focus=?,revision=?,updated_at=? WHERE id=?")
-            .bind(&next_name)
-            .bind(&next_focus)
-            .bind(next_revision)
-            .bind(&now)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("UPDATE workspace_meta SET revision=revision+1 WHERE singleton=1")
-            .execute(&mut *tx)
-            .await?;
-        let updated = EntityRecord {
-            id: id.to_owned(),
-            kind,
-            name: next_name,
-            focus: next_focus,
-            revision: next_revision,
+
+        // Shared typed party edit: the operation owns the revision guard, the
+        // field bounds and the event emission.
+        let outcome = crate::application::party_edit::apply_party_edit(
+            &mut tx,
+            &crate::application::party_edit::PartyEditInput {
+                party_id: id.to_owned(),
+                expected_revision: revision,
+                name,
+                focus,
+                operation_key_digest: crate::digest(
+                    format!("rest-party\0{idempotency_key}\0{id}").as_bytes(),
+                ),
+            },
+        )
+        .await
+        .map_err(|error| match error {
+            crate::application::party_edit::PartyEditError::NotFound => WorkspaceError::NotFound,
+            crate::application::party_edit::PartyEditError::StaleRevision => {
+                WorkspaceError::StaleRevision
+            }
+            crate::application::party_edit::PartyEditError::InvalidName => {
+                WorkspaceError::Invalid("entity name must contain 1–500 bytes".into())
+            }
+            crate::application::party_edit::PartyEditError::InvalidFocus => {
+                WorkspaceError::Invalid("focus exceeds 250 characters".into())
+            }
+            crate::application::party_edit::PartyEditError::NoFields => {
+                WorkspaceError::Invalid("no entity fields to update".into())
+            }
+        })?;
+        let updated = match outcome {
+            crate::application::party_edit::PartyEditOutcome::Changed(result)
+            | crate::application::party_edit::PartyEditOutcome::NoOp(result) => EntityRecord {
+                id: result.id,
+                kind: result.kind,
+                name: result.name,
+                focus: result.focus,
+                revision: result.revision,
+            },
         };
         let result_json =
             serde_json::to_string(&updated).map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
-        sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?,'entity',?,?,'entity.updated','{}')")
-            .bind(new_id(id)).bind(&now).bind(id).bind(next_revision).execute(&mut *tx).await?;
         let cursor: i64 = sqlx::query_scalar("SELECT last_insert_rowid()")
             .fetch_one(&mut *tx)
             .await?;
         sqlx::query("INSERT INTO idempotency_receipt(owner_id,epoch,key,canonical_digest,status_code,result_json,last_event_cursor,created_at) VALUES(1,?,?,?,200,?,?,?)")
-            .bind(&self.epoch).bind(idempotency_key).bind(canonical).bind(&result_json).bind(cursor).bind(now).execute(&mut *tx).await?;
+            .bind(&self.epoch).bind(idempotency_key).bind(canonical).bind(&result_json).bind(cursor).bind(now_utc()).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(updated)
     }

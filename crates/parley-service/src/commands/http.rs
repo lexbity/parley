@@ -26,10 +26,14 @@ use super::ledger::{
     lookup_receipt,
 };
 use super::opportunity::{self, RunError as CreateRunError};
+use super::party::{PartyCommand, RunError as PartyRunError, run as run_party};
 use super::phase::{PhaseCommand, RunError as PhaseRunError, run as run_phase};
 use super::policy::Effect;
+use super::task::{self, RunError as TaskRunError, run as run_task};
 use super::{Actor, ActorKind, Registry, audit_args, validator_for};
 use crate::application::opportunity::CreateError;
+use crate::application::opportunity_task::TaskError;
+use crate::application::party_edit::PartyEditError;
 use crate::application::phase::PhaseError;
 use crate::application::writer::{Failure as WriterFailure, JobResult, WriteOutcome, Writer};
 use crate::{AppState, OwnerPrincipal, now_utc, private_headers};
@@ -58,11 +62,15 @@ type CheckedResult = Result<(Value, i64, bool), (i64, &'static str, String, Vec<
 enum Execution {
     Create,
     Phase(PhaseCommand),
+    Party(PartyCommand),
+    Task,
 }
 
 enum OperationError {
     Phase(PhaseRunError),
     Create(CreateRunError),
+    Party(PartyRunError),
+    Task(TaskRunError),
 }
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -1326,6 +1334,10 @@ async fn pipeline(
         Execution::Create
     } else if let Some(command) = PhaseCommand::for_id(command_id) {
         Execution::Phase(command)
+    } else if let Some(command) = PartyCommand::for_id(command_id) {
+        Execution::Party(command)
+    } else if command_id == task::TASK_DONE_ID {
+        Execution::Task
     } else {
         finalize_attempt(
             tx,
@@ -1380,6 +1392,12 @@ async fn pipeline(
         Execution::Phase(command) => run_phase(command, tx, args, key_digest)
             .await
             .map_err(OperationError::Phase),
+        Execution::Party(command) => run_party(command, tx, args, key_digest)
+            .await
+            .map_err(OperationError::Party),
+        Execution::Task => run_task(tx, args, key_digest)
+            .await
+            .map_err(OperationError::Task),
     };
     // A storage failure is not a domain conflict: abandon the transaction and
     // let admission record the terminal audit outcome with no effect.
@@ -1505,6 +1523,74 @@ async fn pipeline(
                     "conflict",
                     "Workspace must retain an active board list".to_string(),
                     vec![],
+                ),
+                OperationError::Party(PartyRunError::InvalidArgs) => (
+                    422,
+                    "invalid_args",
+                    "Arguments do not match the command rules".to_string(),
+                    vec![json!({"path": "", "problem": "invalid_args"})],
+                ),
+                OperationError::Party(PartyRunError::Party(PartyEditError::NotFound)) => (
+                    404,
+                    "target_unavailable",
+                    "Target record is not available".to_string(),
+                    vec![],
+                ),
+                OperationError::Party(PartyRunError::Party(PartyEditError::StaleRevision)) => (
+                    409,
+                    "version_mismatch",
+                    "Expected revision is stale; reload and create a new intent".to_string(),
+                    vec![],
+                ),
+                OperationError::Party(PartyRunError::Party(PartyEditError::InvalidName)) => (
+                    422,
+                    "invalid_args",
+                    "Party name must contain 1–500 bytes".to_string(),
+                    vec![json!({"path": "/name", "problem": "invalid_name"})],
+                ),
+                OperationError::Party(PartyRunError::Party(PartyEditError::InvalidFocus)) => (
+                    422,
+                    "invalid_args",
+                    "Focus exceeds 250 characters".to_string(),
+                    vec![json!({"path": "/focus", "problem": "invalid_focus"})],
+                ),
+                OperationError::Party(PartyRunError::Party(PartyEditError::NoFields)) => (
+                    422,
+                    "invalid_args",
+                    "No party fields to update".to_string(),
+                    vec![json!({"path": "", "problem": "no_fields"})],
+                ),
+                OperationError::Task(TaskRunError::InvalidArgs) => (
+                    422,
+                    "invalid_args",
+                    "Arguments do not match the command rules".to_string(),
+                    vec![json!({"path": "", "problem": "invalid_args"})],
+                ),
+                OperationError::Task(TaskRunError::Task(TaskError::NotFound)) => (
+                    404,
+                    "target_unavailable",
+                    "Target record is not available".to_string(),
+                    vec![],
+                ),
+                OperationError::Task(TaskRunError::Task(TaskError::StaleRevision)) => (
+                    409,
+                    "version_mismatch",
+                    "Expected notes revision is stale; reload and create a new intent".to_string(),
+                    vec![],
+                ),
+                OperationError::Task(TaskRunError::Task(TaskError::InvalidSpan(
+                    "task line changed; reload notes before toggling",
+                ))) => (
+                    409,
+                    "conflict",
+                    "The addressed task line changed; reload notes before toggling".to_string(),
+                    vec![json!({"path": "/line_sha256", "problem": "task_line_changed"})],
+                ),
+                OperationError::Task(TaskRunError::Task(TaskError::InvalidSpan(message))) => (
+                    422,
+                    "invalid_args",
+                    message.to_string(),
+                    vec![json!({"path": "/byte_start", "problem": "invalid_span"})],
                 ),
                 OperationError::Create(CreateRunError::Create(CreateError::Database)) => {
                     return Err(crate::application::writer::Failure::Unavailable);

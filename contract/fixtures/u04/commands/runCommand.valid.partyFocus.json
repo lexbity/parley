@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/CommandRunSuccess","body":{"ok":true,"command_version":1,"audit_id":"aud_u04_party_focus_01","original_audit_id":null,"replayed":false,"dry_run":false,"result":{"id":"party_sample_02","kind":"org","name":"Org","focus":"Follow up next week","revision":2,"event_id":"evt_u04_party_focus_01","event_cursor":902}}}

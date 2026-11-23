@@ -1736,3 +1736,95 @@ slices:
       owner_role: owner
       package_target: rust
       evidence_path: evidence/u03.md
+  u04:
+    - requirement: UCR-FR-1
+      operationId: runCommand
+      test_id: u04_party_edit_rest_and_command_share_one_operation
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u04.md
+    - requirement: UCR-FR-1
+      operationId: runCommand
+      test_id: u04_task_toggle_exact_span_and_second_identical_task
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u04.md
+    - requirement: UCR-FR-2
+      operationId: runCommand
+      test_id: u04_task_toggle_exact_span_and_second_identical_task
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u04.md
+    - requirement: UCR-FR-2
+      operationId: runCommand
+      test_id: u04_agent_task_noop_consumes_zero_executed_write
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u04.md
+    - requirement: UCR-FR-3
+      operationId: runCommand
+      test_id: u04_agent_delegated_party_edit_and_task_done
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u04.md
+    - requirement: UCR-FR-3
+      operationId: startAgentRun
+      test_id: u04_agent_delegated_party_edit_and_task_done
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u04.md
+    - requirement: UCR-FR-4
+      operationId: runCommand
+      test_id: u04_command_invoke_party_and_task_discipline
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u04.md
+    - requirement: UCR-FR-5
+      operationId: runCommand
+      test_id: u04_task_toggle_rejects_stale_spans_and_malformed_offsets
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u04.md
+    - requirement: UCR-FR-7
+      operationId: runCommand
+      test_id: u04_palette_renames_party_and_updates_focus
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u04.md
+    - requirement: UCR-FR-7
+      operationId: runCommand
+      test_id: u04_palette_selects_second_identical_task_by_keyboard
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u04.md
+    - requirement: UCR-FR-7
+      operationId: runCommand
+      test_id: u04_party_conflict_keeps_dirty_data_without_stale_overwrite
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u04.md
+    - requirement: UCR-NFR-1
+      operationId: runCommand
+      test_id: u04_rest_note_save_and_command_task_toggle_coordinate
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u04.md
+    - requirement: UCR-NFR-4
+      operationId: runCommand
+      test_id: u04_agent_task_noop_consumes_zero_executed_write
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u04.md

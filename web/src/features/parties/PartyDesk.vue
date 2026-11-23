@@ -6,6 +6,8 @@ import {
   type PartyImportReceipt, type Dossier, type EntityNotes, type ExtractorJob, type ExtractorProposal,
   type GraphSnapshot, type GraphEntity, type OpportunitySummary, type SavedSource,
 } from '../../api/client';
+import { commands } from '../../api/commands';
+import { partyActions, registerScoped, useCommandRegistry } from '../../app/commands/registry';
 import ClaimCorrection from './ClaimCorrection.vue';
 import PartyFiles from './PartyFiles.vue';
 import PartyImport from './PartyImport.vue';
@@ -215,6 +217,42 @@ const selectedParty = computed(() => directoryRows.value.find(p => p.id === sele
 const rootName = computed(() => (directoryRows.value.find(p => p.id === rootPartyId.value)
   ?? graphNodes.value.find(p => p.id === rootPartyId.value)
   ?? props.parties.find(p => p.id === rootPartyId.value))?.name ?? '');
+
+// Scoped party commands (UCR-001 U04). The palette freezes the selected
+// party, its card revision and the prompted value; the server re-checks the
+// revision under reservation. Unit-mount scenarios without an installed shell
+// registry skip registration gracefully.
+let commandRegistry: ReturnType<typeof useCommandRegistry> | null = null;
+try {
+  commandRegistry = useCommandRegistry();
+} catch {
+  commandRegistry = null;
+}
+let disposePartyActions: (() => void) | undefined;
+watch([selectedRecordId, dossier, sheetRows], () => {
+  disposePartyActions?.();
+  disposePartyActions = undefined;
+  if (!commandRegistry) return;
+  const id = selectedRecordId.value;
+  const party = selectedParty.value;
+  if (!id || !party || !['person', 'org'].includes(party.kind)) return;
+  const revision = Number(party.revision ?? 1);
+  if (!Number.isSafeInteger(revision) || revision < 1) return;
+  const fingerprint = JSON.stringify([parley.workspaceEpoch, id, revision]);
+  disposePartyActions = registerScoped(commandRegistry, partyActions({
+    partyId: id,
+    cardRevision: revision,
+    intentFingerprint: fingerprint,
+    invoke: (commandId: string, args: Record<string, unknown>, key: string) =>
+      commands.invoke(commandId, { version: 1, args, dry_run: false }, key),
+    onCommitted: (_receipt, commandId) => {
+      status.value = commandId === 'party.rename' ? 'Party renamed.' : 'Focus updated.';
+      error.value = '';
+      changed();
+      if (selectedRecordId.value === id) void loadDossier().then(() => { directoryRevision.value++; });
+    },
+  }));
+}, { flush: 'sync' });
 async function loadDossier() {
   const id = selectedRecordId.value;
   const own = ++requestVersion;

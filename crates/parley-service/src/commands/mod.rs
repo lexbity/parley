@@ -5,9 +5,11 @@ pub(crate) mod descriptor;
 pub(crate) mod http;
 pub(crate) mod ledger;
 pub(crate) mod opportunity;
+pub(crate) mod party;
 pub(crate) mod phase;
 pub(crate) mod policy;
 pub(crate) mod read;
+pub(crate) mod task;
 
 use std::collections::HashMap;
 
@@ -47,6 +49,8 @@ impl Registry {
         descriptors.extend(phase::descriptors().into_iter().cloned());
         descriptors.extend(opportunity::descriptors().into_iter().cloned());
         descriptors.extend(read::descriptors().into_iter().cloned());
+        descriptors.extend(party::descriptors().into_iter().cloned());
+        descriptors.extend(task::descriptors().into_iter().cloned());
         descriptor::validate_registry(&descriptors)?;
         let mut by_id = HashMap::with_capacity(descriptors.len());
         for (index, item) in descriptors.iter().enumerate() {
@@ -195,8 +199,24 @@ impl Registry {
         let (phase_valid, phase_invalid) = phase::validation_samples();
         let (opportunity_valid, opportunity_invalid) = opportunity::validation_samples();
         let (read_valid, read_invalid) = read::validation_samples();
-        let valid = [phase_valid, opportunity_valid, read_valid].concat();
-        let invalid = [phase_invalid, opportunity_invalid, read_invalid].concat();
+        let (party_valid, party_invalid) = party::validation_samples();
+        let (task_valid, task_invalid) = task::validation_samples();
+        let valid = [
+            phase_valid,
+            opportunity_valid,
+            read_valid,
+            party_valid,
+            task_valid,
+        ]
+        .concat();
+        let invalid = [
+            phase_invalid,
+            opportunity_invalid,
+            read_invalid,
+            party_invalid,
+            task_invalid,
+        ]
+        .concat();
         for sample in valid {
             let command = self
                 .command(&sample.command)
@@ -218,6 +238,12 @@ impl Registry {
                     .map_err(|error| format!("{}: {error}", sample.command))?;
             } else if let Some(command_kind) = read::ReadCommand::for_id(&sample.command) {
                 read::parse_wire_args(command_kind, &sample.args)
+                    .map_err(|error| format!("{}: {error}", sample.command))?;
+            } else if let Some(command_kind) = party::PartyCommand::for_id(&sample.command) {
+                party::parse_wire_args(command_kind, &sample.args)
+                    .map_err(|error| format!("{}: {error}", sample.command))?;
+            } else if sample.command == task::TASK_DONE_ID {
+                task::parse_wire_args(&sample.args)
                     .map_err(|error| format!("{}: {error}", sample.command))?;
             } else {
                 return Err(format!(
@@ -257,6 +283,10 @@ pub(crate) fn audit_args(
             (opportunity::args_allowlist(), opportunity::args_sensitive())
         } else if read::ReadCommand::for_id(command_id).is_some() {
             (read::args_allowlist(), read::args_sensitive())
+        } else if party::PartyCommand::for_id(command_id).is_some() {
+            (party::args_allowlist(), party::args_sensitive())
+        } else if command_id == task::TASK_DONE_ID {
+            (task::args_allowlist(), task::args_sensitive())
         } else {
             (&[], &[])
         };

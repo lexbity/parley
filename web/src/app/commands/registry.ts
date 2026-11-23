@@ -90,8 +90,8 @@ export function freezeDescriptor(descriptor: CommandDescriptor): CommandDescript
 export function mergeDescriptors(server: readonly CommandDescriptor[], ui: readonly UiCommand[]): CommandDescriptor[] {
   const replaced = new Set(ui.map((command) => command.replaces).filter((id): id is string => typeof id === 'string'));
   return [
-    ...server.filter((descriptor) => !replaced.has(descriptor.id)).map(freezeDescriptor),
     ...ui.map(uiDescriptor),
+    ...server.filter((descriptor) => !replaced.has(descriptor.id)).map(freezeDescriptor),
   ];
 }
 
@@ -253,6 +253,115 @@ export function queuePhaseActions(input: QueueActionInput): UiCommand[] {
       run: dispatch(UNDO_ID, { original_event_id: input.originalEventId ?? '' }),
     },
   ];
+}
+
+export interface PartyActionInput {
+  partyId: string;
+  cardRevision: number;
+  intentFingerprint: string;
+  invoke: (id: string, args: CommandArgs, key: string) => Promise<CommandSuccess>;
+  onCommitted: (result: CommandSuccess, commandId: string) => void | Promise<void>;
+}
+
+const PARTY_RENAME_ID = 'party.rename';
+const PARTY_SET_FOCUS_ID = 'party.set_focus';
+
+/**
+ * Scoped Party actions. Each dispatch freezes the selected party, its card
+ * revision and the prompted value together with a fresh operation key. Any
+ * change to the fingerprint creates a new intent and key.
+ */
+export function partyActions(input: PartyActionInput): UiCommand[] {
+  const common = { party_id: input.partyId, expected_card_revision: input.cardRevision };
+  let intent: { fingerprint: string; key: string } | null = null;
+  const dispatch = (id: string, fixed: CommandArgs = {}) => async (prompted: CommandArgs) => {
+    const args = { ...prompted, ...common, ...fixed };
+    const fingerprint = JSON.stringify([input.intentFingerprint, id, args]);
+    if (intent?.fingerprint !== fingerprint) intent = { fingerprint, key: newOperationKey() };
+    const result = await input.invoke(id, args, intent.key);
+    await input.onCommitted(result, id);
+  };
+  return [
+    {
+      id: 'ui.party.rename',
+      title: 'Rename party',
+      summary: 'Change the selected party name',
+      keywords: ['party', 'rename', 'name'],
+      effect: 'read',
+      replaces: PARTY_RENAME_ID,
+      prompts: [{ field: 'name', picker: 'text', title: 'Party name' }],
+      confirmation: 'Rename the selected party?',
+      when: (ctx) => ctx.context.route === 'parties' && ctx.context['selection.party'] === true,
+      run: dispatch(PARTY_RENAME_ID),
+    },
+    {
+      id: 'ui.party.set_focus',
+      title: 'Set party focus',
+      summary: 'Change the selected party focus label',
+      keywords: ['party', 'focus'],
+      effect: 'read',
+      replaces: PARTY_SET_FOCUS_ID,
+      prompts: [{ field: 'focus', picker: 'text', title: 'Focus' }],
+      confirmation: 'Update the selected party focus?',
+      when: (ctx) => ctx.context.route === 'parties' && ctx.context['selection.party'] === true,
+      run: dispatch(PARTY_SET_FOCUS_ID),
+    },
+  ];
+}
+
+export interface TaskActionInput {
+  opportunityId: string;
+  notesRevision: number;
+  intentFingerprint: string;
+  invoke: (id: string, args: CommandArgs, key: string) => Promise<CommandSuccess>;
+  onCommitted: (result: CommandSuccess, commandId: string) => void | Promise<void>;
+}
+
+const TASK_DONE_ID = 'opportunity.set_task_done';
+
+/**
+ * Scoped Queue task action. The palette freezes the selected opportunity, its
+ * notes revision and the chosen task (by its unique byte offset); the typed
+ * span and line digest come from the authoritative task picker. The command
+ * marks the task done.
+ */
+export function queueTaskAction(input: TaskActionInput): UiCommand {
+  let intent: { fingerprint: string; key: string } | null = null;
+  return {
+    id: 'ui.queue.set_task_done',
+    title: 'Set task done',
+    summary: 'Mark the selected opportunity task checked',
+    keywords: ['queue', 'task', 'notes', 'check'],
+    effect: 'read',
+    replaces: TASK_DONE_ID,
+    prompts: [{ field: 'line_sha256', picker: 'opportunity_task', title: 'Task' }],
+    confirmation: 'Mark the selected task done?',
+    when: (ctx) => ctx.context.route === 'queue' && ctx.context['selection.opportunity'] === true,
+    run: async (prompted) => {
+      const token = String(prompted.line_sha256 ?? '');
+      const parts = token.split(':');
+      const byteStart = Number(parts[0]);
+      const byteEnd = Number(parts[1]);
+      const lineSha256 = parts[2] ?? '';
+      const notesRevision = Number(parts[3]);
+      if (!Number.isSafeInteger(byteStart) || !Number.isSafeInteger(byteEnd)
+        || !/^[0-9a-f]{64}$/.test(lineSha256) || !Number.isSafeInteger(notesRevision) || notesRevision < 1) {
+        throw new Error('The selected task is no longer available; reload the notes.');
+      }
+      const args: CommandArgs = {
+        opportunity_id: input.opportunityId,
+        expected_notes_revision: notesRevision,
+        byte_start: byteStart,
+        byte_end: byteEnd,
+        line_sha256: lineSha256,
+        checked: true,
+      };
+      const fingerprint = JSON.stringify([input.intentFingerprint, TASK_DONE_ID, args]);
+      if (intent?.fingerprint !== fingerprint) intent = { fingerprint, key: newOperationKey() };
+      const result = await input.invoke(TASK_DONE_ID, args, intent.key);
+      await input.onCommitted(result, TASK_DONE_ID);
+    },
+  };
 }
 
 let installed: CommandRegistry | null = null;

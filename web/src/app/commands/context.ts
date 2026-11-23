@@ -31,6 +31,10 @@ export interface QueuePaletteBinding {
   pack: { id: string; version: string };
   stages: Array<{ value: string; label: string }>;
   originalEventId: string | null;
+  /** Indexed tasks of the selected opportunity, from the authoritative notes read. */
+  tasks: Array<{ value: string; label: string; byteStart: number; byteEnd: number; checked: boolean }>;
+  /** Notes revision captured with the selected row. */
+  notesRevision: number;
 }
 
 export interface ContextSelection {

@@ -96,7 +96,7 @@ describe('descriptor merging', () => {
     for (const command of action) ui.register(command);
     const merged = mergeDescriptors([serverDescriptor, other, untouched], action);
     expect(merged.map((item) => item.id)).toEqual([
-      'ui.navigate', 'ui.queue.set_phase', 'ui.queue.undo_phase_change',
+      'ui.queue.set_phase', 'ui.queue.undo_phase_change', 'ui.navigate',
     ]);
     expect(merged[0]).not.toBe(untouched);
     expect(ui.descriptors({

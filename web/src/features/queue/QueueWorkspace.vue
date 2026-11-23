@@ -16,7 +16,8 @@ import {
 import { commands, type CommandArgs, type CommandSuccess } from '../../api/commands';
 import { sessionEventReader } from '../../app/commands/events';
 import type { QueuePaletteBinding } from '../../app/commands/context';
-import { opportunityCreateAction, queuePhaseActions, registerScoped, useCommandRegistry, type UiCommand } from '../../app/commands/registry';
+import { opportunityCreateAction, queuePhaseActions, queueTaskAction, registerScoped, useCommandRegistry, type UiCommand } from '../../app/commands/registry';
+import type { OpportunityNotes } from '../../api/client';
 import Daily from './Daily.vue';
 import Insights from './Insights.vue';
 
@@ -115,15 +116,52 @@ const originalEventId = computed(() => {
 });
 const commandRegistry = useCommandRegistry();
 let disposeActions: (() => void) | undefined;
-let scopedFingerprint: string | null = null;
+let scopedFingerprint: string | null | undefined;
+const selectedNotes = ref<OpportunityNotes | null>(null);
 
-function refreshScopedActions() {
+// Authoritative task index for the selected record. The palette freezes the
+// notes revision and the typed span from this read; it never accepts a byte
+// span typed by the user.
+watch(selectedRow, (row) => {
+  if (!row) { selectedNotes.value = null; return; }
+  parley.getOpportunityNotes(row.opportunity_id)
+    .then((notes) => { selectedNotes.value = notes; })
+    .catch(() => { selectedNotes.value = null; });
+}, { immediate: true });
+
+function selectedTasks() {
+  const revision = selectedNotes.value?.revision ?? 1;
+  return (selectedNotes.value?.tasks ?? []).map(task => ({
+    // The line digest is equal for identical task lines; the composite token
+    // carries the unique occurrence span and the notes revision so dispatch
+    // needs no lookup and can never use a stale revision.
+    value: `${task.byte_start}:${task.byte_end}:${task.line_sha256}:${revision}`,
+    label: task.text,
+    byteStart: task.byte_start,
+    byteEnd: task.byte_end,
+    lineSha256: task.line_sha256,
+    checked: task.checked,
+  }));
+}
+
+async function refreshScopedActions() {
   const row = selectedRow.value;
   const pack = row ? { id: row.pack_id, version: row.pack_version } : { id: '', version: '' };
   const revision = row?.phase_revision ?? 1;
+  // Ensure the authoritative task index is loaded for the selected record
+  // before the palette picker options are built.
+  if (row && !selectedNotes.value) {
+    try {
+      selectedNotes.value = await parley.getOpportunityNotes(row.opportunity_id);
+    } catch {
+      selectedNotes.value = null;
+    }
+  }
+  const notesRevision = selectedNotes.value?.revision ?? 1;
+  const tasks = selectedTasks();
   const editable = row?.lifecycle === 'open' && editablePhases.value.length > 0 && !uncertain.value;
   const fingerprint = editable
-    ? JSON.stringify([parley.workspaceEpoch, row.opportunity_id, revision, pack.id, pack.version, originalEventId.value])
+    ? JSON.stringify([parley.workspaceEpoch, row.opportunity_id, revision, pack.id, pack.version, originalEventId.value, notesRevision])
     : null;
   if (fingerprint !== scopedFingerprint) {
     scopedFingerprint = fingerprint;
@@ -154,6 +192,20 @@ function refreshScopedActions() {
         },
         onCommitted: applyCommandResult,
       }));
+      actions.push(queueTaskAction({
+        opportunityId: row.opportunity_id,
+        notesRevision,
+        intentFingerprint: fingerprint,
+        invoke: (id: string, args: CommandArgs, key: string) => commands.invoke(id, { version: 1, args, dry_run: false }, key),
+        onCommitted: () => {
+          status.value = 'Task updated.';
+          error.value = '';
+          void parley.getOpportunityNotes(row.opportunity_id)
+            .then((notes) => { selectedNotes.value = notes; })
+            .catch(() => {});
+          sessionEventReader.hint();
+        },
+      }));
     }
     disposeActions = registerScoped(commandRegistry, actions);
   }
@@ -163,10 +215,12 @@ function refreshScopedActions() {
     pack,
     stages: editablePhases.value.map(phase => ({ value: phase.stage_id, label: phase.label })),
     originalEventId: originalEventId.value,
+    tasks,
+    notesRevision,
   });
 }
 
-watch([selectedRow, editablePhases, originalEventId, uncertain], refreshScopedActions);
+watch([selectedRow, editablePhases, originalEventId, uncertain, selectedNotes], refreshScopedActions);
 
 function applyCommandResult(receipt: CommandSuccess) {
   const { opportunity_id: id, stage_id: stageId, phase_revision: revision, event_id: eventId, reverted } = receipt.result;

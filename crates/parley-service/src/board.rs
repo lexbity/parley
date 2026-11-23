@@ -260,57 +260,47 @@ impl Workspace {
         input: &UpdateNotesInput,
         key: &str,
     ) -> Result<Value, WorkspaceError> {
-        let markdown = notes::canonicalize(&input.markdown);
-        if markdown.len() > 1_000_000 {
-            return Err(WorkspaceError::Invalid(
-                "notes exceed the 1 MB limit".into(),
-            ));
-        }
-        let body = json!({"markdown":markdown,"expected_revision":input.expected_revision});
+        let body = json!({"markdown":input.markdown,"expected_revision":input.expected_revision});
         let canonical = canonical_digest("PATCH", &format!("/opportunities/{id}/notes"), &body);
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
         if let Some(replay) = receipt_lookup(&mut tx, key, &canonical).await? {
             tx.commit().await?;
             return Ok(json!({"_replay_status":replay.status,"result":replay.body}));
         }
-        let row: Option<(i64, String)> =
-            sqlx::query_as("SELECT notes_revision,notes_markdown FROM opportunity WHERE id=?")
-                .bind(id)
-                .fetch_optional(&mut *tx)
-                .await?;
-        let Some((revision, current)) = row else {
-            return Err(WorkspaceError::NotFound);
+        let outcome = crate::application::opportunity_task::apply_notes_replace(
+            &mut tx,
+            &crate::application::opportunity_task::NotesReplaceInput {
+                opportunity_id: id.to_owned(),
+                expected_revision: input.expected_revision,
+                markdown: input.markdown.clone(),
+            },
+        )
+        .await
+        .map_err(|error| match error {
+            crate::application::opportunity_task::NotesReplaceError::NotFound => {
+                WorkspaceError::NotFound
+            }
+            crate::application::opportunity_task::NotesReplaceError::StaleRevision => {
+                WorkspaceError::StaleRevision
+            }
+            crate::application::opportunity_task::NotesReplaceError::TooLarge => {
+                WorkspaceError::Invalid("notes exceed the 1 MB limit".into())
+            }
+        })?;
+        let result = match outcome {
+            crate::application::opportunity_task::NotesReplaceOutcome::Changed(result)
+            | crate::application::opportunity_task::NotesReplaceOutcome::NoOp(result) => result,
         };
-        if revision != input.expected_revision {
-            return Err(WorkspaceError::StaleRevision);
-        }
-        let next = if current == markdown {
-            revision
-        } else {
-            revision + 1
-        };
-        let tasks = notes::index(&markdown);
-        let next_task = tasks
-            .iter()
-            .find(|task| !task.checked)
-            .map(|task| task.text.clone());
-        if next != revision {
-            sqlx::query("UPDATE opportunity SET notes_markdown=?,notes_revision=?,notes_next_task=?,updated_at=? WHERE id=? AND notes_revision=?")
-                .bind(&markdown).bind(next).bind(&next_task).bind(now_utc()).bind(id).bind(revision).execute(&mut *tx).await?;
-            write_event(
-                &mut tx,
-                "opportunity_notes",
-                id,
-                next,
-                "opportunity.notes_updated",
-                json!({"notes_revision":next,"task_count":tasks.len()}),
-            )
-            .await?;
-        }
-        let result = notes_value(id, &markdown, next, next_task, tasks);
-        receipt_store(&mut tx, key, &canonical, 200, &result).await?;
+        let value = notes_value(
+            id,
+            &result.markdown,
+            result.revision,
+            result.next_task,
+            result.tasks,
+        );
+        receipt_store(&mut tx, key, &canonical, 200, &value).await?;
         tx.commit().await?;
-        Ok(result)
+        Ok(value)
     }
 
     async fn toggle_task(
@@ -331,6 +321,34 @@ impl Workspace {
             tx.commit().await?;
             return Ok(json!({"_replay_status":replay.status,"result":replay.body}));
         }
+        let outcome = crate::application::opportunity_task::apply_task(
+            &mut tx,
+            &crate::application::opportunity_task::TaskInput {
+                opportunity_id: id.to_owned(),
+                expected_notes_revision: input.notes_revision,
+                byte_start: input.byte_start,
+                byte_end: input.byte_end,
+                line_sha256: input.line_sha256.clone(),
+                checked: input.checked,
+                operation_key_digest: crate::digest(format!("rest-task\0{key}\0{id}").as_bytes()),
+            },
+        )
+        .await
+        .map_err(|error| match error {
+            crate::application::opportunity_task::TaskError::NotFound => WorkspaceError::NotFound,
+            crate::application::opportunity_task::TaskError::StaleRevision => {
+                WorkspaceError::StaleRevision
+            }
+            crate::application::opportunity_task::TaskError::InvalidSpan(message) => {
+                WorkspaceError::Invalid(message.to_owned())
+            }
+        })?;
+        let task = match outcome {
+            crate::application::opportunity_task::TaskOutcome::Changed(result)
+            | crate::application::opportunity_task::TaskOutcome::NoOp(result) => result,
+        };
+        // The REST response carries the full notes projection; re-read the
+        // committed row inside the same transaction.
         let row: Option<(i64, String)> =
             sqlx::query_as("SELECT notes_revision,notes_markdown FROM opportunity WHERE id=?")
                 .bind(id)
@@ -339,39 +357,8 @@ impl Workspace {
         let Some((revision, markdown)) = row else {
             return Err(WorkspaceError::NotFound);
         };
-        if revision != input.notes_revision {
-            return Err(WorkspaceError::StaleRevision);
-        }
-        let changed = notes::toggle(
-            &markdown,
-            input.byte_start,
-            input.byte_end,
-            &input.line_sha256,
-            input.checked,
-        )
-        .map_err(|message| WorkspaceError::Invalid(message.to_owned()))?;
-        let next_revision = if changed.markdown == markdown {
-            revision
-        } else {
-            revision + 1
-        };
-        let next_task = changed
-            .tasks
-            .iter()
-            .find(|task| !task.checked)
-            .map(|task| task.text.clone());
-        if next_revision != revision {
-            sqlx::query("UPDATE opportunity SET notes_markdown=?,notes_revision=?,notes_next_task=?,updated_at=? WHERE id=? AND notes_revision=?")
-                .bind(&changed.markdown).bind(next_revision).bind(&next_task).bind(now_utc()).bind(id).bind(revision).execute(&mut *tx).await?;
-            write_event(&mut tx, "opportunity_notes", id, next_revision, "opportunity.task_toggled", json!({"notes_revision":next_revision,"byte_start":input.byte_start,"byte_end":input.byte_end,"checked":input.checked})).await?;
-        }
-        let result = notes_value(
-            id,
-            &changed.markdown,
-            next_revision,
-            next_task,
-            changed.tasks,
-        );
+        let tasks = notes::index(&markdown);
+        let result = notes_value(id, &markdown, revision, task.next_task, tasks);
         receipt_store(&mut tx, key, &canonical, 200, &result).await?;
         tx.commit().await?;
         Ok(result)

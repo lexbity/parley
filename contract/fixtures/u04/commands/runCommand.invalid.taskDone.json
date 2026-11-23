@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/CommandRunFailure","body":{"ok":false,"command_version":1,"audit_id":"aud_u04_task_02","error":{"code":"conflict","message":"The addressed task line changed; reload notes before toggling","details":[{"path":"/line_sha256","problem":"task_line_changed"}]}}}

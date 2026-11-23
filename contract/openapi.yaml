@@ -6590,7 +6590,7 @@ components:
     AgentPermission:
       type: string
       description: Closed permission value an owner may grant to a delegated run.
-      enum: [opportunity.phase.edit, party.read, opportunity.read]
+      enum: [opportunity.phase.edit, party.read, opportunity.read, opportunity.create, party.edit, opportunity.task.edit]
     AgentRunTarget:
       type: object
       description: One immutable target record in the owner-approved grant.

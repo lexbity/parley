@@ -383,10 +383,16 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
   const COMMAND_SET = 'opportunity.set_phase';
   const COMMAND_UNDO = 'opportunity.undo_phase_change';
   const COMMAND_CREATE = 'opportunity.create';
+  const COMMAND_PARTY_RENAME = 'party.rename';
+  const COMMAND_PARTY_FOCUS = 'party.set_focus';
+  const COMMAND_TASK = 'opportunity.set_task_done';
   const COMMAND_ARG_FIELDS: Record<string, string[]> = {
     [COMMAND_CREATE]: ['title', 'primary_party_id'],
     [COMMAND_SET]: ['opportunity_id', 'expected_phase_revision', 'expected_pack_id', 'expected_pack_version', 'stage_id'],
     [COMMAND_UNDO]: ['opportunity_id', 'expected_phase_revision', 'expected_pack_id', 'expected_pack_version', 'original_event_id'],
+    [COMMAND_PARTY_RENAME]: ['party_id', 'expected_card_revision', 'name'],
+    [COMMAND_PARTY_FOCUS]: ['party_id', 'expected_card_revision', 'focus'],
+    [COMMAND_TASK]: ['opportunity_id', 'expected_notes_revision', 'byte_start', 'byte_end', 'line_sha256', 'checked'],
   };
   const commandDescriptors: RecordData[] = [
     {
@@ -421,6 +427,39 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
       args_schema: { type: 'object', additionalProperties: false, required: COMMAND_ARG_FIELDS[COMMAND_UNDO], properties: {} },
       result_schema: { type: 'object', additionalProperties: false },
       palette: { context_fields: ['route', 'selection.opportunity'], prompts: [] },
+    },
+    {
+      id: COMMAND_PARTY_RENAME, version: 1, title: 'Rename party',
+      summary: 'Change a party name',
+      description: 'Changes the party labeled name under its expected card revision.',
+      keywords: ['party', 'rename', 'name'], effect: 'write', requires_permission: 'party.edit',
+      surfaces: ['palette', 'agent'], agent_tier: 2, supports_dry_run: false,
+      when: 'route == "parties" && selection.party',
+      args_schema: { type: 'object', additionalProperties: false, required: COMMAND_ARG_FIELDS[COMMAND_PARTY_RENAME], properties: {} },
+      result_schema: { type: 'object', additionalProperties: false },
+      palette: { context_fields: ['route', 'selection.party'], prompts: [{ field: 'name', picker: 'text', title: 'Party name' }] },
+    },
+    {
+      id: COMMAND_PARTY_FOCUS, version: 1, title: 'Set party focus',
+      summary: 'Change a party focus label',
+      description: 'Changes the party focus descriptor under its expected card revision.',
+      keywords: ['party', 'focus'], effect: 'write', requires_permission: 'party.edit',
+      surfaces: ['palette', 'agent'], agent_tier: 2, supports_dry_run: false,
+      when: 'route == "parties" && selection.party',
+      args_schema: { type: 'object', additionalProperties: false, required: COMMAND_ARG_FIELDS[COMMAND_PARTY_FOCUS], properties: {} },
+      result_schema: { type: 'object', additionalProperties: false },
+      palette: { context_fields: ['route', 'selection.party'], prompts: [{ field: 'focus', picker: 'text', title: 'Focus' }] },
+    },
+    {
+      id: COMMAND_TASK, version: 1, title: 'Set task done',
+      summary: 'Mark one opportunity task checked or unchecked',
+      description: 'Changes the checked state of exactly one Markdown task by its typed span.',
+      keywords: ['queue', 'task', 'notes', 'check'], effect: 'write', requires_permission: 'opportunity.task.edit',
+      surfaces: ['palette', 'agent'], agent_tier: 2, supports_dry_run: false,
+      when: 'route == "queue" && selection.opportunity',
+      args_schema: { type: 'object', additionalProperties: false, required: COMMAND_ARG_FIELDS[COMMAND_TASK], properties: {} },
+      result_schema: { type: 'object', additionalProperties: false },
+      palette: { context_fields: ['route', 'selection.opportunity'], prompts: [{ field: 'line_sha256', picker: 'opportunity_task', title: 'Task' }] },
     },
   ];
   const commandManifestVersion = `sha256:${createHash('sha256').update(JSON.stringify(commandDescriptors)).digest('hex')}`;
@@ -462,9 +501,17 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
     if (!fields) return null;
     for (const field of fields) {
       const value = args[field];
-      if (field === 'expected_phase_revision') {
+      if (field === 'expected_phase_revision' || field === 'expected_card_revision' || field === 'expected_notes_revision') {
         if (!Number.isSafeInteger(value) || Number(value) < 1) {
           return { path: `/${field}`, problem: 'expected a positive integer' };
+        }
+      } else if (field === 'byte_start' || field === 'byte_end') {
+        if (!Number.isSafeInteger(value) || Number(value) < 0) {
+          return { path: `/${field}`, problem: 'expected a non-negative integer' };
+        }
+      } else if (field === 'checked') {
+        if (typeof value !== 'boolean') {
+          return { path: `/${field}`, problem: 'expected a boolean' };
         }
       } else if (typeof value !== 'string' || !value.trim()) {
         return { path: `/${field}`, problem: 'expected a non-empty string' };
@@ -477,6 +524,87 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
   }
 
   function commandResult(id: string, args: RecordData) {
+    if (id === COMMAND_PARTY_RENAME || id === COMMAND_PARTY_FOCUS) {
+      const partyId = String(args.party_id);
+      const entity = directory.get(partyId);
+      if (!entity || !['person', 'org'].includes(entity.kind)) {
+        return { status: 404, body: { code: 'target_unavailable', message: 'Target record is not available', details: [] } };
+      }
+      if (Number(args.expected_card_revision) !== entity.revision) {
+        return { status: 409, body: { code: 'version_mismatch', message: 'Card revision changed; reload the party row', details: [{ path: '/expected_card_revision', problem: 'stale revision' }] } };
+      }
+      const name = id === COMMAND_PARTY_RENAME ? String(args.name).trim() : entity.name;
+      const focus = id === COMMAND_PARTY_FOCUS ? String(args.focus) : entity.focus;
+      if (!name || name.length > 500) {
+        return { status: 422, body: { code: 'invalid_args', message: 'Party name is invalid', details: [{ path: '/name', problem: 'invalid_name' }] } };
+      }
+      if (focus.length > 250) {
+        return { status: 422, body: { code: 'invalid_args', message: 'Focus is invalid', details: [{ path: '/focus', problem: 'invalid_focus' }] } };
+      }
+      if (name === entity.name && focus === entity.focus) {
+        return {
+          status: 200,
+          body: { id: entity.id, kind: entity.kind, name, focus, revision: entity.revision, event_id: null, event_cursor: null },
+        };
+      }
+      const updated = { ...entity, name, focus, revision: entity.revision + 1 };
+      directory.set(entity.id, updated);
+      pushEvent({ event_id: randomHex(), entity_type: 'entity', entity_id: entity.id, revision: updated.revision, event_type: 'entity.updated', payload: { origin: 'command.registry' } });
+      return {
+        status: 200,
+        body: { id: entity.id, kind: entity.kind, name, focus, revision: updated.revision, event_id: randomHex(), event_cursor: String(events.length) },
+      };
+    }
+    if (id === COMMAND_TASK) {
+      const opportunityId = String(args.opportunity_id);
+      const opportunity = opportunities.get(opportunityId);
+      if (!opportunity) {
+        return { status: 404, body: { code: 'target_unavailable', message: 'Opportunity does not exist', details: [] } };
+      }
+      const current = notesByOpportunity.get(opportunityId) ?? { markdown: '', revision: 1 };
+      if (Number(args.expected_notes_revision) !== current.revision) {
+        return { status: 409, body: { code: 'version_mismatch', message: 'Notes revision changed; reload the notes', details: [{ path: '/expected_notes_revision', problem: 'stale revision' }] } };
+      }
+      const byteStart = Number(args.byte_start);
+      const byteEnd = Number(args.byte_end);
+      const line = String(args.line_sha256);
+      const checked = args.checked === true;
+      const task = tasks(current.markdown).find((item) => item.byte_start === byteStart && item.byte_end === byteEnd && item.line_sha256 === line);
+      if (!task) {
+        return { status: 422, body: { code: 'invalid_args', message: 'The addressed Markdown task is invalid', details: [{ path: '/byte_start', problem: 'invalid_span' }] } };
+      }
+      const bytes = Buffer.from(current.markdown, 'utf8');
+      const lineText = bytes.subarray(byteStart, byteEnd).toString('utf8');
+      const marker = /\[([ xX])\]/.exec(lineText);
+      if (!marker || marker.index === undefined) {
+        return { status: 422, body: { code: 'invalid_args', message: 'The addressed Markdown line is not a task', details: [{ path: '/byte_start', problem: 'invalid_span' }] } };
+      }
+      const wanted = checked ? 'x' : ' ';
+      const count = (m: string) => {
+        const indexed = tasks(m);
+        return { task_count: indexed.length, next_task: indexed.find((item) => !item.checked)?.text ?? null };
+      };
+      if (marker[1] === wanted) {
+        const { task_count, next_task } = count(current.markdown);
+        return {
+          status: 200,
+          body: { opportunity_id: opportunityId, notes_revision: current.revision, next_task, task_count, event_id: null, event_cursor: null },
+        };
+      }
+      const nextMarkdown = Buffer.concat([
+        bytes.subarray(0, byteStart + marker.index + 1),
+        Buffer.from(wanted),
+        bytes.subarray(byteStart + marker.index + 2),
+      ]).toString('utf8');
+      current.markdown = nextMarkdown;
+      current.revision += 1;
+      pushEvent({ event_id: randomHex(), entity_type: 'opportunity', entity_id: opportunityId, revision: current.revision, event_type: 'opportunity.task_toggled', payload: { byte_start: byteStart, byte_end: byteEnd, checked, origin: 'command.registry' } });
+      const { task_count, next_task } = count(nextMarkdown);
+      return {
+        status: 200,
+        body: { opportunity_id: opportunityId, notes_revision: current.revision, next_task, task_count, event_id: randomHex(), event_cursor: String(events.length) },
+      };
+    }
     if (id === COMMAND_CREATE) {
       const title = String(args.title ?? '').trim();
       const party = directory.get(String(args.primary_party_id));
@@ -558,7 +686,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
   // its worker, lease or provider state.
   const AGENT_STATES = ['queued', 'running', 'waiting_owner', 'waiting_job', 'succeeded', 'failed', 'cancelled', 'expired'];
   const AGENT_TARGET_KINDS = ['party', 'opportunity', 'resource', 'material', 'segment'];
-  const AGENT_PERMISSIONS = ['party.read', 'opportunity.read', 'opportunity.create', 'opportunity.phase.edit'];
+  const AGENT_PERMISSIONS = ['party.read', 'opportunity.read', 'opportunity.create', 'opportunity.phase.edit', 'party.edit', 'opportunity.task.edit'];
 
   function agentTargetLabel(target: AgentRunTarget): string {
     if (target.kind === 'party') return directory.get(target.id)?.name ?? target.id;
@@ -889,8 +1017,11 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
       }
       const commandsForContext = commandDescriptors.filter((descriptor) => {
         const when = String(descriptor.when ?? '');
-        if (!when.includes('route == "queue"')) return false;
-        if (when.includes('selection.opportunity')) return context['selection.opportunity'] === true;
+        if (!when) return true;
+        const routeMatch = /route == "([a-z.]+)"/.exec(when);
+        if (routeMatch && context.route !== routeMatch[1]) return false;
+        if (when.includes('selection.opportunity') && context['selection.opportunity'] !== true) return false;
+        if (when.includes('selection.party') && context['selection.party'] !== true) return false;
         return true;
       });
       return json(response, 200, {

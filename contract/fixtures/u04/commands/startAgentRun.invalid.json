@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/AgentErrorEnvelope","body":{"ok":false,"error":{"code":"invalid_args","message":"Grant must contain a closed permission subset","details":[{"path":"/permissions","problem":"unsupported_permission"}]}}}

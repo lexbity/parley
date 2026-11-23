@@ -103,6 +103,31 @@ const manifestSource = new CommandManifestSource({
   context: () => commandContext.value,
   epoch: () => parley.workspaceEpoch,
 });
+// Authoritative task index for the selected opportunity (UCR-001 U04). The
+// palette never accepts a byte span typed by the user; the picker options
+// come exclusively from this bounded notes read.
+const queueTasks = ref<Array<{ value: string; label: string; byteStart: number; byteEnd: number; checked: boolean }>>([]);
+async function loadQueueTasks() {
+  const id = queueBinding.value?.opportunityId;
+  if (!id) { queueTasks.value = []; return; }
+  try {
+    const notes = await parley.getOpportunityNotes(id);
+    queueTasks.value = (notes.tasks ?? []).map((task) => ({
+      // The line digest is equal for identical task lines; the composite token
+      // carries the unique occurrence span and the notes revision so dispatch
+      // needs no lookup and can never use a stale revision.
+      value: `${task.byte_start}:${task.byte_end}:${task.line_sha256}:${notes.revision}`,
+      label: task.text,
+      byteStart: task.byte_start,
+      byteEnd: task.byte_end,
+      lineSha256: task.line_sha256,
+      checked: task.checked,
+    }));
+  } catch {
+    queueTasks.value = [];
+  }
+}
+watch(() => queueBinding.value?.opportunityId, () => { void loadQueueTasks(); });
 const selection = computed(() => ({
   opportunity: route.value.tab === 'Queue' ? queueBinding.value?.opportunityId : null,
   party: route.value.tab === 'Parties' ? route.value.recordId : null,
@@ -117,12 +142,20 @@ const intentFingerprint = computed(() => [
   queueBinding.value?.pack.id ?? '',
   queueBinding.value?.pack.version ?? '',
   queueBinding.value?.originalEventId ?? '',
+  queueBinding.value?.notesRevision ?? 0,
 ].join('|'));
 const pickerOptions = computed(() => ({
   planning_stage: (queueBinding.value?.stages ?? []).map((stage) => ({ value: stage.value, label: stage.label })),
   // The same authoritative directory the owner create form uses; the palette
   // never accepts a party ID typed by the user or supplied by an agent.
   party: parties.value.map((party) => ({ value: party.id, label: party.name })),
+  // The task picker reads the indexed tasks of the selected opportunity. The
+  // option value is the line digest; the typed span travels with the frozen
+  // selection, never as user-typed text.
+  opportunity_task: queueTasks.value.map((task) => ({
+    value: task.value,
+    label: task.checked ? `${task.label} (done)` : task.label,
+  })),
 }));
 
 function syncPaletteCommands() {
@@ -186,6 +219,7 @@ function togglePalette() {
   if (paletteOpen.value) {
     void manifestSource.refresh().then(applyManifest)
       .catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Command catalog is unavailable.'; });
+    void loadQueueTasks();
   }
 }
 

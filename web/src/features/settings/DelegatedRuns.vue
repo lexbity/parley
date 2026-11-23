@@ -25,6 +25,8 @@ const permissionHelp: Record<RunPermission, string> = {
   'opportunity.read': 'read the granted opportunity summary only',
   'opportunity.create': 'create an opportunity for a granted party',
   'opportunity.phase.edit': 'change the phase of a granted opportunity',
+  'party.edit': 'rename a granted party or change its focus',
+  'opportunity.task.edit': 'change the checked state of a task in a granted opportunity notes',
 };
 
 const task = ref('');

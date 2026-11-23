@@ -877,6 +877,7 @@ async fn u01_manifest_search_describe_contract() {
         vec![
             "opportunity.create",
             "opportunity.set_phase",
+            "opportunity.set_task_done",
             "opportunity.undo_phase_change"
         ]
     );

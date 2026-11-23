@@ -3695,7 +3695,7 @@ export interface components {
          * @description Closed permission value an owner may grant to a delegated run.
          * @enum {string}
          */
-        AgentPermission: "opportunity.phase.edit" | "party.read" | "opportunity.read";
+        AgentPermission: "opportunity.phase.edit" | "party.read" | "opportunity.read" | "opportunity.create" | "party.edit" | "opportunity.task.edit";
         /** @description One immutable target record in the owner-approved grant. */
         AgentRunTarget: {
             /** @enum {string} */
