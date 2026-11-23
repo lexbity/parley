@@ -1,0 +1,6 @@
+{
+  "$schema": "#/components/schemas/CreateResourceColumn",
+  "body": {
+    "title": "Workshop"
+  }
+}

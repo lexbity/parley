@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Per-slice proof runner (RFC-0004 "scripts/prove"). Runs the slice's Rust
-# integration tests and its Playwright spec on both the mock and rust
-# projects, then requires fresh machine-readable reports with positive
+# Per-slice proof runner (RFC-0004 "scripts/prove", UCR-001 U01). Runs the
+# slice's Rust integration tests and its Playwright spec on both the mock and
+# rust projects, then requires fresh machine-readable reports with positive
 # executed counts via ci/trace.py.
 #
-# Usage: scripts/prove SLICE_ID    (lowercase s01..s12)
+# Usage: scripts/prove SLICE_ID    (lowercase s01..s12, p01..p04, r01..r04, u01..u09)
 set -euo pipefail
 
 if [ "$#" -ne 1 ]; then
@@ -12,19 +12,29 @@ if [ "$#" -ne 1 ]; then
   exit 2
 fi
 slice=$1
-if [[ ! "$slice" =~ ^(s(0[1-9]|1[0-2])|p0[1-4]|r0[1-4])$ ]]; then
-  echo "invalid slice ID: $slice (expected s01..s12, p01..p04 or r01..r04)" >&2
-  exit 2
-fi
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
+
+# The accepted ID set has one source of truth: ci/common.py SLICE_ORDER.
+# Read it from the module instead of maintaining a second regex here.
+allowed_slices=$(python3 -B -c 'import sys; sys.path.insert(0, "ci"); from common import SLICE_ORDER; print("|".join(SLICE_ORDER))')
+if [[ "|$allowed_slices|" != *"|$slice|"* ]]; then
+  echo "invalid slice ID: $slice (expected one of: ${allowed_slices//|/, })" >&2
+  exit 2
+fi
+
+# Semantic slice IDs can differ from the cargo integration target name (s12
+# is proved by tests/s12_queue_sheet.rs). ci/trace.py owns that mapping.
+cargo_target=$(python3 -B -c 'import sys; sys.path.insert(0, "ci"); from trace import rust_test_target; print(rust_test_target(sys.argv[1]))' "$slice")
+spec="e2e/$slice.spec.ts"
+
 artifacts="$root/artifacts"
 mkdir -p "$artifacts"
 proof_dir=$(mktemp -d "$artifacts/prove-$slice.XXXXXX")
 printf '\n=== prove %s: reports in %s ===\n' "$slice" "$proof_dir"
 
-printf '\n=== prove %s: cargo test -p parley-service --test %s ===\n' "$slice" "$slice"
-cargo test --locked -p parley-service --test "$slice" 2>&1 |
+printf '\n=== prove %s: cargo test -p parley-service --test %s ===\n' "$slice" "$cargo_target"
+cargo test --locked -p parley-service --test "$cargo_target" 2>&1 |
   tee "$proof_dir/cargo-test.log"
 if [[ "$slice" == "s04" ]]; then
   # The offline Extractor evaluation is a CLI capability, not a service test.
@@ -37,12 +47,12 @@ fi
 
 # The rust project builds the Vite bundle and release binary once as a
 # Playwright setup dependency. The mock project has no build dependency.
-printf '\n=== prove %s: playwright e2e/%s.spec.ts (mock + rust) ===\n' "$slice" "$slice"
+printf '\n=== prove %s: playwright %s (mock + rust) ===\n' "$slice" "$spec"
 (
   cd web
   PARLEY_PLAYWRIGHT_JSON="$proof_dir/playwright.json" \
     PARLEY_PLAYWRIGHT_OUTPUT="$proof_dir/browser" \
-    pnpm exec playwright test "e2e/$slice.spec.ts" --project=mock --project=rust
+    pnpm exec playwright test "$spec" --project=mock --project=rust
 )
 
 printf '\n=== prove %s: trace --require-executed ===\n' "$slice"

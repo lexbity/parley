@@ -10,6 +10,8 @@
 pub mod analytics;
 pub mod evidence;
 pub mod gate;
+pub mod hmac;
+pub mod jcs;
 pub mod lifecycle;
 pub mod lint;
 pub mod matching;

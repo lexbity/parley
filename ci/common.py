@@ -16,9 +16,15 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-SLICE_ORDER = [f"s{n:02d}" for n in range(1, 12)] + [
-    f"p{n:02d}" for n in range(1, 5)
-] + [f"r{n:02d}" for n in range(1, 5)] + ["s12"]
+# Canonical cumulative order. Every slice up to and including U09 is a real
+# gate target; verifiers and scripts/prove read this one list so the accepted
+# ID set cannot drift between gates.
+SLICE_ORDER = (
+    [f"s{n:02d}" for n in range(1, 13)]
+    + [f"p{n:02d}" for n in range(1, 5)]
+    + [f"r{n:02d}" for n in range(1, 5)]
+    + [f"u{n:02d}" for n in range(1, 10)]
+)
 
 
 def load_coverage() -> dict[str, Any]:

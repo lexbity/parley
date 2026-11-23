@@ -306,6 +306,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
     return {
       opportunity_id: id, title: opportunity.title, lifecycle, close_reason: opportunity.close_reason ?? null,
       phase: stage && phaseState ? { stage_id: stage.stage_id, label: stage.label, class: stage.class, kind: stage.kind, pack_id: phaseState.pack_id, pack_version: phaseState.pack_version, revision: phaseState.revision } : null,
+      pack_id: activePackId, pack_version: activePackVersion, phase_revision: phaseState?.revision ?? 1,
       participants, next_action: nextAction, other_action_count: 0,
     };
   }
@@ -326,7 +327,149 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
     const page = rows.slice(cursor, cursor + limit);
     const phases = PACK_STAGES.map((stage) => ({ stage_id: stage.stage_id, label: stage.label, class: stage.class, kind: stage.kind, pack_id: activePackId, pack_version: activePackVersion, count: [...opportunities.values()].filter((opportunity) => opportunityPhases.get(String(opportunity.id))?.stage_id === stage.stage_id).length }));
     phases.push({ stage_id: '__unmapped__', label: 'Unmapped', class: 'unmapped', kind: 'planning', pack_id: activePackId, pack_version: activePackVersion, count: [...opportunities.values()].filter((opportunity) => !opportunityPhases.get(String(opportunity.id))?.stage_id).length });
-    return { generation: String(events.length), total, rows: page, phases, cursor: cursor ? String(cursor) : null, next_cursor: cursor + page.length < total ? String(cursor + page.length) : null };
+    return { generation: String(events.length), total, rows: page, phases, pack: { id: activePackId, version: activePackVersion }, cursor: cursor ? String(cursor) : null, next_cursor: cursor + page.length < total ? String(cursor + page.length) : null };
+  }
+
+  // --- UCR-001 command registry fixture. Independent state transitions:
+  // the command path shares this fixture's phase state with the REST adapter,
+  // but never proxies to the Rust service or to the REST wire DTO.
+  const COMMAND_SET = 'opportunity.set_phase';
+  const COMMAND_UNDO = 'opportunity.undo_phase_change';
+  const COMMAND_ARG_FIELDS: Record<string, string[]> = {
+    [COMMAND_SET]: ['opportunity_id', 'expected_phase_revision', 'expected_pack_id', 'expected_pack_version', 'stage_id'],
+    [COMMAND_UNDO]: ['opportunity_id', 'expected_phase_revision', 'expected_pack_id', 'expected_pack_version', 'original_event_id'],
+  };
+  const commandDescriptors: RecordData[] = [
+    {
+      id: COMMAND_SET, version: 1, title: 'Change opportunity phase',
+      summary: 'Move an open opportunity to a planning phase',
+      description: 'Moves an open opportunity to a planning stage. Closing, sending and resolution have separate owner workflows.',
+      keywords: ['queue', 'stage'], effect: 'write', requires_permission: 'opportunity.phase_edit',
+      surfaces: ['palette', 'agent'], agent_tier: 2, supports_dry_run: false,
+      when: 'route == "queue" && selection.opportunity',
+      args_schema: { type: 'object', additionalProperties: false, required: COMMAND_ARG_FIELDS[COMMAND_SET], properties: {} },
+      result_schema: { type: 'object', additionalProperties: false },
+      palette: { context_fields: ['route', 'selection.opportunity'], prompts: [{ field: 'stage_id', picker: 'planning_stage', title: 'Planning phase' }] },
+    },
+    {
+      id: COMMAND_UNDO, version: 1, title: 'Undo phase change',
+      summary: 'Revert the latest manual phase change',
+      description: 'Returns the opportunity to the stage recorded before its latest manual phase transition, including Unmapped.',
+      keywords: ['queue', 'stage', 'undo'], effect: 'write', requires_permission: 'opportunity.phase_edit',
+      surfaces: ['palette', 'agent'], agent_tier: 2, supports_dry_run: false,
+      when: 'route == "queue" && selection.opportunity',
+      args_schema: { type: 'object', additionalProperties: false, required: COMMAND_ARG_FIELDS[COMMAND_UNDO], properties: {} },
+      result_schema: { type: 'object', additionalProperties: false },
+      palette: { context_fields: ['route', 'selection.opportunity'], prompts: [] },
+    },
+  ];
+  const commandManifestVersion = `sha256:${createHash('sha256').update(JSON.stringify(commandDescriptors)).digest('hex')}`;
+  const commandReceipts = new Map<string, { digest: string; status: number; body: RecordData; audit_id: string }>();
+  const commandContextAllowed = (key: string) => key === 'route'
+    || (/^selection\.[a-z0-9_]+$/.test(key) && !key.includes('__'));
+
+  function canonicalArgs(value: unknown): string {
+    if (Array.isArray(value)) return `[${value.map(canonicalArgs).join(',')}]`;
+    if (value && typeof value === 'object') {
+      const source = value as RecordData;
+      return `{${Object.keys(source).sort().map((key) => `${JSON.stringify(key)}:${canonicalArgs(source[key])}`).join(',')}}`;
+    }
+    return JSON.stringify(value ?? null);
+  }
+
+  function commandRank(descriptor: RecordData, query: string): [number, number] {
+    const title = String(descriptor.title).toLocaleLowerCase();
+    if (!query) return [5, 0];
+    if (title === query) return [0, 0];
+    if (title.startsWith(query)) return [1, 0];
+    if (title.split(/\s+/).some((token) => token.startsWith(query))) return [2, 0];
+    const source = [...title];
+    const target = [...query];
+    let index = 0;
+    let skipped = 0;
+    let started = false;
+    for (const char of target) {
+      while (index < source.length && source[index] !== char) { if (started) skipped += 1; index += 1; }
+      if (index >= source.length) return [4, 0];
+      started = true;
+      index += 1;
+    }
+    return [3, skipped];
+  }
+
+  function validateCommandArgs(id: string, args: RecordData): RecordData | null {
+    const fields = COMMAND_ARG_FIELDS[id];
+    if (!fields) return null;
+    for (const field of fields) {
+      const value = args[field];
+      if (field === 'expected_phase_revision') {
+        if (!Number.isSafeInteger(value) || Number(value) < 1) {
+          return { path: `/${field}`, problem: 'expected a positive integer' };
+        }
+      } else if (typeof value !== 'string' || !value.trim()) {
+        return { path: `/${field}`, problem: 'expected a non-empty string' };
+      }
+    }
+    for (const key of Object.keys(args)) {
+      if (!fields.includes(key)) return { path: `/${key}`, problem: 'additional property is not allowed' };
+    }
+    return null;
+  }
+
+  function commandResult(id: string, args: RecordData) {
+    const opportunity = opportunities.get(String(args.opportunity_id));
+    if (!opportunity) return { status: 404, body: { code: 'unknown_command', message: 'Opportunity does not exist', details: [] } };
+    const current = opportunityPhases.get(String(opportunity.id)) ?? { stage_id: null, pack_id: activePackId, pack_version: activePackVersion, revision: 1, event_id: '' };
+    const reverted = id === COMMAND_UNDO;
+    if (args.expected_pack_id !== current.pack_id || args.expected_pack_version !== current.pack_version) {
+      return { status: 409, body: { code: 'conflict', message: 'Active pack identity changed; reload the Queue sheet', details: [] } };
+    }
+    if (Number(args.expected_phase_revision) !== current.revision) {
+      return { status: 409, body: { code: 'conflict', message: `Expected phase revision ${String(args.expected_phase_revision)} but the opportunity is at ${current.revision}`, details: [{ path: '/expected_phase_revision', problem: 'stale revision' }] } };
+    }
+    if (reverted && current.event_id !== String(args.original_event_id)) {
+      return { status: 409, body: { code: 'conflict', message: 'Undo cannot apply: a newer phase change replaced the referenced transition', details: [{ path: '/original_event_id', problem: 'stale event' }] } };
+    }
+    let stageId: string | null;
+    if (reverted) {
+      const event = events.find((item) => item.event_id === String(args.original_event_id));
+      const payload = event?.payload ?? {};
+      const previous = payload.from_stage_id;
+      if (previous !== null && (typeof previous !== 'string' || !PACK_STAGES.some((stage) => stage.stage_id === previous))) {
+        return { status: 409, body: { code: 'conflict', message: 'The original phase event has no restorable predecessor', details: [] } };
+      }
+      // A null predecessor is a recorded Unmapped state and is restorable.
+      stageId = previous === null ? null : String(previous);
+    } else {
+      stageId = String(args.stage_id);
+    }
+    const stage = stageId ? PACK_STAGES.find((item) => item.stage_id === stageId) : null;
+    if (stageId && (!stage || stage.kind === 'terminal')) {
+      return { status: 422, body: { code: 'invalid_args', message: `Stage '${stageId}' is not an active planning stage`, details: [{ path: '/stage_id', problem: 'unknown or terminal stage' }] } };
+    }
+    if (String(opportunity.state) !== 'open') {
+      return { status: 409, body: { code: 'conflict', message: `This opportunity is ${String(opportunity.state)}`, details: [] } };
+    }
+    const noOp = !reverted && current.stage_id === stageId;
+    const eventId = noOp ? null : randomHex();
+    const revision = noOp ? current.revision : current.revision + 1;
+    const next = { stage_id: stageId, pack_id: activePackId, pack_version: activePackVersion, revision, event_id: eventId ?? current.event_id };
+    if (!noOp) {
+      opportunityPhases.set(String(opportunity.id), next);
+      opportunity.revision = Number(opportunity.revision) + 1;
+      pushEvent({
+        event_id: eventId!, entity_type: 'opportunity', entity_id: String(opportunity.id), revision,
+        event_type: 'opportunity.phase_changed',
+        payload: { from_stage_id: current.stage_id, to_stage_id: stageId, pack_id: activePackId, pack_version: activePackVersion, operation: reverted ? 'undo' : 'manual', origin: 'command.registry', reversal_of: reverted ? String(args.original_event_id) : null },
+      });
+    }
+    return {
+      status: 200,
+      body: {
+        opportunity_id: String(opportunity.id), phase_revision: revision, previous_stage_id: current.stage_id,
+        stage_id: stageId, event_id: eventId, event_cursor: String(events.length), reverted,
+      },
+    };
   }
 
   function json(response: ServerResponse, status: number, body: unknown) {
@@ -581,6 +724,88 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
     }
     if (!authorize(request)) {
       return fail(response, cookie ? 403 : 401, cookie ? 'TOKEN_INVALID' : 'SESSION_REQUIRED', 'Sign in to the local workspace');
+    }
+
+    if (url.pathname === '/api/v1/commands/query' && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      if (input.surface !== 'palette') return fail(response, 403, 'forbidden', 'Owner requests must use the palette surface');
+      const context = (input.context ?? {}) as RecordData;
+      if (Object.keys(context).length > 16 || Object.keys(context).some((key) => !commandContextAllowed(key))) {
+        return fail(response, 400, 'malformed_request', 'Context key is not allowlisted');
+      }
+      const visible = context.route === 'queue' && context['selection.opportunity'] === true;
+      return json(response, 200, {
+        contract_major: 1, manifest_version: commandManifestVersion, truncated: false,
+        commands: visible ? commandDescriptors : [],
+      });
+    }
+
+    if (url.pathname === '/api/v1/commands/search' && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      if (typeof input.query !== 'string' || input.query.length > 256) return fail(response, 400, 'malformed_request', 'Query is invalid');
+      const limit = input.limit === undefined ? 10 : Number(input.limit);
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 25) return fail(response, 400, 'malformed_request', 'Limit must be between 1 and 25');
+      const context = (input.context ?? {}) as RecordData;
+      if (Object.keys(context).some((key) => !commandContextAllowed(key))) return fail(response, 400, 'malformed_request', 'Context key is not allowlisted');
+      const needle = input.query.trim().toLocaleLowerCase();
+      const items = commandDescriptors
+        .map((descriptor) => ({ descriptor, score: commandRank(descriptor, needle) }))
+        .filter((entry) => entry.score[0] < 4)
+        .sort((left, right) => left.score[0] - right.score[0] || left.score[1] - right.score[1] || String(left.descriptor.id).localeCompare(String(right.descriptor.id)))
+        .slice(0, limit)
+        .map(({ descriptor }) => ({
+          id: descriptor.id, version: descriptor.version, title: descriptor.title,
+          summary: descriptor.summary, effect: descriptor.effect,
+        }));
+      return json(response, 200, { items, total: items.length, next_cursor: null });
+    }
+
+    const commandDescribe = /^\/api\/v1\/commands\/([^/]+)$/.exec(url.pathname);
+    if (commandDescribe && request.method === 'GET') {
+      const descriptor = commandDescriptors.find((item) => item.id === decodeURIComponent(commandDescribe[1]!));
+      if (!descriptor) return fail(response, 404, 'unknown_command', 'Command is not available');
+      return json(response, 200, descriptor);
+    }
+    if (commandDescribe && request.method === 'POST') {
+      const id = decodeURIComponent(commandDescribe[1]!);
+      const descriptor = commandDescriptors.find((item) => item.id === id);
+      if (!descriptor) return fail(response, 404, 'unknown_command', 'Command is not available');
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key.trim()) return fail(response, 400, 'INVALID_KEY', 'An Idempotency-Key is required');
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      if (input.version !== 1) return fail(response, 409, 'version_mismatch', 'Command version is stale; re-describe and collect fresh consent');
+      if (!input.args || typeof input.args !== 'object' || Array.isArray(input.args)) return fail(response, 422, 'invalid_args', 'Args must be an object');
+      const args = input.args as RecordData;
+      const invalid = validateCommandArgs(id, args);
+      if (invalid) return json(response, 422, { ok: false, error: { code: 'invalid_args', message: 'Command arguments are invalid', details: [invalid] } });
+      const digest = createHash('sha256').update(canonicalArgs(args)).digest('hex');
+      const receiptKey = `${epoch}|${id}|${key}`;
+      const existing = commandReceipts.get(receiptKey);
+      if (existing) {
+        if (existing.digest !== digest) {
+          return json(response, 422, { ok: false, error: { code: 'idempotency_mismatch', message: 'Idempotency key was used for a different command', details: [] } });
+        }
+        return json(response, existing.status, { ...existing.body, replayed: true, original_audit_id: existing.audit_id });
+      }
+      const outcome = commandResult(id, args);
+      const auditId = randomHex(12);
+      if (outcome.status === 200) {
+        const body = {
+          ok: true, command_version: 1, audit_id: auditId, replayed: false,
+          dry_run: input.dry_run === true, result: outcome.body,
+        };
+        commandReceipts.set(receiptKey, { digest, status: 200, body, audit_id: auditId });
+        return json(response, 200, body);
+      }
+      const failure = {
+        ok: false, command_version: 1, audit_id: auditId,
+        error: outcome.body as { code: string; message: string; details: RecordData[] },
+      };
+      commandReceipts.set(receiptKey, { digest, status: outcome.status, body: failure, audit_id: auditId });
+      return json(response, outcome.status, failure);
     }
 
     const importRoute = /^\/api\/v1\/party-imports(?:\/([^/]+)\/(preview|commit))?$/.exec(url.pathname);
@@ -1380,6 +1605,38 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
           }
       return json(response, 200, { columns: resourceColumns, cards: page, off_board, next_cursor, event_cursor: events.length });
     }
+    const resourceColumnPath = /^\/api\/v1\/resource-board\/columns(?:\/([^/]+))?$/.exec(url.pathname);
+    const creatingColumn = resourceColumnPath && !resourceColumnPath[1] && request.method === 'POST';
+    const removingColumn = resourceColumnPath?.[1] && request.method === 'DELETE';
+    if (creatingColumn || removingColumn) {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key || key.length > 100) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+      const digest = createHash('sha256').update(JSON.stringify([request.method, url.pathname, input])).digest('hex');
+      const prior = receipts.get(key);
+      if (prior) return prior.digest === digest ? json(response, prior.status ?? 200, prior.result) : fail(response, 409, 'KEY_REUSED', 'Idempotency key was used for a different command');
+      if (creatingColumn) {
+        const title = typeof input.title === 'string' ? input.title.trim() : '';
+        if (!title || Array.from(title).length > 100) return fail(response, 422, 'INVALID_REQUEST', 'Enter a list name of 1–100 characters.');
+        const column = { id: randomHex(), title, position: (resourceColumns.at(-1)?.position ?? 0) + 1024, revision: 1 };
+        resourceColumns.push(column);
+        pushEvent({ event_id: randomHex(), entity_type: 'resource_column', entity_id: column.id, revision: 1, event_type: 'resource_column.created', payload: column });
+        receipts.set(key, { digest, result: column, status: 201 });
+        return json(response, 201, column);
+      }
+      const id = String(resourceColumnPath?.[1]);
+      const column = resourceColumns.find(item => item.id === id);
+      if (!column) return fail(response, 404, 'NOT_FOUND', 'List does not exist');
+      if (input.expected_revision !== column.revision) return fail(response, 412, 'STALE_REVISION', 'List changed in another session');
+      const cards = [...resourcePlacements].filter(([, placement]) => placement.column_id === id);
+      for (const [resourceId] of cards) applyPlacement(resourceId, { column_id: null });
+      resourceColumns.splice(resourceColumns.indexOf(column), 1);
+      const result = { id, off_board_count: cards.length };
+      pushEvent({ event_id: randomHex(), entity_type: 'resource_column', entity_id: id, revision: column.revision + 1, event_type: 'resource_column.removed', payload: result });
+      receipts.set(key, { digest, result, status: 200 });
+      return json(response, 200, result);
+    }
     const resourceCardRead = /^\/api\/v1\/resource-cards\/([^/]+)$/.exec(url.pathname);
     if (resourceCardRead && request.method === 'GET') {
       const entity = entityResources.get(resourceCardRead[1]!);
@@ -1396,6 +1653,9 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
     if (resourceRetire && request.method === 'POST') {
       const key = request.headers['idempotency-key'];
       if (typeof key !== 'string' || !key) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+      const digest = createHash('sha256').update(JSON.stringify(['POST', url.pathname, {}])).digest('hex');
+      const prior = receipts.get(key);
+      if (prior) return prior.digest === digest ? json(response, prior.status ?? 200, prior.result) : fail(response, 409, 'KEY_REUSED', 'Idempotency key was used for a different command');
       const entity = entityResources.get(resourceRetire[1]!);
       if (!entity || entity.readiness === 'retired') return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
       entity.readiness = 'retired';
@@ -1403,10 +1663,10 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
       entity.etag = entityTag(entity);
       const existing = resources.get(String(entity.id));
       if (existing) { existing.readiness = 'retired'; existing.revision += 1; existing.etag = tag(existing); }
-      resourcePlacements.delete(entity.id as string);
+      applyPlacement(String(entity.id), { column_id: null });
       pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: entity.id as string, revision: Number(entity.revision), event_type: 'resource.retired', payload: {} });
       const result = { entity: { id: entity.id, kind: 'resource', readiness: 'retired', revision: Number(entity.revision) }, affected_versions: [] };
-      receipts.set(key, { digest: createHash('sha256').update(JSON.stringify({})).digest('hex'), result, status: 200 });
+      receipts.set(key, { digest, result, status: 200 });
       return json(response, 200, result);
     }
     if (url.pathname === '/api/v1/resource-card-commits' && request.method === 'POST') {
@@ -1768,7 +2028,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
       opportunityPhases.set(String(opportunity.id), next);
       opportunity.revision = Number(opportunity.revision) + 1;
       pushEvent({
-        event_id: eventId, entity_type: 'opportunity', entity_id: String(opportunity.id), revision: Number(opportunity.revision),
+        event_id: eventId, entity_type: 'opportunity', entity_id: String(opportunity.id), revision: next.revision,
         event_type: 'opportunity.phase_changed',
         payload: { from_stage_id: current.stage_id, to_stage_id: stage.stage_id, from_class: current.stage_id ? PACK_STAGES.find((item) => item.stage_id === current.stage_id)?.class ?? null : null, to_class: stage.class, pack_id: activePackId, pack_version: activePackVersion, operation: reverted ? 'undo' : 'manual', origin: 'queue.sheet', reversal_of: reverted ? input.original_event_id : null },
       });

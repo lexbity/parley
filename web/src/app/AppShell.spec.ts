@@ -2,6 +2,7 @@ import { mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises } from '@vue/test-utils';
 import { parley, type BoardOpportunity, type BoardSnapshot, type ExtractorJob, type GraphEntity, type Material, type OpportunitySummary, type SavedSource } from '../api/client';
+import { commands } from '../api/commands';
 import AppShell from './AppShell.vue';
 import { tabs } from './tabs';
 
@@ -11,6 +12,7 @@ function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [],
   lists: [{ id: 'list-default', title: 'Opportunities', position: 0, archived: false, revision: 1 }], cards: [],
 }): void {
   vi.spyOn(parley, 'connect').mockResolvedValue();
+  vi.spyOn(commands, 'query').mockResolvedValue({ contract_major: 1, manifest_version: 'sha256:test', truncated: false, commands: [] });
   vi.spyOn(parley, 'listResources').mockResolvedValue([]);
   vi.spyOn(parley, 'listParties').mockResolvedValue(parties);
   vi.spyOn(parley, 'listSources').mockResolvedValue(sources);
@@ -20,7 +22,7 @@ function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [],
   vi.spyOn(parley, 'listCapacity').mockResolvedValue([]);
   vi.spyOn(parley, 'getBoard').mockResolvedValue(board);
   vi.spyOn(parley, 'getQueueSheet').mockResolvedValue({ generation: '1', total: 0, rows: [], phases: [], cursor: null, next_cursor: null });
-  vi.spyOn(parley, 'setOpportunityPhase').mockResolvedValue({ row: { opportunity_id: '', title: '', lifecycle: 'open', close_reason: null, phase: null, participants: [], next_action: { kind: 'choose', label: 'Choose a next action', reason: '', date: null, thread_id: null, recipient_id: null, recipient_name: null }, other_action_count: 0 }, event_id: 'ev', phase_revision: 1, reverted: false });
+  vi.spyOn(parley, 'setOpportunityPhase').mockResolvedValue({ row: { opportunity_id: '', title: '', lifecycle: 'open', close_reason: null, pack_id: 'job_search', pack_version: '1.0.0', phase_revision: 1, phase: null, participants: [], next_action: { kind: 'choose', label: 'Choose a next action', reason: '', date: null, thread_id: null, recipient_id: null, recipient_name: null }, other_action_count: 0 }, event_id: 'ev', phase_revision: 1, reverted: false });
   vi.spyOn(parley, 'getDailyQueue').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', pack_id: 'job_search', pack_version: '1.0.0', daily_cap: 12, actionable_count: 0, deferred_count: 0, items: [] });
   vi.spyOn(parley, 'getInsights').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', period_start: '2026-11-14', period_end: '2026-11-21', pack_id: 'job_search', pack_version: '1.0.0', sample_size: 0, metrics: [], comparisons: [], gaps: [], questions: [] });
   vi.spyOn(parley, 'getOpportunityNotes').mockResolvedValue({ opportunity_id: '', markdown: '', revision: 1, next_task: null, tasks: [] });
@@ -71,7 +73,9 @@ describe('AppShell', () => {
     stubWorkspace();
     const wrapper = mount(AppShell);
     await flushPromises();
-    await wrapper.get('section[aria-label="Resource board"] button.add-card').trigger('click');
+    const board = wrapper.get('section[aria-label="Resource board"]');
+    await board.get('button.add-card').trigger('click');
+    await board.findAll('button').find(button => button.text() === 'More options')!.trigger('click');
     const editor = wrapper.get('form[aria-label="Resource card editor"]');
     const titleInput = editor.get('label:has(input) input');
     await titleInput.setValue('unsent resource title');
@@ -317,7 +321,7 @@ describe('AppShell', () => {
     vi.mocked(parley.getQueueSheet).mockResolvedValue({
       generation: '1', total: 1,
       rows: [{
-        opportunity_id: 'o1', title: 'Onboarding exchange', lifecycle: 'open', close_reason: null, phase: null,
+        opportunity_id: 'o1', title: 'Onboarding exchange', lifecycle: 'open', close_reason: null, pack_id: 'job_search', pack_version: '1.0.0', phase_revision: 1, phase: null,
         participants: [{ id: 'p1', name: 'Dana Lee', kind: 'person', role: 'primary' }],
         next_action: { kind: 'choose', label: 'Choose a next action', reason: '', date: null, thread_id: null, recipient_id: null, recipient_name: null },
         other_action_count: 0,
@@ -421,6 +425,64 @@ describe('AppShell', () => {
     expect(connect).toHaveBeenCalled();
     expect(wrapper.text()).toContain('session refused');
     expect(listParties).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it('opens the palette with mod+k and closes it with Escape', async () => {
+    stubWorkspace();
+    const wrapper = mount(AppShell, { attachTo: globalThis.document.body });
+    await flushPromises();
+    globalThis.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
+    await flushPromises();
+    const dialog = wrapper.get('dialog.command-palette');
+    expect(dialog.attributes('open')).toBeDefined();
+    expect(dialog.get('[role="combobox"]').attributes('aria-expanded')).toBe('true');
+    await dialog.get('[role="combobox"]').trigger('keydown', { key: 'Escape' });
+    await flushPromises();
+    expect(wrapper.get('dialog.command-palette').attributes('open')).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it('leaves mod+k to a focused editable field and to an open dialog', async () => {
+    stubWorkspace();
+    const wrapper = mount(AppShell, { attachTo: globalThis.document.body });
+    await flushPromises();
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(3)').trigger('click');
+    await flushPromises();
+    const search = wrapper.get('input[aria-label="Find scenario"]');
+    (search.element as HTMLInputElement).focus();
+    search.element.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
+    await flushPromises();
+    expect(wrapper.get('dialog.command-palette').attributes('open')).toBeUndefined();
+
+    const blocking = globalThis.document.createElement('div');
+    blocking.setAttribute('role', 'alertdialog');
+    blocking.textContent = 'Another dialog owns the chord';
+    globalThis.document.body.appendChild(blocking);
+    (search.element as HTMLInputElement).blur();
+    globalThis.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
+    await flushPromises();
+    expect(wrapper.get('dialog.command-palette').attributes('open')).toBeUndefined();
+    blocking.remove();
+    wrapper.unmount();
+  });
+
+  it('restores focus to the workspace heading when the palette trigger is removed', async () => {
+    stubWorkspace();
+    const wrapper = mount(AppShell, { attachTo: globalThis.document.body });
+    await flushPromises();
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(3)').trigger('click');
+    await flushPromises();
+    const trigger = wrapper.get('button[aria-expanded="false"]');
+    (trigger.element as HTMLButtonElement).focus();
+    globalThis.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
+    await flushPromises();
+    expect(wrapper.get('dialog.command-palette').attributes('open')).toBeDefined();
+    trigger.element.remove();
+    await wrapper.get('dialog.command-palette [role="combobox"]').trigger('keydown', { key: 'Escape' });
+    await flushPromises();
+    expect((globalThis.document.activeElement as HTMLElement | null)?.tagName).toBe('H1');
+    expect(globalThis.document.activeElement?.textContent).toContain('Queue');
     wrapper.unmount();
   });
 

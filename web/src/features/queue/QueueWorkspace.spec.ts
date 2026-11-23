@@ -1,7 +1,15 @@
 import { mount, flushPromises } from '@vue/test-utils';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parley, type GraphEntity, type QueueSheetResponse, type SetPhaseResult, type SheetPhase } from '../../api/client';
+import { commands } from '../../api/commands';
+import { sessionEventReader } from '../../app/commands/events';
+import { createCommandRegistry, installCommandRegistry, useCommandRegistry } from '../../app/commands/registry';
 import QueueWorkspace from './QueueWorkspace.vue';
+
+beforeEach(() => {
+  installCommandRegistry(createCommandRegistry(vi.fn()));
+  vi.spyOn(commands, 'query').mockResolvedValue({ contract_major: 1, manifest_version: 'sha256:test', truncated: false, commands: [] });
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -18,7 +26,7 @@ const parties: GraphEntity[] = [{ id: 'p1', kind: 'person', name: 'Dana Lee', re
 
 function row(overrides: Partial<QueueSheetResponse['rows'][number]> = {}): QueueSheetResponse['rows'][number] {
   return {
-    opportunity_id: 'o1', title: 'Onboarding', lifecycle: 'open', close_reason: null, phase: null,
+    opportunity_id: 'o1', title: 'Onboarding', lifecycle: 'open', close_reason: null, pack_id: 'job_search', pack_version: '1.0.0', phase_revision: 1, phase: null,
     participants: [{ id: 'p1', name: 'Dana Lee', kind: 'person', role: 'primary' }],
     next_action: { kind: 'choose', label: 'Choose a next action', reason: 'No work or wait is known for this opportunity.', date: null, thread_id: null, recipient_id: null, recipient_name: null },
     other_action_count: 0,
@@ -38,8 +46,12 @@ const sheetResponse: QueueSheetResponse = {
 function stub(initialPhases: Record<string, SheetPhase> = {}) {
   const phaseState = new Map<string, SheetPhase>(Object.entries(initialPhases));
   vi.spyOn(parley, 'connect').mockResolvedValue();
+  vi.spyOn(parley, 'getEvents').mockResolvedValue({ items: [], next_cursor: '0', observed_cursor: '0' });
+  vi.spyOn(parley, 'getWritingExchange').mockResolvedValue({ current: null, versions: [] });
+  vi.spyOn(parley, 'getWritingInterests').mockResolvedValue([]);
+  vi.spyOn(parley, 'listThreads').mockResolvedValue([]);
   vi.spyOn(parley, 'getQueueSheet').mockImplementation(async (filters: { search?: string; phase?: string; sort?: 'due' | 'name' } = {}) => {
-    let rows = sheetResponse.rows.map((item) => ({ ...item, phase: phaseState.get(item.opportunity_id) ?? item.phase }));
+    let rows = sheetResponse.rows.map((item) => ({ ...item, phase: phaseState.get(item.opportunity_id) ?? item.phase, phase_revision: phaseState.get(item.opportunity_id)?.revision ?? item.phase_revision }));
     if (filters.phase === 'preparing') rows = rows.filter((item) => item.phase?.stage_id === 'preparing');
     if (filters.phase === '__unmapped__') rows = rows.filter((item) => !item.phase);
     if (filters.search) {
@@ -57,7 +69,7 @@ function stub(initialPhases: Record<string, SheetPhase> = {}) {
     const nextRev = input.expected_phase_revision + (current?.stage_id === input.target_stage_id ? 0 : 1);
     const next: SheetPhase = { stage_id: input.target_stage_id, label: input.target_stage_id === 'preparing' ? 'Preparing' : 'Exploring', class: input.target_stage_id === 'preparing' ? 'prepared' : 'identified', kind: 'planning', pack_id: 'job_search', pack_version: '1.0.0', revision: nextRev };
     phaseState.set(id, next);
-    return { row: { ...row({ phase: next }), opportunity_id: id }, event_id: input.original_event_id ?? `ev-${id}-${input.target_stage_id}`, phase_revision: nextRev, reverted: !!input.original_event_id };
+    return { row: { ...row({ phase: next, phase_revision: nextRev }), opportunity_id: id }, event_id: input.original_event_id ?? `ev-${id}-${input.target_stage_id}`, phase_revision: nextRev, reverted: !!input.original_event_id };
   });
   return mount(QueueWorkspace, { props: { parties, outputs: [] } });
 }
@@ -271,6 +283,66 @@ describe('QueueWorkspace sheet: search, phase edit, undo', () => {
     await wrapper.findAll('button').find((button) => button.text() === 'Load more')!.trigger('click');
     await flushPromises();
     expect(wrapper.findAll('tbody tr[data-opportunity-id]')).toHaveLength(2);
+    wrapper.unmount();
+  });
+
+  it('freezes pack identity and revision in a scoped palette command and applies its receipt', async () => {
+    const wrapper = stub(); await flushPromises();
+    await wrapper.get('button[data-open="o1"]').trigger('click');
+    await flushPromises();
+    const result = {
+      ok: true as const, command_version: 1, audit_id: 'aud-1', replayed: false, dry_run: false,
+      result: { opportunity_id: 'o1', phase_revision: 5, previous_stage_id: null, stage_id: 'preparing', event_id: 'ev-9', event_cursor: '12' },
+    };
+    const event = { cursor: '12', event_id: 'ev-9', entity_type: 'opportunity', entity_id: 'o1', revision: 5, event_type: 'opportunity.phase_changed', occurred_at: '2026-11-20T09:00:00Z', payload: { operation: 'manual', to_stage_id: 'preparing' } };
+    const invoke = vi.spyOn(commands, 'invoke').mockImplementation(async () => {
+      const changed = row({ phase: { ...phases[1]!, revision: 5 }, phase_revision: 5 });
+      vi.mocked(parley.getQueueSheet).mockResolvedValue({ ...sheetResponse, rows: [changed, sheetResponse.rows[1]!] });
+      vi.mocked(parley.getEvents).mockResolvedValue({ items: [event], next_cursor: '12', observed_cursor: '12' });
+      return result;
+    });
+    const ctx = { context: { route: 'queue', 'selection.opportunity': true }, selection: { opportunity: 'o1' } };
+    await useCommandRegistry().run('ui.queue.set_phase', { stage_id: 'preparing' }, ctx);
+    await flushPromises();
+    expect(invoke).toHaveBeenCalledWith('opportunity.set_phase', expect.objectContaining({
+      version: 1,
+      args: expect.objectContaining({ opportunity_id: 'o1', expected_pack_id: 'job_search', expected_pack_version: '1.0.0', stage_id: 'preparing' }),
+    }), expect.any(String));
+    expect(wrapper.text()).toContain('moved to Preparing');
+    expect(wrapper.emitted('binding')?.at(-1)?.[0]).toMatchObject({ opportunityId: 'o1', originalEventId: 'ev-9' });
+    wrapper.unmount();
+  });
+
+  it('reports a conflict when a command result names a row that is no longer visible', async () => {
+    const wrapper = stub(); await flushPromises();
+    await wrapper.get('button[data-open="o1"]').trigger('click');
+    await flushPromises();
+    vi.spyOn(commands, 'invoke').mockResolvedValue({
+      ok: true, command_version: 1, audit_id: 'aud-2', replayed: false, dry_run: false,
+      result: { opportunity_id: 'missing', phase_revision: 2, previous_stage_id: null, stage_id: 'preparing', event_id: null, event_cursor: '1' },
+    });
+    await useCommandRegistry().run('ui.queue.set_phase', { stage_id: 'preparing' }, {
+      context: { route: 'queue', 'selection.opportunity': true }, selection: { opportunity: 'o1' },
+    });
+    await flushPromises();
+    expect(wrapper.get('[role="alert"]').text()).toContain('no longer visible');
+    wrapper.unmount();
+  });
+
+  it('preserves a dirty phase edit when an external event arrives during a save', async () => {
+    let hooks!: Parameters<typeof sessionEventReader.start>[0];
+    vi.spyOn(sessionEventReader, 'start').mockImplementation((value) => { hooks = value; });
+    let finish!: (value: SetPhaseResult) => void;
+    const wrapper = stub();
+    vi.mocked(parley.setOpportunityPhase).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await flushPromises();
+    await wrapper.get('select[aria-label="Phase for Onboarding"]').setValue('preparing');
+    await flushPromises();
+    hooks.onEvents({ items: [{ cursor: '1', event_id: 'external', entity_type: 'opportunity', entity_id: 'o1', revision: 2, event_type: 'opportunity.phase_changed', occurred_at: '2026-11-20T09:00:00Z', payload: {} }], next_cursor: '1', observed_cursor: '1' });
+    await flushPromises();
+    expect(wrapper.get('[role="alert"]').text()).toContain('in flight');
+    finish({ row: sheetResponse.rows[0]!, event_id: 'ev-1', phase_revision: 2, reverted: false });
+    await flushPromises();
     wrapper.unmount();
   });
 

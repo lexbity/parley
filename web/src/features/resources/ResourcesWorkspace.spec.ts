@@ -43,7 +43,7 @@ function stubBoard(board: ResourceBoardSnapshot = emptyBoard, graph = { nodes: [
 }
 
 describe('ResourcesWorkspace', () => {
-  it('renders the three fixed columns with add entry points on an empty board', async () => {
+  it('renders the three initial lists with add entry points on an empty board', async () => {
     stubBoard();
     const wrapper = mount(ResourcesWorkspace);
     await flushPromises();
@@ -53,9 +53,9 @@ describe('ResourcesWorkspace', () => {
     expect(lanes[1]!.text()).toContain('Developing');
     expect(lanes[2]!.text()).toContain('Available');
     expect(wrapper.findAll('button.add-card').length).toBe(3);
-    // The column-local entry is the board's only creation entry (spec §1).
     const boardHeader = wrapper.get('section[aria-label="Resource board"] header.panel-header');
     expect(boardHeader.findAll('button').map(button => button.text())).toEqual(['Find resource']);
+    expect(wrapper.get('.new-list button').text()).toContain('Add another list');
     wrapper.unmount();
   });
 
@@ -74,9 +74,11 @@ describe('ResourcesWorkspace', () => {
     const wrapper = mount(ResourcesWorkspace);
     await flushPromises();
     await wrapper.findAll('button.add-card')[1]!.trigger('click');
+    const inline = wrapper.get('form[aria-label="New card in Developing"]');
+    await inline.get('input').setValue('Workshop outline');
+    await inline.findAll('button').find(button => button.text() === 'More options')!.trigger('click');
     const form = wrapper.get('form[aria-label="Resource card editor"]');
-    expect(form).toBeTruthy();
-    await form.get('input[maxlength="240"]').setValue('Workshop outline');
+    expect((form.get('input[maxlength="240"]').element as HTMLInputElement).value).toBe('Workshop outline');
     await form.get('select').setValue('note');
     await form.trigger('submit');
     await flushPromises();

@@ -9,6 +9,7 @@ test('s01_resource_first_launch_retry_and_cross_session_conflict', async ({ page
   const board = page.getByRole('region', { name: 'Resource board', exact: true });
   const editor = page.getByRole('form', { name: 'Resource card editor' });
   await board.getByRole('button', { name: 'Add card to Inbox' }).click();
+  await board.getByRole('button', { name: 'More options' }).click();
   await editor.getByLabel('Title').fill(title);
   await editor.getByRole('textbox', { name: 'Owner notes' }).fill('A short **review guide** for onboarding teams.');
   await editor.getByRole('button', { name: 'Save card' }).click();

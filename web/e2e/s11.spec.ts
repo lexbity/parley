@@ -17,6 +17,7 @@ async function configureBackups(settings: Awaited<ReturnType<typeof openDataSett
   await settings.getByRole('button', { name: 'Save backup settings' }).click();
   await expect(settings.getByRole('status')).toContainText('schedule saved');
   await settings.getByRole('button', { name: 'Create verified backup now' }).click();
+  await expect(settings.getByRole('status')).toHaveText(/Verified backup .+ created\./);
   await expect(settings.getByRole('region', { name: 'Verified backups' })).toContainText('verified');
 }
 

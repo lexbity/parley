@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/CommandErrorEnvelope","body":{"error":{"code":"forbidden","message":"Owner requests must use the palette surface","details":[{"path":"","problem":"agent_surface_denied"}]}}}

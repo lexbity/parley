@@ -66,7 +66,7 @@ export type SheetPhase = { stage_id: string; label: string; class: string; kind:
 export type SheetParticipant = { id: string; name: string; kind: string; role: 'primary' | 'participant' };
 export type SheetNextActionKind = 'terminal' | 'touch' | 'task' | 'blocked' | 'wait' | 'choose';
 export type SheetNextAction = { kind: SheetNextActionKind; label: string; reason: string; date: string | null; thread_id: string | null; recipient_id: string | null; recipient_name: string | null };
-export type QueueSheetRow = { opportunity_id: string; title: string; lifecycle: 'open' | 'resolved' | 'dormant' | 'closed'; close_reason: string | null; phase: SheetPhase | null; participants: SheetParticipant[]; next_action: SheetNextAction; other_action_count: number };
+export type QueueSheetRow = { opportunity_id: string; title: string; lifecycle: 'open' | 'resolved' | 'dormant' | 'closed'; close_reason: string | null; pack_id: string; pack_version: string; phase_revision: number; phase: SheetPhase | null; participants: SheetParticipant[]; next_action: SheetNextAction; other_action_count: number };
 export type PhaseKind = { stage_id: string; label: string; class: string; kind: 'planning' | 'terminal'; pack_id: string; pack_version: string; count: number };
 export type QueueSheetResponse = { generation: string; total: number; rows: QueueSheetRow[]; phases: PhaseKind[]; cursor: string | null; next_cursor: string | null };
 export type SetPhaseInput = { target_stage_id: string; pack_version: string; expected_phase_revision: number; original_event_id?: string | null };
@@ -392,9 +392,9 @@ function decodeSheetNextAction(value: unknown): SheetNextAction {
 
 function decodeQueueSheetRow(value: unknown): QueueSheetRow {
   const row = object(value);
-  if (!row || !['open', 'resolved', 'dormant', 'closed'].includes(String(row.lifecycle)) || !Array.isArray(row.participants) || !Number.isSafeInteger(row.other_action_count)) throw new Error('Invalid response: sheet row is malformed');
+  if (!row || !['open', 'resolved', 'dormant', 'closed'].includes(String(row.lifecycle)) || !Array.isArray(row.participants) || !Number.isSafeInteger(row.other_action_count) || !Number.isSafeInteger(row.phase_revision) || Number(row.phase_revision) < 1) throw new Error('Invalid response: sheet row is malformed');
   const participants = row.participants.map((raw) => { const item = object(raw); if (!item || !['primary', 'participant'].includes(String(item.role))) throw new Error('Invalid response: sheet participant is malformed'); return { id: requiredString(item.id, 'participant.id'), name: requiredString(item.name, 'participant.name'), kind: requiredString(item.kind, 'participant.kind'), role: item.role as SheetParticipant['role'] }; });
-  return { opportunity_id: requiredString(row.opportunity_id, 'row.opportunity_id'), title: requiredString(row.title, 'row.title'), lifecycle: row.lifecycle as QueueSheetRow['lifecycle'], close_reason: typeof row.close_reason === 'string' ? row.close_reason : null, phase: row.phase === null ? null : decodeSheetPhase(row.phase), participants, next_action: decodeSheetNextAction(row.next_action), other_action_count: Number(row.other_action_count) };
+  return { opportunity_id: requiredString(row.opportunity_id, 'row.opportunity_id'), title: requiredString(row.title, 'row.title'), lifecycle: row.lifecycle as QueueSheetRow['lifecycle'], close_reason: typeof row.close_reason === 'string' ? row.close_reason : null, pack_id: requiredString(row.pack_id, 'row.pack_id'), pack_version: requiredString(row.pack_version, 'row.pack_version'), phase_revision: Number(row.phase_revision), phase: row.phase === null ? null : decodeSheetPhase(row.phase), participants, next_action: decodeSheetNextAction(row.next_action), other_action_count: Number(row.other_action_count) };
 }
 
 function decodeQueueSheet(value: unknown): QueueSheetResponse {
@@ -802,6 +802,24 @@ export class ParleyClient {
   get eventCursor(): string { return this.session?.cursor ?? '0'; }
   get workspaceEpoch(): string | undefined { return this.session?.epoch; }
   get workspaceId(): string | undefined { return this.session?.workspace_id; }
+
+  /**
+   * Owner authentication for sibling API clients (the command client) that
+   * share this singleton session. The bootstrap secret is redeemed once by
+   * connect(); every other owner request reuses these exact credentials.
+   */
+  authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      ...extra,
+    };
+    if (this.session) {
+      headers['X-Parley-Token'] = this.session.mutation_token;
+      headers['X-Parley-Epoch'] = this.session.epoch;
+    }
+    return headers;
+  }
 
   async stagePartyImport(csv: Blob, key: string): Promise<PartyImportStage> {
     const result = object(await this.request('/party-imports', {
@@ -1613,6 +1631,18 @@ export class ParleyClient {
     if (options.cursor) query.set('cursor', options.cursor);
     if (options.includeOffboard) query.set('include_offboard', 'true');
     return decodeResourceBoardSnapshot(await this.request(`/resource-board?${query.toString()}`));
+  }
+
+  async createResourceColumn(input: components['schemas']['CreateResourceColumn'], key: string): Promise<ResourceColumn> {
+    return decodeResourceColumn(await this.mutate('/resource-board/columns', 'POST', input, { 'Idempotency-Key': key }));
+  }
+
+  async removeResourceColumn(id: string, input: components['schemas']['RemoveResourceColumn'], key: string): Promise<components['schemas']['RemovedResourceColumn']> {
+    const result = object(await this.mutate('/resource-board/columns/' + encodeURIComponent(id), 'DELETE', input, { 'Idempotency-Key': key }));
+    if (!result || result.id !== id || !Number.isSafeInteger(result.off_board_count) || Number(result.off_board_count) < 0) {
+      throw new Error('Invalid response: list removal receipt is malformed');
+    }
+    return { id, off_board_count: Number(result.off_board_count) };
   }
 
   async retireResourceCard(id: string, key = newOperationKey()): Promise<{ entity: { id: string; kind: string; readiness: string; revision: number }; affected_versions: Array<{ material_id: string; version_no: number }> }> {

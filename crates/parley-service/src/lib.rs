@@ -233,9 +233,11 @@ fn legacy_value(row: &sqlx::sqlite::SqliteRow, columns: &[String], field: &str) 
     None
 }
 
+mod application;
 mod assistant;
 mod blob;
 mod board;
+mod commands;
 mod generation;
 mod jobs;
 mod maintenance;
@@ -268,6 +270,8 @@ pub enum WorkspaceError {
     NotFound,
     #[error("the record changed in another session")]
     StaleRevision,
+    #[error("command ledger capacity is exhausted")]
+    LedgerFull,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -516,6 +520,12 @@ pub struct Workspace {
     pub(crate) spool: blob::ReleaseSpool,
     root: generation::WorkspaceRoot,
     database_path: PathBuf,
+    /// Private generation key for command ledger HMACs. Kept outside the
+    /// database and excluded from backups/exports; rotated on replacement.
+    command_secret: Arc<std::sync::RwLock<Vec<u8>>>,
+    /// Adopted-operation generation token. A generation publisher holds the
+    /// exclusive lock; writer jobs hold the shared lock.
+    generation: Arc<tokio::sync::RwLock<u64>>,
 }
 
 impl Workspace {
@@ -548,8 +558,10 @@ impl Workspace {
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Full)
             .busy_timeout(Duration::from_secs(2));
+        // UCR-001 §5: at most four read/pool connections plus the dedicated
+        // adopted writer connection created in start_workspace.
         let pool = SqlitePoolOptions::new()
-            .max_connections(5)
+            .max_connections(4)
             .connect_with(options)
             .await?;
         #[cfg(unix)]
@@ -599,6 +611,8 @@ impl Workspace {
         let removed_generation_bytes = root
             .reconcile_unselected()
             .map_err(WorkspaceError::Invalid)?;
+        let command_secret = Arc::new(std::sync::RwLock::new(load_command_secret(&root)?));
+        let generation = Arc::new(tokio::sync::RwLock::new(1u64));
         let workspace = Self {
             pool,
             epoch,
@@ -608,9 +622,21 @@ impl Workspace {
             spool: blob::ReleaseSpool::new(),
             root,
             database_path: path.to_path_buf(),
+            command_secret,
+            generation,
         };
         maintenance::initialize_settings(&workspace).await?;
         maintenance::complete_startup_operations(&workspace, removed_generation_bytes).await?;
+        // Finalize attempts from an earlier process that lack a final audit
+        // record (UCR-001 Q3).
+        let interrupted = commands::ledger::recover_interrupted_attempts(&workspace.pool)
+            .await
+            .map_err(|e| {
+                WorkspaceError::Invalid(format!("recover interrupted command attempts: {e}"))
+            })?;
+        if interrupted > 0 {
+            eprintln!("command ledger: finalized {interrupted} interrupted attempts");
+        }
         Ok(workspace)
     }
 
@@ -638,6 +664,41 @@ impl Workspace {
 
     pub fn workspace_id(&self) -> &str {
         &self.workspace_id
+    }
+
+    /// Snapshot of the current private generation key. Held only for the
+    /// duration of one digest computation; replacement rotates it in memory
+    /// as well as on disk.
+    pub fn command_secret(&self) -> Vec<u8> {
+        self.command_secret
+            .read()
+            .expect("generation key lock poisoned")
+            .clone()
+    }
+
+    /// Rotate the private generation key on workspace replacement. New
+    /// receipts are HMACed under the new key; old-epoch receipts are already
+    /// unreachable because the epoch changed with the replacement.
+    pub(crate) fn rotate_command_secret(&self) {
+        match crate::rotate_command_secret(&self.root) {
+            Ok(bytes) => {
+                let mut guard = self
+                    .command_secret
+                    .write()
+                    .expect("generation key lock poisoned");
+                *guard = bytes;
+            }
+            Err(error) => eprintln!("command ledger: key rotation failed: {error}"),
+        }
+    }
+
+    pub async fn generation_token(&self) -> u64 {
+        *self.generation.read().await
+    }
+
+    pub async fn bump_generation(&self) {
+        let mut token = self.generation.write().await;
+        *token += 1;
     }
 
     /// Idempotent first-launch resource write. Resource, revision, event and
@@ -1906,6 +1967,46 @@ fn random_hex(size: usize) -> String {
     hex::encode(bytes)
 }
 
+/// Load (or create) the private generation key used for command ledger HMACs
+/// and cursors. Kept in the control directory, never in the database.
+fn load_command_secret(root: &generation::WorkspaceRoot) -> Result<Vec<u8>, WorkspaceError> {
+    let path = root.control_path().join("secret.key");
+    if path.exists() {
+        let bytes = std::fs::read(&path)
+            .map_err(|e| WorkspaceError::Invalid(format!("read generation key: {e}")))?;
+        if bytes.len() != 32 {
+            return Err(WorkspaceError::Invalid(
+                "generation key file has the wrong size".into(),
+            ));
+        }
+        return Ok(bytes);
+    }
+    let bytes: Vec<u8> = (0..32).map(|_| random::<u8>()).collect();
+    std::fs::write(&path, &bytes)
+        .map_err(|e| WorkspaceError::Invalid(format!("write generation key: {e}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(bytes)
+}
+
+/// Rotate the generation key on workspace replacement. Old-epoch receipts
+/// and cursors are thereby invalidated.
+fn rotate_command_secret(root: &generation::WorkspaceRoot) -> Result<Vec<u8>, WorkspaceError> {
+    let path = root.control_path().join("secret.key");
+    let bytes: Vec<u8> = (0..32).map(|_| random::<u8>()).collect();
+    std::fs::write(&path, &bytes)
+        .map_err(|e| WorkspaceError::Invalid(format!("rotate generation key: {e}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(bytes)
+}
+
 // ---------------------------------------------------------------------------
 // Transport
 // ---------------------------------------------------------------------------
@@ -1923,6 +2024,8 @@ pub(crate) struct AppState {
     sessions: Arc<Mutex<HashMap<String, Session>>>,
     pub(crate) jobs: jobs::Queue,
     pub(crate) restart: tokio::sync::watch::Sender<bool>,
+    pub(crate) registry: Arc<commands::Registry>,
+    pub(crate) writer: Arc<application::writer::Writer>,
 }
 
 /// Initialize (or open) a private SQLite workspace and bind only to IPv4
@@ -1945,6 +2048,30 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
     let (restart_sender, restart_receiver) = tokio::sync::watch::channel(false);
     let restart_wait = restart_receiver.clone();
     let (jobs, job_task) = jobs::start(workspace.clone(), 32);
+    // Registry boot validation completes before the listener starts; zero
+    // descriptors are published unless every registration passes (FR-4).
+    let registry = Arc::new(
+        commands::Registry::build()
+            .map_err(|error| format!("command registry boot validation failed: {error}"))?,
+    );
+    // Dedicated adopted writer connection (UCR-001 §5).
+    let writer_conn = {
+        let options = SqliteConnectOptions::from_str(&format!(
+            "sqlite://{}",
+            workspace.database_path().display()
+        ))
+        .map_err(|e| format!("adopted writer options: {e}"))?
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Full)
+        .busy_timeout(Duration::from_secs(2));
+        sqlx::SqliteConnection::connect_with(&options)
+            .await
+            .map_err(|e| format!("adopted writer connection: {e}"))?
+    };
+    let (writer, writer_task) =
+        application::writer::start(writer_conn, workspace.generation.clone());
+    let writer = Arc::new(writer);
     let reconcile_task = {
         let workspace = workspace.clone();
         let mut stop = restart_receiver.clone();
@@ -1966,6 +2093,8 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         sessions: Arc::new(Mutex::new(HashMap::new())),
         jobs,
         restart: restart_sender.clone(),
+        registry,
+        writer,
     };
     let bootstrap_shared = state.bootstrap.clone();
     let mut shell = Router::new().route("/", get(index));
@@ -2017,6 +2146,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         .merge(queue_sheet::routes())
         .merge(resource_board::routes())
         .merge(maintenance::routes())
+        .merge(commands::http::routes())
         .with_state(state)
         .layer(axum::extract::DefaultBodyLimit::max(2_100_000));
     let (shutdown, receiver) = tokio::sync::oneshot::channel();
@@ -2036,7 +2166,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         task,
         restart: restart_wait,
         restart_sender,
-        background: vec![job_task, reconcile_task, backup_task],
+        background: vec![job_task, writer_task, reconcile_task, backup_task],
     })
 }
 
@@ -2130,16 +2260,18 @@ fn error(status: StatusCode, code: &'static str, message: impl Into<String>) -> 
         }),
     )
         .into_response();
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
     response
 }
 
 pub(crate) fn private_headers(response: &mut Response, epoch: &str) {
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
     if let Ok(value) = HeaderValue::from_str(epoch) {
         response.headers_mut().insert("x-parley-epoch", value);
     }
@@ -2234,6 +2366,95 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<(), AuthE
     Ok(())
 }
 
+/// A resolved, acting principal. U01 has only the owner principal; agent
+/// principals arrive with the agent runtime slices.
+#[derive(Clone, Debug)]
+pub(crate) struct OwnerPrincipal {
+    /// Opaque pseudonymous principal identity (hash of the session id).
+    pub pseudonym: String,
+}
+
+/// One common auth boundary for adopted operations: session cookie, token
+/// and epoch checks, returning the resolved owner principal.
+pub(crate) async fn authenticate_owner(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<OwnerPrincipal, AuthError> {
+    authenticate(headers, state).await?;
+    let session_id = headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .split(';')
+        .filter_map(|part| part.trim().strip_prefix("parley_session="))
+        .next()
+        .ok_or_else(|| {
+            auth_error(
+                StatusCode::UNAUTHORIZED,
+                "SESSION_REQUIRED",
+                "Sign in to the local workspace",
+            )
+        })?
+        .to_owned();
+    Ok(OwnerPrincipal {
+        pseudonym: digest(format!("parley-session\0{session_id}").as_bytes()),
+    })
+}
+
+/// Version of the explicit table policy that scrubs command state from
+/// snapshots and omits it from portable exports.
+pub fn command_table_policy_version() -> u32 {
+    maintenance::COMMAND_TABLE_POLICY_VERSION
+}
+
+/// Verify that the active catalogue passes every boot constraint. The service
+/// calls this before binding its listener; the release gate calls it to prove
+/// a valid catalogue is publishable.
+pub fn validate_command_catalogue() -> Result<(), String> {
+    commands::Registry::build().map(|_| ())
+}
+
+/// Reject a deliberately invalid descriptor shape. This runs the identical
+/// identity, schema and context-expression checks used by boot registration,
+/// so a negative catalogue case cannot pass by bypassing validation.
+pub fn validate_command_descriptor_shape(
+    id: &str,
+    args_schema: &serde_json::Value,
+    result_schema: &serde_json::Value,
+    when: Option<&str>,
+) -> Result<(), String> {
+    commands::descriptor::validate_owned_descriptor(id, args_schema, result_schema, when)
+}
+
+/// Bounded operation-key syntax for registry invocation (UCR-001 §4.1).
+pub(crate) fn command_operation_key(
+    headers: &HeaderMap,
+) -> Result<String, (StatusCode, &'static str, &'static str)> {
+    let Some(key) = headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "malformed_request",
+            "Idempotency-Key is required",
+        ));
+    };
+    let valid = !key.is_empty()
+        && key.len() <= 128
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.');
+    if !valid {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "malformed_request",
+            "Idempotency-Key is invalid",
+        ));
+    }
+    Ok(key.to_owned())
+}
+
 async fn authenticate_session(headers: &HeaderMap, state: &AppState) -> Result<String, AuthError> {
     check_authority(headers, state)?;
     let cookie = headers
@@ -2311,6 +2532,11 @@ pub(crate) fn command_error(err: WorkspaceError) -> Response {
             "RESOURCE_INVALID",
             message,
         ),
+        WorkspaceError::LedgerFull => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "LEDGER_CAPACITY",
+            "The command ledger is at capacity",
+        ),
         WorkspaceError::Database(sqlx::Error::Database(db))
             if db
                 .code()
@@ -2369,9 +2595,10 @@ async fn index(State(state): State<AppState>, headers: HeaderMap) -> Response {
             "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
         ),
     );
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
     response
 }
 
@@ -2435,9 +2662,10 @@ async fn bootstrap(
         ))
         .unwrap(),
     );
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
     response
 }
 

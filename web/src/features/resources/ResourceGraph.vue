@@ -16,11 +16,15 @@ const props = defineProps<{
   pending?: PendingRelationship | null;
   busy: boolean;
   active: boolean;
+  canAddRelationship: (node: GraphNode) => boolean;
+  removing: boolean;
   labelForNode: (node: GraphNode) => string;
 }>();
 const emit = defineEmits<{
   activate: [id: string];
   'inspect-edge': [id: string];
+  'add-relationship': [id: string];
+  'remove-relationship': [id: string];
   position: [node: { id: string; position: { x: number; y: number } }];
 }>();
 const frame = ref<HTMLElement | null>(null);
@@ -31,6 +35,12 @@ const positions = new Map<string, { x: number; y: number }>();
 let initializedRoot: string | null = null;
 let observer: ResizeObserver | undefined;
 const nodes = computed<Node[]>(() => {
+  const removable = new Set<string>();
+  for (const edge of props.edges) {
+    if (!edge.owner_authored || edge.record) continue;
+    if (edge.from_id === props.rootId) removable.add(edge.to_id);
+    if (edge.to_id === props.rootId) removable.add(edge.from_id);
+  }
   const neighbors = props.nodes.filter(node => node.id !== props.rootId);
   const result: Node[] = props.nodes.map(node => {
     const root = node.id === props.rootId;
@@ -50,7 +60,10 @@ const nodes = computed<Node[]>(() => {
     return {
       id: node.id, type: 'resource-card',
       position: node.position_revision ? { x: node.x, y: node.y } : positions.get(node.id) ?? fallback,
-      data: { title: node.name, kind: props.labelForNode(node), root, party: ['person', 'org', 'project'].includes(node.kind) },
+      data: {
+        title: node.name, kind: props.labelForNode(node), root, party: ['person', 'org', 'project'].includes(node.kind),
+        canAdd: props.canAddRelationship(node), canRemove: !root && removable.has(node.id),
+      },
       selected: props.inspectedId === node.id && !props.edgeId,
       ariaLabel: `${node.name}, ${props.labelForNode(node)}`,
       draggable: !props.busy && node.kind !== 'material' && node.kind !== 'opportunity',
@@ -131,7 +144,7 @@ function cancelEditor() { editor.value?.querySelector<HTMLElement>('.editor-acti
 function onViewport() { alignEditor(); rememberViewport(); }
 function editFocusedNode(event: KeyboardEvent) {
   const target = event.target;
-  if (!(target instanceof HTMLElement)) return;
+  if (!(target instanceof HTMLElement) || target.closest('.node-actions, .node-editor')) return;
   const id = target.closest<HTMLElement>('.vue-flow__node')?.dataset.id;
   if (id) { event.preventDefault(); event.stopPropagation(); emit('activate', id); }
   else if (target === frame.value && props.inspectedId) emit('activate', props.inspectedId);
@@ -178,7 +191,7 @@ onBeforeUnmount(() => observer?.disconnect());
       @edge-click="({ edge }) => emit('inspect-edge', edge.id)"
       @node-drag-stop="({ node }) => emit('position', node)"
     >
-      <template #node-resource-card="{ data, selected }">
+      <template #node-resource-card="{ id, data, selected }">
         <div
           class="graph-card"
           :class="{ root: data.root, party: data.party, selected, provisional: data.pending }"
@@ -197,10 +210,36 @@ onBeforeUnmount(() => observer?.disconnect());
             v-else
             type="button"
             tabindex="-1"
+            class="node-title"
             :aria-label="'Open ' + data.title"
           >
             <small>{{ data.kind }}</small><strong>{{ data.title }}</strong>
           </button>
+          <div
+            v-if="!data.pending && (data.canAdd || data.canRemove)"
+            class="node-actions nodrag nopan"
+          >
+            <button
+              v-if="data.canAdd"
+              type="button"
+              :aria-label="'Add relationship from ' + data.title"
+              :disabled="busy || removing"
+              @click.stop="emit('add-relationship', id)"
+              @keydown.stop
+            >
+              <span aria-hidden="true">+</span>
+            </button>
+            <button
+              v-if="data.canRemove"
+              type="button"
+              :aria-label="'Remove relationship to ' + data.title"
+              :disabled="busy || removing"
+              @click.stop="emit('remove-relationship', id)"
+              @keydown.stop
+            >
+              <span aria-hidden="true">−</span>
+            </button>
+          </div>
           <Handle
             type="source"
             :position="data.root ? Position.Right : Position.Left"
@@ -243,7 +282,10 @@ onBeforeUnmount(() => observer?.disconnect());
   text-align: center;
   color: #213b2f;
 }
-.graph-card button, .graph-card .preview-name { display: grid; width: 100%; align-content: center; gap: .15rem; border: 0; background: transparent; padding: 8px 9px; }
+.node-title, .graph-card .preview-name { display: grid; width: 100%; align-content: center; gap: .15rem; border: 0; background: transparent; padding: 8px 9px; }
+.node-title { min-width: 0; }
+.node-actions { flex: none; display: grid; align-content: center; gap: .2rem; padding: .2rem; }
+.node-actions button { display: grid; place-items: center; padding: 0; width: 2rem; height: 2rem; font-size: 1.2rem; background: #fffefb; border: 1px solid #b2c3b0; }
 .graph-card small { display: block; font: 12px ui-monospace, monospace; color: #344f40; }
 .graph-card strong { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; font: 19px/1.15 Georgia, serif; }
 .graph-card.root { background: #eee2c9; border-color: #927b53; border-width: 2px; }

@@ -1,0 +1,10 @@
+{
+  "$schema": "#/components/schemas/Error",
+  "body": {
+    "error": {
+      "code": "INVALID_REQUEST",
+      "message": "Enter a list name of 1–100 characters.",
+      "details": []
+    }
+  }
+}

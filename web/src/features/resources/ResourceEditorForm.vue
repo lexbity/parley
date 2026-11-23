@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/* global Event, HTMLInputElement, HTMLSelectElement, Blob, URL, document, File, navigator */
+/* global HTMLDetailsElement, Event, HTMLInputElement, HTMLSelectElement, Blob, URL, document, File, navigator */
 import { computed, nextTick, reactive, ref, watch } from 'vue';
 import { ApiError, newOperationKey, parley, type EntityAttachment, type EntityCard, type PlacementView, type ResourceColumn, type ResourcePlacementInput } from '../../api/client';
 import type { components } from '../../api/generated';
@@ -30,6 +30,7 @@ const props = defineProps<{
   card?: EntityCard | null;
   cardSummary?: { resource_id: string; title: string; subtype: string; readiness: string; placement: PlacementView | null; etag: string } | null;
   initialColumnId?: string | null;
+  initialTitle?: string;
   graphMode?: boolean;
   endpointSearchError?: string;
   availableEndpoints?: Array<{ id: string; label: string; kind: string; revision?: number }>;
@@ -44,6 +45,8 @@ const emit = defineEmits<{
 }>();
 
 const title = ref('');
+const relationshipSection = ref<HTMLDetailsElement | null>(null);
+const relationshipTarget = ref<HTMLSelectElement | null>(null);
 const subtype = ref<ResourceSubtype>('artifact');
 const body = ref<Record<string, unknown>>({});
 const relatedBody = ref<Record<string, unknown>>({});
@@ -149,7 +152,7 @@ function refreshModel() {
   const card = liveCard.value;
   initializing = true;
   const ownGeneration = ++attachmentGeneration;
-  title.value = card?.title ?? '';
+  title.value = card?.title ?? props.initialTitle ?? '';
   subtype.value = (card?.subtype as ResourceSubtype) ?? 'artifact';
   body.value = { ...card?.body };
   relatedBody.value = {};
@@ -174,7 +177,7 @@ function refreshModel() {
   relation.focus = '';
   relation.placement = '';
   relation.incoming = false;
-  dirty.value = false;
+  dirty.value = props.mode === 'create' && !!props.initialTitle?.trim();
   unknownOutcome.value = false;
   initializing = false;
   lastIntent = '';
@@ -374,7 +377,14 @@ async function save(): Promise<boolean> {
 
 function focusTitle() { void nextTick(() => titleInput.value?.focus()); }
 const titleInput = ref<HTMLInputElement | null>(null);
-defineExpose({ save, saving, focusTitle, quarantine });
+async function focusRelationship() {
+  if (!relationshipSection.value) return;
+  relationshipSection.value.open = true;
+  relation.enabled = true;
+  await nextTick();
+  relationshipTarget.value?.focus();
+}
+defineExpose({ save, saving, focusTitle, focusRelationship, quarantine });
 
 function useCurrentVersion() {
   const current = conflict.value?.currentCard;
@@ -679,6 +689,7 @@ function discardQuarantined() {
 
       <details
         v-if="graphMode"
+        ref="relationshipSection"
         class="relation-box"
       >
         <summary>Add relationship</summary>
@@ -715,6 +726,7 @@ function discardQuarantined() {
             autocomplete="off"
           ></label>
           <label>Relationship target<select
+            ref="relationshipTarget"
             v-model="relation.mode"
             :disabled="saving"
           ><option
@@ -736,6 +748,7 @@ function discardQuarantined() {
             </p>
             <label>Existing card<select
               v-model="relation.targetId"
+              aria-label="Existing card"
               :disabled="saving"
             >
               <option value="">

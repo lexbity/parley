@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { newOperationKey, parley, type ResourceColumn, type AgentChat, type AgentChatSummary, type RoleJob } from '../../api/client';
 
-defineProps<{ columns?: ResourceColumn[] }>();
+const props = defineProps<{ columns?: ResourceColumn[] }>();
 const selectedColumn = ref('');
+watch(() => props.columns, columns => {
+  if (selectedColumn.value && !columns?.some(column => column.id === selectedColumn.value)) selectedColumn.value = '';
+});
 let confirmIntent: { signature: string; key: string } | null = null;
 const kind = ref<'proof' | 'gift' | 'artifact'>('proof');
 const chat = ref<AgentChat | null>(null);

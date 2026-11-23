@@ -1,0 +1,10 @@
+{
+  "$schema": "#/components/schemas/Error",
+  "body": {
+    "error": {
+      "code": "STALE_REVISION",
+      "message": "The addressed resource, notes, placement, or column changed in another session",
+      "details": []
+    }
+  }
+}

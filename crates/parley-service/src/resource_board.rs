@@ -93,6 +93,14 @@ type BoundAttachmentRow = (String, String, String, String, i64, String, String, 
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/resource-board", get(get_resource_board))
+        .route(
+            "/api/v1/resource-board/columns",
+            post(create_resource_column),
+        )
+        .route(
+            "/api/v1/resource-board/columns/{id}",
+            axum::routing::delete(remove_resource_column),
+        )
         .route("/api/v1/resource-cards/{id}", get(get_resource_card))
         .route(
             "/api/v1/resource-cards/{id}/deliveries",
@@ -113,12 +121,24 @@ pub(super) fn routes() -> Router<AppState> {
 
 const SUBTYPES: &[&str] = &["gift", "proof", "artifact", "skill", "interest", "note"];
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, sqlx::FromRow)]
 pub struct ResourceColumn {
     pub id: String,
     pub title: String,
     pub position: i64,
     pub revision: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateResourceColumn {
+    pub title: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveResourceColumn {
+    pub expected_revision: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -771,20 +791,12 @@ impl Workspace {
         include_offboard: bool,
     ) -> Result<ResourceBoardSnapshot, WorkspaceError> {
         let limit = limit.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE);
-        let columns: Vec<(String, String, i64, i64)> = sqlx::query_as(
+        let mut read = self.pool().begin().await?;
+        let columns: Vec<ResourceColumn> = sqlx::query_as(
             "SELECT id,title,position,revision FROM resource_column ORDER BY position,id",
         )
-        .fetch_all(self.pool())
+        .fetch_all(&mut *read)
         .await?;
-        let columns = columns
-            .into_iter()
-            .map(|(id, title, position, revision)| ResourceColumn {
-                id,
-                title,
-                position,
-                revision,
-            })
-            .collect::<Vec<_>>();
         let after = cursor.as_deref().map(decode_cursor).transpose()?;
         let mut builder = sqlx::QueryBuilder::new(
             "SELECT p.resource_id,e.subtype,e.name,e.readiness,e.body_json,p.column_id,p.position,p.revision,e.revision AS entity_rev,c.position AS col_pos, \
@@ -808,7 +820,7 @@ impl Workspace {
         }
         builder.push(" ORDER BY c.position,p.position,p.resource_id LIMIT ");
         builder.push_bind(limit + 1);
-        let rows: Vec<CardRow> = builder.build_query_as().fetch_all(self.pool()).await?;
+        let rows: Vec<CardRow> = builder.build_query_as().fetch_all(&mut *read).await?;
         let mut cards = Vec::with_capacity(rows.len());
         let mut next_cursor = None;
         for (index, row) in rows.into_iter().enumerate() {
@@ -864,13 +876,14 @@ impl Workspace {
             });
         }
         let off_board = if include_offboard {
-            self.off_board_resources().await?
+            self.off_board_resources(&mut read).await?
         } else {
             Vec::new()
         };
         let event_cursor: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(cursor),0) FROM event")
-            .fetch_one(self.pool())
+            .fetch_one(&mut *read)
             .await?;
+        read.commit().await?;
         Ok(ResourceBoardSnapshot {
             columns,
             cards,
@@ -880,7 +893,10 @@ impl Workspace {
         })
     }
 
-    async fn off_board_resources(&self) -> Result<Vec<OffBoardResource>, WorkspaceError> {
+    async fn off_board_resources(
+        &self,
+        read: &mut Transaction<'_, Sqlite>,
+    ) -> Result<Vec<OffBoardResource>, WorkspaceError> {
         // Entity-kind resources without a placement.
         let rows: Vec<OffBoardRow> = sqlx::query_as(
             "SELECT e.id,e.subtype,e.name,e.readiness,e.body_json,e.revision, \
@@ -893,7 +909,7 @@ impl Workspace {
              AND NOT EXISTS (SELECT 1 FROM resource_placement p WHERE p.resource_id=e.id) \
              ORDER BY e.name COLLATE NOCASE,e.id",
         )
-        .fetch_all(self.pool())
+        .fetch_all(&mut **read)
         .await?;
         let off = rows
             .into_iter()
@@ -1364,6 +1380,112 @@ impl Workspace {
         )
         .await?;
         Ok(json!({"edge_id": edge_id, "to_id": to_id}))
+    }
+
+    /// Append a list to the resource board.
+    pub async fn create_resource_column(
+        &self,
+        input: &CreateResourceColumn,
+        key: &str,
+    ) -> Result<Value, WorkspaceError> {
+        let title = input.title.trim();
+        if !(1..=100).contains(&title.chars().count()) {
+            return Err(WorkspaceError::Invalid(
+                "Enter a list name of 1–100 characters.".into(),
+            ));
+        }
+        let canonical = canonical_digest("POST", "/resource-board/columns", input);
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(replay) = receipt_lookup(&mut tx, key, &canonical).await? {
+            tx.commit().await?;
+            return Ok(json!({"_replay_status": replay.status, "result": replay.body}));
+        }
+        let position: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(position),0)+? FROM resource_column")
+                .bind(RANK_STEP)
+                .fetch_one(&mut *tx)
+                .await?;
+        let id = new_id("resource-column");
+        sqlx::query("INSERT INTO resource_column(id,title,position) VALUES(?,?,?)")
+            .bind(&id)
+            .bind(title)
+            .bind(position)
+            .execute(&mut *tx)
+            .await?;
+        let column = ResourceColumn {
+            id,
+            title: title.to_owned(),
+            position,
+            revision: 1,
+        };
+        let result = json!(&column);
+        write_event(
+            &mut tx,
+            "resource_column",
+            &column.id,
+            1,
+            "resource_column.created",
+            result.clone(),
+        )
+        .await?;
+        receipt_store(&mut tx, key, &canonical, 201, &result).await?;
+        tx.commit().await?;
+        Ok(json!({"_replay_status": 201, "result": result}))
+    }
+
+    /// Remove a list atomically and retain its resources in the off-board picker.
+    pub async fn remove_resource_column(
+        &self,
+        id: &str,
+        input: &RemoveResourceColumn,
+        key: &str,
+    ) -> Result<Value, WorkspaceError> {
+        let canonical = canonical_digest("DELETE", &format!("/resource-board/columns/{id}"), input);
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(replay) = receipt_lookup(&mut tx, key, &canonical).await? {
+            tx.commit().await?;
+            return Ok(json!({"_replay_status": replay.status, "result": replay.body}));
+        }
+        let revision: i64 = sqlx::query_scalar("SELECT revision FROM resource_column WHERE id=?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(WorkspaceError::NotFound)?;
+        if revision != input.expected_revision {
+            return Err(WorkspaceError::StaleRevision);
+        }
+        let resource_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT resource_id FROM resource_placement WHERE column_id=? ORDER BY position,resource_id",
+        )
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let off_board = ResourcePlacementInput {
+            column_id: None,
+            before_resource_id: None,
+        };
+        for resource_id in &resource_ids {
+            self.apply_placement(&mut tx, resource_id, &off_board, None, None, None)
+                .await?;
+        }
+        let last_revision: i64 =
+            sqlx::query_scalar("DELETE FROM resource_column WHERE id=? RETURNING revision")
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await?;
+        let result = json!({"id": id, "off_board_count": resource_ids.len()});
+        write_event(
+            &mut tx,
+            "resource_column",
+            id,
+            last_revision + 1,
+            "resource_column.removed",
+            result.clone(),
+        )
+        .await?;
+        receipt_store(&mut tx, key, &canonical, 200, &result).await?;
+        tx.commit().await?;
+        Ok(result)
     }
 
     /// Move a card between columns, reorder within one column, or remove it
@@ -2375,6 +2497,31 @@ async fn get_resource_board(
     }
 }
 
+async fn create_resource_column(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<CreateResourceColumn>,
+) -> Response {
+    let key = match command_key(&state, &headers).await {
+        Ok(key) => key,
+        Err(response) => return *response,
+    };
+    command_handler(state.workspace.create_resource_column(&input, &key)).await
+}
+
+async fn remove_resource_column(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(input): Json<RemoveResourceColumn>,
+) -> Response {
+    let key = match command_key(&state, &headers).await {
+        Ok(key) => key,
+        Err(response) => return *response,
+    };
+    command_handler(state.workspace.remove_resource_column(&id, &input, &key)).await
+}
+
 async fn get_resource_card(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -2572,6 +2719,11 @@ fn rb_error(error: WorkspaceError) -> Response {
             "STALE_REVISION",
             "The addressed resource, notes, placement, or column changed in another session"
                 .to_owned(),
+        ),
+        WorkspaceError::LedgerFull => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "LEDGER_CAPACITY",
+            "The command ledger is at capacity".to_owned(),
         ),
     };
     (

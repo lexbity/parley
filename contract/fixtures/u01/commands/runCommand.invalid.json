@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/CommandRunFailure","body":{"ok":false,"command_version":1,"audit_id":"aud_sample_02","error":{"code":"invalid_args","message":"Arguments do not match the command schema","details":[{"path":"/args/stage_id","problem":"unknown_stage"}]}}}

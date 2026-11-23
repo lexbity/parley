@@ -17,6 +17,7 @@ test('r01_board_create_edit_move_remove_and_related_card', async ({ page }) => {
 
   // Column entry: create a card in Developing with Markdown notes.
   await board.getByRole('button', { name: 'Add card to Developing' }).click();
+  await board.getByRole('button', { name: 'More options' }).click();
   const editor = page.getByRole('form', { name: 'Resource card editor' });
   await expect(editor).toBeVisible();
   await editor.getByLabel('Title').fill('Importer checklist');
@@ -47,7 +48,7 @@ test('r01_board_create_edit_move_remove_and_related_card', async ({ page }) => {
   const details = page.getByRole('region', { name: 'Resource inspector' });
   const moveSelect = details.getByRole('combobox', { name: /Move Importer checklist v2 to column/ });
   await moveSelect.selectOption('available');
-  await expect(board.getByRole('heading', { name: /Available/ }).locator('..').getByText('Importer checklist v2')).toBeVisible();
+  await expect(board.getByRole('region', { name: 'Available', exact: true }).getByText('Importer checklist v2')).toBeVisible();
 
   // Remove from board; the resource stays discoverable in the picker.
   await details.getByRole('button', { name: 'Remove from board' }).click();
@@ -58,10 +59,11 @@ test('r01_board_create_edit_move_remove_and_related_card', async ({ page }) => {
 
   // Graph flow: create a related card from the node editor.
   await picker.getByRole('button', { name: /^(?:Artifact )?Importer checklist v2/ }).click();
-  await canvas.locator('.vue-flow__node').first().click();
+  const addRelationship = canvas.getByRole('button', { name: 'Add relationship from Importer checklist v2' });
+  await addRelationship.focus();
+  await addRelationship.press('Enter');
   await expect(editor).toBeVisible();
-  await editor.locator('details.relation-box summary').click();
-  await editor.getByRole('checkbox', { name: 'Include a relationship in this save' }).check();
+  await expect(editor.getByLabel('Relationship target')).toBeFocused();
   await editor.getByLabel('Relationship target').selectOption('create');
   await editor.getByLabel('New card title').fill('Fixture walkthrough');
   await editor.getByRole('textbox', { name: 'Related card notes' }).fill('Keep the **quoted newline**.');
@@ -79,7 +81,33 @@ test('r01_board_create_edit_move_remove_and_related_card', async ({ page }) => {
   await page.getByRole('dialog', { name: 'Find resource' }).getByRole('button', { name: 'Close' }).click();
   await page.getByText('Cards and relationships', { exact: true }).click();
   const relationships = page.getByRole('region', { name: 'Connections graph' }).getByRole('list', { name: 'Semantic relationship list' });
-  await expect(relationships.getByText(/Importer checklist v2 includes Fixture walkthrough/)).toBeVisible();
+  const includes = relationships.getByText('Importer checklist v2 includes Fixture walkthrough');
+  await expect(includes).toBeVisible();
+
+  // With two links to the same card, remove only the relationship chosen.
+  await addRelationship.click();
+  await editor.getByLabel('Relationship target').selectOption('link');
+  await editor.getByLabel('Existing card', { exact: true }).selectOption({ label: 'Fixture walkthrough · Artifact' });
+  await editor.getByLabel('Relationship verb').selectOption('supports');
+  await editor.getByLabel('Basis').fill('The walkthrough also supports the checklist');
+  await editor.getByRole('button', { name: 'Save card' }).click();
+  const supports = relationships.getByText('Importer checklist v2 supports Fixture walkthrough');
+  await expect(supports).toBeVisible();
+  const remove = canvas.getByRole('button', { name: 'Remove relationship to Fixture walkthrough' });
+  await remove.click();
+  const chooseRelationship = page.getByRole('dialog', { name: 'Remove a relationship' });
+  await chooseRelationship.getByLabel('Relationship', { exact: true }).selectOption({ label: 'Importer checklist v2 includes Fixture walkthrough' });
+  await chooseRelationship.getByRole('button', { name: 'Remove relationship' }).click();
+  await expect(chooseRelationship).toBeHidden();
+  await expect(includes).toHaveCount(0);
+  await expect(supports).toBeVisible();
+
+  page.once('dialog', dialog => dialog.accept());
+  await remove.click();
+  await expect(supports).toHaveCount(0);
+  await expect(canvas.getByRole('button', { name: 'Open Importer checklist v2' })).toBeVisible();
+  await board.getByRole('button', { name: 'Find resource' }).click();
+  await expect(picker.getByText('Fixture walkthrough')).toBeVisible();
 });
 
 test('narrow Resource views preserve a graph draft and return keyboard focus after closing', async ({ page }) => {
@@ -90,6 +118,7 @@ test('narrow Resource views preserve a graph draft and return keyboard focus aft
   const editor = page.getByRole('form', { name: 'Resource card editor' });
 
   await board.getByRole('button', { name: 'Add card to Inbox' }).click();
+  await board.getByRole('button', { name: 'More options' }).click();
   await editor.getByLabel('Title').fill('Mobile checklist');
   await editor.getByRole('button', { name: 'Save card' }).click();
   const details = page.getByRole('region', { name: 'Resource inspector' });
@@ -118,4 +147,49 @@ test('narrow Resource views preserve a graph draft and return keyboard focus aft
   await page.reload();
   await expect(views.getByRole('button', { name: 'Connections' })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('heading', { name: 'Mobile checklist · connections' })).toBeVisible();
+});
+
+test('resource lists and cards can be added inline, removed and recovered from the picker', async ({ page }) => {
+  await page.goto('/resources');
+  const board = page.getByRole('region', { name: 'Resource board' });
+  await board.getByRole('button', { name: 'Add another list' }).click();
+  const listName = board.getByRole('textbox', { name: 'List name' });
+  await expect(listName).toBeFocused();
+  await listName.fill('Workshop');
+  await listName.press('Enter');
+  const workshop = board.getByRole('region', { name: 'Workshop', exact: true });
+  await expect(workshop).toBeVisible();
+  await listName.press('Escape');
+
+  await workshop.getByRole('button', { name: 'Add card to Workshop' }).click();
+  const cardTitle = workshop.getByRole('textbox', { name: 'Card title in Workshop' });
+  await expect(cardTitle).toBeFocused();
+  await cardTitle.fill('Practice handout');
+  await cardTitle.press('Enter');
+  await expect(workshop.getByRole('button', { name: /^(?:Artifact )?Practice handout/ })).toBeVisible();
+  await expect(cardTitle).toHaveValue('');
+  await expect(cardTitle).toBeFocused();
+  await cardTitle.press('Escape');
+  await expect(workshop.getByRole('button', { name: 'Add card to Workshop' })).toBeFocused();
+
+  page.once('dialog', dialog => dialog.accept());
+  await workshop.getByRole('button', { name: 'Remove list Workshop' }).click();
+  await expect(workshop).toHaveCount(0);
+  await board.getByRole('button', { name: 'Find resource' }).click();
+  const picker = page.getByRole('dialog', { name: 'Find resource' });
+  const handout = picker.getByRole('listitem').filter({ hasText: 'Practice handout' });
+  await expect(handout).toContainText('Off board');
+  await handout.getByRole('combobox').selectOption('inbox');
+  await picker.getByRole('button', { name: 'Close' }).click();
+
+  const inbox = board.getByRole('region', { name: 'Inbox', exact: true });
+  const removeCard = inbox.getByRole('button', { name: 'Delete Practice handout' });
+  page.once('dialog', dialog => dialog.dismiss());
+  await removeCard.click();
+  await expect(removeCard).toBeVisible();
+  page.once('dialog', dialog => dialog.accept());
+  await removeCard.click();
+  await expect(removeCard).toHaveCount(0);
+  await board.getByRole('button', { name: 'Find resource' }).click();
+  await expect(handout).toHaveCount(0);
 });

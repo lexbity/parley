@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/CommandRunSuccess","body":{"ok":true,"command_version":1,"audit_id":"aud_sample_01","original_audit_id":null,"replayed":false,"dry_run":false,"result":{"opportunity_id":"opp_sample_01","previous_stage_id":"exploring","stage_id":"preparing","phase_revision":5,"event_id":"evt_sample_01","event_cursor":"812"}}}

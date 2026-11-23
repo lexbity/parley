@@ -13,6 +13,7 @@ test('r03_cross_tab_refresh_retire_and_keyboard_open', async ({ page, context })
 
   // Create a card on the first tab.
   await board.getByRole('button', { name: 'Add card to Inbox' }).click();
+  await board.getByRole('button', { name: 'More options' }).click();
   const editor = page.getByRole('form', { name: 'Resource card editor' });
   await editor.getByLabel('Title').fill('Cross-tab card');
   await editor.getByRole('button', { name: 'Save card' }).click();

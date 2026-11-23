@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /* global DragEvent, Event, HTMLElement, HTMLDialogElement, HTMLSelectElement, MediaQueryList, BeforeUnloadEvent, BroadcastChannel, MessageEvent */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { ApiError, newOperationKey, parley, type DeliveryRow, type EntityAttachment, type EntityCard, type GraphSnapshot, type PlacementView, type ResourceBoardSnapshot } from '../../api/client';
+import { ApiError, newOperationKey, parley, type DeliveryRow, type EntityAttachment, type EntityCard, type GraphSnapshot, type PlacementView, type ResourceBoardSnapshot, type ResourceColumn } from '../../api/client';
 import { kindLabel } from '../parties/relations';
 import MarkdownPreview from '../../shared/MarkdownPreview.vue';
 import ResourceEditorForm from './ResourceEditorForm.vue';
@@ -14,7 +14,7 @@ type CardSummary = ResourceBoardSnapshot['cards'][number];
 type GraphNode = GraphSnapshot['nodes'][number];
 type GraphEdge = GraphSnapshot['edges'][number];
 type View = 'board' | 'connections' | 'details';
-type Editor = { mode: 'create'; column: string } | { mode: 'edit'; card: EntityCard; graph: boolean; summary: CardSummary | null };
+type Editor = { mode: 'create'; column: string; title: string } | { mode: 'edit'; card: EntityCard; graph: boolean; summary: CardSummary | null };
 const emptyGraph = (): GraphSnapshot => ({ nodes: [], edges: [], omitted_nodes: 0, omitted_edges: 0 });
 const snapshot = ref<ResourceBoardSnapshot | null>(null);
 const graph = ref(emptyGraph());
@@ -54,12 +54,27 @@ const detailsHeading = ref<HTMLElement | null>(null);
 const boardHeading = ref<HTMLElement | null>(null);
 const layoutBusy = ref(false);
 const moveBusy = ref(false);
+const boardWriteBusy = ref(false);
+const composer = ref<{ kind: 'card'; columnId: string } | { kind: 'list' } | null>(null);
+const composerTitle = ref('');
+const displacedCardTitle = ref('');
+const composerError = ref('');
+const composerInput = ref<HTMLElement | null>(null);
+const addList = ref<HTMLElement | null>(null);
+let composerTrigger: HTMLElement | null = null;
+let composerIntent: { signature: string; key: string } | null = null;
+let removalIntent: { signature: string; key: string } | null = null;
+let retirementIntent: { signature: string; key: string } | null = null;
 const draggedId = ref('');
 const dropTarget = ref('');
 const partyEndpoints = ref<Array<{ id: string; label: string; kind: string; revision?: number }>>([]);
 const relationshipToReveal = ref<string | null>(null);
 const edgeCorrection = ref<{ verb: string; basis: string; reverse: boolean } | null>(null);
 const edgeBusy = ref(false);
+const graphRemovalDialog = ref<HTMLDialogElement | null>(null);
+const graphRemovalTarget = ref<string | null>(null);
+const graphRemovalEdge = ref('');
+let graphRemovalTrigger: HTMLElement | null = null;
 const versionDialog = ref<HTMLDialogElement | null>(null);
 const sentVersion = ref<Awaited<ReturnType<typeof parley.getDeliveredResourceVersion>> | null>(null);
 const versionLoading = ref(false);
@@ -100,6 +115,12 @@ const rootName = computed(() => nodeById.value.get(rootId.value ?? '')?.name ?? 
 const selectedNode = computed(() => nodeById.value.get(inspectedId.value ?? ''));
 const selectedSummary = computed(() => resourceById.value.get(inspectedId.value ?? ''));
 const selectedEdge = computed(() => graph.value.edges.find(edge => edge.id === edgeId.value) ?? inspectorGraph.value?.edges.find(edge => edge.id === edgeId.value));
+function removableGraphEdges(id: string) {
+  const root = rootId.value;
+  return graph.value.edges.filter(edge => edge.owner_authored && !edge.record
+    && ((edge.from_id === root && edge.to_id === id) || (edge.to_id === root && edge.from_id === id)));
+}
+const graphRemovalChoices = computed(() => graphRemovalTarget.value ? removableGraphEdges(graphRemovalTarget.value) : []);
 const filteredResources = computed(() => {
   const search = query.value.trim().toLocaleLowerCase();
   return allResources.value.filter(card => `${card.title} ${resourceLabel(card.subtype)}`.toLocaleLowerCase().includes(search));
@@ -188,13 +209,20 @@ async function refreshBoard() {
       visited.add(cursor);
       const page = await parley.getResourceBoard({ cursor });
       if (own !== boardGeneration) return;
-      if (page.columns.some(column => next.columns.find(item => item.id === column.id)?.revision !== column.revision)) {
+      if (page.columns.length !== next.columns.length || page.columns.some((column, index) => {
+        const first = next.columns[index];
+        return first?.id !== column.id || first.revision !== column.revision;
+      })) {
         throw new Error('The board changed while loading. Retry to get the latest order.');
       }
       for (const card of page.cards) cards.set(card.resource_id, card);
       cursor = page.next_cursor;
     }
     snapshot.value = { ...next, cards: [...cards.values()] };
+    const draft = composer.value;
+    if (draft?.kind === 'card' && !next.columns.some(column => column.id === draft.columnId) && !boardWriteBusy.value) {
+      retainDisplacedCard();
+    }
     eventCursor = String(next.event_cursor);
     if (initialBoardScroll) {
       await nextTick();
@@ -389,11 +417,14 @@ function stay(showErrors = false) {
 }
 function closeEditor() { requestSwitch(() => restoreInvocation(invocation)); }
 function openCreate(column: string) {
-  const trigger = focused();
+  const trigger = composerTrigger;
+  const title = composerTitle.value;
+
   requestSwitch(() => {
     invocation = trigger;
     editorKey.value += 1;
-    editor.value = { mode: 'create', column };
+    editor.value = { mode: 'create', column, title };
+    cancelComposer(false);
     void showModalEditor();
   });
 }
@@ -402,9 +433,10 @@ async function showModalEditor() {
   if (editorDialog.value?.isConnected && !editorDialog.value.open) editorDialog.value.showModal();
   form.value?.focusTitle();
 }
-function openEdit(id: string, inGraph = false) {
+function openEdit(id: string, inGraph = false, addRelationship = false) {
   if (editor.value?.mode === 'edit' && editor.value.card.id === id && editor.value.graph === inGraph) {
-    form.value?.focusTitle();
+    if (addRelationship) form.value?.focusRelationship();
+    else form.value?.focusTitle();
     return;
   }
   const trigger = focused();
@@ -422,7 +454,7 @@ function openEdit(id: string, inGraph = false) {
       if (own !== editorGeneration) return;
       editorKey.value += 1;
       editor.value = { mode: 'edit', card, graph: inGraph, summary };
-      if (inGraph) void nextTick(() => form.value?.focusTitle());
+      if (inGraph) void nextTick(() => addRelationship ? form.value?.focusRelationship() : form.value?.focusTitle());
       else void showModalEditor();
     }).catch(reason => {
       if (own === editorGeneration) error.value = message(reason, 'Could not open the card.');
@@ -463,9 +495,9 @@ async function pollChanges() {
     const page = await parley.getEvents(eventCursor);
     eventCursor = page.next_cursor;
     const changed = page.items.some(item =>
-      ['resource', 'entity', 'entity_attachment', 'edge', 'claim', 'send', 'material', 'opportunity'].includes(item.entity_type));
+      ['resource', 'resource_column', 'entity', 'entity_attachment', 'edge', 'claim', 'send', 'material', 'opportunity'].includes(item.entity_type));
     if (!changed) return;
-    if (editorDirty.value || moveBusy.value) pendingRefresh = true;
+    if (editorDirty.value) pendingRefresh = true;
     else await refresh();
   } catch (reason) {
     if (reason instanceof ApiError && [409, 410].includes(reason.status)) {
@@ -495,9 +527,104 @@ function closePicker() {
   void nextTick(() => restoreInvocation(pickerInvocation));
 }
 
+function startComposer(next: NonNullable<typeof composer.value>, event: Event) {
+  const trigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : focused();
+  requestSwitch(() => {
+    composerTrigger = trigger;
+    composer.value = next;
+    composerTitle.value = next.kind === 'card' ? displacedCardTitle.value : '';
+    if (next.kind === 'card') displacedCardTitle.value = '';
+    composerError.value = '';
+    composerIntent = null;
+    focusComposer();
+  });
+}
+function assignComposerInput(element: unknown) {
+  if (element instanceof HTMLElement) composerInput.value = element;
+}
+function focusComposer() {
+  void nextTick(() => {
+    composerInput.value?.focus();
+  });
+}
+function cancelComposer(restoreFocus = true) {
+  if (boardWriteBusy.value) return;
+  composer.value = null;
+  composerTitle.value = '';
+  composerError.value = '';
+  composerIntent = null;
+  if (restoreFocus) void nextTick(() => restoreInvocation(composerTrigger));
+}
+function retainDisplacedCard() {
+  displacedCardTitle.value = composerTitle.value;
+  cancelComposer(false);
+}
+async function saveComposer() {
+  const draft = composer.value;
+  const title = composerTitle.value.trim();
+  if (!draft || !title || boardWriteBusy.value || boardLoading.value) return;
+  const epoch = parley.workspaceEpoch;
+  const signature = JSON.stringify([epoch, draft, title]);
+  if (composerIntent?.signature !== signature) composerIntent = { signature, key: newOperationKey() };
+  const { key } = composerIntent;
+  boardWriteBusy.value = true;
+  composerError.value = '';
+  error.value = '';
+  try {
+    if (draft.kind === 'card') {
+      await parley.commitResourceCard({ create: { title, subtype: 'artifact', body: {}, placement: { column_id: draft.columnId } } }, key);
+    } else {
+      await parley.createResourceColumn({ title }, key);
+    }
+    if (epoch !== parley.workspaceEpoch) return;
+    status.value = draft.kind === 'card' ? 'Card added.' : 'List added.';
+    composerIntent = null;
+    composerTitle.value = '';
+    notify();
+    await refreshBoard();
+  } catch (reason) {
+    if (epoch === parley.workspaceEpoch) composerError.value = message(reason, draft.kind === 'card' ? 'Could not add the card.' : 'Could not add the list.');
+  } finally {
+    boardWriteBusy.value = false;
+    if (draft === composer.value) {
+      if (draft.kind === 'card' && !snapshot.value?.columns.some(column => column.id === draft.columnId)) retainDisplacedCard();
+      else focusComposer();
+    }
+  }
+}
+async function removeColumn(column: ResourceColumn) {
+  const count = cardsByColumn.value.get(column.id)?.length ?? 0;
+  const description = count ? ` ${count === 1 ? 'Its card will' : 'Its cards will'} move to Find resource, where you can add them to another list.` : '';
+  if (boardWriteBusy.value || boardLoading.value || !globalThis.confirm(`Remove “${column.title}”?${description}`)) return;
+  const epoch = parley.workspaceEpoch;
+  const signature = JSON.stringify([epoch, column.id, column.revision]);
+  if (removalIntent?.signature !== signature) removalIntent = { signature, key: newOperationKey() };
+  boardWriteBusy.value = true;
+  error.value = '';
+  try {
+    const result = await parley.removeResourceColumn(column.id, { expected_revision: column.revision }, removalIntent.key);
+    if (epoch !== parley.workspaceEpoch) return;
+    status.value = result.off_board_count ? 'List removed. Its cards are in Find resource.' : 'List removed.';
+    removalIntent = null;
+    notify();
+    await refresh();
+  } catch (reason) {
+    if (epoch !== parley.workspaceEpoch) return;
+    error.value = message(reason, 'Could not remove the list.');
+    if (reason instanceof ApiError && [404, 412].includes(reason.status)) await refreshBoard();
+  } finally {
+    boardWriteBusy.value = false;
+    if (!snapshot.value?.columns.some(item => item.id === column.id)) {
+      if (composer.value?.kind === 'card' && composer.value.columnId === column.id) retainDisplacedCard();
+      await nextTick();
+      restoreInvocation(addList.value);
+    }
+  }
+}
+
 let failedMove: { signature: string; key: string } | null = null;
 async function moveCard(card: CardSummary, column: string | null, before: string | null = null) {
-  if (moveBusy.value || boardLoading.value || before === card.resource_id || !column && !card.placement) return;
+  if (boardWriteBusy.value || moveBusy.value || boardLoading.value || before === card.resource_id || !column && !card.placement) return;
   const trigger = focused();
   const source = card.placement?.column_id;
   const input = {
@@ -603,17 +730,54 @@ async function correctEdge(edge: GraphEdge) {
   } catch (reason) { error.value = message(reason, 'Could not correct the relationship.'); }
   finally { edgeBusy.value = false; }
 }
-async function detachEdge(edge: GraphEdge) {
-  if (edgeBusy.value || !globalThis.confirm('Detach this relationship? Both cards will remain.')) return;
+function removeRelationshipFromGraph(id: string) {
+  const trigger = focused();
+  requestSwitch(() => {
+    const choices = removableGraphEdges(id);
+    if (choices.length === 1 && choices[0]) {
+      void detachEdge(choices[0]).then(() => restoreGraphActionFocus(trigger));
+    } else if (choices.length > 1) {
+      graphRemovalTrigger = trigger;
+      graphRemovalTarget.value = id;
+      graphRemovalEdge.value = '';
+      error.value = '';
+      void nextTick(() => graphRemovalDialog.value?.showModal());
+    }
+  });
+}
+function restoreGraphActionFocus(trigger: HTMLElement | null) {
+  void nextTick(() => {
+    if (trigger?.isConnected) trigger.focus();
+    else globalThis.document.querySelector<HTMLElement>('[data-testid="resource-canvas"]')?.focus();
+  });
+}
+function closeGraphRemoval() {
+  graphRemovalDialog.value?.close();
+  graphRemovalTarget.value = null;
+  restoreGraphActionFocus(graphRemovalTrigger);
+}
+async function removeChosenRelationship() {
+  const edge = graphRemovalChoices.value.find(item => item.id === graphRemovalEdge.value);
+  if (!edge) return;
+  if (await detachEdge(edge, false)) closeGraphRemoval();
+}
+async function detachEdge(edge: GraphEdge, confirm = true) {
+  if (edgeBusy.value || !edge.owner_authored || edge.record) return false;
+  if (confirm && !globalThis.confirm(`Remove “${sentence(edge)}”? Both cards will remain.`)) return false;
+  error.value = '';
   edgeBusy.value = true;
   try {
     await parley.removeEdge(edge.id, edge.revision, newOperationKey());
-    edgeId.value = null;
-    status.value = 'Relationship detached.';
+    if (edgeId.value === edge.id) edgeId.value = null;
+    status.value = 'Relationship removed.';
     notify();
     await refresh();
-  } catch (reason) { error.value = message(reason, 'Could not detach the relationship.'); }
-  finally { edgeBusy.value = false; }
+    return true;
+  } catch (reason) {
+    error.value = message(reason, 'Could not remove the relationship.');
+    if (reason instanceof ApiError && [404, 412].includes(reason.status)) await refresh();
+    return false;
+  } finally { edgeBusy.value = false; }
 }
 async function download(file: EntityAttachment) {
   const id = inspectedId.value;
@@ -628,17 +792,32 @@ async function download(file: EntityAttachment) {
     globalThis.setTimeout(() => globalThis.URL.revokeObjectURL(url), 30_000);
   } catch (reason) { detailsError.value = message(reason, 'Could not download this file.'); }
 }
-async function retire(card: CardSummary) {
-  if (!globalThis.confirm(`Retire “${card.title}”? It will leave the board and resource picker.`)) return;
+function retire(card: CardSummary) {
+  requestSwitch(() => { void confirmRetirement(card); });
+}
+async function confirmRetirement(card: CardSummary) {
+  if (boardWriteBusy.value || !globalThis.confirm(`Delete “${card.title}”? This retires the resource from the board and picker. Its delivery history is preserved.`)) return;
+  const trigger = focused();
+  const epoch = parley.workspaceEpoch;
+  const signature = JSON.stringify([epoch, card.resource_id]);
+  if (retirementIntent?.signature !== signature) retirementIntent = { signature, key: newOperationKey() };
+  boardWriteBusy.value = true;
+  error.value = '';
   try {
-    await parley.retireResourceCard(card.resource_id);
+    await parley.retireResourceCard(card.resource_id, retirementIntent.key);
+    if (epoch !== parley.workspaceEpoch) return;
+    retirementIntent = null;
     if (selectedId.value === card.resource_id) selectedId.value = null;
     if (rootId.value === card.resource_id) rootId.value = null;
     if (inspectedId.value === card.resource_id) inspectedId.value = null;
-    status.value = 'Card retired.';
+    if (props.routeId === card.resource_id) emit('navigate', '/resources');
+    status.value = 'Card deleted.';
     notify();
     await refresh();
-  } catch (reason) { error.value = message(reason, 'Could not retire the card.'); }
+    await nextTick();
+    if (trigger && !trigger.isConnected) restoreInvocation(boardHeading.value);
+  } catch (reason) { error.value = message(reason, 'Could not delete the card.'); }
+  finally { boardWriteBusy.value = false; }
 }
 async function searchParties(query: string) {
   const own = ++partyGeneration;
@@ -656,13 +835,23 @@ async function searchParties(query: string) {
   }
 }
 function onBeforeUnload(event: BeforeUnloadEvent) {
-  if (!editorDirty.value) return;
+  if (!editorDirty.value && !composerTitle.value.trim() && !displacedCardTitle.value) return;
   event.preventDefault();
   event.returnValue = true;
 }
 function workspaceChanged() {
   pendingRefresh = false;
   failedMove = null;
+  if (channelEpoch !== parley.workspaceEpoch) {
+    composer.value = null;
+    composerTitle.value = '';
+    displacedCardTitle.value = '';
+    composerError.value = '';
+    composerIntent = null;
+    removalIntent = null;
+    retirementIntent = null;
+    if (graphRemovalDialog.value?.open) closeGraphRemoval();
+  }
   if (editorDirty.value) form.value?.quarantine();
   else dismissEditor(false);
   if (channelEpoch !== parley.workspaceEpoch) {
@@ -779,6 +968,19 @@ defineExpose({ refresh, requestSwitch, hasDraft, columns });
         </button>
       </div>
       <div
+        v-if="displacedCardTitle"
+        class="notice"
+        role="status"
+      >
+        The list for “{{ displacedCardTitle }}” was removed. Choose Add card in another list to continue this draft.
+        <button
+          type="button"
+          @click="displacedCardTitle = ''"
+        >
+          Discard draft
+        </button>
+      </div>
+      <div
         ref="boardViewport"
         class="board"
         :aria-busy="boardLoading"
@@ -793,7 +995,18 @@ defineExpose({ refresh, requestSwitch, hasDraft, columns });
           @dragover.prevent="draggedId && (dropTarget = column.id)"
           @drop.prevent="drop($event, column.id)"
         >
-          <h3>{{ column.title }} <small>{{ cardsByColumn.get(column.id)?.length ?? 0 }}</small></h3>
+          <header class="lane-header">
+            <h3>{{ column.title }} <small>{{ cardsByColumn.get(column.id)?.length ?? 0 }}</small></h3>
+            <button
+              type="button"
+              class="remove-list"
+              :aria-label="'Remove list ' + column.title"
+              :disabled="boardLoading || boardWriteBusy || moveBusy"
+              @click="removeColumn(column)"
+            >
+              Remove
+            </button>
+          </header>
           <ul class="tile-list">
             <li
               v-for="card in cardsByColumn.get(column.id) ?? []"
@@ -817,25 +1030,134 @@ defineExpose({ refresh, requestSwitch, hasDraft, columns });
                 <strong>{{ card.title }}</strong>
                 <span class="tile-counts">{{ card.counts.files }} {{ card.counts.files === 1 ? 'file' : 'files' }} · {{ card.counts.connections }} linked<span v-if="card.counts.proposed"> · {{ card.counts.proposed }} proposed</span></span>
               </button>
-              <button
-                type="button"
-                class="edit-tile"
-                :aria-label="'Edit ' + card.title"
-                @click="openEdit(card.resource_id)"
-              >
-                Edit
-              </button>
+              <div class="tile-actions">
+                <button
+                  type="button"
+                  :aria-label="'Edit ' + card.title"
+                  @click="openEdit(card.resource_id)"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  class="retire"
+                  :aria-label="'Delete ' + card.title"
+                  :disabled="boardWriteBusy || moveBusy"
+                  @click="retire(card)"
+                >
+                  Delete
+                </button>
+              </div>
             </li>
           </ul>
+          <form
+            v-if="composer?.kind === 'card' && composer.columnId === column.id"
+            class="board-composer"
+            :aria-label="'New card in ' + column.title"
+            @submit.prevent="saveComposer"
+            @keydown.esc.stop.prevent="cancelComposer()"
+          >
+            <input
+              :ref="assignComposerInput"
+              v-model="composerTitle"
+              :aria-label="'Card title in ' + column.title"
+              placeholder="Enter a card title"
+              maxlength="240"
+              :disabled="boardWriteBusy"
+            >
+            <p
+              v-if="composerError"
+              role="alert"
+            >
+              {{ composerError }}
+            </p>
+            <div class="actions">
+              <button
+                class="primary"
+                type="submit"
+                :disabled="!composerTitle.trim() || boardLoading || boardWriteBusy"
+              >
+                Add card
+              </button>
+              <button
+                type="button"
+                :disabled="boardWriteBusy"
+                @click="openCreate(column.id)"
+              >
+                More options
+              </button>
+              <button
+                type="button"
+                :disabled="boardWriteBusy"
+                @click="cancelComposer()"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
           <button
+            v-show="composer?.kind !== 'card' || composer.columnId !== column.id"
             type="button"
             class="add-card"
             :aria-label="'Add card to ' + column.title"
-            @click="openCreate(column.id)"
+            :disabled="boardWriteBusy || (composer !== null && !!composerTitle.trim())"
+            @click="startComposer({ kind: 'card', columnId: column.id }, $event)"
           >
             + Add card
           </button>
         </section>
+        <div
+          v-if="snapshot"
+          class="new-list"
+        >
+          <form
+            v-if="composer?.kind === 'list'"
+            class="board-composer"
+            aria-label="New resource list"
+            @submit.prevent="saveComposer"
+            @keydown.esc.stop.prevent="cancelComposer()"
+          >
+            <input
+              ref="composerInput"
+              v-model="composerTitle"
+              aria-label="List name"
+              placeholder="Enter a list name"
+              maxlength="100"
+              :disabled="boardWriteBusy"
+            >
+            <p
+              v-if="composerError"
+              role="alert"
+            >
+              {{ composerError }}
+            </p>
+            <div class="actions">
+              <button
+                type="submit"
+                class="primary"
+                :disabled="!composerTitle.trim() || boardLoading || boardWriteBusy"
+              >
+                Add list
+              </button>
+              <button
+                type="button"
+                :disabled="boardWriteBusy"
+                @click="cancelComposer()"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+          <button
+            v-show="composer?.kind !== 'list'"
+            ref="addList"
+            type="button"
+            :disabled="boardWriteBusy || (composer !== null && !!composerTitle.trim())"
+            @click="startComposer({ kind: 'list' }, $event)"
+          >
+            + Add another list
+          </button>
+        </div>
       </div>
       <p
         v-if="boardLoading && !snapshot"
@@ -844,7 +1166,7 @@ defineExpose({ refresh, requestSwitch, hasDraft, columns });
         Loading resource board…
       </p>
       <p
-        v-else-if="snapshot"
+        v-else-if="snapshot?.columns.length"
         class="panel-note"
       >
         Drag cards to organize them, or move them from Details.
@@ -925,8 +1247,12 @@ defineExpose({ refresh, requestSwitch, hasDraft, columns });
           :pending="pendingRelationship"
           :busy="layoutBusy"
           :active="active !== false && (!narrow || view === 'connections')"
+          :can-add-relationship="isResource"
+          :removing="edgeBusy"
           :label-for-node="node => resourceLabel(resourceById.get(node.id)?.subtype ?? node.kind)"
           @activate="activateNode"
+          @add-relationship="id => openEdit(id, true, true)"
+          @remove-relationship="removeRelationshipFromGraph"
           @inspect-edge="inspectEdge"
           @position="savePosition"
         >
@@ -1456,6 +1782,65 @@ defineExpose({ refresh, requestSwitch, hasDraft, columns });
       </template>
     </dialog>
     <dialog
+      ref="graphRemovalDialog"
+      class="resource-dialog"
+      aria-labelledby="graph-remove-title"
+      @cancel.prevent="!edgeBusy && closeGraphRemoval()"
+    >
+      <form
+        v-if="graphRemovalTarget"
+        class="board-composer"
+        @submit.prevent="removeChosenRelationship"
+      >
+        <h2 id="graph-remove-title">
+          Remove a relationship
+        </h2>
+        <label>Relationship
+          <select
+            v-model="graphRemovalEdge"
+            aria-label="Relationship"
+            required
+            autofocus
+            :disabled="edgeBusy"
+          >
+            <option
+              value=""
+              disabled
+            >Choose a relationship</option>
+            <option
+              v-for="edge in graphRemovalChoices"
+              :key="edge.id"
+              :value="edge.id"
+            >{{ sentence(edge) }}</option>
+          </select>
+        </label>
+        <p v-if="graphRemovalChoices.length === 0">
+          No removable relationships remain between these cards.
+        </p>
+        <p
+          v-if="error"
+          role="alert"
+        >
+          {{ error }}
+        </p>
+        <div class="actions">
+          <button
+            type="submit"
+            :disabled="edgeBusy || !graphRemovalChoices.some(edge => edge.id === graphRemovalEdge)"
+          >
+            Remove relationship
+          </button>
+          <button
+            type="button"
+            :disabled="edgeBusy"
+            @click="closeGraphRemoval"
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <dialog
       ref="editorDialog"
       class="resource-dialog editor-dialog"
       aria-label="Resource card editor"
@@ -1470,6 +1855,7 @@ defineExpose({ refresh, requestSwitch, hasDraft, columns });
         :card-summary="editor.mode === 'edit' ? editor.summary : null"
         :initial-column-id="editor.mode === 'create' ? editor.column : null"
         :columns="snapshot?.columns ?? []"
+        :initial-title="editor.mode === 'create' ? editor.title : ''"
         @saved="onSaved"
         @cancel="closeEditor"
         @update:dirty="editorDirty = $event"
@@ -1558,15 +1944,22 @@ defineExpose({ refresh, requestSwitch, hasDraft, columns });
 .panel-header h2 { margin: 0; overflow-wrap: anywhere; }
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
 .actions button, .panel-header button { min-height: 2.5rem; }
-.board { display: grid; max-height: min(65dvh, 41rem); overflow: auto; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .6rem; padding: .7rem; background: #f4f6ed; }
+.board { display: flex; align-items: flex-start; min-width: 0; max-height: min(65dvh, 41rem); overflow: auto; gap: .65rem; padding: .7rem; background: #f4f6ed; }
+.lane, .new-list { flex: 0 0 clamp(13rem, 31%, 17rem); min-width: 0; }
+.new-list > button { width: 100%; border-style: dashed; text-align: start; background: #fffdf8; min-height: 2.75rem; }
+.lane-header { display: flex; align-items: start; justify-content: space-between; gap: .3rem; margin-bottom: .55rem; }
+.lane-header .remove-list { font-size: .8rem; color: #832d25; min-height: 2rem; padding: .25rem .4rem; background: transparent; border-color: transparent; }
+.board-composer { background: #fffefb; border: 1px solid #c3cdbf; border-radius: .4rem; display: grid; gap: .5rem; padding: .55rem; }
+.board-composer input { min-width: 0; width: 100%; }
+.board-composer .actions button { font-size: .85rem; min-height: 2.25rem; }
+.board-composer p { margin: 0; color: #832d25; overflow-wrap: anywhere; }
 .resources-workspace section.lane {
   background: #e9eee2;
   border: 1px solid #d3dbcc;
   border-radius: .5rem;
-  min-height: 24rem;
   padding: .55rem;
 }
-.lane h3 { font-size: 1.03rem; margin: .25rem .1rem .75rem; overflow-wrap: anywhere; }
+.lane h3 { font-size: 1.03rem; margin: .25rem .1rem; overflow-wrap: anywhere; }
 .lane h3 small { margin-left: .18rem; font-variant-numeric: tabular-nums; font-weight: 500; }
 .tile-list { list-style: none; margin: 0; padding: 0; }
 .tile { display: grid; border: 1px solid #c3cdbf; border-top: 3px solid #a48e68; border-radius: .4rem; background: #fffefb; margin-bottom: .55rem; min-width: 0; padding-bottom: .35rem; }
@@ -1576,7 +1969,8 @@ defineExpose({ refresh, requestSwitch, hasDraft, columns });
 .tile-body small, .eyebrow { color: var(--muted); font: .88rem/1.4 ui-monospace, monospace; }
 .tile-body strong { font: 1.23rem/1.2 Georgia, serif; }
 .tile-counts { color: var(--muted); font-size: .9rem; }
-.edit-tile { justify-self: end; margin-right: .37rem; min-height: 2rem; }
+.tile-actions { display: flex; justify-content: flex-end; gap: .3rem; padding: 0 .37rem; }
+.tile-actions button { min-height: 2rem; font-size: .82rem; }
 .add-card, .text-button { text-align: left; background: none; color: #245640; }
 .add-card { border-color: transparent; min-height: 2.5rem; margin-top: .1rem; padding-inline: .35rem; }
 .drop-lane { outline: 2px dashed #30654d; outline-offset: -3px; }
@@ -1621,7 +2015,6 @@ defineExpose({ refresh, requestSwitch, hasDraft, columns });
   .resources-workspace .inspector-panel { border-top: 0; }
 }
 @media (max-width: 530px) {
-  .board { grid-template-columns: minmax(0, 1fr); max-height: none; }
-  .resources-workspace section.lane { min-height: 0; }
+  .board { display: grid; grid-template-columns: minmax(0, 1fr); max-height: none; }
 }
 </style>

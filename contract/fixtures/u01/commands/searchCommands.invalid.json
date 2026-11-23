@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/CommandErrorEnvelope","body":{"error":{"code":"malformed_request","message":"Search query exceeds 256 bytes","details":[{"path":"/query","problem":"too_long"}]}}}

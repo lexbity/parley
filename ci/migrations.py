@@ -1,17 +1,22 @@
-"""Migration verifier for Parley (RFC-0002 BE-01/BE-04, RFC-0004 S01).
+"""Migration verifier for Parley (RFC-0002 BE-01/BE-04, RFC-0004 S01, UCR-001 U01).
 
 For `--through SLICE` this script:
 
 1. requires every migration owned by slices up to SLICE to exist,
 2. verifies sqlx-cli is installed and matches the sqlx library (major.minor),
-3. applies each cumulative prefix of the migration set to a real, private
-   SQLite file with `sqlx migrate run`, then checks integrity, foreign keys,
-   applied row counts and that stored checksums match SHA-384 of the files,
+3. applies every migration file whose numeric prefix is at or below the
+   highest required version — in numeric order, not slice order — to a real,
+   private SQLite file with `sqlx migrate run`, then checks integrity, foreign
+   keys, applied row counts and that stored checksums match SHA-384 of the
+   files,
 4. runs `cargo sqlx prepare --workspace --check` against the fully migrated
    database so query metadata cannot drift from the schema.
 
-Temporary databases live in a private temp directory and are removed after the
-run. No migration is ever applied to a real workspace from here.
+Every migration file in that numeric range must have exactly one owning
+slice. The ownership check is exercised by a negative self-test that removes
+the 0019 and 0020 owners in turn and requires the check to fail. Temporary
+databases live in a private temp directory and are removed after the run. No
+migration is ever applied to a real workspace from here.
 """
 
 from __future__ import annotations
@@ -28,8 +33,9 @@ from pathlib import Path
 from common import REPO_ROOT, VerificationError, fail, run, slices_through
 
 MIGRATIONS_DIR = REPO_ROOT / "migrations"
+MIGRATION_PREFIX = re.compile(r"^(\d{4})_")
 
-# Slice -> owned migration file (RFC-0004 implementation plan).
+# Slice -> owned migration file (RFC-0004 implementation plan, UCR-001 U01).
 SLICE_MIGRATIONS: dict[str, list[str]] = {
     "s01": ["0001_workspace.sql"],
     "s02": ["0002_graph.sql"],
@@ -46,12 +52,113 @@ SLICE_MIGRATIONS: dict[str, list[str]] = {
     "p01": ["0012_party_sheet.sql"],
     "p02": ["0013_graph_cards.sql"],
     "p03": [],
-    "p04": ["0014_party_intake.sql", "0015_resource_cards.sql", "0016_party_private_staging.sql", "0017_card_retirement.sql"],
+    "p04": [
+        "0014_party_intake.sql",
+        "0015_resource_cards.sql",
+        "0016_party_private_staging.sql",
+        "0017_card_retirement.sql",
+    ],
     "r01": ["0018_resource_board.sql"],
     "r02": [],
     "r03": [],
     "r04": ["0020_resource_workspace.sql"],
+    "u01": ["0021_command_ledger.sql"],
 }
+
+# Ownership entries removed one at a time by the negative self-test.
+SELF_TEST_VICTIMS = ("0019_queue_sheet.sql", "0020_resource_workspace.sql")
+
+
+def numeric_prefix(name: str) -> int:
+    """Return the four-digit sqlx version prefix of a migration filename."""
+    match = MIGRATION_PREFIX.match(name)
+    if not match:
+        raise VerificationError(
+            f"migration {name!r} has no four-digit numeric prefix; sqlx cannot order it"
+        )
+    return int(match.group(1))
+
+
+def migration_files() -> list[Path]:
+    """Return every migration file in numeric prefix order (ties by name)."""
+    files = [path for path in MIGRATIONS_DIR.glob("*.sql") if MIGRATION_PREFIX.match(path.name)]
+    return sorted(files, key=lambda path: (numeric_prefix(path.name), path.name))
+
+
+def verify_ownership(migrations: dict[str, list[str]], highest: int) -> None:
+    """Require exactly one slice to own every migration file up to `highest`.
+
+    This is the internal function the negative self-test mutates. It raises
+    VerificationError with every ambiguity, missing owner or missing file; it
+    never filters the slice set, so an unowned migration cannot hide behind a
+    later slice's ownership entry.
+    """
+    errors: list[str] = []
+    owners: dict[str, list[str]] = {}
+    for slice_id, names in migrations.items():
+        for name in names:
+            if numeric_prefix(name) <= highest:
+                owners.setdefault(name, []).append(slice_id)
+
+    present = {
+        path.name: path for path in migration_files() if numeric_prefix(path.name) <= highest
+    }
+    for name in sorted(present):
+        declared = owners.get(name, [])
+        if len(declared) != 1:
+            errors.append(
+                f"migrations/{name} (version {numeric_prefix(name)}) is owned by "
+                f"{len(declared)} slice(s): {declared or 'none'}; exactly one owner is required"
+            )
+    for name in sorted(set(owners) - set(present)):
+        errors.append(
+            f"{', '.join(owners[name])} own(s) migrations/{name}, which is missing from "
+            f"{MIGRATIONS_DIR.relative_to(REPO_ROOT)}"
+        )
+
+    by_prefix: dict[int, list[str]] = {}
+    for name in present:
+        by_prefix.setdefault(numeric_prefix(name), []).append(name)
+    for version, names in sorted(by_prefix.items()):
+        if len(names) != 1:
+            errors.append(
+                f"migration version {version} is ambiguous: {sorted(names)}; sqlx needs one file "
+                "per numeric prefix"
+            )
+    if errors:
+        raise VerificationError("\n".join(errors))
+
+
+def self_test_ownership_gate() -> None:
+    """Negative gate: removing a real owner must make verify_ownership fail.
+
+    The map is copied per victim; the canonical SLICE_MIGRATIONS is never
+    mutated. If the check ever passes with an unowned 0019 or 0020, the
+    positive ownership gate would be vacuous and this self-test fails the run.
+    """
+    for victim in SELF_TEST_VICTIMS:
+        if not any(victim in names for names in SLICE_MIGRATIONS.values()):
+            raise VerificationError(
+                f"negative ownership self-test cannot find {victim} in SLICE_MIGRATIONS"
+            )
+        mutated = {
+            slice_id: [name for name in names if name != victim]
+            for slice_id, names in SLICE_MIGRATIONS.items()
+        }
+        try:
+            verify_ownership(mutated, numeric_prefix(victim))
+        except VerificationError as exc:
+            if victim in str(exc):
+                continue
+            raise VerificationError(
+                f"negative ownership self-test rejected the mutated map for the wrong reason "
+                f"(expected {victim}): {exc}"
+            ) from exc
+        raise VerificationError(
+            f"negative ownership self-test failed: removing the owner of {victim} still passed "
+            "the ownership check"
+        )
+    print("negative ownership self-test passed (0019 and 0020 owners are required).")
 
 
 def sqlx_cli_version() -> str:
@@ -132,30 +239,24 @@ def verify_through(last: str) -> None:
     cli = check_sqlx_cli()
     print(f"sqlx-cli {cli} matches the sqlx library.")
 
-    errors: list[str] = []
     required: list[tuple[str, str]] = []
-    for slice_id in [f"s{n:02d}" for n in range(1, 12)] + [
-        f"p{n:02d}" for n in range(1, 5)
-    ]:
+    for slice_id in slices_through(last):
         for name in SLICE_MIGRATIONS[slice_id]:
             required.append((slice_id, name))
+    if not required:
+        raise VerificationError(
+            f"no migrations are declared for any slice through {last}; a verifier that applies "
+            "zero migrations cannot qualify the schema"
+        )
+    highest = max(numeric_prefix(name) for _, name in required)
+    verify_ownership(SLICE_MIGRATIONS, highest)
+    self_test_ownership_gate()
+    print(
+        f"migration ownership verified: {len(required)} declared migration(s) through {last}, "
+        f"highest required version {highest:04d}."
+    )
 
-    owned = {
-        slice_id: name
-        for slice_id in slices_through(last)
-        for name in SLICE_MIGRATIONS[slice_id]
-    }
-    for slice_id, name in required:
-        path = MIGRATIONS_DIR / name
-        if slice_id in owned and not path.exists():
-            errors.append(
-                f"{slice_id} owns migrations/{name}, which is missing "
-                "(RFC-0004 implementation plan)"
-            )
-    if errors:
-        fail(errors)
-
-    applied = [MIGRATIONS_DIR / name for _, name in required if (MIGRATIONS_DIR / name).exists()]
+    applied = [path for path in migration_files() if numeric_prefix(path.name) <= highest]
     with tempfile.TemporaryDirectory(prefix="parley-migrations-") as tmp:
         workdir = Path(tmp)
         db_path = Path(workdir / "workspace.sqlite")

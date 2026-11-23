@@ -1123,6 +1123,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/commands/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Return the owner's authorized Tier 1 command descriptors.
+         * @description Owner session, mutation token and epoch are required. Agent surfaces and tiers are rejected for owner callers.
+         */
+        post: operations["queryCommands"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/commands/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Search the owner's palette command catalogue.
+         * @description Uses the same permission filter as queryCommands and returns closed summaries without schemas or private record data.
+         */
+        post: operations["searchCommands"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/commands/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Describe one owner-visible command.
+         * @description Visibility follows the registry's owner filter, not a client-reported context. Concealed and absent commands return the same unknown_command envelope.
+         */
+        get: operations["describeCommand"];
+        put?: never;
+        /**
+         * Invoke one registered command through the shared application operation.
+         * @description Owner session, mutation token, epoch and a mandatory Idempotency-Key are required. Retries reuse the same key, version and canonical arguments.
+         */
+        post: operations["runCommand"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/insights": {
         parameters: {
             query?: never;
@@ -1854,6 +1918,38 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/resource-board/columns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createResourceColumn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/resource-board/columns/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["removeResourceColumn"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2981,17 +3077,20 @@ export interface components {
             label: string;
             reason: string;
             /** Format: date-time */
-            date?: string | null;
-            thread_id?: string | null;
-            recipient_id?: string | null;
-            recipient_name?: string | null;
+            date?: ((string | null) | null) | null;
+            thread_id?: ((string | null) | null) | null;
+            recipient_id?: ((string | null) | null) | null;
+            recipient_name?: ((string | null) | null) | null;
         };
         QueueSheetRow: {
             opportunity_id: string;
             title: string;
             /** @enum {string} */
             lifecycle: "open" | "resolved" | "dormant" | "closed";
-            close_reason?: string | null;
+            close_reason?: ((string | null) | null) | null;
+            pack_id: string;
+            pack_version: string;
+            phase_revision: number;
             phase: components["schemas"]["SheetPhase"] | null;
             participants: components["schemas"]["SheetParticipant"][];
             next_action: components["schemas"]["SheetNextAction"];
@@ -3012,8 +3111,8 @@ export interface components {
             total: number;
             rows: components["schemas"]["QueueSheetRow"][];
             phases: components["schemas"]["PhaseKind"][];
-            cursor?: string | null;
-            next_cursor?: string | null;
+            cursor?: ((string | null) | null) | null;
+            next_cursor?: ((string | null) | null) | null;
         };
         SetPhaseInput: {
             target_stage_id: string;
@@ -3149,6 +3248,16 @@ export interface components {
         };
         OpportunityList: components["schemas"]["OpportunitySummary"][];
         MaterialList: components["schemas"]["MaterialRecord"][];
+        CreateResourceColumn: {
+            title: string;
+        };
+        RemoveResourceColumn: {
+            expected_revision: number;
+        };
+        RemovedResourceColumn: {
+            id: string;
+            off_board_count: number;
+        };
         ResourceColumn: {
             id: string;
             title: string;
@@ -3362,6 +3471,109 @@ export interface components {
         BoundAttachment: {
             attachment: components["schemas"]["EntityAttachment"];
         };
+        /** @description One stable JSON Pointer path and typed problem code; never a validation-engine message. */
+        CommandErrorDetail: {
+            path: string;
+            problem: string;
+        };
+        CommandError: {
+            /** @enum {string} */
+            code: "malformed_request" | "unauthenticated" | "origin_denied" | "unsupported_media_type" | "forbidden" | "approval_required" | "approval_invalid" | "unknown_command" | "target_unavailable" | "conflict" | "epoch_changed" | "version_mismatch" | "operation_in_progress" | "approval_stale" | "cursor_stale" | "requires_owner_workflow" | "request_too_large" | "result_too_large" | "invalid_args" | "idempotency_mismatch" | "budget_exceeded" | "unavailable" | "timeout" | "internal";
+            message: string;
+            details: components["schemas"]["CommandErrorDetail"][];
+        };
+        CommandErrorEnvelope: {
+            error: components["schemas"]["CommandError"];
+        };
+        QueryCommandsInput: {
+            /** @constant */
+            surface: "palette";
+            context?: {
+                [key: string]: string | boolean;
+            };
+        };
+        CommandPaletteSpec: {
+            context_fields: string[];
+            prompts: {
+                field: string;
+                /** @enum {string} */
+                picker: "party" | "planning_stage" | "opportunity_task";
+                title: string;
+            }[];
+        };
+        /** @description Closed descriptor published only after boot validation; schemas are self-contained Draft 2020-12 objects. */
+        CommandDescriptor: {
+            id: string;
+            version: number;
+            title: string;
+            summary: string;
+            description: string;
+            keywords: string[];
+            /** @enum {string} */
+            effect: "read" | "write" | "destructive";
+            requires_permission: string;
+            surfaces: ("palette" | "agent")[];
+            agent_tier?: number;
+            args_schema: {
+                [key: string]: unknown;
+            };
+            result_schema: {
+                [key: string]: unknown;
+            };
+            supports_dry_run: boolean;
+            when?: string;
+            palette: components["schemas"]["CommandPaletteSpec"];
+        };
+        QueryCommandsResult: {
+            /** @constant */
+            contract_major: 1;
+            manifest_version: string;
+            truncated: boolean;
+            commands: components["schemas"]["CommandDescriptor"][];
+        };
+        SearchCommandsInput: {
+            query: string;
+            limit?: number;
+            context?: {
+                [key: string]: string | boolean;
+            };
+        };
+        CommandSummary: {
+            id: string;
+            version: number;
+            title: string;
+            summary: string;
+            /** @enum {string} */
+            effect: "read" | "write" | "destructive";
+        };
+        CommandSearchResult: {
+            items: components["schemas"]["CommandSummary"][];
+            total: number;
+            next_cursor: string | null;
+        };
+        CommandInvocationInput: {
+            version: number;
+            args: Record<string, never>;
+            dry_run?: boolean;
+        };
+        CommandRunSuccess: {
+            /** @constant */
+            ok: true;
+            command_version: number;
+            audit_id: string;
+            original_audit_id: string | null;
+            replayed: boolean;
+            dry_run: boolean;
+            result: Record<string, never>;
+        };
+        CommandRunFailure: {
+            /** @constant */
+            ok: false;
+            command_version: number;
+            audit_id?: string;
+            error: components["schemas"]["CommandError"];
+        };
+        CommandRunResult: components["schemas"]["CommandRunSuccess"] | components["schemas"]["CommandRunFailure"];
     };
     responses: {
         /** @description Stable error envelope. */
@@ -3373,14 +3585,41 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description Stable command error envelope with a typed detail array. */
+        CommandError: {
+            headers: {
+                "Cache-Control": components["headers"]["PrivateNoStore"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["CommandErrorEnvelope"];
+            };
+        };
+        /** @description Stable command invocation failure envelope with a typed detail array. */
+        CommandRunFailure: {
+            headers: {
+                "Cache-Control": components["headers"]["PrivateNoStore"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["CommandRunFailure"];
+            };
+        };
     };
     parameters: {
         MutationToken: string;
         Epoch: string;
         IdempotencyKey: string;
+        /** @description Bounded invocation key. A retry reuses this key with the same version and canonical arguments. */
+        CommandIdempotencyKey: string;
     };
     requestBodies: never;
-    headers: never;
+    headers: {
+        /** @description Owner command responses are private and must not be stored by any cache. */
+        PrivateNoStore: "private, no-store";
+        /** @description Workspace epoch that produced the command response. */
+        ParleyEpoch: string;
+    };
     pathItems: never;
 }
 export type $defs = Record<string, never>;
@@ -5949,6 +6188,144 @@ export interface operations {
             };
         };
     };
+    queryCommands: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QueryCommandsInput"];
+            };
+        };
+        responses: {
+            /** @description Ordered descriptor manifest; never cached or shared. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueryCommandsResult"];
+                };
+            };
+            400: components["responses"]["CommandError"];
+            401: components["responses"]["CommandError"];
+            403: components["responses"]["CommandError"];
+        };
+    };
+    searchCommands: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SearchCommandsInput"];
+            };
+        };
+        responses: {
+            /** @description Ranked, bounded command summaries; never cached or shared. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandSearchResult"];
+                };
+            };
+            400: components["responses"]["CommandError"];
+            401: components["responses"]["CommandError"];
+            403: components["responses"]["CommandError"];
+        };
+    };
+    describeCommand: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Closed command descriptor; never cached or shared. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandDescriptor"];
+                };
+            };
+            401: components["responses"]["CommandError"];
+            403: components["responses"]["CommandError"];
+            404: components["responses"]["CommandError"];
+        };
+    };
+    runCommand: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                /** @description Bounded invocation key. A retry reuses this key with the same version and canonical arguments. */
+                "Idempotency-Key": components["parameters"]["CommandIdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CommandInvocationInput"];
+            };
+        };
+        responses: {
+            /** @description Committed or replayed command result; never cached or shared. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandRunSuccess"];
+                };
+            };
+            400: components["responses"]["CommandError"];
+            401: components["responses"]["CommandError"];
+            403: components["responses"]["CommandError"];
+            404: components["responses"]["CommandError"];
+            409: components["responses"]["CommandError"];
+            413: components["responses"]["CommandError"];
+            422: components["responses"]["CommandRunFailure"];
+            429: components["responses"]["CommandError"];
+            500: components["responses"]["CommandError"];
+            503: components["responses"]["CommandError"];
+            504: components["responses"]["CommandError"];
+        };
+    };
     getInsights: {
         parameters: {
             query?: {
@@ -7510,6 +7887,71 @@ export interface operations {
             };
             401: components["responses"]["Error"];
             422: components["responses"]["Error"];
+        };
+    };
+    createResourceColumn: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateResourceColumn"];
+            };
+        };
+        responses: {
+            /** @description List appended to the resource board. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResourceColumn"];
+                };
+            };
+            401: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    removeResourceColumn: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RemoveResourceColumn"];
+            };
+        };
+        responses: {
+            /** @description List removed and its resources moved off the board. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemovedResourceColumn"];
+                };
+            };
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            412: components["responses"]["Error"];
         };
     };
     getResourceCard: {

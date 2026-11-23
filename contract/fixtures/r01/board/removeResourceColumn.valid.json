@@ -1,0 +1,6 @@
+{
+  "$schema": "#/components/schemas/RemoveResourceColumn",
+  "body": {
+    "expected_revision": 2
+  }
+}

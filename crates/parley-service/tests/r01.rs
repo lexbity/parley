@@ -957,3 +957,107 @@ async fn r01_legacy_resources_stay_offboard_and_replay_returns_same_card() {
     service.shutdown().await;
     let _ = fs::remove_file(&db);
 }
+
+#[tokio::test]
+async fn resource_lists_replay_create_and_remove_with_current_revision() {
+    let db = path();
+    let service = parley_service::start_workspace(&db).await.unwrap();
+    let session = owner_session(&service).await;
+    let create_key = next_key();
+    let create = [("Idempotency-Key", create_key.as_str())];
+    let lists = "/api/v1/resource-board/columns";
+    let input = json!({"title": " Workshop "});
+    let list = request(
+        &service,
+        &session,
+        "POST",
+        lists,
+        Some(input.clone()),
+        &create,
+    )
+    .await;
+    assert_eq!(list.status, 201);
+    assert_eq!(list.body["title"], "Workshop");
+    let id = list.body["id"].as_str().unwrap();
+    let replay = request(&service, &session, "POST", lists, Some(input), &create).await;
+    assert_eq!(replay.status, 201);
+    assert_eq!(replay.body, list.body);
+
+    let card = request(
+        &service,
+        &session,
+        "POST",
+        "/api/v1/resource-card-commits",
+        Some(json!({"create": {"title": "Handout", "subtype": "artifact", "placement": {"column_id": id}}})),
+        &[("Idempotency-Key", &next_key())],
+    )
+    .await;
+    assert_eq!(card.status, 201);
+    let resource_id = card.body["entity"]["id"].as_str().unwrap();
+    let list_path = format!("{lists}/{id}");
+    let stale = request(
+        &service,
+        &session,
+        "DELETE",
+        &list_path,
+        Some(json!({"expected_revision": 1})),
+        &[("Idempotency-Key", &next_key())],
+    )
+    .await;
+    assert_eq!(stale.status, 412);
+
+    let remove_key = next_key();
+    let remove = [("Idempotency-Key", remove_key.as_str())];
+    let input = json!({"expected_revision": 2});
+    let removed = request(
+        &service,
+        &session,
+        "DELETE",
+        &list_path,
+        Some(input.clone()),
+        &remove,
+    )
+    .await;
+    assert_eq!(removed.status, 200);
+    assert_eq!(removed.body, json!({"id": id, "off_board_count": 1}));
+    let replay = request(
+        &service,
+        &session,
+        "DELETE",
+        &list_path,
+        Some(input),
+        &remove,
+    )
+    .await;
+    assert_eq!(replay.status, 200);
+    assert_eq!(replay.body, removed.body);
+
+    let board = request(
+        &service,
+        &session,
+        "GET",
+        "/api/v1/resource-board?include_offboard=true",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(board.status, 200);
+    assert!(
+        !board.body["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|column| column["id"] == id)
+    );
+    assert!(
+        board.body["off_board"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|card| card["resource_id"] == resource_id)
+    );
+    assert_eq!(board.body["cards"], json!([]));
+
+    service.shutdown().await;
+    let _ = fs::remove_file(db);
+}
