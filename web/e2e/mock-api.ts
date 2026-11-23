@@ -382,11 +382,24 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
   // but never proxies to the Rust service or to the REST wire DTO.
   const COMMAND_SET = 'opportunity.set_phase';
   const COMMAND_UNDO = 'opportunity.undo_phase_change';
+  const COMMAND_CREATE = 'opportunity.create';
   const COMMAND_ARG_FIELDS: Record<string, string[]> = {
+    [COMMAND_CREATE]: ['title', 'primary_party_id'],
     [COMMAND_SET]: ['opportunity_id', 'expected_phase_revision', 'expected_pack_id', 'expected_pack_version', 'stage_id'],
     [COMMAND_UNDO]: ['opportunity_id', 'expected_phase_revision', 'expected_pack_id', 'expected_pack_version', 'original_event_id'],
   };
   const commandDescriptors: RecordData[] = [
+    {
+      id: COMMAND_CREATE, version: 1, title: 'Create opportunity',
+      summary: 'Create an opportunity for a selected party',
+      description: 'Creates one open opportunity with the selected active party as its primary participant and places it in the first board list.',
+      keywords: ['queue', 'new', 'create', 'lead'], effect: 'write', requires_permission: 'opportunity.create',
+      surfaces: ['palette', 'agent'], agent_tier: 2, supports_dry_run: false,
+      when: 'route == "queue"',
+      args_schema: { type: 'object', additionalProperties: false, required: COMMAND_ARG_FIELDS[COMMAND_CREATE], properties: {} },
+      result_schema: { type: 'object', additionalProperties: false },
+      palette: { context_fields: ['route'], prompts: [{ field: 'title', picker: 'text', title: 'Opportunity title' }, { field: 'primary_party_id', picker: 'party', title: 'Primary party' }] },
+    },
     {
       id: COMMAND_SET, version: 1, title: 'Change opportunity phase',
       summary: 'Move an open opportunity to a planning phase',
@@ -464,6 +477,27 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
   }
 
   function commandResult(id: string, args: RecordData) {
+    if (id === COMMAND_CREATE) {
+      const title = String(args.title ?? '').trim();
+      const party = directory.get(String(args.primary_party_id));
+      if (!title || !party || !['person', 'org'].includes(party.kind)) {
+        return { status: 404, body: { code: 'target_unavailable', message: 'Primary party is not available', details: [] } };
+      }
+      const record = { id: randomHex(), title, state: 'open', revision: 1, participant_ids: [party.id], source_variant_ids: [], material_ids: [], tags: [] };
+      opportunities.set(record.id, record);
+      const homeList = boardLists.find((list) => !list.archived)!;
+      const position = [...placements.values()].filter((placement) => placement.list_id === homeList.id).length;
+      placements.set(record.id, { list_id: homeList.id, position, placement_revision: 1 });
+      notesByOpportunity.set(record.id, { markdown: '', revision: 1 });
+      pushEvent({ event_id: randomHex(), entity_type: 'opportunity', entity_id: record.id, revision: 1, event_type: 'opportunity.created', payload: { primary_party_id: party.id, origin: 'command.registry' } });
+      return {
+        status: 200,
+        body: {
+          opportunity_id: record.id, revision: 1, primary_party_id: party.id,
+          list_id: homeList.id, position, event_cursor: String(events.length),
+        },
+      };
+    }
     const opportunity = opportunities.get(String(args.opportunity_id));
     if (!opportunity) return { status: 404, body: { code: 'unknown_command', message: 'Opportunity does not exist', details: [] } };
     const current = opportunityPhases.get(String(opportunity.id)) ?? { stage_id: null, pack_id: activePackId, pack_version: activePackVersion, revision: 1, event_id: '' };
@@ -524,7 +558,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
   // its worker, lease or provider state.
   const AGENT_STATES = ['queued', 'running', 'waiting_owner', 'waiting_job', 'succeeded', 'failed', 'cancelled', 'expired'];
   const AGENT_TARGET_KINDS = ['party', 'opportunity', 'resource', 'material', 'segment'];
-  const AGENT_PERMISSIONS = ['party.read', 'opportunity.read', 'opportunity.phase.edit'];
+  const AGENT_PERMISSIONS = ['party.read', 'opportunity.read', 'opportunity.create', 'opportunity.phase.edit'];
 
   function agentTargetLabel(target: AgentRunTarget): string {
     if (target.kind === 'party') return directory.get(target.id)?.name ?? target.id;
@@ -853,10 +887,15 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
       if (Object.keys(context).length > 16 || Object.keys(context).some((key) => !commandContextAllowed(key))) {
         return fail(response, 400, 'malformed_request', 'Context key is not allowlisted');
       }
-      const visible = context.route === 'queue' && context['selection.opportunity'] === true;
+      const commandsForContext = commandDescriptors.filter((descriptor) => {
+        const when = String(descriptor.when ?? '');
+        if (!when.includes('route == "queue"')) return false;
+        if (when.includes('selection.opportunity')) return context['selection.opportunity'] === true;
+        return true;
+      });
       return json(response, 200, {
         contract_major: 1, manifest_version: commandManifestVersion, truncated: false,
-        commands: visible ? commandDescriptors : [],
+        commands: commandsForContext,
       });
     }
 

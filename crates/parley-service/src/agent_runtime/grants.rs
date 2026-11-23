@@ -114,7 +114,13 @@ impl Grant {
         &self,
         args: &'a serde_json::Value,
     ) -> Option<(&'static str, &'a str)> {
-        for field in ["party_id", "opportunity_id", "resource_id", "material_id"] {
+        for field in [
+            "party_id",
+            "primary_party_id",
+            "opportunity_id",
+            "resource_id",
+            "material_id",
+        ] {
             if let Some(value) = args.get(field).and_then(serde_json::Value::as_str) {
                 return Some((field, value));
             }
@@ -126,5 +132,107 @@ impl Grant {
         self.targets
             .iter()
             .any(|target| target.kind == kind && target.id == id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::policy::Permission;
+
+    fn target(kind: &str, id: &str) -> GrantTarget {
+        GrantTarget { kind: kind.to_owned(), id: id.to_owned() }
+    }
+
+    fn valid_targets() -> Vec<GrantTarget> {
+        vec![target("party", "p-1")]
+    }
+
+    #[test]
+    fn build_grant_accepts_a_deduplicated_subset() {
+        let permission = Permission::all()[0].as_str().to_owned();
+        let grant = build_grant(
+            vec![permission.clone(), permission.clone()],
+            vec![target("party", "p-1"), target("party", "p-2")],
+            true,
+        );
+        let err = build_grant(vec![permission.clone(), permission], valid_targets(), true)
+            .expect_err("duplicate permissions must be rejected");
+        assert!(err.contains("duplicate permission"), "{err}");
+        let _ = grant;
+    }
+
+    #[test]
+    fn build_grant_rejects_out_of_bounds_input() {
+        let permission = Permission::all()[0].as_str().to_owned();
+        assert!(build_grant(vec![], valid_targets(), false).is_err());
+        assert!(
+            build_grant(vec!["not-a-permission".into()], valid_targets(), false).is_err()
+        );
+        assert!(build_grant(vec![permission], vec![], false).is_err());
+        let too_many: Vec<GrantTarget> = (0..=MAX_TARGETS)
+            .map(|index| target("party", &format!("p-{index}")))
+            .collect();
+        assert!(build_grant(vec![Permission::all()[0].as_str().into()], too_many, false).is_err());
+        assert!(
+            build_grant(vec![Permission::all()[0].as_str().into()], vec![target("party", "")], false)
+                .is_err()
+        );
+        let long_id = "p".repeat(201);
+        assert!(
+            build_grant(vec![Permission::all()[0].as_str().into()], vec![target("party", &long_id)], false)
+                .is_err()
+        );
+        assert!(
+            build_grant(vec![Permission::all()[0].as_str().into()], vec![target("vehicle", "p-1")], false)
+                .is_err()
+        );
+        assert!(
+            build_grant(
+                vec![Permission::all()[0].as_str().into()],
+                vec![target("party", "p-1"), target("party", "p-1")],
+                false
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn principal_pseudonym_is_stable_per_run_and_epoch() {
+        let first = AgentPrincipal::from_grant("run-1", "epoch-1", "lease-1", b"secret");
+        let again = AgentPrincipal::from_grant("run-1", "epoch-1", "lease-2", b"secret");
+        let other_run = AgentPrincipal::from_grant("run-2", "epoch-1", "lease-1", b"secret");
+        assert_eq!(first.pseudonym, again.pseudonym);
+        assert_ne!(first.pseudonym, other_run.pseudonym);
+        assert!(first.pseudonym.starts_with("agent_"));
+        assert_eq!(first.run_id, "run-1");
+        assert_eq!(first.lease_token, "lease-1");
+    }
+
+    #[test]
+    fn allows_and_target_fields_read_the_grant() {
+        let grant = build_grant(
+            vec![Permission::all()[0].as_str().into()],
+            vec![target("party", "p-1"), target("opportunity", "o-1")],
+            false,
+        )
+        .unwrap();
+        assert!(grant.allows(Permission::parse(Permission::all()[0].as_str()).unwrap()));
+        let others = Permission::all()
+            .iter()
+            .find(|permission| permission.as_str() != Permission::all()[0].as_str())
+            .copied();
+        if let Some(other) = others {
+            assert!(!grant.allows(other));
+        }
+        assert!(grant.contains_target("party", "p-1"));
+        assert!(!grant.contains_target("party", "p-9"));
+
+        let args = serde_json::json!({ "opportunity_id": "o-1", "nested": { "party_id": "x" } });
+        assert_eq!(grant.target_field(&args), Some(("opportunity_id", "o-1")));
+        let party_args = serde_json::json!({ "party_id": "p-1" });
+        assert_eq!(grant.target_field(&party_args), Some(("party_id", "p-1")));
+        let empty = serde_json::json!({});
+        assert_eq!(grant.target_field(&empty), None);
     }
 }

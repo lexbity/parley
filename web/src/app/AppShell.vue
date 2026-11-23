@@ -120,6 +120,9 @@ const intentFingerprint = computed(() => [
 ].join('|'));
 const pickerOptions = computed(() => ({
   planning_stage: (queueBinding.value?.stages ?? []).map((stage) => ({ value: stage.value, label: stage.label })),
+  // The same authoritative directory the owner create form uses; the palette
+  // never accepts a party ID typed by the user or supplied by an agent.
+  party: parties.value.map((party) => ({ value: party.id, label: party.name })),
 }));
 
 function syncPaletteCommands() {

@@ -84,6 +84,10 @@ pub(crate) async fn claim(
                 .collect()
         })
         .unwrap_or_default();
+    let allow_created_opportunities = grant
+        .get("allow_created_opportunities")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let principal = crate::agent_runtime::grants::AgentPrincipal::from_grant(
         run_id,
         epoch,
@@ -97,6 +101,7 @@ pub(crate) async fn claim(
         principal.lease_token,
         permissions,
         targets,
+        allow_created_opportunities,
     )))
 }
 

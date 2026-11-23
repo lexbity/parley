@@ -874,7 +874,11 @@ async fn u01_manifest_search_describe_contract() {
         .collect();
     assert_eq!(
         ids,
-        vec!["opportunity.set_phase", "opportunity.undo_phase_change"]
+        vec![
+            "opportunity.create",
+            "opportunity.set_phase",
+            "opportunity.undo_phase_change"
+        ]
     );
     let (status, unconditioned) = request(
         port,

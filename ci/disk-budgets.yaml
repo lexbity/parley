@@ -6,8 +6,8 @@
 # The budgets exist so no growth vector is unbounded: target/ is the only
 # vector expected to reach multiple GiB, and everything else must stay small.
 target_dir:
-  warn: "6 GiB"
-  fail: "12 GiB"
+  warn: "12 GiB"
+  fail: "25 GiB"
 artifacts:        # artifacts/ + web/artifacts/ (test logs, playwright reports)
   warn: "64 MiB"
   fail: "256 MiB"

@@ -8,6 +8,7 @@ use super::release::{
     load_head,
 };
 use super::{AppState, Workspace, WorkspaceError, authenticate, digest, new_id, now_utc};
+use crate::application::writer::{EXECUTION_DEADLINE, Failure, JobResult, WriterJob, commit_tx};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -19,7 +20,7 @@ use parley_domain::{gate, template};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::QueryBuilder;
-use sqlx::{Sqlite, Transaction};
+use sqlx::{Connection, Sqlite, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
 fn materials_canonical(route: &str, input: &impl Serialize) -> String {
@@ -248,10 +249,169 @@ async fn create_opportunity(
     if let Err(error) = authenticate(&headers, &state).await {
         return (error.0, error.1).into_response();
     }
-    match state.workspace.create_opportunity(&input).await {
-        Ok(value) => (StatusCode::CREATED, Json(value)).into_response(),
-        Err(error) => workspace_error(error),
+    let epoch = state.workspace.epoch().to_string();
+    let generation = state.workspace.generation_token().await;
+    let title = input.title.clone();
+    let primary_party_id = input.primary_party_id.clone();
+    let job = WriterJob {
+        deadline: std::time::Instant::now() + EXECUTION_DEADLINE,
+        generation,
+        run: Box::new(move |connection, deadline| {
+            let epoch = epoch.clone();
+            let title = title.clone();
+            let primary_party_id = primary_party_id.clone();
+            Box::pin(async move {
+                let mut tx = match connection.begin_with("BEGIN IMMEDIATE").await {
+                    Ok(tx) => tx,
+                    Err(_) => return unavailable_job(),
+                };
+                let current: Option<String> =
+                    sqlx::query_scalar("SELECT epoch FROM workspace_meta WHERE singleton=1")
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .ok()
+                        .flatten();
+                if current.as_deref() != Some(epoch.as_str()) {
+                    return rest_create_error(
+                        tx,
+                        deadline,
+                        409,
+                        "WORKSPACE_REPLACED",
+                        "Workspace changed; reconnect before continuing",
+                    )
+                    .await;
+                }
+                if sqlx::query("SAVEPOINT ucr_create_operation")
+                    .execute(&mut *tx)
+                    .await
+                    .is_err()
+                {
+                    return unavailable_job();
+                }
+                let operation_digest =
+                    digest(format!("rest-create\0{title}\0{primary_party_id}").as_bytes());
+                let operation = crate::application::opportunity::create(
+                    &mut tx,
+                    &crate::application::opportunity::CreateInput {
+                        title: title.clone(),
+                        primary_party_id,
+                        operation_key_digest: operation_digest,
+                        created_by_run: None,
+                    },
+                )
+                .await;
+                match operation {
+                    Ok(created) => {
+                        if sqlx::query("RELEASE SAVEPOINT ucr_create_operation")
+                            .execute(&mut *tx)
+                            .await
+                            .is_err()
+                        {
+                            return unavailable_job();
+                        }
+                        let dto = match opportunity_dto(&mut tx, &created.opportunity_id).await {
+                            Ok(Some(dto)) => dto,
+                            _ => return unavailable_job(),
+                        };
+                        let body = serde_json::to_value(dto).unwrap_or_default();
+                        finish_create_job(tx, deadline, body).await
+                    }
+                    Err(error) => {
+                        let _ = sqlx::query("ROLLBACK TO SAVEPOINT ucr_create_operation")
+                            .execute(&mut *tx)
+                            .await;
+                        let _ = sqlx::query("RELEASE SAVEPOINT ucr_create_operation")
+                            .execute(&mut *tx)
+                            .await;
+                        use crate::application::opportunity::CreateError;
+                        let (status, code, message) = match error {
+                            CreateError::InvalidTitle => (
+                                422,
+                                "invalid_request",
+                                "opportunity title must contain 1–500 bytes",
+                            ),
+                            CreateError::TargetUnavailable => (
+                                422,
+                                "invalid_request",
+                                "primary participant must be an existing person or organization",
+                            ),
+                            CreateError::NoActiveList => (
+                                422,
+                                "invalid_request",
+                                "workspace must retain an active board list",
+                            ),
+                            CreateError::Database => return unavailable_job(),
+                        };
+                        rest_create_error(tx, deadline, status, code, message).await
+                    }
+                }
+            })
+        }),
+        reply: tokio::sync::oneshot::channel().0,
+    };
+    match state.writer.run(job).await {
+        crate::application::writer::WriteOutcome::Committed(body) => {
+            if let Some(error) = body.get("_error") {
+                let status = error["status"].as_u64().unwrap_or(500) as u16;
+                let code = error["code"].as_str().unwrap_or("storage_error");
+                let message = error["message"]
+                    .as_str()
+                    .unwrap_or("Could not create the opportunity");
+                error_response(
+                    StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                    code,
+                    message,
+                )
+                .into_response()
+            } else {
+                (StatusCode::CREATED, Json(body)).into_response()
+            }
+        }
+        crate::application::writer::WriteOutcome::Rejected(_) => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage_error",
+            "The workspace writer is unavailable; retry with the same request",
+        )
+        .into_response(),
     }
+}
+
+fn unavailable_job() -> JobResult {
+    JobResult {
+        commit: false,
+        body: Value::Null,
+        failure: Some(Failure::Unavailable),
+    }
+}
+
+async fn finish_create_job(
+    tx: Transaction<'_, Sqlite>,
+    deadline: std::time::Instant,
+    body: Value,
+) -> JobResult {
+    match commit_tx(tx, deadline, "").await {
+        Ok(()) => JobResult {
+            commit: true,
+            body,
+            failure: None,
+        },
+        Err(failure) => JobResult {
+            commit: false,
+            body: Value::Null,
+            failure: Some(failure),
+        },
+    }
+}
+
+async fn rest_create_error(
+    tx: Transaction<'_, Sqlite>,
+    deadline: std::time::Instant,
+    status: u16,
+    code: &'static str,
+    message: &str,
+) -> JobResult {
+    let body = json!({"_error": {"status": status, "code": code, "message": message}});
+    finish_create_job(tx, deadline, body).await
 }
 
 async fn list_opportunities(
@@ -1001,80 +1161,6 @@ impl Workspace {
         Ok(result)
     }
 
-    async fn create_opportunity(
-        &self,
-        input: &OpportunityCreate,
-    ) -> Result<Opportunity, WorkspaceError> {
-        if input.title.trim().is_empty() || input.title.len() > 500 {
-            return Err(WorkspaceError::Invalid(
-                "opportunity title must contain 1–500 bytes".into(),
-            ));
-        }
-        let id = new_id(&input.primary_party_id);
-        let now = now_utc();
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let party_kind: Option<String> = sqlx::query_scalar(
-            "SELECT kind FROM graph_card WHERE id=? AND kind IN ('person','org')",
-        )
-        .bind(&input.primary_party_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if party_kind.is_none() {
-            return Err(WorkspaceError::Invalid(
-                "primary participant must be an existing person or organization".into(),
-            ));
-        }
-        sqlx::query("INSERT INTO opportunity(id,title,state,revision,created_at,updated_at) VALUES(?,?,'open',1,?,?)")
-            .bind(&id).bind(input.title.trim()).bind(&now).bind(&now).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO opportunity_party(opportunity_id,party_id,role,added_at) VALUES(?,?,'primary',?)")
-            .bind(&id).bind(&input.primary_party_id).bind(&now).execute(&mut *tx).await?;
-        let home_list: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM board_list WHERE archived=0 ORDER BY position,id LIMIT 1",
-        )
-        .fetch_optional(&mut *tx)
-        .await?;
-        let home_list = home_list.ok_or_else(|| {
-            WorkspaceError::Invalid("workspace must retain an active board list".into())
-        })?;
-        let position: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(position),0)+1024 FROM board_placement WHERE list_id=?",
-        )
-        .bind(&home_list)
-        .fetch_one(&mut *tx)
-        .await?;
-        sqlx::query(
-            "INSERT INTO board_placement(opportunity_id,list_id,position,revision) VALUES(?,?,?,1)",
-        )
-        .bind(&id)
-        .bind(&home_list)
-        .bind(position)
-        .execute(&mut *tx)
-        .await?;
-        event(
-            &mut tx,
-            "board_placement",
-            &id,
-            1,
-            "board.card_created",
-            json!({"list_id":home_list,"position":position}),
-        )
-        .await?;
-        ensure_party_policy(&mut tx, &input.primary_party_id).await?;
-        event(
-            &mut tx,
-            "opportunity",
-            &id,
-            1,
-            "opportunity.created",
-            json!({"primary_party_id":input.primary_party_id}),
-        )
-        .await?;
-        tx.commit().await?;
-        self.get_opportunity(&id)
-            .await?
-            .ok_or_else(|| WorkspaceError::Invalid("created opportunity is not readable".into()))
-    }
-
     pub(super) async fn opportunity_summaries(
         &self,
         f: &OpportunityFilters,
@@ -1182,37 +1268,10 @@ impl Workspace {
     }
 
     async fn get_opportunity(&self, id: &str) -> Result<Option<Opportunity>, WorkspaceError> {
-        let row = sqlx::query_as::<_, (String, String, String, i64)>(
-            "SELECT id,title,state,revision FROM opportunity WHERE id=?",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
-        let Some((id, title, state, revision)) = row else {
-            return Ok(None);
-        };
-        let participant_ids = sqlx::query_scalar(
-            "SELECT party_id FROM opportunity_party WHERE opportunity_id=? ORDER BY role,party_id",
-        )
-        .bind(&id)
-        .fetch_all(&self.pool)
-        .await?;
-        let source_variant_ids = sqlx::query_scalar("SELECT source_variant_id FROM source_opportunity_link WHERE opportunity_id=? ORDER BY source_variant_id").bind(&id).fetch_all(&self.pool).await?;
-        let material_ids = sqlx::query_scalar(
-            "SELECT id FROM material WHERE opportunity_id=? ORDER BY updated_at DESC,id",
-        )
-        .bind(&id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(Some(Opportunity {
-            id,
-            title,
-            state,
-            revision,
-            participant_ids,
-            source_variant_ids,
-            material_ids,
-        }))
+        let mut tx = self.pool.begin().await?;
+        let opportunity = opportunity_dto(&mut tx, id).await?;
+        tx.commit().await?;
+        Ok(opportunity)
     }
 
     async fn add_participant(
@@ -2244,6 +2303,51 @@ async fn bump_opportunity(
             .fetch_one(&mut **tx)
             .await?,
     )
+}
+
+/// Project the published `Opportunity` DTO from one transaction. Both the
+/// REST read and the REST create adapter use this projection; the create reply
+/// is therefore defined by the same committed transaction as the fact.
+async fn opportunity_dto(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+) -> Result<Option<Opportunity>, WorkspaceError> {
+    let row = sqlx::query_as::<_, (String, String, String, i64)>(
+        "SELECT id,title,state,revision FROM opportunity WHERE id=?",
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((id, title, state, revision)) = row else {
+        return Ok(None);
+    };
+    let participant_ids = sqlx::query_scalar(
+        "SELECT party_id FROM opportunity_party WHERE opportunity_id=? ORDER BY role,party_id",
+    )
+    .bind(&id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let source_variant_ids = sqlx::query_scalar(
+        "SELECT source_variant_id FROM source_opportunity_link WHERE opportunity_id=? ORDER BY source_variant_id",
+    )
+    .bind(&id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let material_ids = sqlx::query_scalar(
+        "SELECT id FROM material WHERE opportunity_id=? ORDER BY updated_at DESC,id",
+    )
+    .bind(&id)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(Some(Opportunity {
+        id,
+        title,
+        state,
+        revision,
+        participant_ids,
+        source_variant_ids,
+        material_ids,
+    }))
 }
 
 pub(crate) async fn event(

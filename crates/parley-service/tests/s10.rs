@@ -228,8 +228,13 @@ async fn s10_queue_5000_parties_meets_render_budget() {
         "S10 queue benchmark profile: {build_profile} build, cold first read={cold_elapsed:?}; 20 warm loopback HTTP reads, 5,000 open opportunities/parties, response JSON parsed; warm p95={p95:?}, host {}",
         std::env::consts::OS
     );
+    // Coverage instrumentation adds per-region profiling overhead to every
+    // request, so the wall-clock budget binds plain builds only; under
+    // llvm-cov (LLVM_PROFILE_FILE set) allow the instrumentation multiple.
+    let instrumented = std::env::var_os("LLVM_PROFILE_FILE").is_some();
+    let budget = std::time::Duration::from_millis(if instrumented { 300 } else { 200 });
     assert!(
-        p95 < std::time::Duration::from_millis(200),
+        p95 < budget,
         "Queue p95 {p95:?}, samples={samples:?}"
     );
     service.shutdown().await;

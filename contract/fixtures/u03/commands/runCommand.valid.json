@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/CommandRunSuccess","body":{"ok":true,"command_version":1,"audit_id":"aud_u03_create_01","original_audit_id":null,"replayed":false,"dry_run":false,"result":{"opportunity_id":"opp_sample_u03","revision":1,"primary_party_id":"party_sample_u03","list_id":"inbox","position":1024,"event_cursor":"812"}}}

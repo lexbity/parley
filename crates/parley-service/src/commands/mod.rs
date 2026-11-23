@@ -4,6 +4,7 @@
 pub(crate) mod descriptor;
 pub(crate) mod http;
 pub(crate) mod ledger;
+pub(crate) mod opportunity;
 pub(crate) mod phase;
 pub(crate) mod policy;
 pub(crate) mod read;
@@ -44,6 +45,7 @@ impl Registry {
     pub fn build() -> Result<Self, String> {
         let mut descriptors = Vec::new();
         descriptors.extend(phase::descriptors().into_iter().cloned());
+        descriptors.extend(opportunity::descriptors().into_iter().cloned());
         descriptors.extend(read::descriptors().into_iter().cloned());
         descriptor::validate_registry(&descriptors)?;
         let mut by_id = HashMap::with_capacity(descriptors.len());
@@ -191,9 +193,10 @@ impl Registry {
     /// struct; every invalid sample must fail schema validation.
     fn validate_samples(&self) -> Result<(), String> {
         let (phase_valid, phase_invalid) = phase::validation_samples();
+        let (opportunity_valid, opportunity_invalid) = opportunity::validation_samples();
         let (read_valid, read_invalid) = read::validation_samples();
-        let valid = [phase_valid, read_valid].concat();
-        let invalid = [phase_invalid, read_invalid].concat();
+        let valid = [phase_valid, opportunity_valid, read_valid].concat();
+        let invalid = [phase_invalid, opportunity_invalid, read_invalid].concat();
         for sample in valid {
             let command = self
                 .command(&sample.command)
@@ -209,6 +212,9 @@ impl Registry {
                 })?;
             if let Some(command_kind) = phase::PhaseCommand::for_id(&sample.command) {
                 phase::parse_wire_args(command_kind, &sample.args)
+                    .map_err(|error| format!("{}: {error}", sample.command))?;
+            } else if sample.command == opportunity::CREATE_ID {
+                opportunity::parse_wire_args(&sample.args)
                     .map_err(|error| format!("{}: {error}", sample.command))?;
             } else if let Some(command_kind) = read::ReadCommand::for_id(&sample.command) {
                 read::parse_wire_args(command_kind, &sample.args)
@@ -237,6 +243,26 @@ impl Registry {
     }
 }
 
+/// Positive audit allowlist for one registered command. A registration that
+/// forgets to declare its fields records no args instead of leaking arbitrary
+/// request content into the ledger (UCR-001 §5).
+pub(crate) fn audit_args(
+    command_id: &str,
+    args: &serde_json::Map<String, serde_json::Value>,
+) -> String {
+    let (allow, sensitive): (&[&str], &[&str]) =
+        if phase::PhaseCommand::for_id(command_id).is_some() {
+            (phase::args_allowlist(), phase::args_sensitive())
+        } else if command_id == opportunity::CREATE_ID {
+            (opportunity::args_allowlist(), opportunity::args_sensitive())
+        } else if read::ReadCommand::for_id(command_id).is_some() {
+            (read::args_allowlist(), read::args_sensitive())
+        } else {
+            (&[], &[])
+        };
+    ledger::redact_args(args, allow, sensitive)
+}
+
 #[derive(Clone)]
 pub(crate) struct SampleArgs {
     pub command: String,
@@ -256,6 +282,9 @@ pub(crate) struct Actor {
     pub lease_token: Option<String>,
     pub permissions: Vec<String>,
     pub targets: Vec<ActorTarget>,
+    /// Immutable run grant flag. Only the private principal constructor may
+    /// set this from a durable run row; tool input can never assert it.
+    pub allow_created_opportunities: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -280,6 +309,7 @@ impl Actor {
             lease_token: None,
             permissions: Vec::new(),
             targets: Vec::new(),
+            allow_created_opportunities: false,
         }
     }
 
@@ -291,6 +321,7 @@ impl Actor {
         lease_token: String,
         permissions: Vec<String>,
         targets: Vec<ActorTarget>,
+        allow_created_opportunities: bool,
     ) -> Self {
         Self {
             kind: ActorKind::Agent,
@@ -300,6 +331,7 @@ impl Actor {
             lease_token: Some(lease_token),
             permissions,
             targets,
+            allow_created_opportunities,
         }
     }
 
@@ -316,7 +348,13 @@ impl Actor {
         &self,
         args: &'a serde_json::Value,
     ) -> Option<(&'static str, &'a str)> {
-        for field in ["party_id", "opportunity_id", "resource_id", "material_id"] {
+        for field in [
+            "party_id",
+            "primary_party_id",
+            "opportunity_id",
+            "resource_id",
+            "material_id",
+        ] {
             if let Some(value) = args.get(field).and_then(serde_json::Value::as_str) {
                 return Some((field, value));
             }

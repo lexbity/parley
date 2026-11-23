@@ -8,6 +8,8 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub(crate) enum Permission {
+    #[serde(rename = "opportunity.create")]
+    OpportunityCreate,
     #[serde(rename = "opportunity.phase.edit")]
     OpportunityPhaseEdit,
     #[serde(rename = "party.read")]
@@ -19,6 +21,7 @@ pub(crate) enum Permission {
 impl Permission {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Permission::OpportunityCreate => "opportunity.create",
             Permission::OpportunityPhaseEdit => "opportunity.phase.edit",
             Permission::PartyRead => "party.read",
             Permission::OpportunityRead => "opportunity.read",
@@ -28,6 +31,7 @@ impl Permission {
     /// Every permission an owner may grant to a delegated run.
     pub fn all() -> &'static [Permission] {
         &[
+            Permission::OpportunityCreate,
             Permission::OpportunityPhaseEdit,
             Permission::PartyRead,
             Permission::OpportunityRead,
@@ -43,8 +47,12 @@ impl Permission {
 }
 
 /// Closed set of permission values the registry can declare.
-pub(crate) const PERMISSION_ALLOWLIST: &[&str] =
-    &["opportunity.phase.edit", "party.read", "opportunity.read"];
+pub(crate) const PERMISSION_ALLOWLIST: &[&str] = &[
+    "opportunity.create",
+    "opportunity.phase.edit",
+    "party.read",
+    "opportunity.read",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

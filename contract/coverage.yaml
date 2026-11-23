@@ -1594,3 +1594,138 @@ slices:
       owner_role: owner
       package_target: rust+mock
       evidence_path: evidence/u02.md
+
+  u03:
+    - requirement: UCR-FR-1
+      operationId: runCommand
+      test_id: u03_rest_and_command_create_share_one_fact_and_events
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u03.md
+    - requirement: UCR-A1
+      operationId: createOpportunity
+      test_id: u03_rest_and_command_create_share_one_fact_and_events
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u03.md
+    - requirement: UCR-FR-5
+      operationId: runCommand
+      test_id: u03_create_crash_boundaries_and_key_discipline
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u03.md
+    - requirement: UCR-NFR-1
+      operationId: runCommand
+      test_id: u03_create_crash_boundaries_and_key_discipline
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u03.md
+    - requirement: UCR-FR-3
+      operationId: runCommand
+      test_id: u03_agent_create_binds_self_created_target_and_advances_phase
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u03.md
+    - requirement: UCR-FR-9
+      operationId: startAgentRun
+      test_id: u03_agent_create_binds_self_created_target_and_advances_phase
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u03.md
+    - requirement: UCR-FR-2
+      operationId: getAgentRunTranscript
+      test_id: u03_revocation_fences_phase_tool_and_replay
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u03.md
+    - requirement: UCR-FR-3
+      operationId: cancelAgentRun
+      test_id: u03_revocation_fences_phase_tool_and_replay
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u03.md
+    - requirement: UCR-FR-3
+      operationId: runCommand
+      test_id: u03_nested_roles_and_self_created_grant_are_not_authority
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u03.md
+    - requirement: UCR-A2
+      operationId: startAgentRun
+      test_id: u03_nested_roles_and_self_created_grant_are_not_authority
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u03.md
+    - requirement: UCR-NFR-4
+      operationId: runCommand
+      test_id: u03_executed_write_allowance_is_debited_once_per_effect
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u03.md
+    - requirement: UCR-NFR-1
+      operationId: runCommand
+      test_id: u03_concurrent_same_key_creates_produce_one_effect
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u03.md
+    - requirement: UCR-FR-2
+      operationId: runCommand
+      test_id: u03_seeded_combinations_of_grants_stages_and_revisions
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u03.md
+    - requirement: UCR-NFR-1
+      operationId: runCommand
+      test_id: u03_seeded_combinations_of_grants_stages_and_revisions
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u03.md
+    - requirement: UCR-FR-10
+      operationId: getAgentRun
+      test_id: u03_restart_preserves_created_facts_audit_and_budgets
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u03.md
+    - requirement: UCR-FR-7
+      operationId: runCommand
+      test_id: u03_palette_creates_opportunity_with_authoritative_party_picker
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u03.md
+    - requirement: UCR-FR-5
+      operationId: runCommand
+      test_id: u03_command_create_replays_one_fact
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u03.md
+    - requirement: UCR-FR-3
+      operationId: startAgentRun
+      test_id: u03_delegated_create_consent_and_revocation_keep_queue_current
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u03.md
+    - requirement: UCR-FR-9
+      operationId: cancelAgentRun
+      test_id: u03_delegated_create_consent_and_revocation_keep_queue_current
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u03.md

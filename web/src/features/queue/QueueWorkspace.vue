@@ -16,7 +16,7 @@ import {
 import { commands, type CommandArgs, type CommandSuccess } from '../../api/commands';
 import { sessionEventReader } from '../../app/commands/events';
 import type { QueuePaletteBinding } from '../../app/commands/context';
-import { queuePhaseActions, registerScoped, useCommandRegistry } from '../../app/commands/registry';
+import { opportunityCreateAction, queuePhaseActions, registerScoped, useCommandRegistry, type UiCommand } from '../../app/commands/registry';
 import Daily from './Daily.vue';
 import Insights from './Insights.vue';
 
@@ -129,8 +129,17 @@ function refreshScopedActions() {
     scopedFingerprint = fingerprint;
     disposeActions?.();
     disposeActions = undefined;
+    const actions: UiCommand[] = [opportunityCreateAction({
+      invoke: (id: string, args: CommandArgs, key: string) => commands.invoke(id, { version: 1, args, dry_run: false }, key),
+      onCommitted: () => {
+        status.value = 'Opportunity created. It is Unmapped until you choose a phase.';
+        error.value = '';
+        void loadSheet();
+        sessionEventReader.hint();
+      },
+    })];
     if (row && fingerprint) {
-      disposeActions = registerScoped(commandRegistry, queuePhaseActions({
+      actions.push(...queuePhaseActions({
         opportunityId: row.opportunity_id,
         phaseRevision: revision,
         packId: pack.id,
@@ -146,6 +155,7 @@ function refreshScopedActions() {
         onCommitted: applyCommandResult,
       }));
     }
+    disposeActions = registerScoped(commandRegistry, actions);
   }
   emit('binding', {
     opportunityId: editable ? row.opportunity_id : null,

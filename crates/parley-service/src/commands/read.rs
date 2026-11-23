@@ -198,6 +198,14 @@ fn command_id(command: ReadCommand) -> &'static str {
     }
 }
 
+pub(crate) fn args_allowlist() -> &'static [&'static str] {
+    &["party_id", "opportunity_id"]
+}
+
+pub(crate) fn args_sensitive() -> &'static [&'static str] {
+    &["party_id", "opportunity_id"]
+}
+
 pub(crate) fn validation_samples() -> (Vec<super::SampleArgs>, Vec<super::SampleArgs>) {
     let valid = vec![
         super::SampleArgs {
