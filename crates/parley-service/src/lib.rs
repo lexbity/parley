@@ -1950,8 +1950,23 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         restart: restart_sender.clone(),
     };
     let bootstrap_shared = state.bootstrap.clone();
-    let app = Router::new()
-        .route("/", get(index))
+    let mut shell = Router::new().route("/", get(index));
+    for tab in [
+        "resources",
+        "parties",
+        "leads",
+        "queue",
+        "output",
+        "settings",
+    ] {
+        let root = format!("/{tab}");
+        shell = shell
+            .route(&root, get(index))
+            .route(&format!("{root}/"), get(index))
+            .route(&format!("{root}/{{record}}"), get(index))
+            .route(&format!("{root}/{{record}}/"), get(index));
+    }
+    let app = shell
         .route("/assets/{*path}", get(asset))
         .route("/api/v1/health", get(health))
         .route("/api/v1/session/bootstrap", post(bootstrap))

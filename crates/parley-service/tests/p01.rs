@@ -349,3 +349,29 @@ async fn p01_bounded_directory_and_neighborhood_at_5000_parties() {
     assert!(latency[18] < std::time::Duration::from_millis(500));
     service.shutdown().await;
 }
+
+#[tokio::test]
+async fn p01_shell_deep_links_reach_the_packaged_index() {
+    let db = path();
+    let s = parley_service::start_workspace(&db).await.unwrap();
+    let sess = owner_session(&s).await;
+    let index = request(&s, &sess, "GET", "/", None, &[]).await;
+    for tab in [
+        "resources",
+        "parties",
+        "leads",
+        "queue",
+        "output",
+        "settings",
+    ] {
+        for suffix in ["", "/", "/record", "/record/"] {
+            let page = request(&s, &sess, "GET", &format!("/{tab}{suffix}"), None, &[]).await;
+            assert_eq!(page.status, index.status, "{tab}{suffix}");
+            assert_eq!(page.bytes, index.bytes, "{tab}{suffix}");
+        }
+    }
+    for path in ["/api/v1/no-route", "/parties/bad/route", "/not-a-tab"] {
+        assert_eq!(request(&s, &sess, "GET", path, None, &[]).await.status, 404);
+    }
+    s.shutdown().await;
+}
