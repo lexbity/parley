@@ -30,6 +30,10 @@ const MAX_RESOURCE_TITLE: usize = 240;
 const MAX_NOTES_BYTES: usize = 1_000_000;
 const MAX_BASIS_BYTES: usize = 2_000;
 const MAX_VERB_BYTES: usize = 120;
+/// Verbs that assert a delivery. The generic graph editor cannot manufacture
+/// a delivery by assigning such a verb (Resources spec §5); delivery
+/// provenance is derived only from recorded sends (resource_card_deliveries).
+const RESERVED_DELIVERY_VERBS: [&str; 3] = ["shared with", "delivered to", "sent to"];
 const DEFAULT_PAGE: i64 = 200;
 const MAX_PAGE: i64 = 500;
 
@@ -995,6 +999,17 @@ impl Workspace {
         if verb.is_empty() || verb.len() > MAX_VERB_BYTES {
             return Err(WorkspaceError::Invalid(
                 "relationship verb must contain 1–120 bytes".into(),
+            ));
+        }
+        let normalized_verb = verb.to_lowercase().replace('_', " ");
+        let normalized_verb = normalized_verb.split_whitespace().collect::<Vec<_>>().join(" ");
+        if RESERVED_DELIVERY_VERBS.contains(&normalized_verb.as_str()) {
+            return Err(WorkspaceError::Invalid(
+                format!(
+                    "A relationship cannot assert a delivery ('{verb}'). Record the delivery \
+                     through the opportunity's Mark sent workflow; delivery provenance is shown \
+                     from recorded sends."
+                ),
             ));
         }
         let basis = relation.basis.trim();

@@ -40,7 +40,7 @@ const selectedId = ref('');
 const saving = ref<Record<string, boolean>>({});
 const status = ref('');
 const error = ref('');
-const undoIntent = ref<{ opportunityId: string; toStage: string; eventId: string; phaseRevision: number; fromLabel: string } | null>(null);
+const undoIntent = ref<{ opportunityId: string; toStage: string; packVersion: string; eventId: string; phaseRevision: number; fromLabel: string } | null>(null);
 const undoBusy = ref(false);
 const narrowInspector = ref(false);
 let searchHandle: ReturnType<typeof globalThis.setTimeout> | undefined;
@@ -51,8 +51,38 @@ const createBusy = ref(false);
 const rowRefs = ref<Record<string, HTMLElement | null>>({});
 const phaseSelectRefs = ref<Record<string, HTMLSelectElement | null>>({});
 
+// Entry restores the last valid search, filters, sort and selection for this
+// workspace (spec §2), scoped to the workspace epoch like the party desk.
+// The key needs the session epoch, so restore runs once connect() resolves.
+const prefsKey = ref('');
+const hydrated = ref(false);
+function restorePrefs() {
+  const key = parley.workspaceEpoch ? 'parley.queue.' + parley.workspaceEpoch : '';
+  if (!key) return;
+  prefsKey.value = key;
+  hydrated.value = true;
+  try {
+    const saved = JSON.parse(globalThis.sessionStorage.getItem(key) ?? '{}');
+    if (typeof saved.query === 'string') query.value = saved.query;
+    if (typeof saved.phaseFilter === 'string') phaseFilter.value = saved.phaseFilter;
+    if (saved.sortKey === 'due' || saved.sortKey === 'name') sortKey.value = saved.sortKey;
+    if (typeof saved.selectedId === 'string') selectedId.value = saved.selectedId;
+  } catch { /* Storage can be unavailable in a private browsing session. */ }
+}
+watch([query, phaseFilter, sortKey, selectedId], () => {
+  if (!prefsKey.value) return;
+  try {
+    globalThis.sessionStorage.setItem(prefsKey.value, JSON.stringify({
+      query: query.value, phaseFilter: phaseFilter.value, sortKey: sortKey.value, selectedId: selectedId.value,
+    }));
+  } catch { /* Keep in-memory navigation. */ }
+});
+
 const phases = computed(() => sheet.value.phases);
 const filteredPhaseOptions = computed(() => phases.value);
+/** Phase choices for the row and inspector selects: permitted planning
+ * stages only, never the Unmapped pseudo-stage or terminal lifecycle. */
+const editablePhases = computed(() => filteredPhaseOptions.value.filter((phase) => phase.kind === 'planning' && phase.stage_id !== '__unmapped__'));
 const countLabel = computed(() => `${sheet.value.rows.length} of ${sheet.value.total} scenarios`);
 const hasFilters = computed(() => query.value.trim().length > 0 || phaseFilter.value.length > 0 || sortKey.value !== 'due');
 const selectedRow = computed(() => sheet.value.rows.find((row) => row.opportunity_id === selectedId.value) ?? null);
@@ -65,10 +95,24 @@ function stageLabel(phase: SheetPhase | null): string {
   return phase.label;
 }
 
-function actionDateLabel(row: QueueSheetRow): string {
-  const date = row.next_action.date;
+/** Owner-timezone date label: em dash when missing, "Today", otherwise a
+ * short month/day (with the year when it differs from the current one). */
+function formatActionDate(date: string | null): string {
   if (!date) return '—';
-  return date.slice(0, 10);
+  const parsed = new Date(date.length <= 10 ? date + 'T00:00:00' : date);
+  if (Number.isNaN(parsed.getTime())) return date;
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const target = new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+  if (target.getTime() === today.getTime()) return 'Today';
+  const month = parsed.toLocaleString('en', { month: 'short' });
+  return parsed.getFullYear() === now.getFullYear()
+    ? `${month} ${parsed.getDate()}`
+    : `${month} ${parsed.getDate()}, ${parsed.getFullYear()}`;
+}
+
+function actionDateLabel(row: QueueSheetRow): string {
+  return formatActionDate(row.next_action.date);
 }
 
 function isToday(date: string | null): boolean {
@@ -78,7 +122,7 @@ function isToday(date: string | null): boolean {
   return date.slice(0, 10) === local;
 }
 
-async function loadSheet() {
+async function loadSheet(cursor?: string) {
   const current = ++generation.value;
   loading.value = true;
   loadError.value = '';
@@ -87,10 +131,19 @@ async function loadSheet() {
       ...(query.value.trim() ? { search: query.value.trim() } : {}),
       ...(phaseFilter.value ? { phase: phaseFilter.value } : {}),
       sort: sortKey.value,
+      ...(cursor ? { cursor } : {}),
     });
     if (current !== generation.value) return;
-    sheet.value = result;
-    if (result.rows.length && !result.rows.some((row) => row.opportunity_id === selectedId.value)) {
+    if (cursor) {
+      const merged = [...sheet.value.rows];
+      for (const row of result.rows) {
+        if (!merged.some((item) => item.opportunity_id === row.opportunity_id)) merged.push(row);
+      }
+      sheet.value = { ...result, rows: merged };
+    } else {
+      sheet.value = result;
+    }
+    if (result.rows.length && !result.rows.some((row) => row.opportunity_id === selectedId.value) && !cursor) {
       selectedId.value = result.rows[0]!.opportunity_id;
     }
   } catch (reason) {
@@ -124,9 +177,14 @@ async function changePhase(row: QueueSheetRow, targetStage: string) {
   error.value = '';
   status.value = '';
   try {
+    // An Unmapped row has no stored pack version; the sheet's planning
+    // stages carry the owner pack's current version for the first mapping.
+    const packVersion = row.phase?.pack_version
+      ?? editablePhases.value[0]?.pack_version
+      ?? '1.0.0';
     const result = await parley.setOpportunityPhase(row.opportunity_id, {
       target_stage_id: targetStage,
-      pack_version: row.phase?.pack_version ?? '1.0.0',
+      pack_version: packVersion,
       expected_phase_revision: row.phase?.revision ?? 1,
     });
     applyPhaseResult(result, row);
@@ -151,7 +209,7 @@ function applyPhaseResult(result: SetPhaseResult, previous: QueueSheetRow) {
       selectedId.value = replacement?.opportunity_id ?? '';
     }
     status.value = `${previous.title} moved to ${nextLabel} and is hidden by the ${phaseLabelFor(phaseFilter.value)} filter.`;
-    undoIntent.value = { opportunityId: result.row.opportunity_id, toStage: previous.phase?.stage_id ?? '', eventId: result.event_id, phaseRevision: result.phase_revision, fromLabel: nextLabel };
+    undoIntent.value = { opportunityId: result.row.opportunity_id, toStage: previous.phase?.stage_id ?? '', packVersion: result.row.phase?.pack_version ?? previous.phase?.pack_version ?? '1.0.0', eventId: result.event_id, phaseRevision: result.phase_revision, fromLabel: nextLabel };
     if (selectedId.value) {
       void nextTick(() => {
         const row = sheet.value.rows.find((item) => item.opportunity_id === selectedId.value);
@@ -172,7 +230,7 @@ function applyPhaseResult(result: SetPhaseResult, previous: QueueSheetRow) {
     }
     status.value = `${result.row.title} moved to ${nextLabel}.`;
     if (previous.phase?.stage_id !== result.row.phase?.stage_id && previous.phase) {
-      undoIntent.value = { opportunityId: result.row.opportunity_id, toStage: previous.phase.stage_id, eventId: result.event_id, phaseRevision: result.phase_revision, fromLabel: nextLabel };
+      undoIntent.value = { opportunityId: result.row.opportunity_id, toStage: previous.phase.stage_id, packVersion: previous.phase.pack_version, eventId: result.event_id, phaseRevision: result.phase_revision, fromLabel: nextLabel };
     }
   }
   // Resync quietly so counts/generation reflect the committed event.
@@ -192,7 +250,7 @@ async function undoPhaseChange() {
   try {
     const result = await parley.setOpportunityPhase(intent.opportunityId, {
       target_stage_id: intent.toStage,
-      pack_version: '1.0.0',
+      pack_version: intent.packVersion,
       expected_phase_revision: intent.phaseRevision,
       original_event_id: intent.eventId,
     });
@@ -222,6 +280,108 @@ function clearFilters() {
   void loadSheet();
 }
 
+function loadMore() {
+  void loadSheet(sheet.value.next_cursor ?? undefined);
+}
+
+// --- Read-only scenario context (spec §2 inspector): proposed exchange,
+// source passages with speaker and tier, participant follow-ups, history. ---
+
+type DetailExchange = { participantId: string; participantName: string; theyGet: string; iGet: string };
+type DetailSource = { id: string; participantName: string; statement: string; knowledgeKind: string; claim: { wording: string; tier: number; speakerKind: string } | null };
+type DetailHistory = { cursor: string; when: string; label: string };
+type DetailThread = { recipientId: string; state: string; nextActionAt: string | null };
+const detail = ref<{ exchanges: DetailExchange[]; sources: DetailSource[]; history: DetailHistory[]; threads: DetailThread[] } | null>(null);
+const detailLoading = ref(false);
+let detailVersion = 0;
+
+function eventSummary(payload: Record<string, unknown>, eventType: string): string {
+  const text = (key: string) => (typeof payload[key] === 'string' ? (payload[key] as string) : null);
+  switch (eventType) {
+    case 'opportunity.created': return 'Opportunity created';
+    case 'opportunity.participant_added': return `Participant added${text('role') ? ` · ${text('role')}` : ''}`;
+    case 'opportunity.phase_changed': return `Phase ${text('from_stage_id') ? phaseLabelFor(text('from_stage_id')!) : '—'} → ${text('to_stage_id') ? phaseLabelFor(text('to_stage_id')!) : ''}${payload.operation === 'undo' ? ' (undo)' : ''}`;
+    case 'opportunity.exchange_version_created': return 'Proposed exchange recorded';
+    case 'opportunity.exchange_attested': return 'Exchange attested';
+    case 'opportunity.interest_added': return 'Interest recorded';
+    case 'opportunity.source_linked': return 'Source linked';
+    case 'opportunity.source_unlinked': return 'Source unlinked';
+    case 'opportunity.source_claim_corrected': return 'Source claim corrected';
+    case 'opportunity.notes_updated': return 'Notes updated';
+    case 'opportunity.task_toggled': return 'Task updated';
+    case 'opportunity.tags_changed': return 'Tags updated';
+    case 'opportunity.resolved': return `Resolved${text('result') ? ` · ${text('result')}` : ''}`;
+    case 'opportunity.closed': return `Closed${text('reason') ? ` · ${text('reason')}` : ''}`;
+    case 'opportunity.reopened': return 'Reopened';
+    default: return eventType.replaceAll('_', ' ');
+  }
+}
+
+async function loadDetail(opportunityId: string) {
+  const own = ++detailVersion;
+  detail.value = null;
+  const row = sheet.value.rows.find((item) => item.opportunity_id === opportunityId);
+  if (!row) return;
+  detailLoading.value = true;
+  try {
+    const participantResults = await Promise.allSettled(row.participants.map(async (participant) => {
+      // A recipient without a recorded exchange simply contributes no block.
+      const [exchange, interests] = await Promise.all([
+        parley.getWritingExchange(opportunityId, participant.id).catch(() => null),
+        parley.getWritingInterests(opportunityId, participant.id).catch(() => []),
+      ]);
+      return { participant, exchange, interests };
+    }));
+    // History pages the focused event feed; 10 pages is a generous bound.
+    const historyItems: Array<{ cursor: string; event_type: string; occurred_at: string; payload: Record<string, unknown> }> = [];
+    let cursor = '0';
+    for (let page = 0; page < 10; page += 1) {
+      const result = await parley.getEvents(cursor, { entity_type: 'opportunity', entity_id: opportunityId });
+      historyItems.push(...result.items);
+      if (!result.items.length || result.next_cursor === cursor) break;
+      cursor = result.next_cursor;
+    }
+    const threads = await parley.listThreads({ opportunity_id: opportunityId }).catch(() => []);
+    if (own !== detailVersion) return;
+    const exchanges: DetailExchange[] = [];
+    const sources: DetailSource[] = [];
+    for (const result of participantResults) {
+      if (result.status !== 'fulfilled') continue;
+      const { participant, exchange, interests } = result.value;
+      const current = (exchange?.current ?? null) as Record<string, unknown> | null;
+      if (current && typeof current.they_get === 'string' && typeof current.i_get === 'string') {
+        exchanges.push({ participantId: participant.id, participantName: participant.name, theyGet: current.they_get, iGet: current.i_get });
+      }
+      for (const interest of interests) {
+        sources.push({
+          id: interest.id, participantName: participant.name, statement: interest.statement,
+          knowledgeKind: interest.knowledge_kind,
+          claim: interest.claim ? { wording: interest.claim.wording, tier: interest.claim.tier, speakerKind: interest.claim.speaker_kind } : null,
+        });
+      }
+    }
+    detail.value = {
+      exchanges,
+      sources,
+      history: historyItems.map((event) => ({ cursor: event.cursor, when: formatActionDate(event.occurred_at), label: eventSummary(event.payload ?? {}, event.event_type) })),
+      threads: threads.map((thread) => ({ recipientId: thread.recipient_id, state: thread.state, nextActionAt: thread.next_action_at ?? null })),
+    };
+  } catch {
+    if (own === detailVersion) detail.value = null;
+  } finally {
+    if (own === detailVersion) detailLoading.value = false;
+  }
+}
+
+function threadFor(participantId: string): DetailThread | null {
+  return detail.value?.threads.find((thread) => thread.recipientId === participantId) ?? null;
+}
+
+watch(selectedId, (id) => {
+  if (id) void loadDetail(id);
+  else { detailVersion++; detail.value = null; }
+}, { immediate: true });
+
 function openInParties(partyId: string) {
   emit('navigate', `/parties/${encodeURIComponent(partyId)}`);
 }
@@ -247,15 +407,17 @@ async function createOpportunity() {
   }
 }
 
-watch(query, scheduleSearch);
-watch(phaseFilter, () => { void loadSheet(); });
-watch(sortKey, () => { void loadSheet(); });
+watch(query, () => { if (hydrated.value) return; scheduleSearch(); });
+watch(phaseFilter, () => { if (hydrated.value) return; void loadSheet(); });
+watch(sortKey, () => { if (hydrated.value) return; void loadSheet(); });
 watch(() => props.routeId, (id) => { if (id) { void loadSheet().then(openRouted); } });
 
 onMounted(async () => {
   try {
     await parley.connect();
+    restorePrefs();
     await loadSheet();
+    hydrated.value = false;
     openRouted();
   } catch (reason) {
     loadError.value = reason instanceof Error ? reason.message : 'Could not load the Queue sheet.';
@@ -445,7 +607,7 @@ onBeforeUnmount(() => {
             <p>The Queue read failed. Your filters are preserved.</p>
             <button
               type="button"
-              @click="loadSheet"
+              @click="() => loadSheet()"
             >
               Retry
             </button>
@@ -541,7 +703,7 @@ onBeforeUnmount(() => {
                         Unmapped
                       </option>
                       <option
-                        v-for="phase in filteredPhaseOptions.filter((p) => p.kind === 'planning')"
+                        v-for="phase in editablePhases"
                         :key="phase.stage_id"
                         :value="phase.stage_id"
                       >
@@ -572,6 +734,13 @@ onBeforeUnmount(() => {
           </div>
           <div class="meta">
             {{ countLabel }}
+            <button
+              v-if="sheet.next_cursor && !loading"
+              type="button"
+              @click="loadMore"
+            >
+              Load more
+            </button>
           </div>
         </template>
       </section>
@@ -607,7 +776,7 @@ onBeforeUnmount(() => {
                     disabled
                   >Unmapped</option>
                   <option
-                    v-for="phase in filteredPhaseOptions.filter((p) => p.kind === 'planning')"
+                    v-for="phase in editablePhases"
                     :key="phase.stage_id"
                     :value="phase.stage_id"
                   >
@@ -619,6 +788,12 @@ onBeforeUnmount(() => {
               <h4>{{ selectedRow.next_action.label }}</h4>
               <p class="hint">
                 {{ selectedRow.next_action.reason }}
+              </p>
+              <p
+                v-if="selectedRow.next_action.date"
+                class="hint"
+              >
+                Due {{ formatActionDate(selectedRow.next_action.date) }}
               </p>
               <p
                 v-if="selectedRow.other_action_count"
@@ -635,6 +810,63 @@ onBeforeUnmount(() => {
                 </template>.
               </p>
             </div>
+            <div
+              v-if="detailLoading || detail?.exchanges.length"
+              class="block"
+            >
+              <small>PROPOSED EXCHANGE</small>
+              <p
+                v-if="detailLoading"
+                class="hint"
+              >
+                Loading scenario context…
+              </p>
+              <template v-else>
+                <div
+                  v-for="entry in detail!.exchanges"
+                  :key="entry.participantId"
+                  class="exchange"
+                >
+                  <p>
+                    <strong>They get</strong> · {{ entry.theyGet }}
+                  </p>
+                  <p>
+                    <strong>I hope to get</strong> · {{ entry.iGet }}
+                  </p>
+                </div>
+              </template>
+            </div>
+            <div
+              v-if="detail?.sources.length"
+              class="block"
+            >
+              <small>SOURCE PASSAGES</small>
+              <details
+                v-for="passage in detail!.sources"
+                :key="passage.id"
+                class="source-passage"
+              >
+                <summary>{{ passage.statement }}</summary>
+                <blockquote
+                  v-if="passage.claim"
+                  class="passage-quote"
+                >
+                  {{ passage.claim.wording }}
+                </blockquote>
+                <small
+                  v-if="passage.claim"
+                  class="hint"
+                >
+                  {{ passage.claim.speakerKind }} · T{{ passage.claim.tier }} · {{ passage.participantName }}
+                </small>
+                <small
+                  v-else
+                  class="hint"
+                >
+                  Owner-entered · {{ passage.participantName }}
+                </small>
+              </details>
+            </div>
             <div class="block">
               <small>PARTICIPANTS</small>
               <ul class="participants">
@@ -650,6 +882,12 @@ onBeforeUnmount(() => {
                     Open {{ party.name }} in Parties
                   </button>
                   <span class="hint"> · {{ party.role }}</span>
+                  <span
+                    v-if="threadFor(party.id)"
+                    class="hint"
+                  > · thread {{ threadFor(party.id)!.state }}<template v-if="threadFor(party.id)!.nextActionAt">
+                    · next {{ formatActionDate(threadFor(party.id)!.nextActionAt) }}
+                  </template></span>
                 </li>
               </ul>
             </div>
@@ -674,6 +912,22 @@ onBeforeUnmount(() => {
                 </li>
               </ul>
             </div>
+            <details
+              v-if="detail?.history.length"
+              class="block history"
+            >
+              <summary class="hint">
+                SCENARIO HISTORY ({{ detail!.history.length }})
+              </summary>
+              <ol class="history-list">
+                <li
+                  v-for="entry in detail!.history"
+                  :key="entry.cursor"
+                >
+                  <span class="hint">{{ entry.when }}</span> · {{ entry.label }}
+                </li>
+              </ol>
+            </details>
             <div class="block">
               <small>QUEUE RULES</small>
               <p class="hint">
@@ -747,6 +1001,13 @@ td.action { min-width: 150px; font-size: 14px; }
 .link:hover { text-decoration: underline; }
 .empty-state { padding: 2rem; }
 .empty-state h3 { margin-top: 0; }
+.exchange p { margin: .15rem 0; }
+.source-passage { padding: .3rem 0; }
+.source-passage summary { cursor: pointer; font-size: 13px; }
+.passage-quote { margin: .3rem 0; padding: .35rem .6rem; border-left: 3px solid #225744; background: #eff3e9; font-size: 13px; }
+.history summary { cursor: pointer; font: 11px/1.5 monospace; letter-spacing: .045em; color: #56675d; }
+.history-list { margin: .4rem 0 0; padding-left: 1.1rem; font-size: 13px; }
+.history-list li { margin: .2rem 0; }
 @media (max-width: 1020px) {
   .sheet-layout { grid-template-columns: 1fr; }
   .inspector { display: none; }

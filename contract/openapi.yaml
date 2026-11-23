@@ -607,6 +607,18 @@ paths:
           type: string
           pattern: ^[0-9]+$
         required: false
+      - in: query
+        name: entity_type
+        schema:
+          type: string
+        required: false
+        description: Focused read - restrict the feed to one entity type.
+      - in: query
+        name: entity_id
+        schema:
+          type: string
+        required: false
+        description: Focused read - restrict the feed to one entity id.
       - $ref: '#/components/parameters/MutationToken'
       - $ref: '#/components/parameters/Epoch'
       responses:
@@ -3445,6 +3457,7 @@ components:
       - entity_id
       - revision
       - event_type
+      - occurred_at
       - payload
       properties:
         cursor:
@@ -3458,6 +3471,8 @@ components:
         revision:
           type: integer
         event_type:
+          type: string
+        occurred_at:
           type: string
         payload:
           type: object

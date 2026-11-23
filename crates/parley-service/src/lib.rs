@@ -3061,6 +3061,10 @@ async fn get_entity_dossier(
 #[derive(Deserialize)]
 struct EventsQuery {
     after: Option<String>,
+    /// Optional focused reads (Queue inspector history): restrict the feed to
+    /// one entity without paging the whole workspace.
+    entity_type: Option<String>,
+    entity_id: Option<String>,
 }
 
 async fn get_events(
@@ -3089,13 +3093,55 @@ async fn get_events(
             "Event cursor is ahead of the workspace",
         );
     }
-    let rows = match sqlx::query_as::<_, (i64, String, String, String, i64, String, String)>(
-        "SELECT cursor,event_id,entity_type,entity_id,revision,event_type,payload_json FROM event WHERE cursor>? ORDER BY cursor LIMIT 200",
-    )
-    .bind(after)
-    .fetch_all(state.workspace.pool())
-    .await
-    {
+    type EventRow = (
+        i64,
+        String,
+        String,
+        String,
+        i64,
+        String,
+        String,
+        String,
+    );
+    let rows = match (query.entity_type.as_deref(), query.entity_id.as_deref()) {
+        (None, None) => {
+            sqlx::query_as::<_, EventRow>(
+                "SELECT cursor,event_id,entity_type,entity_id,revision,event_type,payload_json,occurred_at FROM event WHERE cursor>? ORDER BY cursor LIMIT 200",
+            )
+            .bind(after)
+            .fetch_all(state.workspace.pool())
+            .await
+        }
+        (Some(entity_type), None) => {
+            sqlx::query_as::<_, EventRow>(
+                "SELECT cursor,event_id,entity_type,entity_id,revision,event_type,payload_json,occurred_at FROM event WHERE cursor>? AND entity_type=? ORDER BY cursor LIMIT 200",
+            )
+            .bind(after)
+            .bind(entity_type)
+            .fetch_all(state.workspace.pool())
+            .await
+        }
+        (None, Some(entity_id)) => {
+            sqlx::query_as::<_, EventRow>(
+                "SELECT cursor,event_id,entity_type,entity_id,revision,event_type,payload_json,occurred_at FROM event WHERE cursor>? AND entity_id=? ORDER BY cursor LIMIT 200",
+            )
+            .bind(after)
+            .bind(entity_id)
+            .fetch_all(state.workspace.pool())
+            .await
+        }
+        (Some(entity_type), Some(entity_id)) => {
+            sqlx::query_as::<_, EventRow>(
+                "SELECT cursor,event_id,entity_type,entity_id,revision,event_type,payload_json,occurred_at FROM event WHERE cursor>? AND entity_type=? AND entity_id=? ORDER BY cursor LIMIT 200",
+            )
+            .bind(after)
+            .bind(entity_type)
+            .bind(entity_id)
+            .fetch_all(state.workspace.pool())
+            .await
+        }
+    };
+    let rows = match rows {
         Ok(rows) => rows,
         Err(_) => {
             return error(
@@ -3108,7 +3154,7 @@ async fn get_events(
     let items: Vec<Value> = rows
         .into_iter()
         .map(
-            |(cursor, event_id, entity_type, entity_id, revision, event_type, payload)| {
+            |(cursor, event_id, entity_type, entity_id, revision, event_type, payload, occurred_at)| {
                 json!({
                     "cursor": cursor.to_string(),
                     "event_id": event_id,
@@ -3116,6 +3162,7 @@ async fn get_events(
                     "entity_id": entity_id,
                     "revision": revision,
                     "event_type": event_type,
+                    "occurred_at": occurred_at,
                     "payload": serde_json::from_str::<Value>(&payload).unwrap_or(Value::Null),
                 })
             },

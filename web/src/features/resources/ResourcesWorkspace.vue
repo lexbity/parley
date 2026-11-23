@@ -1,9 +1,9 @@
 <script setup lang="ts">
-/* global DragEvent, Event, HTMLSelectElement, BeforeUnloadEvent, CustomEvent, BroadcastChannel, MessageEvent */
-import { computed, onMounted, ref, watch } from 'vue';
+/* global DragEvent, Event, HTMLSelectElement, BeforeUnloadEvent, CustomEvent, BroadcastChannel, MessageEvent, HTMLElement, HTMLDialogElement */
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { Background, Controls, VueFlow, type Edge, type Node } from '@xyflow/vue';
 import {
-  parley,
+  newOperationKey, parley,
   type DeliveryRow, type EntityCard, type GraphSnapshot, type PlacementView, type ResourceBoardSnapshot,
 } from '../../api/client';
 import ResourceEditorForm from './ResourceEditorForm.vue';
@@ -64,6 +64,15 @@ function summaryForEdit(card: CardSummary): SummaryForEdit {
 }
 const formKey = ref(0);
 const editorDirty = ref(false);
+const formRef = ref<InstanceType<typeof ResourceEditorForm> | null>(null);
+const boardDialog = ref<HTMLDialogElement | null>(null);
+/** While a draft is dirty, switching cards offers Save / Discard / Stay
+ * (spec §4) instead of silently discarding. */
+const pendingSwitch = ref<(() => void) | null>(null);
+let invocation: HTMLElement | null = null;
+const layoutBusy = ref(false);
+const canvasFrame = ref<HTMLElement | null>(null);
+const anchor = ref({ left: '0.6rem', top: '0.6rem' });
 
 type CardSummary = NonNullable<ResourceBoardSnapshot['cards'][number]>;
 
@@ -83,11 +92,22 @@ const selectedCard = computed(() => snapshot.value?.cards.find((card) => card.re
 const selectedNode = computed(() => graph.value.nodes.find((node) => node.id === inspectedId.value) ?? null);
 const selectedEdge = computed(() => graph.value.edges.find((edge) => edge.id === inspectedEdgeId.value) ?? null);
 
-const graphNodes = computed<Node[]>(() => graph.value.nodes.map((node) => ({
-  id: node.id, type: 'default', position: { x: node.x, y: node.y },
-  data: { label: `${node.name}\n${node.kind}` },
-  selected: node.id === inspectedId.value, draggable: false,
-})));
+const rootName = computed(() =>
+  graph.value.nodes.find((node) => node.id === rootId.value)?.name
+  ?? snapshot.value?.cards.find((card) => card.resource_id === rootId.value)?.title
+  ?? snapshot.value?.off_board.find((card) => card.resource_id === rootId.value)?.title
+  ?? '');
+
+const graphNodes = computed<Node[]>(() => graph.value.nodes.map((node) => {
+  const classes = [node.id === rootId.value ? 'root-node' : '', node.kind !== 'resource' ? 'party-node' : ''].filter(Boolean).join(' ');
+  return {
+    id: node.id, type: 'default', position: { x: node.x, y: node.y },
+    data: { label: `${node.name}\n${node.kind}` },
+    selected: node.id === inspectedId.value,
+    draggable: !layoutBusy.value,
+    class: classes || undefined,
+  };
+}));
 const graphEdges = computed<Edge[]>(() => graph.value.edges.map((edge) => ({
   id: edge.id, source: edge.from_id, target: edge.to_id, label: edge.verb,
   selected: edge.id === inspectedEdgeId.value,
@@ -145,6 +165,11 @@ function selectCard(id: string) {
 function selectNode(id: string) {
   inspectedId.value = id;
   inspectedEdgeId.value = null;
+  // Selecting a resource node expands its editor at that node (spec §1);
+  // clicking the node already being edited keeps its live draft.
+  if (editor.value.open && editor.value.graphMode && editor.value.card?.id === id) return;
+  const node = graph.value.nodes.find((item) => item.id === id);
+  if (node && node.kind === 'resource') openEdit(id, true);
 }
 
 function exploreConnections(id: string) {
@@ -164,42 +189,121 @@ function returnToSelected() {
   }
 }
 
-async function openCreate(columnId: string) {
-  if (editorDirty.value && !globalThis.confirm('Discard the unsaved card draft and start another?')) return;
-  editorDirty.value = false;
-  editor.value = { open: true, mode: 'create', card: null, summary: null, columnId, graphMode: false };
-  formKey.value += 1;
+function captureInvocation() {
+  invocation = globalThis.document.activeElement instanceof HTMLElement ? globalThis.document.activeElement : null;
 }
 
-async function openEdit(id: string, graphMode = false) {
-  if (editorDirty.value && !globalThis.confirm('Discard the unsaved card draft and open another?')) return;
-  editorDirty.value = false;
-  try {
-    const card = await parley.getEntityCard(id);
-    const found = snapshot.value?.cards.find((item) => item.resource_id === id);
-    editor.value = { open: true, mode: 'edit', card, summary: found ? summaryForEdit(found) : null, columnId: null, graphMode };
+/** Route editor switches through the dirty-draft Save / Discard / Stay flow. */
+function requestEditorSwitch(action: () => void) {
+  if (!editorDirty.value) { action(); return; }
+  pendingSwitch.value = action;
+}
+
+function openCreate(columnId: string) {
+  requestEditorSwitch(() => {
+    captureInvocation();
+    editor.value = { open: true, mode: 'create', card: null, summary: null, columnId, graphMode: false };
     formKey.value += 1;
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : 'Could not open the card editor.';
-  }
+    void nextTick(showBoardDialog);
+  });
+}
+
+function openEdit(id: string, graphMode = false) {
+  requestEditorSwitch(() => {
+    captureInvocation();
+    void (async () => {
+      try {
+        const card = await parley.getEntityCard(id);
+        const found = snapshot.value?.cards.find((item) => item.resource_id === id);
+        editor.value = { open: true, mode: 'edit', card, summary: found ? summaryForEdit(found) : null, columnId: null, graphMode };
+        formKey.value += 1;
+        if (graphMode) {
+          await nextTick();
+          setAnchor(id);
+        } else {
+          await nextTick();
+          showBoardDialog();
+        }
+      } catch (reason) {
+        error.value = reason instanceof Error ? reason.message : 'Could not open the card editor.';
+      }
+    })();
+  });
+}
+
+/** jsdom implements <dialog> without modal methods; content stays inline there. */
+function showBoardDialog() {
+  const dialog = boardDialog.value;
+  if (dialog && !dialog.open && typeof dialog.showModal === 'function') dialog.showModal();
+  else if (dialog && !dialog.open && typeof dialog.show === 'function') dialog.show();
+}
+
+function dismissBoardDialog() {
+  const dialog = boardDialog.value;
+  if (dialog?.open && typeof dialog.close === 'function') dialog.close();
 }
 
 function closeEditor() {
   editor.value.open = false;
   editorDirty.value = false;
+  dismissBoardDialog();
+  void nextTick(() => invocation?.focus());
+}
+
+async function resolveEditorSwitch(save: boolean) {
+  if (save && !await (formRef.value?.save() ?? Promise.resolve(false))) return;
+  if (!save) closeEditor();
+  const action = pendingSwitch.value;
+  pendingSwitch.value = null;
+  action?.();
+}
+
+function stayOnEditor() {
+  pendingSwitch.value = null;
+}
+
+function onDialogCancel(event: Event) {
+  // Escape follows the draft rules: a dirty draft offers Save / Discard / Stay.
+  if (editorDirty.value) {
+    event.preventDefault();
+    if (!pendingSwitch.value) pendingSwitch.value = () => {};
+    return;
+  }
+  closeEditor();
+}
+
+function setAnchor(id: string) {
+  const frame = canvasFrame.value;
+  if (!frame) return;
+  const node = Array.from(frame.querySelectorAll<HTMLElement>('[data-id]')).find((el) => el.getAttribute('data-id') === id);
+  if (!node) return;
+  const bounds = frame.getBoundingClientRect();
+  const rect = node.getBoundingClientRect();
+  anchor.value = {
+    left: Math.max(6, Math.min(rect.left - bounds.left, bounds.width - 436)) + 'px',
+    top: Math.max(6, Math.min(rect.top - bounds.top, Math.max(6, bounds.height - 330))) + 'px',
+  };
 }
 
 function onSaved(result: { entity: EntityCard; placement: PlacementView | null; createdRelated: { edge_id: string; to_id: string } | null }) {
+  const wasCreate = editor.value.mode === 'create';
   editorDirty.value = false;
   editor.value.open = false;
+  dismissBoardDialog();
   selectedId.value = result.entity.id;
-  rootId.value = result.entity.id;
   inspectedId.value = result.entity.id;
   inspectedEdgeId.value = null;
+  // Only a create promotes the graph root; an ordinary edit never recenters
+  // the graph (spec §3).
+  if (wasCreate) rootId.value = result.entity.id;
   postBoardChanged();
   void refreshBoard().then(() => void loadGraph());
   emit('changed');
   status.value = result.createdRelated ? 'Card and relationship saved; the related card is off board.' : 'Card saved.';
+  const action = pendingSwitch.value;
+  pendingSwitch.value = null;
+  void nextTick(() => invocation?.focus());
+  action?.();
 }
 
 async function moveCard(card: CardSummary, destinationColumnId: string | null) {
@@ -239,6 +343,27 @@ function onDrop(event: DragEvent, destinationColumnId: string) {
 function onColumnChange(card: CardSummary, event: Event) {
   const value = (event.target as HTMLSelectElement).value;
   void moveCard(card, value === '__off__' ? null : value);
+}
+
+/** Persist a manual node drag per scope/root; a drag changes only view
+ * geometry (spec §3). Positions load from the same scoped view. */
+async function saveNodePosition(event: { node: { id: string; position: { x: number; y: number } } }) {
+  const node = graph.value.nodes.find((item) => item.id === event.node.id);
+  if (!node || layoutBusy.value) return;
+  layoutBusy.value = true;
+  error.value = '';
+  try {
+    await parley.saveGraphLayout({
+      view_scope: 'resources',
+      view_id: rootId.value ?? 'board',
+      positions: [{ entity_id: node.id, x: event.node.position.x, y: event.node.position.y, expected_revision: node.position_revision }],
+    }, newOperationKey());
+  } catch (reason) {
+    error.value = reason instanceof Error ? `${reason.message} The saved layout is unchanged; reload the graph before retrying.` : 'Layout could not be saved. The saved layout is unchanged.';
+  } finally {
+    layoutBusy.value = false;
+  }
+  void loadGraph();
 }
 
 function placeOffBoard(card: { resource_id: string; title: string; legacy?: boolean }, event: Event) {
@@ -416,13 +541,6 @@ defineExpose({ refresh: refreshBoard });
     >
       <header class="pane-bar">
         <h3>Your resources</h3>
-        <button
-          type="button"
-          class="primary"
-          @click="openCreate(snapshot?.columns[0]?.id ?? 'inbox')"
-        >
-          + Add card
-        </button>
       </header>
       <div
         class="board"
@@ -465,9 +583,11 @@ defineExpose({ refresh: refreshBoard });
                   <strong>{{ card.title }}</strong>
                   <span
                     class="tile-counts"
-                    :title="`${card.counts.files} files · ${card.counts.connections} connections · ${card.counts.deliveries} deliveries`"
+                    :title="`${card.counts.files} files · ${card.counts.connections} connections · ${card.counts.deliveries} deliveries · ${card.counts.proposed} proposed links`"
                   >
-                    {{ card.counts.files }} files · {{ card.counts.connections }} linked · {{ card.counts.deliveries }} delivered
+                    {{ card.counts.files }} files · {{ card.counts.connections }} linked · {{ card.counts.deliveries }} delivered<template v-if="card.counts.proposed">
+                      · {{ card.counts.proposed }} proposed
+                    </template>
                   </span>
                 </button>
                 <div class="tile-actions">
@@ -514,7 +634,7 @@ defineExpose({ refresh: refreshBoard });
       aria-label="Connections graph"
     >
       <header class="pane-bar">
-        <h3>{{ selectedNode?.name ?? 'Resource connections' }}</h3>
+        <h3>{{ rootName ? rootName + ' · connections' : 'Resource connections' }}</h3>
         <button
           v-if="rootId !== inspectedId && inspectedId"
           type="button"
@@ -544,6 +664,7 @@ defineExpose({ refresh: refreshBoard });
         Bounded neighborhood: {{ graph.omitted_nodes }} or more nodes omitted.
       </p>
       <div
+        ref="canvasFrame"
         class="canvas-frame"
         tabindex="0"
         aria-label="Resource graph canvas"
@@ -554,15 +675,37 @@ defineExpose({ refresh: refreshBoard });
           :nodes="graphNodes"
           :edges="graphEdges"
           fit-view-on-init
-          :nodes-draggable="false"
+          :nodes-draggable="!layoutBusy"
           :nodes-connectable="false"
           elements-selectable
-          @node-click="({ node }) => selectNode(node.id)"
+          @node-click="({ node }) => selectNode(String(node.id))"
           @edge-click="({ edge }) => { inspectedEdgeId = String(edge.id); inspectedId = null; }"
+          @node-drag-stop="saveNodePosition"
         >
           <Background />
           <Controls />
         </VueFlow>
+        <div
+          v-if="editor.open && editor.graphMode"
+          class="editor-anchor"
+          :style="anchor"
+        >
+          <ResourceEditorForm
+            ref="formRef"
+            :key="formKey"
+            :columns="snapshot?.columns ?? []"
+            :mode="editor.mode"
+            :card="editor.card"
+            :card-summary="editor.summary"
+            :initial-column-id="editor.columnId"
+            :graph-mode="true"
+            :available-endpoints="availableEndpoints"
+            @saved="onSaved"
+            @cancel="closeEditor"
+            @update:dirty="editorDirty = $event"
+            @navigate="emit('navigate', $event)"
+          />
+        </div>
       </div>
       <details
         class="semantic-list"
@@ -630,25 +773,6 @@ defineExpose({ refresh: refreshBoard });
         >
           Explore connections
         </button>
-      </div>
-      <div
-        v-if="editor.open"
-        class="editor-host"
-      >
-        <ResourceEditorForm
-          :key="formKey"
-          :columns="snapshot?.columns ?? []"
-          :mode="editor.mode"
-          :card="editor.card"
-          :card-summary="editor.summary"
-          :initial-column-id="editor.columnId"
-          :graph-mode="editor.graphMode"
-          :available-endpoints="availableEndpoints"
-          @saved="onSaved"
-          @cancel="closeEditor"
-          @update:dirty="editorDirty = $event"
-          @navigate="emit('navigate', $event)"
-        />
       </div>
     </section>
 
@@ -791,7 +915,6 @@ defineExpose({ refresh: refreshBoard });
               {{ card.title }} · {{ card.subtype }} · {{ card.legacy ? 'legacy (off board)' : 'off board' }}
             </button>
             <select
-              v-if="!card.legacy"
               :aria-label="`Place ${card.title} on board`"
               @change="placeOffBoard(card, $event)"
             >
@@ -816,6 +939,59 @@ defineExpose({ refresh: refreshBoard });
         </ul>
       </details>
     </section>
+
+    <!-- Board Edit opens the shared content form over the board (spec §1). -->
+    <dialog
+      ref="boardDialog"
+      class="board-editor-dialog"
+      aria-label="Resource card editor"
+      @cancel="onDialogCancel"
+    >
+      <ResourceEditorForm
+        v-if="editor.open && !editor.graphMode"
+        ref="formRef"
+        :key="formKey"
+        :columns="snapshot?.columns ?? []"
+        :mode="editor.mode"
+        :card="editor.card"
+        :card-summary="editor.summary"
+        :initial-column-id="editor.columnId"
+        :graph-mode="false"
+        :available-endpoints="availableEndpoints"
+        @saved="onSaved"
+        @cancel="closeEditor"
+        @update:dirty="editorDirty = $event"
+        @navigate="emit('navigate', $event)"
+      />
+    </dialog>
+
+    <!-- Dirty draft switch: Save / Discard / Stay, per spec §4. -->
+    <div
+      v-if="pendingSwitch"
+      class="draft-prompt"
+      role="alertdialog"
+      aria-label="Unsaved card draft"
+    >
+      <strong>Unsaved card draft</strong>
+      <button
+        type="button"
+        @click="resolveEditorSwitch(true)"
+      >
+        Save
+      </button>
+      <button
+        type="button"
+        @click="resolveEditorSwitch(false)"
+      >
+        Discard unsaved changes
+      </button>
+      <button
+        type="button"
+        @click="stayOnEditor"
+      >
+        Stay
+      </button>
+    </div>
 
     <p
       class="workspace-status"
@@ -882,6 +1058,13 @@ button.retire { color: #852521; border-color: #d9a49c; }
 .workspace-status { grid-column: 1 / -1; margin: 0; color: #58665f; }
 .workspace-status.error { color: #852521; }
 .sr-only { position: absolute; clip-path: inset(50%); height: 1px; width: 1px; overflow: hidden; white-space: nowrap; }
+/* Party neighbours and the graph root stay visually distinct (prototype palette). */
+.resources-workspace :deep(.vue-flow__node.party-node) { background: #dbe9eb; }
+.resources-workspace :deep(.vue-flow__node.root-node) { background: #f2e6cf; border: 2px solid #846e48; }
+.editor-anchor { position: absolute; z-index: 5; inset-inline-start: .6rem; width: min(420px, calc(100% - 12px)); max-height: calc(100% - 1.5rem); overflow: auto; border: 2px solid #436b55; border-radius: 8px; background: #fffdf7; box-shadow: 0 5px 24px #223c3026; }
+.board-editor-dialog { width: min(36rem, 94vw); max-height: 88dvh; color: #253e32; background: #fffef7; border: 1px solid #abbcac; border-radius: .55rem; padding: .9rem; }
+.board-editor-dialog::backdrop { background: #172b2260; }
+.draft-prompt { position: fixed; z-index: 15; top: 15%; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: .6rem; padding: 1rem; background: #fffdf7; border: 2px solid #526f58; border-radius: 8px; box-shadow: 0 10px 40px #213c3030; flex-wrap: wrap; }
 @media (max-width: 1100px) { .resources-workspace { grid-template-columns: minmax(15rem, 1fr) minmax(0, 1.8fr); } .inspector-panel { grid-column: 1 / -1; } }
 @media (max-width: 900px) { .resources-workspace { grid-template-columns: 1fr; } .inspector-panel { grid-column: auto; } .board { grid-template-columns: repeat(3, minmax(9rem, 1fr)); overflow-x: auto; } }
 </style>

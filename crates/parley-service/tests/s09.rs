@@ -553,3 +553,108 @@ async fn s09_source_correction_after_mark_sent_preserves_sent_bytes() {
     drop(workspace);
     let _ = fs::remove_file(path);
 }
+
+#[tokio::test]
+async fn s09_interests_read_includes_linked_claim_revision() {
+    let (path, workspace, port, service) = setup().await;
+
+    // Source-backed graph entity (tier 1 claim), mirroring the correction test above.
+    let (status, org) = request(
+        port,
+        "POST",
+        "/api/v1/entities",
+        Some(json!({"kind":"org","name":"Northline"})),
+        "s09-interests-org",
+    )
+    .await;
+    assert_eq!(status, 201);
+    let (status, source) = request(
+        port,
+        "POST",
+        "/api/v1/captures",
+        Some(json!({"text":"Dana Lee will work with Northline.","title":"Team update"})),
+        "s09-interests-capture",
+    )
+    .await;
+    assert_eq!(status, 201, "{source}");
+    let (status, relation) = request(
+        port,
+        "POST",
+        "/api/v1/graph/related",
+        Some(json!({
+            "kind":"person","name":"Dana Lee",
+            "related_entity_id": org["id"],"verb":"member_of",
+            "occurrence_id": source["occurrence_id"],
+            "quote":"Dana Lee will work with Northline.",
+            "view_scope":"opportunity","view_id":"pending","x":120.0,"y":90.0
+        })),
+        "s09-interests-relation",
+    )
+    .await;
+    assert_eq!(status, 201, "{relation}");
+    let recipient = relation["id"].as_str().unwrap().to_owned();
+    let claim_id: String = sqlx::query_scalar("SELECT id FROM claim WHERE subject_id=?")
+        .bind(&recipient)
+        .fetch_one(workspace.pool())
+        .await
+        .unwrap();
+
+    let (status, opportunity) = request(
+        port,
+        "POST",
+        "/api/v1/opportunities",
+        Some(json!({"title":"Northline onboarding","primary_party_id":recipient})),
+        "s09-interests-opp",
+    )
+    .await;
+    assert_eq!(status, 201);
+    let opportunity_id = opportunity["id"].as_str().unwrap().to_owned();
+
+    // A source-backed interest links a claim revision; the read returns its
+    // wording, tier and speaker so the inspector can show the passage.
+    let (status, backed) = request(
+        port,
+        "POST",
+        &format!("/api/v1/opportunities/{opportunity_id}/interests"),
+        Some(json!({"recipient_id":recipient,"side":"them","statement":"A clearer onboarding handoff","knowledge_kind":"observation","claim_id":claim_id,"claim_revision":1})),
+        "s09-interests-backed",
+    )
+    .await;
+    assert_eq!(status, 201, "{backed}");
+    let (status, owner_only) = request(
+        port,
+        "POST",
+        &format!("/api/v1/opportunities/{opportunity_id}/interests"),
+        Some(json!({"recipient_id":recipient,"side":"me","statement":"Offer a usable checklist","knowledge_kind":"owner_report"})),
+        "s09-interests-owner",
+    )
+    .await;
+    assert_eq!(status, 201);
+
+    let (status, read) = request(
+        port,
+        "GET",
+        &format!("/api/v1/opportunities/{opportunity_id}/interests?recipient_id={recipient}"),
+        None,
+        "s09-interests-read",
+    )
+    .await;
+    assert_eq!(status, 200, "{read}");
+    let items = read["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    let backed_item = items.iter().find(|item| item["id"] == backed["id"]).unwrap();
+    assert_eq!(backed_item["claim"]["claim_id"].as_str().unwrap(), claim_id);
+    assert_eq!(backed_item["claim"]["revision"].as_i64().unwrap(), 1);
+    assert_eq!(
+        backed_item["claim"]["wording"].as_str().unwrap(),
+        "Dana Lee will work with Northline."
+    );
+    assert_eq!(backed_item["claim"]["tier"].as_i64().unwrap(), 1);
+    assert!(!backed_item["claim"]["speaker_kind"].as_str().unwrap().is_empty());
+    let owner_item = items.iter().find(|item| item["id"] == owner_only["id"]).unwrap();
+    assert!(owner_item["claim"].is_null(), "{owner_item}");
+
+    service.shutdown().await;
+    drop(workspace);
+    let _ = fs::remove_file(path);
+}

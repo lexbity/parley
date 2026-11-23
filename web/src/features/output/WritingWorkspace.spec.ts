@@ -21,11 +21,11 @@ function setup() {
 describe('WritingWorkspace', () => {
   it('binds interests and an explicit fairness attestation to the selected recipient', async () => {
     const wrapper = setup(); await flushPromises();
-    const add = vi.spyOn(parley, 'addWritingInterest').mockImplementation(async (_opportunity, input) => ({ id: input.side === 'them' ? 'i1' : 'i2', side: input.side, statement: input.statement, knowledge_kind: input.knowledge_kind, check_suggestion: input.check_suggestion ?? null, claim_id: null, claim_revision: null, revision: 1, status: 'active' }));
+    const add = vi.spyOn(parley, 'addWritingInterest').mockImplementation(async (_opportunity, input) => ({ id: input.side === 'them' ? 'i1' : 'i2', side: input.side, statement: input.statement, knowledge_kind: input.knowledge_kind, check_suggestion: input.check_suggestion ?? null, claim_id: null, claim_revision: null, claim: null, revision: 1, status: 'active' }));
     let exchangeSaved = false;
     const save = vi.spyOn(parley, 'saveWritingExchange').mockImplementation(async () => { exchangeSaved = true; return { version: 1 }; });
     const attest = vi.spyOn(parley, 'attestWritingExchange').mockResolvedValue();
-    vi.spyOn(parley, 'getWritingInterests').mockResolvedValueOnce([]).mockResolvedValue([{ id: 'i1', side: 'them', statement: 'Reduce onboarding friction', knowledge_kind: 'hypothesis', check_suggestion: 'Verify', claim_id: null, claim_revision: null, revision: 1, status: 'active' }, { id: 'i2', side: 'me', statement: 'Find a useful role', knowledge_kind: 'owner_report', check_suggestion: null, claim_id: null, claim_revision: null, revision: 1, status: 'active' }]);
+    vi.spyOn(parley, 'getWritingInterests').mockResolvedValueOnce([]).mockResolvedValue([{ id: 'i1', side: 'them', statement: 'Reduce onboarding friction', knowledge_kind: 'hypothesis', check_suggestion: 'Verify', claim_id: null, claim_revision: null, claim: null, revision: 1, status: 'active' }, { id: 'i2', side: 'me', statement: 'Find a useful role', knowledge_kind: 'owner_report', check_suggestion: null, claim_id: null, claim_revision: null, claim: null, revision: 1, status: 'active' }]);
     vi.spyOn(parley, 'getWritingExchange').mockImplementation(async () => ({ current: exchangeSaved ? { version: 1, they_get: 'A checklist', i_get: 'A useful conversation', fairness_attested: false } : null, versions: [] }));
     await wrapper.get('select').setValue('opp-1'); await wrapper.findAll('select')[1]!.setValue('person-1'); await flushPromises();
     await wrapper.findAll('form')[0]!.get('textarea').setValue('Reduce onboarding friction'); await wrapper.findAll('form')[0]!.trigger('submit'); await flushPromises();

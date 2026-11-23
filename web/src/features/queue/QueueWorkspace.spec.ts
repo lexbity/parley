@@ -5,6 +5,7 @@ import QueueWorkspace from './QueueWorkspace.vue';
 
 afterEach(() => {
   vi.restoreAllMocks();
+  globalThis.sessionStorage.clear();
 });
 
 const phases = [
@@ -156,6 +157,119 @@ describe('QueueWorkspace sheet: search, phase edit, undo', () => {
     await wrapper.findAll('button').find((button) => button.text() === 'Retry')!.trigger('click');
     await flushPromises();
     expect(wrapper.findAll('tbody tr[data-opportunity-id]')).toHaveLength(2);
+    wrapper.unmount();
+  });
+  it('restores the saved search, filters, sort and selection after reconnect', async () => {
+    vi.spyOn(parley, 'connect').mockResolvedValue();
+    vi.spyOn(parley, 'workspaceEpoch', 'get').mockReturnValue('epoch-1');
+    globalThis.sessionStorage.setItem('parley.queue.epoch-1', JSON.stringify({
+      query: 'fixture', phaseFilter: '', sortKey: 'name', selectedId: 'o2',
+    }));
+    const sheet = vi.spyOn(parley, 'getQueueSheet').mockResolvedValue({
+      ...sheetResponse,
+      rows: [sheetResponse.rows[1]!, sheetResponse.rows[0]!],
+    });
+    vi.spyOn(parley, 'getDailyQueue').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', pack_id: 'job_search', pack_version: '1.0.0', daily_cap: 12, actionable_count: 0, deferred_count: 0, items: [] });
+    vi.spyOn(parley, 'getInsights').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', period_start: '2026-11-14', period_end: '2026-11-21', pack_id: 'job_search', pack_version: '1.0.0', sample_size: 0, metrics: [], comparisons: [], gaps: [], questions: [] });
+    const wrapper = mount(QueueWorkspace, { props: { parties, outputs: [] } });
+    await flushPromises();
+    expect((wrapper.get('input[aria-label="Find scenario"]').element as HTMLInputElement).value).toBe('fixture');
+    expect(sheet.mock.calls[0]?.[0]).toMatchObject({ search: 'fixture', sort: 'name' });
+    // The restored selection survives because the row is still visible.
+    expect(wrapper.get('button.open[aria-pressed="true"]').text()).toBe('Fieldwork fixture');
+    wrapper.unmount();
+  });
+
+  it('never offers Unmapped or terminal lifecycle stages as phase targets', async () => {
+    const wrapper = stub(); await flushPromises();
+    vi.mocked(parley.getQueueSheet).mockResolvedValue({
+      ...sheetResponse,
+      phases: [
+        ...phases,
+        { stage_id: '__unmapped__', label: 'Unmapped', class: 'unmapped', kind: 'planning', pack_id: '', pack_version: '', count: 1 },
+        { stage_id: 'closed', label: 'Closed', class: 'terminal', kind: 'terminal', pack_id: '', pack_version: '', count: 0 },
+      ],
+    });
+    await wrapper.get('select[aria-label="Order"]').setValue('name');
+    await flushPromises();
+    const targets = wrapper.get('select[aria-label="Phase for Onboarding"]').findAll('option').map((option) => option.text());
+    expect(targets).toEqual(['Unmapped', 'Exploring', 'Preparing', 'In conversation']);
+    expect(targets).not.toContain('Closed');
+    wrapper.unmount();
+  });
+
+  it('labels action dates in the owner timezone', async () => {
+    const now = new Date();
+    const iso = (offsetDays: number) => {
+      const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offsetDays);
+      return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+    };
+    const dated = {
+      ...sheetResponse,
+      rows: [
+        row({ opportunity_id: 'o1', next_action: { kind: 'task', label: 'Confirm the recipient', reason: 'Checklist ready.', date: iso(0), thread_id: null, recipient_id: null, recipient_name: null } }),
+        row({ opportunity_id: 'o2', next_action: { kind: 'task', label: 'Review the outline', reason: 'Workshop planned.', date: '2026-05-04', thread_id: null, recipient_id: null, recipient_name: null } }),
+      ],
+    };
+    vi.spyOn(parley, 'connect').mockResolvedValue();
+    vi.spyOn(parley, 'getQueueSheet').mockResolvedValue(dated);
+    vi.spyOn(parley, 'getDailyQueue').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', pack_id: 'job_search', pack_version: '1.0.0', daily_cap: 12, actionable_count: 0, deferred_count: 0, items: [] });
+    vi.spyOn(parley, 'getInsights').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', period_start: '2026-11-14', period_end: '2026-11-21', pack_id: 'job_search', pack_version: '1.0.0', sample_size: 0, metrics: [], comparisons: [], gaps: [], questions: [] });
+    const wrapper = mount(QueueWorkspace, { props: { parties, outputs: [] } });
+    await flushPromises();
+    const cells = wrapper.findAll('td.date');
+    expect(cells[0]!.text()).toBe('Today');
+    expect(cells[0]!.classes()).toContain('due');
+    expect(cells[1]!.text()).toBe('May 4');
+    wrapper.unmount();
+  });
+
+  it('appends the next page through the continuation cursor', async () => {
+    vi.spyOn(parley, 'connect').mockResolvedValue();
+    const sheet = vi.spyOn(parley, 'getQueueSheet')
+      .mockResolvedValueOnce({ ...sheetResponse, rows: [sheetResponse.rows[0]!], total: 2, next_cursor: '1' })
+      .mockResolvedValueOnce({ ...sheetResponse, rows: sheetResponse.rows, total: 2, next_cursor: null });
+    void sheet;
+    vi.spyOn(parley, 'getDailyQueue').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', pack_id: 'job_search', pack_version: '1.0.0', daily_cap: 12, actionable_count: 0, deferred_count: 0, items: [] });
+    vi.spyOn(parley, 'getInsights').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', period_start: '2026-11-14', period_end: '2026-11-21', pack_id: 'job_search', pack_version: '1.0.0', sample_size: 0, metrics: [], comparisons: [], gaps: [], questions: [] });
+    const wrapper = mount(QueueWorkspace, { props: { parties, outputs: [] } });
+    await flushPromises();
+    expect(wrapper.findAll('tbody tr[data-opportunity-id]')).toHaveLength(1);
+    await wrapper.findAll('button').find((button) => button.text() === 'Load more')!.trigger('click');
+    await flushPromises();
+    expect(wrapper.findAll('tbody tr[data-opportunity-id]')).toHaveLength(2);
+    wrapper.unmount();
+  });
+
+  it('shows proposed exchange, source passages, follow-ups and history in the inspector', async () => {
+    const wrapper = stub(); await flushPromises();
+    vi.spyOn(parley, 'getWritingExchange').mockResolvedValue({
+      current: { version: 1, they_get: 'Annotated setup instructions', i_get: 'Maintainer feedback' },
+      versions: [],
+    });
+    vi.spyOn(parley, 'getWritingInterests').mockResolvedValue([
+      { id: 'i1', side: 'them', statement: 'Clearer quickstart', knowledge_kind: 'observation', check_suggestion: null, claim_id: 'c1', claim_revision: 1, claim: { claim_id: 'c1', revision: 1, wording: 'We incorporated the setup edits into the quickstart.', tier: 1, speaker_kind: 'party' }, revision: 1, status: 'active' },
+    ]);
+    const eventPage = {
+      items: [{ cursor: '1', event_id: 'e1', entity_type: 'opportunity', entity_id: 'o1', revision: 1, event_type: 'opportunity.created', occurred_at: '2026-11-20T09:00:00Z', payload: {} }],
+      next_cursor: '1', observed_cursor: '1',
+    };
+    vi.spyOn(parley, 'getEvents').mockImplementation(async (cursor: string) => cursor === '0' ? eventPage : { items: [], next_cursor: cursor, observed_cursor: '1' });
+    vi.spyOn(parley, 'listThreads').mockResolvedValue([{
+      id: 't1', opportunity_id: 'o1', recipient_id: 'p1', state: 'waiting', current_touch: 1,
+      expires_at: null, next_action_at: '2026-11-25T09:00:00Z', sent_at: null, updated_at: '2026-11-21T09:00:00Z', sends: [],
+    }]);
+    await wrapper.findAll('button.open')[1]!.trigger('click');
+    await flushPromises();
+    const inspector = wrapper.get('aside.inspector');
+    expect(inspector.text()).toContain('PROPOSED EXCHANGE');
+    expect(inspector.text()).toContain('They get · Annotated setup instructions');
+    expect(inspector.text()).toContain('I hope to get · Maintainer feedback');
+    expect(inspector.text()).toContain('SOURCE PASSAGES');
+    expect(inspector.text()).toContain('We incorporated the setup edits into the quickstart.');
+    expect(inspector.text()).toContain('party · T1');
+    expect(inspector.text()).toContain('thread waiting');
+    expect(inspector.text()).toContain('SCENARIO HISTORY (1)');
     wrapper.unmount();
   });
 });

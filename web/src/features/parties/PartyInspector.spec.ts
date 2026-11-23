@@ -9,7 +9,13 @@ const dossier: Dossier = {
   direct_links: [{ id: 'e1', from_id: 'p2', to_id: 'p1', verb: 'member_of', revision: 1, tier: 1, wording: 'Mira maintains the CSV tools.' }],
   files: [{ id: 'a1', filename: 'guide.pdf', content_type: 'application/pdf', size: 1024, sha256: 'a'.repeat(64), share_permission: false, reviewed_by_owner: true, created_at: '2026-11-22T00:00:00Z' }],
   opportunities: [{ id: 'o1', title: 'Onboarding exchange', role: 'primary' }],
-  associated_resources: [{ id: 'r1', title: 'Checklist', kind: 'proof', opportunity_id: 'o1', opportunity_title: 'Onboarding exchange' }],
+  associated_resources: [{
+    id: 'r1', title: 'Checklist', kind: 'proof', opportunity_id: 'o1', opportunity_title: 'Onboarding exchange',
+    paths: [
+      { via: 'opportunity', participant_id: 'p1', opportunity_id: 'o1', opportunity_title: 'Onboarding exchange' },
+      { via: 'edge', participant_id: 'p1', edge_id: 'e9', verb: 'could_help' },
+    ],
+  }],
 };
 
 function mountInspector(props: Record<string, unknown> = {}) {
@@ -32,6 +38,9 @@ describe('PartyInspector', () => {
     expect(wrapper.text()).toContain('guide.pdf');
     expect(wrapper.text()).toContain('Onboarding exchange');
     expect(wrapper.text()).toContain('Checklist');
+    // Association paths show each hop with a deep link (amendment §1).
+    expect(wrapper.text()).toContain('via Onboarding exchange');
+    expect(wrapper.text()).toContain('via could help');
     expect(wrapper.text()).toContain('Open Fieldwork’s network');
     const button = wrapper.findAll('button').find((item) => item.text().includes('Open Fieldwork’s network'))!;
     button.trigger('click');

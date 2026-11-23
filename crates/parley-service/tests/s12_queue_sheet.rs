@@ -367,3 +367,71 @@ async fn s12_sheet_sort_pagination_and_waiting_checkpoint() {
     drop(service);
     let _ = fs::remove_file(path);
 }
+
+#[tokio::test]
+async fn s12_events_filter_returns_scoped_history_with_timestamps() {
+    let (path, _workspace, port, service) = setup().await;
+
+    let party = create_party(port, "Fieldwork Lead").await;
+    let opp = create_opportunity(port, "Co-write an importer guide", &party).await;
+    let (status, first) = phase_change(port, &opp, "exploring", 1, None, "s12-events-k1").await;
+    assert_eq!(status, 200, "{first:?}");
+
+    // Unfiltered reads carry occurred_at for chronological history.
+    let (status, all) = request(port, "GET", "/api/v1/events", None, "s12-events-all").await;
+    assert_eq!(status, 200, "{all:?}");
+    let items = all["items"].as_array().unwrap();
+    assert!(!items.is_empty());
+    let mut previous_cursor = 0i64;
+    for item in items {
+        assert!(
+            item["occurred_at"].as_str().map(|value| !value.is_empty()).unwrap_or(false),
+            "{item}"
+        );
+        let cursor: i64 = item["cursor"].as_str().unwrap().parse().unwrap();
+        assert!(cursor > previous_cursor);
+        previous_cursor = cursor;
+    }
+
+    // Focused reads restrict the feed to one entity (Queue inspector history).
+    let (status, scoped) = request(
+        port,
+        "GET",
+        &format!("/api/v1/events?entity_type=opportunity&entity_id={opp}"),
+        None,
+        "s12-events-scoped",
+    )
+    .await;
+    assert_eq!(status, 200, "{scoped:?}");
+    let scoped_items = scoped["items"].as_array().unwrap();
+    assert!(!scoped_items.is_empty());
+    for item in scoped_items {
+        assert_eq!(item["entity_type"].as_str().unwrap(), "opportunity");
+        assert_eq!(item["entity_id"].as_str().unwrap(), opp);
+    }
+    assert!(
+        scoped_items
+            .iter()
+            .any(|item| item["event_type"].as_str() == Some("opportunity.phase_changed")),
+        "{scoped_items:?}"
+    );
+
+    let (status, party_scoped) = request(
+        port,
+        "GET",
+        &format!("/api/v1/events?entity_type=entity&entity_id={party}"),
+        None,
+        "s12-events-party",
+    )
+    .await;
+    assert_eq!(status, 200, "{party_scoped:?}");
+    let party_items = party_scoped["items"].as_array().unwrap();
+    assert!(!party_items.is_empty());
+    for item in party_items {
+        assert_eq!(item["entity_id"].as_str().unwrap(), party);
+    }
+
+    drop(_workspace);
+    drop(service);
+    let _ = fs::remove_file(path);
+}

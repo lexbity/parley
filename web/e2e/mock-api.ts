@@ -1,11 +1,11 @@
-import { allowedAssertion } from '../src/features/parties/relations';
-import { parsePartyCsv, previewCsv, importDigest, maxImportRows, maxImportBytes } from '../mock/party-import';
+import { allowedAssertion } from '../src/features/parties/relations.ts';
+import { parsePartyCsv, previewCsv, importDigest, maxImportRows, maxImportBytes } from '../mock/party-import.ts';
 import type { PartyImportMapping, PartyImportPreview } from '../src/api/client';
 import { createHash, randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
-import { buildDailyQueue, buildInsights, PACK_DOCUMENTS, validatePackDocument } from '../mock/coach';
-import { adminImpact, adminOverview, adminPreview as encodeAdminPreview, type AdminBackupRecord, type AdminOperation } from '../mock/admin';
+import { buildDailyQueue, buildInsights, PACK_DOCUMENTS, validatePackDocument } from '../mock/coach.ts';
+import { adminImpact, adminOverview, adminPreview as encodeAdminPreview, type AdminBackupRecord, type AdminOperation } from '../mock/admin.ts';
 
 /**
  * The one fixture-mode implementation of the Parley local API (RFC-0003
@@ -72,6 +72,7 @@ type EventRecord = {
   entity_id: string;
   revision: number;
   event_type: string;
+  occurred_at: string;
   payload: RecordData;
 };
 
@@ -158,8 +159,8 @@ export function createMockApi(): MockApi {
   const tag = (resource: ResourceRecord) => `"p1.${epoch}.resource.${resource.id}.${resource.revision}"`;
   const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.entity.${entity.id}.${entity.revision}"`;
   const notesTag = (entityId: string, revision: number) => `"p1.${epoch}.notes.${entityId}.${revision}"`;
-  const pushEvent = (event: Omit<EventRecord, 'cursor'>) => {
-    events.push({ ...event, cursor: String(events.length + 1) });
+  const pushEvent = (event: Omit<EventRecord, 'cursor' | 'occurred_at'>) => {
+    events.push({ ...event, occurred_at: now(), cursor: String(events.length + 1) });
   };
 
   function deepClone<T>(value: T): T {
@@ -451,6 +452,12 @@ export function createMockApi(): MockApi {
   function unbindAttachmentFrom(entityId: string, ref: string): void {
     const list = entityAttachments.get(entityId) ?? [];
     entityAttachments.set(entityId, list.filter((a) => a.id !== ref));
+  }
+
+  const RESERVED_DELIVERY_VERBS = ['shared with', 'delivered to', 'sent to'];
+  function reservedDeliveryVerb(verb: unknown): string | null {
+    const normalized = String(verb ?? '').trim().toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ');
+    return RESERVED_DELIVERY_VERBS.includes(normalized) ? String(verb ?? '').trim() : null;
   }
 
   function relateFrom(fromId: string, rel: RecordData, info: { edge_id: string | null; to_id: string | null }): string | null {
@@ -790,7 +797,7 @@ export function createMockApi(): MockApi {
     if (voiceRetire && request.method === 'POST') { const sample = voiceSamples.find((item) => item.id === voiceRetire[1]); if (!sample) return fail(response, 404, 'VOICE_SAMPLE_NOT_FOUND', 'Voice sample does not exist'); sample.status = 'retired'; return json(response, 200, { id: sample.id, status: 'retired', revision: 2 }); }
     if (url.pathname === '/api/v1/matching/calibrations' && request.method === 'GET') return json(response, 200, { model: embeddingModel, model_digest: null, scoring_config_digest: null, calibrations: [] });
     const writingInterestsMatch = /^\/api\/v1\/opportunities\/([^/]+)\/interests$/.exec(url.pathname);
-    if (writingInterestsMatch && request.method === 'GET') return json(response, 200, { opportunity_id: writingInterestsMatch[1], recipient_id: url.searchParams.get('recipient_id'), items: writingInterests.get(`${writingInterestsMatch[1]}:${url.searchParams.get('recipient_id')}`) ?? [] });
+    if (writingInterestsMatch && request.method === 'GET') return json(response, 200, { opportunity_id: writingInterestsMatch[1], recipient_id: url.searchParams.get('recipient_id'), items: (writingInterests.get(`${writingInterestsMatch[1]}:${url.searchParams.get('recipient_id')}`) ?? []).map((item) => ({ ...item, claim: null })) });
     if (writingInterestsMatch && request.method === 'POST') { let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); } const key = `${writingInterestsMatch[1]}:${String(input.recipient_id)}`; const item = { id: randomHex(), revision: 1, status: 'active', ...input, check_suggestion: input.check_suggestion ?? null, claim_id: null, claim_revision: null }; writingInterests.set(key, [...(writingInterests.get(key) ?? []), item]); return json(response, 201, item); }
     const writingExchangeMatch = /^\/api\/v1\/opportunities\/([^/]+)\/exchange(?:\/([^/]+)\/attest)?$/.exec(url.pathname);
     if (writingExchangeMatch && request.method === 'GET') { const versions = writingExchanges.get(`${writingExchangeMatch[1]}:${url.searchParams.get('recipient_id')}`) ?? []; return json(response, 200, { opportunity_id: writingExchangeMatch[1], recipient_id: url.searchParams.get('recipient_id'), current: versions.at(-1) ?? null, versions }); }
@@ -1227,7 +1234,11 @@ export function createMockApi(): MockApi {
         return fail(response, 400, 'CURSOR_INVALID', 'Event cursor must be a non-negative decimal');
       }
       const afterCursor = url.searchParams.get('after') ?? '0';
-      const items = events.filter((event) => Number(event.cursor) > after);
+      const entityType = url.searchParams.get('entity_type');
+      const entityId = url.searchParams.get('entity_id');
+      const items = events.filter((event) => Number(event.cursor) > after
+        && (!entityType || event.entity_type === entityType)
+        && (!entityId || event.entity_id === entityId));
       return json(response, 200, {
         items,
         next_cursor: events.at(-1)?.cursor ?? afterCursor,
@@ -1385,6 +1396,8 @@ export function createMockApi(): MockApi {
         status = 201;
         if (create.placement && typeof create.placement === 'object' && !applyPlacement(id, create.placement as RecordData)) return fail(response, 422, 'INVALID_REQUEST', 'Placement column or anchor is invalid');
         if (input.relation_add && typeof input.relation_add === 'object') {
+          const reserved = reservedDeliveryVerb((input.relation_add as RecordData).verb);
+          if (reserved) return fail(response, 422, 'INVALID_REQUEST', `A relationship cannot assert a delivery ('${reserved}'). Record the delivery through the opportunity's Mark sent workflow; delivery provenance is shown from recorded sends.`);
           const reason = relateFrom(id, input.relation_add as RecordData, relatedInfo);
           if (reason) return fail(response, 422, 'INVALID_REQUEST', `Relationship rejected: ${reason}`);
         }
@@ -1412,6 +1425,8 @@ export function createMockApi(): MockApi {
         entity = current;
         if (input.placement && typeof input.placement === 'object' && !applyPlacement(String(current.id), input.placement as RecordData)) return fail(response, 422, 'INVALID_REQUEST', 'Placement column or anchor is invalid');
         if (input.relation_add && typeof input.relation_add === 'object') {
+          const reserved = reservedDeliveryVerb((input.relation_add as RecordData).verb);
+          if (reserved) return fail(response, 422, 'INVALID_REQUEST', `A relationship cannot assert a delivery ('${reserved}'). Record the delivery through the opportunity's Mark sent workflow; delivery provenance is shown from recorded sends.`);
           const reason = relateFrom(String(current.id), input.relation_add as RecordData, relatedInfo);
           if (reason) return fail(response, 422, 'INVALID_REQUEST', `Relationship rejected: ${reason}`);
         }

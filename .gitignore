@@ -27,3 +27,7 @@ blob-report/
 .env
 .env.*
 *.swp
+
+# Agent tools
+.zcode
+.codex

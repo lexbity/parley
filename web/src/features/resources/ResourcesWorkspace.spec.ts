@@ -52,6 +52,9 @@ describe('ResourcesWorkspace', () => {
     expect(lanes[1]!.text()).toContain('Developing');
     expect(lanes[2]!.text()).toContain('Available');
     expect(wrapper.findAll('button.add-card').length).toBe(3);
+    // The column-local entry is the board's only creation entry (spec §1).
+    const boardHeader = wrapper.get('section[aria-label="Resource board"] header.pane-bar');
+    expect(boardHeader.findAll('button').length).toBe(0);
     wrapper.unmount();
   });
 
@@ -263,22 +266,122 @@ describe('ResourcesWorkspace', () => {
     wrapper.unmount();
   });
 
-  it('shows off-board resources in the picker and detects a saved related card', async () => {
+  it('shows off-board resources in the picker and offers placement to legacy rows', async () => {
     stubBoard({
       ...emptyBoard,
-      off_board: [{
-        resource_id: 'off-1', subtype: 'artifact', title: 'Fixture walkthrough',
-        readiness: 'draft', legacy: false,
-        counts: { files: 0, connections: 0, proposed: 0, deliveries: 0 },
-        gaps: [],
-        etag: '"p1.e.off-1.1"',
-      }],
+      off_board: [
+        {
+          resource_id: 'off-1', subtype: 'artifact', title: 'Fixture walkthrough',
+          readiness: 'draft', legacy: false,
+          counts: { files: 0, connections: 0, proposed: 0, deliveries: 0 },
+          gaps: [],
+          etag: '"p1.e.off-1.1"',
+        },
+        {
+          resource_id: 'legacy-1', subtype: 'note', title: 'Legacy checklist idea',
+          readiness: 'draft', legacy: true,
+          counts: { files: 0, connections: 0, proposed: 0, deliveries: 0 },
+          gaps: [],
+          etag: '"p1.e.legacy-1.1"',
+        },
+      ],
     });
     const wrapper = mount(ResourcesWorkspace);
     await flushPromises();
     const picker = wrapper.get('details.picker');
     expect(picker.text()).toContain('Fixture walkthrough');
     expect(picker.text()).toContain('off board');
+    const legacyRow = picker.findAll('li').find((item) => item.text().includes('Legacy checklist idea'))!;
+    expect(legacyRow.text()).toContain('legacy (off board)');
+    expect(legacyRow.find('select').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('offers Save / Discard / Stay when switching with a dirty draft', async () => {
+    stubBoard(oneCardBoard);
+    vi.spyOn(parley, 'getEntityCard').mockResolvedValue({
+      id: 'card-1', kind: 'resource', title: 'Importer checklist', subtype: 'artifact',
+      body: {}, readiness: 'draft', revision: 1,
+      notes: { markdown: '', revision: 1 }, etag: '"p1.e.card-1.1"',
+    });
+    const wrapper = mount(ResourcesWorkspace);
+    await flushPromises();
+    await wrapper.get('button.tile-body').trigger('click');
+    await flushPromises();
+    await wrapper.findAll('section[aria-label="Resource board"] button').find((button) => button.text() === 'Edit')!.trigger('click');
+    await flushPromises();
+    const form = wrapper.get('form[aria-label="Resource card editor"]');
+    await form.get('input[maxlength="240"]').setValue('Uncommitted local edit');
+
+    // Opening another card keeps the draft and offers the three-way switch.
+    await wrapper.findAll('section[aria-label="Resource board"] button').find((button) => button.text() === 'Edit')!.trigger('click');
+    const prompt = wrapper.get('[role="alertdialog"]');
+    expect(prompt.text()).toContain('Unsaved card draft');
+    await prompt.findAll('button').find((button) => button.text() === 'Stay')!.trigger('click');
+    expect((wrapper.get('input[maxlength="240"]').element as HTMLInputElement).value).toBe('Uncommitted local edit');
+
+    // Discard clears the draft and completes the pending switch.
+    await wrapper.findAll('section[aria-label="Resource board"] button').find((button) => button.text() === 'Edit')!.trigger('click');
+    await wrapper.get('[role="alertdialog"]').findAll('button').find((button) => button.text() === 'Discard unsaved changes')!.trigger('click');
+    await flushPromises();
+    expect((wrapper.get('input[maxlength="240"]').element as HTMLInputElement).value).toBe('Importer checklist');
+    wrapper.unmount();
+  });
+
+  it('shows the graph root in the header and never recenters on an ordinary edit', async () => {
+    stubBoard({
+      ...oneCardBoard,
+      cards: [
+        ...oneCardBoard.cards,
+        {
+          resource_id: 'card-2', subtype: 'note', title: 'Workshop outline',
+          readiness: 'draft', placement: { column_id: 'inbox', position: 1024, revision: 1 },
+          counts: { files: 0, connections: 0, proposed: 0, deliveries: 0 },
+          gaps: [], etag: '"p1.e.card-2.1"',
+        },
+      ],
+    });
+    vi.spyOn(parley, 'getGraph').mockResolvedValue({
+      nodes: [
+        { id: 'card-1', kind: 'resource', name: 'Importer checklist', focus: '', revision: 1, x: 0, y: 0, position_revision: 0 },
+        { id: 'card-2', kind: 'resource', name: 'Workshop outline', focus: '', revision: 1, x: 10, y: 0, position_revision: 0 },
+      ],
+      edges: [{ id: 'e1', from_id: 'card-1', to_id: 'card-2', verb: 'includes', revision: 1, quote: '', tier: 3, speaker_kind: 'owner', captured_at: '2026-11-22T00:00:00Z', occurrence_id: null, source_title: null, source_url: null, claim_id: null, state: 'active' }],
+      omitted_nodes: 0, omitted_edges: 0,
+    });
+    vi.spyOn(parley, 'getEntityCard').mockImplementation(async (id: string) => ({
+      id, kind: 'resource', title: id === 'card-2' ? 'Workshop outline' : 'Importer checklist',
+      subtype: id === 'card-2' ? 'note' : 'artifact',
+      body: {}, readiness: 'draft', revision: 1,
+      notes: { markdown: '', revision: 1 }, etag: `"p1.e.${id}.1"`,
+    }));
+    const commit = vi.spyOn(parley, 'commitResourceCard').mockResolvedValue({
+      entity: { id: 'card-2', kind: 'resource', title: 'Workshop outline v2', subtype: 'note', body: {}, readiness: 'draft', revision: 2, notes: { markdown: '', revision: 1 }, etag: '"p1.e.card-2.2"' },
+      placement: null, created_related: null, event_cursor: 6,
+    });
+    const wrapper = mount(ResourcesWorkspace);
+    await flushPromises();
+    // Selecting the checklist tile roots the graph at it.
+    const tileFor = (title: string) => wrapper.findAll('button.tile-body').find((tile) => tile.text().includes(title))!;
+    await tileFor('Importer checklist').trigger('click');
+    await flushPromises();
+    expect(wrapper.get('section[aria-label="Connections graph"] header.pane-bar h3').text()).toBe('Importer checklist · connections');
+
+    // Edit the outline card via its tile Edit button; root stays on the selection.
+    await tileFor('Importer checklist').trigger('click');
+    await flushPromises();
+    const outlineTile = wrapper.findAll('.tile').find((tile) => tile.text().includes('Workshop outline'))!;
+    await outlineTile.findAll('button').find((button) => button.text() === 'Edit')!.trigger('click');
+    await flushPromises();
+    const form = wrapper.get('form[aria-label="Resource card editor"]');
+    await form.get('input[maxlength="240"]').setValue('Workshop outline v2');
+    await form.trigger('submit');
+    await flushPromises();
+    expect(commit).toHaveBeenCalledWith(
+      expect.objectContaining({ edit: expect.objectContaining({ resource_id: 'card-2' }) }),
+      expect.any(String),
+    );
+    expect(wrapper.get('section[aria-label="Connections graph"] header.pane-bar h3').text()).toBe('Importer checklist · connections');
     wrapper.unmount();
   });
 });

@@ -2126,6 +2126,7 @@ export interface components {
             entity_id: string;
             revision: number;
             event_type: string;
+            occurred_at: string;
             payload: {
                 [key: string]: unknown;
             };
@@ -3864,6 +3865,10 @@ export interface operations {
         parameters: {
             query?: {
                 after?: string;
+                /** @description Focused read - restrict the feed to one entity type. */
+                entity_type?: string;
+                /** @description Focused read - restrict the feed to one entity id. */
+                entity_id?: string;
             };
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];

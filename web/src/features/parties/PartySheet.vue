@@ -226,7 +226,7 @@ function typeLabel(kind: string): string {
       </button>
     </p>
     <footer class="sheet-foot">
-      {{ visibleParties.length }} {{ more ? 'loaded rows' : 'party rows' }}
+      {{ visibleParties.length }} {{ more ? 'loaded rows' : 'party rows' }} · name, type and focus
       <button
         v-if="more"
         :disabled="loading"

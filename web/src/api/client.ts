@@ -94,7 +94,8 @@ export type BriefItem = { id: string; scope_kind: 'party' | 'segment'; scope_id:
 export type RoleJob = { id: string; role: string; status: string; result: Record<string, unknown> | null; last_error: string | null; scope_kind?: string; scope_id?: string };
 export type VocabularyFluency = { term: string; status: 'unknown' | 'learning' | 'fluent'; revision: number };
 export type WritingTemplate = { id: string; family_id: string; name: string; version: number; status: string; body: string; sentence_rules: string[]; stage_class: string; channel: string; parent_version_id: string | null };
-export type WritingInterest = { id: string; side: 'them' | 'me'; statement: string; knowledge_kind: string; check_suggestion: string | null; claim_id: string | null; claim_revision: number | null; revision: number; status: string };
+export type WritingInterestClaim = { claim_id: string; revision: number; wording: string; tier: number; speaker_kind: string };
+export type WritingInterest = { id: string; side: 'them' | 'me'; statement: string; knowledge_kind: string; check_suggestion: string | null; claim_id: string | null; claim_revision: number | null; claim: WritingInterestClaim | null; revision: number; status: string };
 export type WritingMatch = { id: string; opportunity_id: string; recipient_id: string; embed_model_digest: string; calibration_json: string; shortlist_json: string; why_job_id: string | null };
 export type WritingJob = { job_id: string; role: string };
 export type BackupRecord = { id: string; created_at: string; status: 'verified' | 'damaged' | 'incomplete'; manifest_sha256: string; workspace_id: string; format_version: number };
@@ -608,6 +609,7 @@ function decodeEventPage(value: unknown): EventPage {
       entity_id: requiredString(event.entity_id, 'event.entity_id'),
       revision: Number(event.revision),
       event_type: requiredString(event.event_type, 'event.event_type'),
+      occurred_at: requiredString(event.occurred_at, 'event.occurred_at'),
       payload,
     };
   });
@@ -938,8 +940,11 @@ export class ParleyClient {
     return data as Resource;
   }
 
-  async getEvents(after = '0'): Promise<EventPage> {
-    return decodeEventPage(await this.request(`/events?after=${encodeURIComponent(after)}`));
+  async getEvents(after = '0', filters: { entity_type?: string; entity_id?: string } = {}): Promise<EventPage> {
+    const params = new URLSearchParams({ after });
+    if (filters.entity_type) params.set('entity_type', filters.entity_type);
+    if (filters.entity_id) params.set('entity_id', filters.entity_id);
+    return decodeEventPage(await this.request(`/events?${params.toString()}`));
   }
 
   async createResource(input: CreateResource, key: string): Promise<Resource> {
@@ -1119,7 +1124,7 @@ export class ParleyClient {
   async getWritingInterests(opportunityId: string, recipientId: string): Promise<WritingInterest[]> {
     const value = object(await this.request(`/opportunities/${encodeURIComponent(opportunityId)}/interests?recipient_id=${encodeURIComponent(recipientId)}`));
     if (!value || !Array.isArray(value.items)) throw new Error('Invalid response: recipient interests are malformed');
-    return value.items.map((raw) => { const item = object(raw); if (!item) throw new Error('Invalid response: recipient interest is malformed'); return { id: requiredString(item.id, 'interest.id'), side: requiredString(item.side, 'interest.side') as WritingInterest['side'], statement: requiredString(item.statement, 'interest.statement'), knowledge_kind: requiredString(item.knowledge_kind, 'interest.knowledge_kind'), check_suggestion: typeof item.check_suggestion === 'string' ? item.check_suggestion : null, claim_id: typeof item.claim_id === 'string' ? item.claim_id : null, claim_revision: Number.isSafeInteger(item.claim_revision) ? Number(item.claim_revision) : null, revision: Number(item.revision), status: requiredString(item.status, 'interest.status') }; });
+    return value.items.map((raw) => { const item = object(raw); if (!item) throw new Error('Invalid response: recipient interest is malformed'); const claim = object(item.claim); return { id: requiredString(item.id, 'interest.id'), side: requiredString(item.side, 'interest.side') as WritingInterest['side'], statement: requiredString(item.statement, 'interest.statement'), knowledge_kind: requiredString(item.knowledge_kind, 'interest.knowledge_kind'), check_suggestion: typeof item.check_suggestion === 'string' ? item.check_suggestion : null, claim_id: typeof item.claim_id === 'string' ? item.claim_id : null, claim_revision: Number.isSafeInteger(item.claim_revision) ? Number(item.claim_revision) : null, claim: claim ? { claim_id: requiredString(claim.claim_id, 'interest.claim.claim_id'), revision: Number(claim.revision), wording: requiredString(claim.wording, 'interest.claim.wording'), tier: Number(claim.tier), speaker_kind: requiredString(claim.speaker_kind, 'interest.claim.speaker_kind') } : null, revision: Number(item.revision), status: requiredString(item.status, 'interest.status') }; });
   }
 
   async getWritingExchange(opportunityId: string, recipientId: string): Promise<{ current: Record<string, unknown> | null; versions: Array<Record<string, unknown>> }> {
@@ -1131,7 +1136,7 @@ export class ParleyClient {
   async addWritingInterest(opportunityId: string, input: { recipient_id: string; side: 'them' | 'me'; statement: string; knowledge_kind: 'observation' | 'hypothesis' | 'owner_report'; check_suggestion?: string }, key = newOperationKey()): Promise<WritingInterest> {
     const value = object(await this.mutate(`/opportunities/${encodeURIComponent(opportunityId)}/interests`, 'POST', input, { 'Idempotency-Key': key }));
     if (!value) throw new Error('Invalid response: created interest is malformed');
-    return { id: requiredString(value.id, 'interest.id'), side: requiredString(value.side, 'interest.side') as WritingInterest['side'], statement: requiredString(value.statement, 'interest.statement'), knowledge_kind: requiredString(value.knowledge_kind, 'interest.knowledge_kind'), check_suggestion: typeof value.check_suggestion === 'string' ? value.check_suggestion : null, claim_id: null, claim_revision: null, revision: Number(value.revision ?? 1), status: requiredString(value.status ?? 'active', 'interest.status') };
+    return { id: requiredString(value.id, 'interest.id'), side: requiredString(value.side, 'interest.side') as WritingInterest['side'], statement: requiredString(value.statement, 'interest.statement'), knowledge_kind: requiredString(value.knowledge_kind, 'interest.knowledge_kind'), check_suggestion: typeof value.check_suggestion === 'string' ? value.check_suggestion : null, claim_id: null, claim_revision: null, claim: null, revision: Number(value.revision ?? 1), status: requiredString(value.status ?? 'active', 'interest.status') };
   }
 
   async saveWritingExchange(opportunityId: string, input: { recipient_id: string; they_get: string; i_get: string; interest_ids: string[] }, key = newOperationKey()): Promise<Record<string, unknown>> {

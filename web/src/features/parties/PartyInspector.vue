@@ -200,6 +200,30 @@ function typeLabel(kind: string): string {
             <button @click="emit('navigate', '/resources/' + resource.id)">
               {{ resource.title }}
             </button> <small> · {{ resource.kind }}</small>
+            <ul
+              v-if="resource.paths?.length"
+              class="association-paths"
+            >
+              <li
+                v-for="(path, index) in resource.paths"
+                :key="index"
+              >
+                <small>via
+                  <template v-if="path.via === 'opportunity'">
+                    <button
+                      type="button"
+                      class="path-link"
+                      @click="emit('navigate', '/queue/' + path.opportunity_id)"
+                    >
+                      {{ path.opportunity_title }}
+                    </button>
+                  </template>
+                  <template v-else>
+                    {{ path.verb?.replaceAll('_', ' ') }}
+                  </template>
+                </small>
+              </li>
+            </ul>
           </li>
         </ul>
       </details>
@@ -227,4 +251,7 @@ function typeLabel(kind: string): string {
 .notes-preview { max-height: 14rem; overflow: auto; border: 1px solid #e0e5df; border-radius: .35rem; padding: 0 .6rem; }
 .retire { align-self:start; margin:.55rem .9rem; }
 .open-card { margin: .5rem 0 .7rem; }
+.association-paths { list-style: none; margin: .15rem 0 0; padding-left: 1.1rem; }
+.association-paths small { color: #58665f; }
+.path-link { border: 0; background: transparent; padding: 0; color: #225744; font: inherit; text-decoration: underline; cursor: pointer; }
 </style>

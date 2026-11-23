@@ -136,6 +136,8 @@ async fn r04_link_existing_party_preserves_its_record() {
     let party_id = party["data"]["id"].as_str().unwrap().to_owned();
 
     // Link the existing party by ID; no new person or resource tile appears.
+    // Delivery-asserting verbs are reserved: the generic editor must not be
+    // able to manufacture a "shared with" edge (Resources spec §5).
     let (status, link) = request(
         &service,
         &session,
@@ -143,7 +145,7 @@ async fn r04_link_existing_party_preserves_its_record() {
         "/api/v1/resource-card-commits",
         Some(json!({
             "edit": {"resource_id": root_id, "expected_revision": 1, "expected_notes_rev": 1},
-            "relation_add": {"verb": "shared with", "target_id": party_id, "basis": "owner-recorded send to Mira"}
+            "relation_add": {"verb": "refers to", "target_id": party_id, "basis": "owner-recorded link to Mira"}
         })),
         &[("Idempotency-Key", next_key().as_str())],
     )
@@ -161,6 +163,33 @@ async fn r04_link_existing_party_preserves_its_record() {
     )
     .await;
     assert_eq!(persons["data"].as_array().unwrap().len(), 1);
+
+    let (rejected_status, rejected) = request(
+        &service,
+        &session,
+        "POST",
+        "/api/v1/resource-card-commits",
+        Some(json!({
+            "edit": {"resource_id": root_id, "expected_revision": 2, "expected_notes_rev": 1},
+            "relation_add": {"verb": "shared with", "target_id": party_id, "basis": "owner-recorded send to Mira"}
+        })),
+        &[("Idempotency-Key", next_key().as_str())],
+    )
+    .await;
+    assert_eq!(rejected_status, 422, "{rejected}");
+    assert_eq!(
+        rejected["error"]["code"].as_str().unwrap_or_default(),
+        "INVALID_REQUEST",
+        "{rejected}"
+    );
+    assert!(
+        rejected["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("cannot assert a delivery"),
+        "{rejected}"
+    );
+
     let (_, dossier) = request(
         &service,
         &session,
@@ -174,7 +203,11 @@ async fn r04_link_existing_party_preserves_its_record() {
     assert!(
         links
             .iter()
-            .any(|edge| edge["from_id"] == root_id && edge["verb"] == "shared with"),
+            .any(|edge| edge["from_id"] == root_id && edge["verb"] == "refers to"),
+        "{dossier}"
+    );
+    assert!(
+        !links.iter().any(|edge| edge["verb"] == "shared with"),
         "{dossier}"
     );
 

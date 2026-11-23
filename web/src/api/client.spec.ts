@@ -234,7 +234,7 @@ describe('ParleyClient S07 contact lifecycle commands', () => {
 
 describe('ParleyClient S09 recipient writing commands', () => {
   it('binds exchange, templates, matching, composition, lint and voice versions to one session', async () => {
-    const interest = { id: 'interest-1', side: 'them', statement: 'Improve onboarding', knowledge_kind: 'hypothesis', check_suggestion: 'Verify with a source', claim_id: null, claim_revision: null, revision: 1, status: 'active' };
+    const interest = { id: 'interest-1', side: 'them', statement: 'Improve onboarding', knowledge_kind: 'hypothesis', check_suggestion: 'Verify with a source', claim_id: null, claim_revision: null, claim: null, revision: 1, status: 'active' };
     const template = { id: 'template-1', family_id: 'family-1', name: 'One ask', version: 1, status: 'draft', body: '{{their_name:name}}', sentence_rules: [[]], stage_class: 'identified', channel: 'email', parent_version_id: null };
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(sessionResponse())
@@ -383,18 +383,25 @@ describe('ParleyClient', () => {
       .mockResolvedValueOnce(response({ data: resource }))
       .mockResolvedValueOnce(response({
         items: [{ cursor: '1', event_id: 'event-1', entity_type: 'resource', entity_id: resource.id,
-          revision: 1, event_type: 'resource.created', payload: { kind: 'gift' } }],
+          revision: 1, event_type: 'resource.created', occurred_at: '2026-11-22T09:00:00Z', payload: { kind: 'gift' } }],
+        next_cursor: '1', observed_cursor: '1',
+      }))
+      .mockResolvedValueOnce(response({
+        items: [{ cursor: '1', event_id: 'event-1', entity_type: 'opportunity', entity_id: 'o1',
+          revision: 1, event_type: 'opportunity.created', occurred_at: '2026-11-22T09:00:00Z', payload: {} }],
         next_cursor: '1', observed_cursor: '1',
       }));
 
     await client.connect();
     expect(await client.listResources()).toEqual([resource]);
     expect(await client.getResource(resource.id)).toEqual(resource);
-    expect(await client.getEvents('7/8')).toMatchObject({ next_cursor: '1', items: [{ entity_id: resource.id }] });
+    expect(await client.getEvents('7/8')).toMatchObject({ next_cursor: '1', items: [{ entity_id: resource.id, occurred_at: '2026-11-22T09:00:00Z' }] });
+    expect(await client.getEvents('7/8', { entity_type: 'opportunity', entity_id: 'o1' })).toMatchObject({ next_cursor: '1' });
     expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual([
       '/api/v1/entities?kind=resource',
       '/api/v1/entities/resource%201',
       '/api/v1/events?after=7%2F8',
+      '/api/v1/events?after=7%2F8&entity_type=opportunity&entity_id=o1',
     ]);
     for (const [, init] of fetchMock.mock.calls.slice(1)) {
       const headers = new Headers(init?.headers);

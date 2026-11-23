@@ -16,6 +16,11 @@ import MarkdownPreview from '../../shared/MarkdownPreview.vue';
 const SUBTYPES = ['gift', 'proof', 'artifact', 'skill', 'interest', 'note'] as const;
 export type ResourceSubtype = (typeof SUBTYPES)[number];
 
+/** Owner-authored resource relationship verbs (prototype set). Delivery-
+ * asserting verbs are deliberately absent: recorded sends, not edges,
+ * establish that something was shared. */
+const RELATIONSHIP_VERBS = ['includes', 'supports', 'relates to', 'considered for'] as const;
+
 const props = defineProps<{
   columns: ResourceColumn[];
   mode: 'create' | 'edit';
@@ -28,6 +33,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   saved: [result: { entity: EntityCard; placement: PlacementView | null; createdRelated: { edge_id: string; to_id: string } | null }];
+  'update:dirty': [dirty: boolean];
   cancel: [];
   navigate: [path: string];
 }>();
@@ -75,6 +81,9 @@ watch([title, subtype, notes, placementColumn], () => { dirty.value = true; });
 watch(body, () => { dirty.value = true; }, { deep: true });
 watch([stagedUploads, markedRemovals], () => { dirty.value = true; }, { deep: true });
 watch(() => relation.enabled, () => { dirty.value = true; });
+// The workspace owns the dirty-draft switch (Save / Discard / Stay), so the
+// draft reports its dirty state upward.
+watch(dirty, (value) => emit('update:dirty', value));
 
 const KIND_LABELS: Record<string, string> = {
   gift: 'Gift or offer', proof: 'Proof or result', artifact: 'Artifact',
@@ -112,6 +121,12 @@ const placementIntent = computed<ResourcePlacementInput | null>(() => {
   return { column_id: placementColumn.value, before_resource_id: null };
 });
 
+// A lost acknowledgement must be retried with the exact same request and
+// operation key (spec §6 Concurrency); a changed intent gets a fresh key.
+// Declared before refreshModel, which the immediate card watcher invokes.
+let lastIntent = '';
+let intentKey = '';
+
 function refreshModel() {
   const card = props.card;
   title.value = card?.title ?? '';
@@ -137,6 +152,19 @@ function refreshModel() {
   relation.createNotes = '';
   relation.createSubtype = 'artifact';
   dirty.value = false;
+  lastIntent = '';
+  intentKey = '';
+  if (props.mode === 'edit' && card) {
+    // Bound files must be inspectable and removable (spec §4 Files). A late
+    // response for a previous card never populates this draft.
+    const cardId = card.id;
+    void parley.listAttachments(cardId).then((rows) => {
+      if (liveCard.value?.id !== cardId) return;
+      attachments.value = rows;
+    }).catch((reason: unknown) => {
+      if (liveCard.value?.id === cardId) status.value = reason instanceof Error ? reason.message : 'Could not load the bound files; retry by reopening the card.';
+    });
+  }
 }
 
 watch(() => props.card, () => {
@@ -219,17 +247,19 @@ function freezeTitle(): string {
   return title.value.trim();
 }
 
-async function save() {
-  if (saving.value || epochQuarantined.value) return;
+/** Commits the whole draft atomically. Resolves true only on a server
+ * acknowledgement so the Save/Discard/Stay switch can react to failures. */
+async function save(): Promise<boolean> {
+  if (saving.value || epochQuarantined.value) return false;
   const trimmedTitle = freezeTitle();
-  if (!trimmedTitle) { error.value = 'A card needs a title.'; return; }
+  if (!trimmedTitle) { error.value = 'A card needs a title.'; return false; }
   const payload: Record<string, unknown> = {};
   const notesMd = notes.value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   if (props.mode === 'create') {
     payload.create = { title: trimmedTitle, subtype: subtype.value, body: { ...body }, notes_md: notesMd, placement: placementIntent.value };
   } else {
     const target = liveCard.value;
-    if (!target) return;
+    if (!target) return false;
     payload.edit = {
       resource_id: target.id,
       expected_revision: target.revision,
@@ -245,7 +275,9 @@ async function save() {
   }
   const relation = relationIntent();
   if (relation) payload.relation_add = relation;
-  const key = newOperationKey();
+  const serialized = JSON.stringify(payload);
+  if (serialized !== lastIntent) { lastIntent = serialized; intentKey = newOperationKey(); }
+  const key = intentKey;
   saving.value = true;
   error.value = '';
   status.value = 'Saving card…';
@@ -255,6 +287,7 @@ async function save() {
     dirty.value = false;
     status.value = 'Card saved.';
     emit('saved', { entity: result.entity, placement: result.placement, createdRelated: result.created_related });
+    return true;
   } catch (reason) {
     if (reason instanceof ApiError && reason.status === 409 && reason.code === 'WORKSPACE_REPLACED') {
       epochQuarantined.value = { title: trimmedTitle, notes: notesMd };
@@ -276,10 +309,13 @@ async function save() {
     } else {
       error.value = reason instanceof Error ? reason.message : 'Save failed. Your edits are still here.';
     }
+    return false;
   } finally {
     saving.value = false;
   }
 }
+
+defineExpose({ save });
 
 function useCurrentVersion() {
   const current = conflict.value?.currentCard;
@@ -604,12 +640,14 @@ function discardQuarantined() {
         > Include a relationship in this save</label>
         <template v-if="relation.enabled">
           <label>From this card<output class="verb-preview">{{ card?.title ?? 'New card' }} → {{ relation.verb || '…' }} → {{ relation.mode === 'link' ? (availableEndpoints?.find((item) => item.id === relation.targetId)?.label ?? 'choose target') : relation.mode === 'create' ? (relation.createTitle || 'new card') : '…' }}</output></label>
-          <label>Verb<input
+          <label>Relationship verb<select
             v-model="relation.verb"
-            maxlength="120"
             :disabled="saving"
-            autocomplete="off"
-          ></label>
+          ><option
+            v-for="verb in RELATIONSHIP_VERBS"
+            :key="verb"
+            :value="verb"
+          >{{ verb }}</option></select></label>
           <label>Basis<input
             v-model="relation.basis"
             maxlength="2000"
