@@ -297,7 +297,7 @@ describe('AppShell', () => {
     expect(createOpportunity).toHaveBeenCalledWith('Onboarding exchange', 'p1');
     expect(wrapper.text()).toContain('initial board placement does not change its stage or outreach state');
     expect(wrapper.text()).toContain('Onboarding exchange');
-    await wrapper.findAll('button').find((button) => button.text() === 'Open card')!.trigger('click');
+    await wrapper.get('section[aria-labelledby="queue-heading"]').findAll('button').find((button) => button.text() === 'Open card')!.trigger('click');
     await flushPromises();
     expect(wrapper.text()).toContain('Dana Lee · outreach · v1 · draft');
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(4)').trigger('click');

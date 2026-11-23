@@ -877,6 +877,49 @@ slices:
       owner_role: owner
       package_target: rust+mock
       evidence_path: evidence/p01.md
+  p02:
+  - requirement: P02-RELATIONSHIPS
+    operationId: linkExistingCards
+    test_id: p02_related_and_existing_edges
+    fixture_id: relationships
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p02.md
+  - requirement: P02-RELATIONSHIPS
+    operationId: correctEdge
+    test_id: p02_related_and_existing_edges
+    fixture_id: relationships
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p02.md
+  - requirement: P02-RELATIONSHIPS
+    operationId: removeEdge
+    test_id: p02_related_and_existing_edges
+    fixture_id: relationships
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p02.md
+  - requirement: P02-RELATIONSHIPS
+    operationId: reviseClaim
+    test_id: p02_related_and_existing_edges
+    fixture_id: relationships
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p02.md
+  - requirement: P02-RELATIONSHIPS
+    operationId: retireEntity
+    test_id: p02_retirement_preserves_historical_links
+    fixture_id: relationships
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p02.md
+  - requirement: P02-RELATIONSHIPS
+    operationId: getEntityUsage
+    test_id: p02_retirement_preserves_historical_links
+    fixture_id: relationships
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p02.md
   p03:
   - requirement: P03-ATTACHMENTS
     operationId: bindEntityAttachment

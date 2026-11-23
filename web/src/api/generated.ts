@@ -352,6 +352,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/claims/{id}/revisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reviseClaim"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/entities/{id}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getEntityUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/entities/{id}/retire": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["retireEntity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/edges": {
         parameters: {
             query?: never;
@@ -1859,6 +1907,54 @@ export interface components {
             y: number;
             position_revision: number;
         };
+        ClaimRevisionInput: {
+            expected_revision: number;
+            occurrence_id: string;
+            wording: string;
+            /** @enum {string} */
+            speaker_kind: "owner" | "party" | "unknown";
+            speaker_entity_id?: string | null;
+        };
+        ClaimRevisionReceipt: {
+            id: string;
+            revision: number;
+            occurrence_id: string;
+            wording: string;
+            /** @enum {string} */
+            speaker_kind: "owner" | "party" | "unknown";
+            speaker_entity_id: string | null;
+        };
+        RetireEntityInput: {
+            expected_revision: number;
+        };
+        RetiredEntity: {
+            id: string;
+            revision: number;
+            /** Format: date-time */
+            retired_at: string;
+        };
+        EntityUsage: {
+            links: {
+                id: string;
+                verb: string;
+                from_id: string;
+                to_id: string;
+            }[];
+            opportunities: {
+                id: string;
+                title: string;
+            }[];
+            materials: {
+                id: string;
+                kind: string;
+            }[];
+            counts: {
+                links: number;
+                opportunities: number;
+                materials: number;
+                recommendations: number;
+            };
+        };
         GraphEdge: {
             id: string;
             from_id: string;
@@ -1874,6 +1970,9 @@ export interface components {
             /** Format: date-time */
             captured_at: string;
             source_title: string | null;
+            claim_id?: string;
+            claim_revision?: number;
+            speaker_entity_id?: string | null;
             source_url: string | null;
         };
         GraphSnapshot: {
@@ -1943,6 +2042,8 @@ export interface components {
             kind: "person" | "org" | "project" | "resource";
             name: string;
             focus?: string;
+            notes?: string;
+            staged_upload_ids?: string[];
         };
         UpdateEntityInput: {
             name?: string;
@@ -1972,6 +2073,11 @@ export interface components {
             /** @enum {integer|null} */
             tier: 1 | 2 | 3 | null;
             wording: string | null;
+            claim_id?: string | null;
+            claim_revision?: number | null;
+            occurrence_id?: string | null;
+            speaker_kind?: string | null;
+            speaker_entity_id?: string | null;
         };
         PartyImportStage: {
             stage_id: string;
@@ -2042,14 +2148,29 @@ export interface components {
             id: string;
             title: string;
             kind: string;
-            opportunity_id: string;
-            opportunity_title: string;
+            opportunity_id: string | null;
+            opportunity_title: string | null;
+            paths?: {
+                /** @enum {string} */
+                via: "edge" | "opportunity";
+                participant_id: string;
+                edge_id?: string;
+                verb?: string;
+                opportunity_id?: string;
+                opportunity_title?: string;
+            }[];
         };
         Dossier: {
+            /** Format: date-time */
+            retired_at?: string | null;
             entity: components["schemas"]["GraphEntity"];
             direct_links: components["schemas"]["DossierLink"][];
             files: components["schemas"]["DossierFile"][];
             opportunities: components["schemas"]["DossierOpportunity"][];
+            import_origin?: {
+                batch_id: string;
+                source_record: number;
+            } | null;
             associated_resources: components["schemas"]["DossierResource"][];
         };
         DossierEnvelope: {
@@ -3613,6 +3734,107 @@ export interface operations {
             422: components["responses"]["Error"];
         };
     };
+    reviseClaim: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClaimRevisionInput"];
+            };
+        };
+        responses: {
+            /** @description Attributed claim revision recorded. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ClaimRevisionReceipt"];
+                    };
+                };
+            };
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            412: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    getEntityUsage: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description References affected by retirement. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["EntityUsage"];
+                    };
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    retireEntity: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                "If-Match": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RetireEntityInput"];
+            };
+        };
+        responses: {
+            /** @description Retirement recorded. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["RetiredEntity"];
+                    };
+                };
+            };
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            412: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
     linkExistingCards: {
         parameters: {
             query?: never;
@@ -3631,7 +3853,7 @@ export interface operations {
         };
         responses: {
             /** @description Relationship command acknowledged. */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };

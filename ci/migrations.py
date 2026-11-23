@@ -44,9 +44,9 @@ SLICE_MIGRATIONS: dict[str, list[str]] = {
     "s11": ["0011_legacy.sql"],
     "s12": [],
     "p01": ["0012_party_sheet.sql"],
-    "p02": [],
+    "p02": ["0013_graph_cards.sql"],
     "p03": [],
-    "p04": ["0013_party_intake.sql"],
+    "p04": ["0014_party_intake.sql", "0015_resource_cards.sql", "0016_party_private_staging.sql", "0017_card_retirement.sql"],
 }
 
 

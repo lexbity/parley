@@ -26,6 +26,7 @@ const active = computed(() => route.value.tab);
 const writingOpen = ref(false);
 const outputStatus = ref('');
 const parties = ref<GraphEntity[]>([]);
+const partyDesk = ref<InstanceType<typeof PartyDesk> | null>(null);
 const resourceEditor = ref<InstanceType<typeof ResourceEditor> | null>(null);
 const lastTabPaths = new Map<string, string>();
 const sources = ref<SavedSource[]>([]);
@@ -66,6 +67,11 @@ async function refreshLeads() {
 }
 
 function navigate(path: string, replace = false) {
+  if (route.value.tab === 'Parties' && partyDesk.value && path !== route.value.path) {
+    partyDesk.value.requestSwitch(() => commitNavigation(path, replace));
+  } else commitNavigation(path, replace);
+}
+function commitNavigation(path: string, replace: boolean) {
   lastTabPaths.set(route.value.tab, route.value.path);
   const next = resolveRoute(path);
   if (replace) globalThis.history.replaceState(null, '', next.path);
@@ -235,9 +241,12 @@ watch(route, () => { void focusRouteLocation(); });
       </div>
       <PartyDesk
         v-show="active === 'Parties'"
+        ref="partyDesk"
         :parties="parties"
         :sources="sources"
         :opportunities="opportunities"
+        :active="active === 'Parties'"
+        :inbox="route.tab === 'Parties' && route.location === 'inbox'"
         :party-id="route.tab === 'Parties' ? route.recordId ?? undefined : undefined"
         @changed="refreshLeads"
         @navigate="navigate"

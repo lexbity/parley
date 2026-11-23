@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Dossier, GraphEntity } from '../../api/client';
+import { parley, type Dossier, type GraphEntity } from '../../api/client';
 import MarkdownPreview from '../../shared/MarkdownPreview.vue';
 
 const props = defineProps<{
@@ -8,12 +8,14 @@ const props = defineProps<{
   loading: boolean;
   rootPartyId: string | null;
   notesError: string;
+  markdown?: string;
+  nodes?: GraphEntity[];
 }>();
 
-const emit = defineEmits<{ 'open-card': []; 'make-root': [id: string] }>();
+const emit = defineEmits<{ 'open-card': []; 'make-root': [id: string]; navigate: [path: string]; 'select-node': [id: string]; 'start-opportunity': []; 'review-retirement': []; 'return-to-results': []; 'inspect-link': [id: string] }>();
 
 function typeLabel(kind: string): string {
-  return kind === 'org' ? 'Organization' : kind === 'person' ? 'Person' : 'Project';
+  return kind === 'org' ? 'Organization' : kind === 'person' ? 'Person' : kind === 'resource' ? 'Resource' : kind === 'project' ? 'Project' : kind;
 }
 </script>
 
@@ -38,14 +40,24 @@ function typeLabel(kind: string): string {
       v-else-if="!props.party"
       class="pad-line"
     >
-      Select a party row or graph node to inspect it. Opening a node never marks facts reviewed.
+      {{ props.notesError || 'Select a party row or graph node to inspect it.' }} 
     </p>
+    <div
+      v-else-if="dossier?.retired_at"
+      class="inspector-head"
+    >
+      <h3>{{ party?.name }}</h3>
+      <p>This card was retired.</p>
+      <button @click="emit('return-to-results')">
+        Return to results
+      </button>
+    </div>
     <template v-else>
       <div class="inspector-head">
         <h3>{{ props.party.name }}</h3>
         <small>{{ typeLabel(props.party.kind) }} · {{ props.party.focus || 'no focus' }}</small>
         <p
-          v-if="props.rootPartyId && props.rootPartyId !== props.party.id"
+          v-if="['person', 'org'].includes(props.party.kind) && props.rootPartyId && props.rootPartyId !== props.party.id"
           class="outside-root"
         >
           Sheet root is {{ props.rootPartyId === props.party.id ? 'this party' : 'a different root' }}.
@@ -64,6 +76,12 @@ function typeLabel(kind: string): string {
       >
         {{ props.notesError }}
       </p>
+      <p
+        v-if="dossier?.import_origin"
+        class="pad-line"
+      >
+        CSV import · record {{ dossier.import_origin.source_record }}
+      </p>
       <details
         class="inspector-section"
         :open="true"
@@ -71,11 +89,14 @@ function typeLabel(kind: string): string {
         <summary>Notes</summary>
         <div class="notes-preview">
           <MarkdownPreview
-            v-if="props.dossier?.entity"
-            :source="''"
+            v-if="markdown"
+            :source="markdown"
           />
-          <p class="pad-line">
-            Load the card to edit owner notes.
+          <p
+            v-else
+            class="pad-line"
+          >
+            No owner notes.
           </p>
         </div>
         <button
@@ -105,7 +126,9 @@ function typeLabel(kind: string): string {
             v-for="link in props.dossier.direct_links"
             :key="link.id"
           >
-            <strong>{{ link.verb }}</strong>
+            <button @click="emit('inspect-link', link.id)">
+              {{ link.from_id === party?.id ? '→' : '←' }} {{ link.verb.replaceAll('_',' ') }} · {{ nodes?.find(n => n.id === (link.from_id === party?.id ? link.to_id : link.from_id))?.name ?? (link.from_id === party?.id ? link.to_id : link.from_id) }}
+            </button> <small>{{ link.verb }}</small>
             <small> · T{{ link.tier ?? '—' }}{{ link.wording ? ` · “${link.wording}”` : '' }}</small>
           </li>
         </ul>
@@ -146,9 +169,18 @@ function typeLabel(kind: string): string {
             v-for="opportunity in props.dossier.opportunities"
             :key="opportunity.id"
           >
-            {{ opportunity.title }} <small> · role {{ opportunity.role }}</small>
+            <button @click="emit('navigate', '/queue/' + opportunity.id)">
+              {{ opportunity.title }}
+            </button> <small> · role {{ opportunity.role }}</small>
           </li>
         </ul>
+        <button
+          v-if="['org', 'person'].includes(party?.kind ?? "
+          ")"
+          @click="emit('start-opportunity')"
+        >
+          Start opportunity
+        </button>
       </details>
       <details class="inspector-section">
         <summary>Associated resources</summary>
@@ -156,7 +188,7 @@ function typeLabel(kind: string): string {
           v-if="!props.dossier?.associated_resources?.length"
           class="pad-line"
         >
-          No resources are used by visible opportunities with this party.
+          No associated resources.
         </p>
         <ul
           v-else
@@ -166,10 +198,19 @@ function typeLabel(kind: string): string {
             v-for="resource in props.dossier.associated_resources"
             :key="resource.id"
           >
-            {{ resource.title }} <small> · {{ resource.kind }} · via {{ resource.opportunity_title }}</small>
+            <button @click="emit('navigate', '/resources/' + resource.id)">
+              {{ resource.title }}
+            </button> <small> · {{ resource.kind }}</small>
           </li>
         </ul>
       </details>
+      <button
+        v-if="dossier?.entity.etag && parley.supports('party.relations')"
+        class="retire"
+        @click="emit('review-retirement')"
+      >
+        Review retirement
+      </button>
     </template>
   </section>
 </template>
@@ -185,5 +226,6 @@ function typeLabel(kind: string): string {
 .pad-line { margin: .5rem .9rem; }
 .outside-root { background: #fbf6e8; border: 1px solid #e5d9ae; border-radius: .35rem; padding: .45rem .6rem; }
 .notes-preview { max-height: 14rem; overflow: auto; border: 1px solid #e0e5df; border-radius: .35rem; padding: 0 .6rem; }
+.retire { align-self:start; margin:.55rem .9rem; }
 .open-card { margin: .5rem 0 .7rem; }
 </style>

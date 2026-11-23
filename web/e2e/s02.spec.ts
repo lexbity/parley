@@ -35,8 +35,9 @@ test('s02_independent_source_same_name_parties_graph_evidence_and_correction', a
   await form.getByLabel('Saved source').selectOption({ index: 1 });
   await form.getByLabel('Exact supporting quote').fill('will work with Dana on onboarding');
   await form.getByRole('button', { name: 'Save related entity and relationship' }).click();
-  await expect(region.getByText(/node, edge, evidence and initial position atomically/)).toBeVisible();
   await expect(page.getByText('The entity and source-attributed directed relationship were saved together.')).toBeVisible();
+
+  await region.getByRole('region', { name: 'Card editor' }).getByRole('button', { name: 'Cancel', exact: true }).click();
 
   // The graph shows the directed edge; the sheet keeps both same-name rows and
   // the organization as the highlighted root.

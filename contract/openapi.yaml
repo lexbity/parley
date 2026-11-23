@@ -800,6 +800,125 @@ paths:
                 additionalProperties: true
         '422':
           $ref: '#/components/responses/Error'
+  /claims/{id}/revisions:
+    post:
+      operationId: reviseClaim
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaimRevisionInput'
+      responses:
+        '201':
+          description: Attributed claim revision recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/ClaimRevisionReceipt'
+                additionalProperties: false
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+        '412':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+  /entities/{id}/usage:
+    get:
+      operationId: getEntityUsage
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: References affected by retirement.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/EntityUsage'
+                additionalProperties: false
+        '404':
+          $ref: '#/components/responses/Error'
+  /entities/{id}/retire:
+    post:
+      operationId: retireEntity
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - in: header
+        name: If-Match
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetireEntityInput'
+      responses:
+        '200':
+          description: Retirement recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/RetiredEntity'
+                additionalProperties: false
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+        '412':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
   /edges:
     post:
       operationId: linkExistingCards
@@ -819,7 +938,7 @@ paths:
             schema:
               $ref: '#/components/schemas/EdgeWrite'
       responses:
-        '200':
+        '201':
           description: Relationship command acknowledged.
           content:
             application/json:
@@ -2896,6 +3015,174 @@ components:
           x: {type: number}
           y: {type: number}
           position_revision: {type: integer, minimum: 0}
+    ClaimRevisionInput:
+      type: object
+      required:
+      - expected_revision
+      - occurrence_id
+      - wording
+      - speaker_kind
+      properties:
+        expected_revision:
+          type: integer
+          minimum: 1
+        occurrence_id:
+          type: string
+          minLength: 1
+        wording:
+          type: string
+          minLength: 1
+        speaker_kind:
+          type: string
+          enum:
+          - owner
+          - party
+          - unknown
+        speaker_entity_id:
+          type: string
+          nullable: true
+      additionalProperties: false
+    ClaimRevisionReceipt:
+      type: object
+      required:
+      - id
+      - revision
+      - occurrence_id
+      - wording
+      - speaker_kind
+      - speaker_entity_id
+      properties:
+        id:
+          type: string
+          minLength: 1
+        revision:
+          type: integer
+          minimum: 1
+        occurrence_id:
+          type: string
+          minLength: 1
+        wording:
+          type: string
+          minLength: 1
+        speaker_kind:
+          type: string
+          enum:
+          - owner
+          - party
+          - unknown
+        speaker_entity_id:
+          type: string
+          nullable: true
+      additionalProperties: false
+    RetireEntityInput:
+      type: object
+      required:
+      - expected_revision
+      properties:
+        expected_revision:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    RetiredEntity:
+      type: object
+      required:
+      - id
+      - revision
+      - retired_at
+      properties:
+        id:
+          type: string
+          minLength: 1
+        revision:
+          type: integer
+          minimum: 1
+        retired_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    EntityUsage:
+      type: object
+      required:
+      - links
+      - opportunities
+      - materials
+      - counts
+      properties:
+        links:
+          type: array
+          items:
+            type: object
+            required:
+            - id
+            - verb
+            - from_id
+            - to_id
+            properties:
+              id:
+                type: string
+                minLength: 1
+              verb:
+                type: string
+                minLength: 1
+              from_id:
+                type: string
+                minLength: 1
+              to_id:
+                type: string
+                minLength: 1
+            additionalProperties: false
+        opportunities:
+          type: array
+          items:
+            type: object
+            required:
+            - id
+            - title
+            properties:
+              id:
+                type: string
+                minLength: 1
+              title:
+                type: string
+                minLength: 1
+            additionalProperties: false
+        materials:
+          type: array
+          items:
+            type: object
+            required:
+            - id
+            - kind
+            properties:
+              id:
+                type: string
+                minLength: 1
+              kind:
+                type: string
+                minLength: 1
+            additionalProperties: false
+        counts:
+          type: object
+          required:
+          - links
+          - opportunities
+          - materials
+          - recommendations
+          properties:
+            links:
+              type: integer
+              minimum: 0
+            opportunities:
+              type: integer
+              minimum: 0
+            materials:
+              type: integer
+              minimum: 0
+            recommendations:
+              type: integer
+              minimum: 0
+          additionalProperties: false
+      additionalProperties: false
     GraphEdge:
       type: object
       required: [id, from_id, to_id, verb, revision, occurrence_id, quote, tier, speaker_kind, captured_at, source_title, source_url]
@@ -2911,6 +3198,9 @@ components:
         speaker_kind: {type: string, enum: [owner, party, unknown]}
         captured_at: {type: string, format: date-time}
         source_title: {type: string, nullable: true}
+        claim_id: {type: string}
+        claim_revision: {type: integer, minimum: 1}
+        speaker_entity_id: {type: string, nullable: true}
         source_url: {type: string, nullable: true}
       additionalProperties: false
     GraphSnapshot:
@@ -3077,6 +3367,8 @@ components:
         focus:
           type: string
           maxLength: 250
+        notes: {type: string}
+        staged_upload_ids: {type: array, items: {type: string}, uniqueItems: true}
       additionalProperties: false
     UpdateEntityInput:
       type: object
@@ -3141,6 +3433,11 @@ components:
         revision: {type: integer, minimum: 1}
         tier: {type: integer, enum: [1, 2, 3], nullable: true}
         wording: {type: string, nullable: true}
+        claim_id: {type: string, nullable: true}
+        claim_revision: {type: integer, minimum: 1, nullable: true}
+        occurrence_id: {type: string, nullable: true}
+        speaker_kind: {type: string, nullable: true}
+        speaker_entity_id: {type: string, nullable: true}
       additionalProperties: false
     PartyImportStage:
       type: object
@@ -3345,13 +3642,26 @@ components:
         id: {type: string}
         title: {type: string}
         kind: {type: string}
-        opportunity_id: {type: string}
-        opportunity_title: {type: string}
+        opportunity_id: {type: string, nullable: true}
+        opportunity_title: {type: string, nullable: true}
+        paths:
+          type: array
+          items:
+            type: object
+            required: [via, participant_id]
+            properties:
+              via: {type: string, enum: [edge, opportunity]}
+              participant_id: {type: string}
+              edge_id: {type: string}
+              verb: {type: string}
+              opportunity_id: {type: string}
+              opportunity_title: {type: string}
       additionalProperties: false
     Dossier:
       type: object
       required: [entity, direct_links, files, opportunities, associated_resources]
       properties:
+        retired_at: {type: string, nullable: true, format: date-time}
         entity:
           $ref: '#/components/schemas/GraphEntity'
         direct_links:
@@ -3366,6 +3676,13 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DossierOpportunity'
+        import_origin:
+          type: object
+          nullable: true
+          required: [batch_id, source_record]
+          properties:
+            batch_id: {type: string}
+            source_record: {type: integer}
         associated_resources:
           type: array
           items:
