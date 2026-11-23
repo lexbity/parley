@@ -1,0 +1,13 @@
+{
+  "data": {
+    "stage_id": "b1",
+    "headers": [
+      "Name",
+      "Notes",
+      ""
+    ],
+    "row_count": 3,
+    "max_rows": 1000,
+    "max_bytes": 1048576
+  }
+}

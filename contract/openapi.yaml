@@ -214,6 +214,245 @@ paths:
           $ref: '#/components/responses/Error'
         '428':
           $ref: '#/components/responses/Error'
+  /party-imports:
+    post:
+      operationId: stagePartyImport
+      security:
+      - sessionCookie: []
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          text/csv:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '201':
+          description: Parsed private CSV stage and bounded input limits.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/PartyImportStage'
+                additionalProperties: false
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+        '413':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+  /party-imports/{id}/preview:
+    post:
+      operationId: previewPartyImport
+      security:
+      - sessionCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PartyImportMapping'
+      responses:
+        '200':
+          description: Mapped records and duplicate decisions for this preview.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/PartyImportPreview'
+                additionalProperties: false
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+  /party-imports/{id}/commit:
+    post:
+      operationId: commitPartyImport
+      security:
+      - sessionCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PartyImportCommit'
+      responses:
+        '201':
+          description: Atomic import receipt with canonical party IDs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/PartyImportReceipt'
+                additionalProperties: false
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+  /entities/{id}/attachments:
+    post:
+      operationId: bindEntityAttachment
+      security:
+      - sessionCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BindEntityAttachment'
+      responses:
+        '201':
+          description: Private card file binding for a staged upload.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/DossierFile'
+                additionalProperties: false
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+  /entities/{id}/attachments/{ref}:
+    delete:
+      operationId: unlinkEntityAttachment
+      security:
+      - sessionCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - name: ref
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Removed one entity attachment binding.
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+  /entities/{id}/attachments/{ref}/content:
+    get:
+      operationId: getEntityAttachmentContent
+      security:
+      - sessionCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - name: ref
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Owner-authorized verified file bytes.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
   /entities/{id}/notes:
     get:
       operationId: getEntityNotes
@@ -2636,6 +2875,181 @@ components:
         revision: {type: integer, minimum: 1}
         tier: {type: integer, enum: [1, 2, 3], nullable: true}
         wording: {type: string, nullable: true}
+      additionalProperties: false
+    PartyImportStage:
+      type: object
+      required:
+      - stage_id
+      - headers
+      - row_count
+      - max_rows
+      - max_bytes
+      properties:
+        stage_id:
+          type: string
+          minLength: 1
+        headers:
+          type: array
+          items:
+            type: string
+        row_count:
+          type: integer
+          minimum: 0
+        max_rows:
+          type: integer
+          minimum: 1
+        max_bytes:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    PartyImportMapping:
+      type: object
+      required:
+      - party_type
+      - name_column
+      - excluded_records
+      - distinct_records
+      properties:
+        party_type:
+          type: string
+          enum:
+          - person
+          - org
+        name_column:
+          type: integer
+          minimum: 0
+        focus_column:
+          type: integer
+          minimum: 0
+          nullable: true
+        notes_column:
+          type: integer
+          minimum: 0
+          nullable: true
+        excluded_records:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+          uniqueItems: true
+        distinct_records:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+          uniqueItems: true
+      additionalProperties: false
+    PartyImportRow:
+      type: object
+      required:
+      - source_record
+      - name
+      - focus
+      - notes
+      - duplicates
+      - decision
+      properties:
+        source_record:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+        focus:
+          type: string
+        notes:
+          type: string
+        duplicates:
+          type: array
+          items:
+            type: string
+        decision:
+          type: string
+          enum:
+          - create
+          - skip
+          - review
+          - error
+      additionalProperties: false
+    PartyImportPreview:
+      type: object
+      required:
+      - preview_id
+      - digest
+      - rows
+      - create_count
+      - skip_count
+      - error_count
+      properties:
+        preview_id:
+          type: string
+          minLength: 1
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/PartyImportRow'
+        create_count:
+          type: integer
+          minimum: 0
+        skip_count:
+          type: integer
+          minimum: 0
+        error_count:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    PartyImportCommit:
+      type: object
+      required:
+      - preview_id
+      - digest
+      properties:
+        preview_id:
+          type: string
+          minLength: 1
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+      additionalProperties: false
+    PartyImportReceipt:
+      type: object
+      required:
+      - batch_id
+      - created
+      - skipped_count
+      properties:
+        batch_id:
+          type: string
+          minLength: 1
+        created:
+          type: array
+          items:
+            type: object
+            required:
+            - source_record
+            - party_id
+            properties:
+              source_record:
+                type: integer
+                minimum: 1
+              party_id:
+                type: string
+                minLength: 1
+            additionalProperties: false
+        skipped_count:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    BindEntityAttachment:
+      type: object
+      required:
+      - upload_id
+      properties:
+        upload_id:
+          type: string
+          minLength: 1
       additionalProperties: false
     DossierFile:
       type: object

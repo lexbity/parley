@@ -877,3 +877,47 @@ slices:
       owner_role: owner
       package_target: rust+mock
       evidence_path: evidence/p01.md
+  p03:
+  - requirement: P03-ATTACHMENTS
+    operationId: bindEntityAttachment
+    test_id: p03_private_attachments
+    fixture_id: attachments
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p03.md
+  - requirement: P03-ATTACHMENTS
+    operationId: unlinkEntityAttachment
+    test_id: p03_private_attachments
+    fixture_id: attachments
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p03.md
+  - requirement: P03-ATTACHMENTS
+    operationId: getEntityAttachmentContent
+    test_id: p03_private_attachments
+    fixture_id: attachments
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p03.md
+  p04:
+  - requirement: P04-CSV
+    operationId: stagePartyImport
+    test_id: p04_csv_preview_commit
+    fixture_id: csv
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p04.md
+  - requirement: P04-CSV
+    operationId: previewPartyImport
+    test_id: p04_csv_preview_commit
+    fixture_id: csv
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p04.md
+  - requirement: P04-CSV
+    operationId: commitPartyImport
+    test_id: p04_csv_preview_commit
+    fixture_id: csv
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p04.md
