@@ -1,7 +1,7 @@
 use super::{AppState, authenticate, digest, now_utc};
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -28,9 +28,18 @@ pub(super) fn routes() -> Router<AppState> {
 }
 
 #[allow(clippy::type_complexity)]
-async fn queue(State(state): State<AppState>, headers: HeaderMap) -> Response {
+async fn queue(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<super::queue_sheet::SheetQuery>,
+) -> Response {
     if let Err(r) = authenticate(&headers, &state).await {
         return r.into_response();
+    }
+    // The daily queue remains the default for legacy callers; the Queue sheet
+    // (Parley-Queue spec) is requested explicitly with view=sheet/list.
+    if matches!(query.view.as_deref(), Some("sheet") | Some("list")) {
+        return super::queue_sheet::sheet_query(&state, &headers, query).await;
     }
     let mut tx = match state.workspace.pool().begin().await {
         Ok(v) => v,

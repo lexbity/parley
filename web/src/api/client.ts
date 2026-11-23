@@ -61,6 +61,15 @@ export type BoardList = components['schemas']['BoardList'];
 export type BoardOpportunity = Opportunity & { tags: string[] };
 export type BoardPlacement = { opportunity: BoardOpportunity; opportunity_id: string; list_id: string; position: number; placement_revision: number; next_task: string | null };
 export type BoardSnapshot = { lists: BoardList[]; cards: BoardPlacement[] };
+export type SheetPhase = { stage_id: string; label: string; class: string; kind: 'planning' | 'terminal'; pack_id: string; pack_version: string; revision: number };
+export type SheetParticipant = { id: string; name: string; kind: string; role: 'primary' | 'participant' };
+export type SheetNextActionKind = 'terminal' | 'touch' | 'task' | 'blocked' | 'wait' | 'choose';
+export type SheetNextAction = { kind: SheetNextActionKind; label: string; reason: string; date: string | null; thread_id: string | null; recipient_id: string | null; recipient_name: string | null };
+export type QueueSheetRow = { opportunity_id: string; title: string; lifecycle: 'open' | 'resolved' | 'dormant' | 'closed'; close_reason: string | null; phase: SheetPhase | null; participants: SheetParticipant[]; next_action: SheetNextAction; other_action_count: number };
+export type PhaseKind = { stage_id: string; label: string; class: string; kind: 'planning' | 'terminal'; pack_id: string; pack_version: string; count: number };
+export type QueueSheetResponse = { generation: string; total: number; rows: QueueSheetRow[]; phases: PhaseKind[]; cursor: string | null; next_cursor: string | null };
+export type SetPhaseInput = { target_stage_id: string; pack_version: string; expected_phase_revision: number; original_event_id?: string | null };
+export type SetPhaseResult = { row: QueueSheetRow; event_id: string; phase_revision: number; reverted: boolean };
 export type OpportunityNotes = components['schemas']['OpportunityNotes'];
 export type OpportunityTask = NonNullable<OpportunityNotes['tasks']>[number];
 export type MovePlacementInput = components['schemas']['MoveOpportunityPlacement'];
@@ -331,6 +340,37 @@ function decodeDailyQueue(value: unknown): DailyQueueSnapshot {
     };
   });
   return { as_of: requiredString(snapshot.as_of, 'daily.as_of'), pack_id: requiredString(snapshot.pack_id, 'daily.pack_id'), pack_version: requiredString(snapshot.pack_version, 'daily.pack_version'), daily_cap: Number(snapshot.daily_cap), actionable_count: Number(snapshot.actionable_count), deferred_count: Number(snapshot.deferred_count), items };
+}
+
+function decodeSheetPhase(value: unknown): SheetPhase {
+  const phase = object(value);
+  if (!phase || !['planning', 'terminal'].includes(String(phase.kind)) || !Number.isSafeInteger(phase.revision)) throw new Error('Invalid response: sheet phase is malformed');
+  return { stage_id: requiredString(phase.stage_id, 'phase.stage_id'), label: requiredString(phase.label, 'phase.label'), class: requiredString(phase.class, 'phase.class'), kind: phase.kind as SheetPhase['kind'], pack_id: requiredString(phase.pack_id, 'phase.pack_id'), pack_version: requiredString(phase.pack_version, 'phase.pack_version'), revision: Number(phase.revision) };
+}
+
+function decodeSheetNextAction(value: unknown): SheetNextAction {
+  const action = object(value);
+  if (!action || !['terminal', 'touch', 'task', 'blocked', 'wait', 'choose'].includes(String(action.kind)) || typeof action.label !== 'string' || typeof action.reason !== 'string') throw new Error('Invalid response: sheet next action is malformed');
+  return { kind: action.kind as SheetNextActionKind, label: action.label, reason: action.reason, date: typeof action.date === 'string' ? action.date : null, thread_id: typeof action.thread_id === 'string' ? action.thread_id : null, recipient_id: typeof action.recipient_id === 'string' ? action.recipient_id : null, recipient_name: typeof action.recipient_name === 'string' ? action.recipient_name : null };
+}
+
+function decodeQueueSheetRow(value: unknown): QueueSheetRow {
+  const row = object(value);
+  if (!row || !['open', 'resolved', 'dormant', 'closed'].includes(String(row.lifecycle)) || !Array.isArray(row.participants) || !Number.isSafeInteger(row.other_action_count)) throw new Error('Invalid response: sheet row is malformed');
+  const participants = row.participants.map((raw) => { const item = object(raw); if (!item || !['primary', 'participant'].includes(String(item.role))) throw new Error('Invalid response: sheet participant is malformed'); return { id: requiredString(item.id, 'participant.id'), name: requiredString(item.name, 'participant.name'), kind: requiredString(item.kind, 'participant.kind'), role: item.role as SheetParticipant['role'] }; });
+  return { opportunity_id: requiredString(row.opportunity_id, 'row.opportunity_id'), title: requiredString(row.title, 'row.title'), lifecycle: row.lifecycle as QueueSheetRow['lifecycle'], close_reason: typeof row.close_reason === 'string' ? row.close_reason : null, phase: row.phase === null ? null : decodeSheetPhase(row.phase), participants, next_action: decodeSheetNextAction(row.next_action), other_action_count: Number(row.other_action_count) };
+}
+
+function decodeQueueSheet(value: unknown): QueueSheetResponse {
+  const sheet = object(value);
+  if (!sheet || !Array.isArray(sheet.rows) || !Array.isArray(sheet.phases) || !Number.isSafeInteger(sheet.total)) throw new Error('Invalid response: queue sheet is malformed');
+  return { generation: requiredString(sheet.generation, 'sheet.generation'), total: Number(sheet.total), rows: sheet.rows.map(decodeQueueSheetRow), phases: sheet.phases.map((raw) => { const phase = object(raw); if (!phase || !['planning', 'terminal'].includes(String(phase.kind)) || !Number.isSafeInteger(phase.count)) throw new Error('Invalid response: sheet phase kind is malformed'); return { stage_id: requiredString(phase.stage_id, 'phase_kind.stage_id'), label: requiredString(phase.label, 'phase_kind.label'), class: requiredString(phase.class, 'phase_kind.class'), kind: phase.kind as PhaseKind['kind'], pack_id: requiredString(phase.pack_id, 'phase_kind.pack_id'), pack_version: requiredString(phase.pack_version, 'phase_kind.pack_version'), count: Number(phase.count) }; }), cursor: typeof sheet.cursor === 'string' ? sheet.cursor : null, next_cursor: typeof sheet.next_cursor === 'string' ? sheet.next_cursor : null };
+}
+
+function decodeSetPhaseResult(value: unknown): SetPhaseResult {
+  const result = object(value);
+  if (!result || !Number.isSafeInteger(result.phase_revision) || typeof result.reverted !== 'boolean' || typeof result.event_id !== 'string') throw new Error('Invalid response: phase change result is malformed');
+  return { row: decodeQueueSheetRow(result.row), event_id: result.event_id, phase_revision: Number(result.phase_revision), reverted: result.reverted };
 }
 
 function decodeInsightMetric(value: unknown): InsightMetric {
@@ -1155,6 +1195,18 @@ export class ParleyClient {
     for (const [key, value] of Object.entries(filters)) if (typeof value === 'string' && value.length) query.set(key, value);
     if (filters.missing_material) query.set('missing_material', 'true');
     return decodeDailyQueue(await this.request(`/queue?${query.toString()}`));
+  }
+
+  async getQueueSheet(filters: { search?: string; phase?: string; sort?: 'due' | 'name'; cursor?: string; limit?: number; status?: string; party_id?: string; tag?: string; missing_material?: boolean } = {}): Promise<QueueSheetResponse> {
+    const query = new URLSearchParams({ view: 'sheet' });
+    for (const [key, value] of Object.entries(filters)) if (typeof value === 'string' && value.length) query.set(key, value);
+    if (typeof filters.limit === 'number') query.set('limit', String(filters.limit));
+    if (filters.missing_material) query.set('missing_material', 'true');
+    return decodeQueueSheet(await this.request(`/queue?${query.toString()}`));
+  }
+
+  async setOpportunityPhase(id: string, input: SetPhaseInput, key = newOperationKey()): Promise<SetPhaseResult> {
+    return decodeSetPhaseResult(await this.mutate(`/opportunities/${encodeURIComponent(id)}/phase`, 'PATCH', input, { 'Idempotency-Key': key }));
   }
 
   async getInsights(): Promise<InsightsReport> {

@@ -544,6 +544,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/opportunities/{id}/phase": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["setOpportunityPhase"];
+        trace?: never;
+    };
     "/opportunities/{id}/tags": {
         parameters: {
             query?: never;
@@ -2899,6 +2915,84 @@ export interface components {
             blocked: components["schemas"]["QueueItem"][];
             suggested_send_count: number;
         };
+        PackStage: {
+            stage_id: string;
+            label: string;
+            class: string;
+            /** @enum {string} */
+            kind: "planning" | "terminal";
+            pack_id: string;
+            pack_version: string;
+        };
+        SheetPhase: {
+            stage_id: string;
+            label: string;
+            class: string;
+            /** @enum {string} */
+            kind: "planning" | "terminal";
+            pack_id: string;
+            pack_version: string;
+            revision: number;
+        };
+        SheetParticipant: {
+            id: string;
+            name: string;
+            kind: string;
+            /** @enum {string} */
+            role: "primary" | "participant";
+        };
+        SheetNextAction: {
+            /** @enum {string} */
+            kind: "terminal" | "touch" | "task" | "blocked" | "wait" | "choose";
+            label: string;
+            reason: string;
+            /** Format: date-time */
+            date?: string | null;
+            thread_id?: string | null;
+            recipient_id?: string | null;
+            recipient_name?: string | null;
+        };
+        QueueSheetRow: {
+            opportunity_id: string;
+            title: string;
+            /** @enum {string} */
+            lifecycle: "open" | "resolved" | "dormant" | "closed";
+            close_reason?: string | null;
+            phase: components["schemas"]["SheetPhase"] | null;
+            participants: components["schemas"]["SheetParticipant"][];
+            next_action: components["schemas"]["SheetNextAction"];
+            other_action_count: number;
+        };
+        PhaseKind: {
+            stage_id: string;
+            label: string;
+            class: string;
+            /** @enum {string} */
+            kind: "planning" | "terminal";
+            pack_id: string;
+            pack_version: string;
+            count: number;
+        };
+        QueueSheetResponse: {
+            generation: string;
+            total: number;
+            rows: components["schemas"]["QueueSheetRow"][];
+            phases: components["schemas"]["PhaseKind"][];
+            cursor?: string | null;
+            next_cursor?: string | null;
+        };
+        SetPhaseInput: {
+            target_stage_id: string;
+            pack_version: string;
+            expected_phase_revision: number;
+            original_event_id?: string | null;
+        };
+        SetPhaseResult: {
+            row: components["schemas"]["QueueSheetRow"];
+            event_id: string;
+            phase_revision: number;
+            reverted: boolean;
+        };
         QueuedJob: {
             job_id: string;
             status: string;
@@ -4484,6 +4578,39 @@ export interface operations {
             };
         };
     };
+    setOpportunityPhase: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetPhaseInput"];
+            };
+        };
+        responses: {
+            /** @description Phase transition committed (or same-phase no-op); canonical row returned. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetPhaseResult"];
+                };
+            };
+            409: components["responses"]["Error"];
+            412: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
     setOpportunityTags: {
         parameters: {
             query?: never;
@@ -5710,7 +5837,19 @@ export interface operations {
     };
     getQueue: {
         parameters: {
-            query?: never;
+            query?: {
+                view?: "daily" | "sheet" | "list";
+                search?: string;
+                phase?: string;
+                sort?: "due" | "name";
+                cursor?: string;
+                limit?: number;
+                status?: "open" | "resolved" | "dormant" | "closed";
+                party_id?: string;
+                tag?: string;
+                missing_material?: boolean;
+                deadline_before?: string;
+            };
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
                 "X-Parley-Epoch": components["parameters"]["Epoch"];
@@ -5720,13 +5859,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Deterministic queue and blocked lane from one snapshot; no agent dispatch. */
+            /** @description Deterministic queue view. view=daily (default) returns the legacy actionable/blocked snapshot; view=sheet|list returns the phase-scoped opportunity sheet. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["QueueSnapshot"];
+                    "application/json": components["schemas"]["QueueSnapshot"] | components["schemas"]["QueueSheetResponse"];
                 };
             };
         };

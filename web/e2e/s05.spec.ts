@@ -19,43 +19,51 @@ test('s05_keyboard_board_list_card_order_and_archive', async ({ page }) => {
   await expect(parties.getByLabel('Find a party')).toHaveValue(suffix);
   await expect(parties.getByRole('button', { name: partyName })).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('link', { name: 'Queue' }).click();
-  const queue = page.getByRole('region', { name: 'Opportunities' });
-  await queue.getByRole('button', { name: 'New opportunity' }).click();
-  await queue.getByLabel('Opportunity title').fill('Onboarding map');
-  await queue.getByLabel('Participant').selectOption({ label: `${partyName} · person` });
-  await queue.getByRole('button', { name: 'Create opportunity' }).click();
-  await expect(queue.getByRole('heading', { name: 'Onboarding map' })).toBeVisible();
 
-  await queue.getByRole('button', { name: 'Manage lists' }).click();
-  await queue.getByLabel('New list').fill('Friday follow-ups');
-  await queue.getByRole('button', { name: 'Add list' }).click();
-  await queue.getByText('Organize card').click();
-  const moveToList = queue.getByLabel('Move Onboarding map to list');
-  await moveToList.selectOption({ label: 'Friday follow-ups' });
-  await queue.getByRole('button', { name: 'Move card' }).click();
-  await expect(queue.getByRole('region', { name: 'Friday follow-ups list' })).toContainText('Onboarding map');
+  // The Queue is a sheet now: no board, custom list management or drag ordering.
+  await expect(page.locator('nav[aria-label="Queue views"]')).not.toContainText('Board');
+  await expect(page.getByRole('button', { name: 'Manage lists' })).toHaveCount(0);
 
-  await queue.getByRole('region', { name: 'Friday follow-ups list' }).getByText('List options').click();
-  await queue.getByLabel('Rename Friday follow-ups').fill('Friday');
-  await queue.getByRole('button', { name: 'Save list name' }).last().click();
-  await queue.getByRole('button', { name: 'Move Friday up' }).click();
-  const friday = queue.getByRole('region', { name: 'Friday list' });
-  await friday.getByRole('button', { name: 'Open card' }).click();
+  const sheet = page.getByRole('region', { name: 'Scenario sheet' });
+  for (const title of ['Onboarding map', 'Fieldwork review']) {
+    await page.getByRole('button', { name: 'New opportunity' }).click();
+    await page.getByLabel('Opportunity title').fill(title);
+    await page.getByLabel('Participant').selectOption({ label: `${partyName} · person` });
+    await page.getByRole('button', { name: 'Create opportunity' }).click();
+    await expect(sheet.getByText(title)).toBeVisible();
+  }
 
-  const markdown = '🧭\n- [ ] Prepare map\n\n```md\n- [ ] Literal example\n```\n';
-  const notes = queue.getByRole('region', { name: 'Notes and tasks' });
-  await notes.getByLabel('Markdown notes').fill(markdown);
-  await notes.getByRole('button', { name: 'Save notes' }).click();
-  await expect(notes.locator('.cm-line')).toHaveText(markdown.split('\n'));
-  await expect(notes.locator('pre')).toContainText('- [ ] Literal example');
-  await expect(notes.getByRole('checkbox', { name: 'Prepare map', exact: true })).toHaveCount(1);
-  await notes.getByRole('checkbox', { name: 'Prepare map', exact: true }).check();
-  await expect(notes.locator('.cm-line')).toHaveText(markdown.replace('[ ] Prepare', '[x] Prepare').split('\n'));
-  await expect(notes.locator('.cm-content')).toContainText('- [ ] Literal example');
+  // Keyboard: Enter activates a row and opens its inspector.
+  const firstRow = sheet.locator('tbody tr[data-opportunity-id]').first();
+  await firstRow.locator('button.open').focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('complementary', { name: 'Scenario details' })).toContainText('Onboarding map');
 
-  const archiveDestination = queue.getByLabel('Archive destination for Friday');
-  await archiveDestination.selectOption({ label: 'Inbox' });
-  await queue.getByRole('region', { name: 'Friday list' }).getByRole('button', { name: 'Archive list' }).click();
-  await expect(queue.getByRole('region', { name: 'Friday list' })).toHaveCount(0);
-  await expect(queue.getByRole('region', { name: 'Inbox list' })).toContainText('Onboarding map');
+  // Phase edit through the native row select.
+  await page.getByRole('combobox', { name: 'Phase for Onboarding map', exact: true }).selectOption('preparing');
+  await expect(page.getByText('moved to Preparing')).toBeVisible();
+  await page.getByLabel('Phase filter').selectOption('preparing');
+  await expect(sheet.locator('tbody tr[data-opportunity-id]')).toHaveCount(1);
+
+  // Changing phase through the row select leaves the filter; the announcement
+  // names the filter and the sheet stays browsable.
+  await page.getByRole('combobox', { name: 'Phase for Onboarding map', exact: true }).selectOption('in_conversation');
+  await expect(page.getByText('is hidden by the Preparing filter')).toBeVisible();
+  await expect(sheet.locator('tbody tr[data-opportunity-id]')).toHaveCount(0);
+
+  // Undo is offered in the persistent toast and restores the prior phase.
+  await page.getByRole('button', { name: 'Undo phase change' }).click();
+  await expect(page.getByText('returned to Preparing')).toBeVisible();
+  await expect(sheet.locator('tbody tr[data-opportunity-id]')).toHaveCount(1);
+
+  // Escape dismisses an uncommitted choice/dialog; nothing changes.
+  await page.keyboard.press('Escape');
+  await expect(sheet.locator('tbody tr[data-opportunity-id]')).toHaveCount(1);
+
+  // Clear the filter; name sort restores both rows deterministically.
+  await page.getByLabel('Phase filter').selectOption('');
+  await expect(sheet.locator('tbody tr[data-opportunity-id]')).toHaveCount(2);
+  await page.getByLabel('Order').selectOption('Scenario name');
+  const titles = await sheet.locator('tbody tr[data-opportunity-id] button.open').allTextContents();
+  expect([...titles].sort()).toEqual(titles);
 });

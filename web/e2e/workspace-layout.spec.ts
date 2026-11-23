@@ -13,9 +13,9 @@ async function beside(left: Locator, right: Locator) {
 test('desktop workspaces retain their pane layout with an empty inventory', async ({ page }) => {
   await page.setViewportSize({ width: 1500, height: 800 });
   await page.goto('/resources');
-  await beside(page.getByRole('region', { name: 'Resources workspace' }), page.getByRole('region', { name: 'Resource chat' }));
-  await expect(page.getByRole('textbox', { name: 'Your answer' })).toBeVisible();
-  await expect(page.getByLabel('What is it?')).toBeHidden();
+  await beside(page.getByRole('region', { name: 'Resource board', exact: true }), page.getByRole('region', { name: 'Connections graph', exact: true }));
+  await expect(page.getByRole('region', { name: 'Resource inspector', exact: true })).toBeVisible();
+  await expect(page.getByRole('form', { name: 'Resource card editor' })).toBeHidden();
 
   await page.getByRole('link', { name: 'Parties' }).click();
   const network = page.getByRole('region', { name: 'Party network' });
@@ -25,7 +25,10 @@ test('desktop workspaces retain their pane layout with an empty inventory', asyn
   await expect(page.getByRole('textbox', { name: 'Question', exact: true })).toBeDisabled();
 
   await page.getByRole('link', { name: 'Queue' }).click();
-  await expect(page.getByRole('region', { name: 'Inbox list' })).toBeVisible();
+  const sheet = page.getByRole('region', { name: 'Scenario sheet' });
+  const inspector = page.getByRole('complementary', { name: 'Scenario details' });
+  await beside(sheet, inspector);
+  await expect(page.getByLabel('Find scenario')).toBeVisible();
   await expect(page.getByLabel('Opportunity title')).toBeHidden();
   await page.getByRole('link', { name: 'Output' }).click();
   await expect(page.getByRole('columnheader')).toHaveText(['Material', 'Opportunity', 'Contact', 'Status', 'Release']);
