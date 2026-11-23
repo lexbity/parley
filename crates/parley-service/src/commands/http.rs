@@ -50,8 +50,9 @@ pub(crate) const MAX_EXECUTED_WRITES_PER_RUN: i64 = 10;
 const BUDGET_WINDOW_SECONDS: i64 = 60;
 
 /// A validated operation output, or a normalized terminal response
-/// `(status, code, message, details)`.
-type CheckedResult = Result<(Value, i64), (i64, &'static str, String, Vec<Value>)>;
+/// `(status, code, message, details)`. The success tuple is
+/// `(result, bytes, effected)` where `effected` is false for a true no-op.
+type CheckedResult = Result<(Value, i64, bool), (i64, &'static str, String, Vec<Value>)>;
 
 /// Registered write operations dispatched inside the savepoint.
 enum Execution {
@@ -1372,7 +1373,7 @@ async fn pipeline(
     } else {
         None
     };
-    let executed: Result<Value, OperationError> = match execution {
+    let executed: Result<super::RunOutcome, OperationError> = match execution {
         Execution::Create => opportunity::run(tx, args, key_digest, created_by_run)
             .await
             .map_err(OperationError::Create),
@@ -1391,7 +1392,8 @@ async fn pipeline(
         return Err(crate::application::writer::Failure::Unavailable);
     }
     let checked: CheckedResult = match executed {
-        Ok(value) => {
+        Ok(outcome) => {
+            let value = outcome.result;
             let bytes = serde_json::to_string(&value).unwrap_or_default().len() as i64;
             if bytes > MAX_RESULT_BYTES {
                 Err((
@@ -1406,7 +1408,7 @@ async fn pipeline(
                     Err(_) => false,
                 };
                 if valid {
-                    Ok((value, bytes))
+                    Ok((value, bytes, outcome.effected))
                 } else {
                     Err((
                         500,
@@ -1513,15 +1515,16 @@ async fn pipeline(
     };
 
     let (inner, body_bytes) = match checked {
-        Ok(pair) => {
+        Ok((value, bytes, effected_flag)) => {
             sqlx::query("RELEASE SAVEPOINT ucr_operation")
                 .execute(&mut **tx)
                 .await
                 .map_err(|_| crate::application::writer::Failure::Unavailable)?;
-            if effect != Effect::Read && mode == Mode::Execute {
+            // A true no-op consumes zero executed-write allowance (FR-2).
+            if effected_flag && effect != Effect::Read && mode == Mode::Execute {
                 debit_effect(tx, actor).await?;
             }
-            pair
+            (value, bytes)
         }
         Err((status, code, message, details)) => {
             sqlx::query("ROLLBACK TO SAVEPOINT ucr_operation")

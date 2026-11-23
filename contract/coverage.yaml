@@ -1729,3 +1729,10 @@ slices:
       owner_role: owner
       package_target: rust+mock
       evidence_path: evidence/u03.md
+    - requirement: UCR-FR-2
+      operationId: runCommand
+      test_id: u03_noop_phase_consumes_zero_executed_write_allowance
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u03.md

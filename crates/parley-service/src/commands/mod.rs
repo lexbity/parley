@@ -269,6 +269,15 @@ pub(crate) struct SampleArgs {
     pub args: serde_json::Value,
 }
 
+/// The serialized outcome of a registered write operation plus whether a real
+/// effect (a domain event or fact mutation) occurred. A true no-op returns
+/// the current permitted state and consumes zero executed-write allowance
+/// (UCR-001 FR-2).
+pub(crate) struct RunOutcome {
+    pub result: serde_json::Value,
+    pub effected: bool,
+}
+
 /// The resolved actor behind an invocation. Owner authority is unrestricted;
 /// an agent actor carries only the immutable permission/target subset of its
 /// run. Instances are built by the owner auth boundary or by the private
