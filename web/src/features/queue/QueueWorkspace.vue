@@ -22,7 +22,7 @@ import {
 import { commands, type CommandArgs, type CommandSuccess } from '../../api/commands';
 import { sessionEventReader } from '../../app/commands/events';
 import type { QueuePaletteBinding } from '../../app/commands/context';
-import { queuePhaseActions, registerScoped, useCommandRegistry } from '../../app/commands/registry';
+import { opportunityCreateAction, queuePhaseActions, registerScoped, useCommandRegistry, type UiCommand } from '../../app/commands/registry';
 import Daily from './Daily.vue';
 import Insights from './Insights.vue';
 
@@ -99,21 +99,33 @@ let disposeActions: (() => void) | null = null;
 function refreshScopedActions() {
   disposeActions?.();
   disposeActions = null;
-  const row = selectedRow.value;
-  if (!row) return;
-  const pack = packIdentity(row);
-  if (!pack.id || !pack.version) return;
-  const revision = row.phase?.revision ?? 1;
-  disposeActions = registerScoped(commandRegistry, queuePhaseActions({
-    opportunityId: row.opportunity_id,
-    phaseRevision: revision,
-    packId: pack.id,
-    packVersion: pack.version,
-    originalEventId: lastPhaseEventId.value,
-    intentFingerprint: `${epochAtLoad.value}|${row.opportunity_id}|${revision}`,
+  const actions: UiCommand[] = [opportunityCreateAction({
     invoke: (id: string, args: CommandArgs, key: string) => commands.invoke(id, { version: 1, args, dry_run: false }, key),
-    onCommitted: (result, commandId) => applyCommandResult(result, commandId),
-  }));
+    onCommitted: () => {
+      status.value = 'Opportunity created. It is Unmapped until you choose a phase.';
+      conflict.value = '';
+      void loadSheet();
+      sessionEventReader.hint();
+    },
+  })];
+  const row = selectedRow.value;
+  if (row) {
+    const pack = packIdentity(row);
+    if (pack.id && pack.version) {
+      const revision = row.phase?.revision ?? 1;
+      actions.push(...queuePhaseActions({
+        opportunityId: row.opportunity_id,
+        phaseRevision: revision,
+        packId: pack.id,
+        packVersion: pack.version,
+        originalEventId: lastPhaseEventId.value,
+        intentFingerprint: `${epochAtLoad.value}|${row.opportunity_id}|${revision}`,
+        invoke: (id: string, args: CommandArgs, key: string) => commands.invoke(id, { version: 1, args, dry_run: false }, key),
+        onCommitted: (result, commandId) => applyCommandResult(result, commandId),
+      }));
+    }
+  }
+  disposeActions = registerScoped(commandRegistry, actions);
 }
 
 watch([selectedRow, lastPhaseEventId, epochAtLoad], () => refreshScopedActions());

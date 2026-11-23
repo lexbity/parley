@@ -18,7 +18,7 @@ export type CommandReceipt = {
   original_audit_id?: string | null;
   replayed?: boolean;
   error?: { code: string; message: string };
-  result?: { stage_id: string | null; phase_revision: number; event_id: string | null };
+  result?: { stage_id?: string | null; phase_revision?: number; event_id?: string | null; opportunity_id?: string; revision?: number };
 };
 
 export async function signIn(page: Page): Promise<OwnerSession> {

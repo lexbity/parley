@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/AgentRunSummary","body":{"run_id":"agent-run_sample_01","state":"queued","revision":1,"granted_actions":["party.read"],"targets":[{"kind":"party","id":"party_sample_01"}],"deadline_at":"2026-11-23T12:30:00.000Z","phase":"queued"}}

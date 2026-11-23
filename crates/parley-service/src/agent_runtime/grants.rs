@@ -114,7 +114,13 @@ impl Grant {
         &self,
         args: &'a serde_json::Value,
     ) -> Option<(&'static str, &'a str)> {
-        for field in ["party_id", "opportunity_id", "resource_id", "material_id"] {
+        for field in [
+            "party_id",
+            "primary_party_id",
+            "opportunity_id",
+            "resource_id",
+            "material_id",
+        ] {
             if let Some(value) = args.get(field).and_then(serde_json::Value::as_str) {
                 return Some((field, value));
             }

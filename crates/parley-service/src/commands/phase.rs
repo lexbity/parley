@@ -163,13 +163,6 @@ impl PhaseCommand {
             PhaseCommand::Undo => UNDO_PHASE_ID,
         }
     }
-
-    pub fn args_schema(&self) -> &'static Value {
-        match self {
-            PhaseCommand::Set => &SET_PHASE_ARGS_SCHEMA,
-            PhaseCommand::Undo => &UNDO_PHASE_ARGS_SCHEMA,
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]

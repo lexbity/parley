@@ -64,6 +64,7 @@ SLICE_MIGRATIONS: dict[str, list[str]] = {
     "r04": ["0020_resource_workspace.sql"],
     "u01": ["0021_command_ledger.sql"],
     "u02": ["0022_agent_runs.sql"],
+    "u03": [],
 }
 
 # Ownership entries removed one at a time by the negative self-test.

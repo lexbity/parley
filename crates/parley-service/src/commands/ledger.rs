@@ -406,26 +406,42 @@ pub(crate) fn redact_args(
     serde_json::Value::Object(out).to_string()
 }
 
+/// One interrupted attempt row: audit ID, epoch, actor kind, principal
+/// pseudonym, run pseudonym, command ID, command version and mode.
+type InterruptedAttempt = (String, String, String, String, String, Option<String>, i64, String);
+
 /// Startup finalization: every attempt without a terminal outcome from an
 /// earlier process is marked interrupted.
 pub(crate) async fn recover_interrupted_attempts(
     pool: &SqlitePool,
 ) -> Result<usize, WorkspaceError> {
-    let attempts: Vec<(String, String, String, String, i64, String)> = sqlx::query_as(
-        "SELECT a.audit_id,a.epoch,a.principal_pseudonym,a.command_id,a.command_version,a.mode FROM command_audit_event a WHERE a.kind='attempt' AND NOT EXISTS(SELECT 1 FROM command_audit_event o WHERE o.kind='outcome' AND o.attempt_audit_id=a.audit_id)",
+    let attempts: Vec<InterruptedAttempt> = sqlx::query_as(
+        "SELECT a.audit_id,a.epoch,a.actor_kind,a.principal_pseudonym,a.run_pseudonym,a.command_id,a.command_version,a.mode FROM command_audit_event a WHERE a.kind='attempt' AND NOT EXISTS(SELECT 1 FROM command_audit_event o WHERE o.kind='outcome' AND o.attempt_audit_id=a.audit_id)",
     )
     .fetch_all(pool)
     .await?;
     let interrupted = attempts.len();
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let now = now_utc();
-    for (audit_id, epoch, principal, command_id, command_version, mode) in attempts {
+    for (
+        audit_id,
+        epoch,
+        actor_kind,
+        principal,
+        run_pseudonym,
+        command_id,
+        command_version,
+        mode,
+    ) in attempts
+    {
         sqlx::query(
-            "INSERT INTO command_audit_event(audit_id,kind,epoch,actor_kind,principal_pseudonym,command_id,command_version,mode,policy_result,outcome_code,attempt_audit_id,occurred_at) VALUES(?, 'outcome', ?, 'owner', ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO command_audit_event(audit_id,kind,epoch,actor_kind,principal_pseudonym,run_pseudonym,command_id,command_version,mode,policy_result,outcome_code,attempt_audit_id,occurred_at) VALUES(?, 'outcome', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(crate::new_id(&format!("interrupted:{audit_id}")))
         .bind(&epoch)
+        .bind(&actor_kind)
         .bind(&principal)
+        .bind(run_pseudonym)
         .bind(&command_id)
         .bind(command_version)
         .bind(&mode)

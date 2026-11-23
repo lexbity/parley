@@ -173,6 +173,40 @@ export interface QueueActionInput {
 
 const SET_ID = 'opportunity.set_phase';
 const UNDO_ID = 'opportunity.undo_phase_change';
+const CREATE_ID = 'opportunity.create';
+
+export interface OpportunityCreateActionInput {
+  invoke: (id: string, args: CommandArgs, key: string) => Promise<CommandSuccess>;
+  onCommitted: (result: CommandSuccess) => void | Promise<void>;
+}
+
+/**
+ * Scoped owner create front door. The palette freezes the prompted title and
+ * picked party before dispatch; the key is minted once for that frozen intent.
+ * A new prompt or selection is a new key, never a retry of the old intent.
+ */
+export function opportunityCreateAction(input: OpportunityCreateActionInput): UiCommand {
+  return {
+    id: 'ui.queue.create_opportunity',
+    title: 'Create opportunity',
+    summary: 'Create an opportunity for a selected party',
+    keywords: ['queue', 'new', 'create', 'lead'],
+    effect: 'read',
+    replaces: CREATE_ID,
+    prompts: [
+      { field: 'title', picker: 'text', title: 'Opportunity title' },
+      { field: 'primary_party_id', picker: 'party', title: 'Primary party' },
+    ],
+    confirmation: 'Create this open opportunity for the selected party?',
+    when: (ctx) => ctx.context.route === 'queue',
+    run: async (args) => {
+      const key = newOperationKey();
+      const frozen = Object.freeze({ ...args });
+      const result = await input.invoke(CREATE_ID, frozen, key);
+      await input.onCommitted(result);
+    },
+  };
+}
 
 /**
  * Scoped Queue actions. Each dispatch freezes the authoritative record,

@@ -23,6 +23,7 @@ const ACTIVE_STATES: RunState[] = ['queued', 'running', 'waiting_owner', 'waitin
 const permissionHelp: Record<RunPermission, string> = {
   'party.read': 'read the granted party summary only',
   'opportunity.read': 'read the granted opportunity summary only',
+  'opportunity.create': 'create an opportunity for a granted party',
   'opportunity.phase.edit': 'change the phase of a granted opportunity',
 };
 
@@ -30,6 +31,7 @@ const task = ref('');
 const targetQuery = ref('');
 const selectedTargets = ref<string[]>([]);
 const permissions = ref<RunPermission[]>(['party.read', 'opportunity.read']);
+const allowCreated = ref(false);
 const acknowledged = ref(false);
 const parties = ref<GraphEntity[]>([]);
 const opportunities = ref<Opportunity[]>([]);
@@ -226,7 +228,7 @@ async function start() {
       task: task.value,
       targets,
       permissions: [...permissions.value],
-      allow_created_opportunities: false,
+      allow_created_opportunities: permissions.value.includes('opportunity.create') && allowCreated.value,
     }, key);
     applyRuns([{ run_id: started.run_id, state: started.state, revision: started.revision, deadline_at: started.deadline_at }, ...runs.value.filter((row) => row.run_id !== started.run_id)]);
     status.value = `Run ${started.run_id} started with ${permissions.value.length} granted action(s).`;
@@ -415,6 +417,14 @@ onBeforeUnmount(() => {
             :aria-label="`Grant ${permission}`"
           > {{ permission }} — {{ permissionHelp[permission] }}
         </label>
+        <label
+          v-if="permissions.includes('opportunity.create')"
+          class="created-target-grant"
+        ><input
+          v-model="allowCreated"
+          type="checkbox"
+          aria-label="Grant created by this run opportunities"
+        > Bind opportunities this run creates to its own scope (created by this run).</label>
       </fieldset>
 
       <label><input

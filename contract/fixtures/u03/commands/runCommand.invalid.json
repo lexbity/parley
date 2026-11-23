@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/CommandRunFailure","body":{"ok":false,"command_version":1,"audit_id":"aud_u03_create_02","error":{"code":"target_unavailable","message":"Primary party is not available","details":[{"path":"/primary_party_id","problem":"unknown_party"}]}}}
