@@ -76,6 +76,21 @@ type EventRecord = {
   payload: RecordData;
 };
 
+type AgentRunTarget = { kind: string; id: string };
+type AgentRunRecord = {
+  run_id: string;
+  epoch: string;
+  state: string;
+  revision: number;
+  deadline_at: string;
+  targets: AgentRunTarget[];
+  permissions: string[];
+  turn_count: number;
+  transcript_bytes: number;
+  wake_condition: string | null;
+};
+type AgentTurnRecord = { turn_no: number; speaker: string; ordinal: number; text: string };
+
 const randomHex = (bytes = 16) => randomBytes(bytes).toString('hex');
 
 export interface MockApi {
@@ -149,6 +164,13 @@ export function createMockApi(): MockApi {
   const notesByOpportunity = new Map<string, { markdown: string; revision: number }>();
   let provider = { endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' };
   const receipts = new Map<string, { digest: string; result: RecordData; status?: number }>();
+  // U02 authoritative run and turn rows survive snapshots; worker timers,
+  // replay keys and pending leases are transient and are scrubbed on restore.
+  const agentRuns = new Map<string, AgentRunRecord>();
+  const agentTurns = new Map<string, AgentTurnRecord[]>();
+  const agentStartKeys = new Map<string, { digest: string; run_id: string; body: RecordData }>();
+  const agentCancelKeys = new Map<string, { digest: string; body: RecordData }>();
+  const agentTimers = new Map<string, ReturnType<typeof setTimeout>[]>();
   const events: EventRecord[] = [];
   const adminBackups: AdminBackupRecord[] = [];
   const adminPreviews = new Map<string, { operation: AdminOperation; digest: string; epoch: string; cursor: string; expires: number; backupId: string | null; partyId: string | null }>();
@@ -173,7 +195,28 @@ export function createMockApi(): MockApi {
   }
 
   function workspaceCollections(): Record<string, unknown> {
-    return { resources, directory, notesByEntity, partyImportOrigins, entityAttachments, sourceTextByOccurrence, graphEdges, graphPositions, sourceGroups, captures, extractorJobs, roleJobs, agentChats, briefItems, segments, segmentMembers, fluency, writingInterests, writingExchanges, templateFamilies, writingTemplates, voiceSamples, opportunities, outputs, uploads, materialRecords, releaseRecords, threads, sends, outcomes, resolutions, capacityLedger, coachQuestions, validatedPacks, boardLists, placements, notesByOpportunity, opportunityPhases, events };
+    return { resources, directory, notesByEntity, partyImportOrigins, entityAttachments, sourceTextByOccurrence, graphEdges, graphPositions, sourceGroups, captures, extractorJobs, roleJobs, agentChats, briefItems, segments, segmentMembers, fluency, writingInterests, writingExchanges, templateFamilies, writingTemplates, voiceSamples, opportunities, outputs, uploads, materialRecords, releaseRecords, threads, sends, outcomes, resolutions, capacityLedger, coachQuestions, validatedPacks, boardLists, placements, notesByOpportunity, opportunityPhases, agentRuns, agentTurns, events };
+  }
+
+  function clearAgentTimers(runId?: string) {
+    if (runId) {
+      for (const timer of agentTimers.get(runId) ?? []) clearTimeout(timer);
+      agentTimers.delete(runId);
+      return;
+    }
+    for (const timers of agentTimers.values()) for (const timer of timers) clearTimeout(timer);
+    agentTimers.clear();
+  }
+
+  function scheduleAgent(runId: string, step: () => void, delay: number) {
+    const timer = setTimeout(() => {
+      const remaining = (agentTimers.get(runId) ?? []).filter((item) => item !== timer);
+      if (remaining.length) agentTimers.set(runId, remaining);
+      else agentTimers.delete(runId);
+      step();
+    }, delay);
+    timer.unref?.();
+    agentTimers.set(runId, [...(agentTimers.get(runId) ?? []), timer]);
   }
 
   function takeWorkspaceSnapshot(): Record<string, unknown> {
@@ -187,6 +230,9 @@ export function createMockApi(): MockApi {
       if (current instanceof Map && saved instanceof Map) { current.clear(); for (const [key, value] of saved) current.set(deepClone(key), deepClone(value)); }
       else if (Array.isArray(current) && Array.isArray(saved)) current.splice(0, current.length, ...deepClone(saved));
     }
+    clearAgentTimers();
+    agentStartKeys.clear();
+    agentCancelKeys.clear();
     const owner = snapshot.owner as RecordData;
     provider = deepClone(owner.provider as typeof provider);
     Object.assign(questionBank, deepClone(owner.questionBank as typeof questionBank));
@@ -469,6 +515,78 @@ export function createMockApi(): MockApi {
         opportunity_id: String(opportunity.id), phase_revision: revision, previous_stage_id: current.stage_id,
         stage_id: stageId, event_id: eventId, event_cursor: String(events.length),
       },
+    };
+  }
+
+  // --- U02 delegated runs. One fixture state machine produces the same
+  // queued → running → succeeded facts as the Rust runtime without sharing
+  // its worker, lease or provider state.
+  const AGENT_STATES = ['queued', 'running', 'waiting_owner', 'waiting_job', 'succeeded', 'failed', 'cancelled', 'expired'];
+  const AGENT_TARGET_KINDS = ['party', 'opportunity', 'resource', 'material', 'segment'];
+  const AGENT_PERMISSIONS = ['party.read', 'opportunity.read', 'opportunity.phase.edit'];
+
+  function agentTargetLabel(target: AgentRunTarget): string {
+    if (target.kind === 'party') return directory.get(target.id)?.name ?? target.id;
+    if (target.kind === 'opportunity') return String(opportunities.get(target.id)?.title ?? target.id);
+    return target.id;
+  }
+
+  function addAgentTurn(run: AgentRunRecord, turn: AgentTurnRecord) {
+    const turns = agentTurns.get(run.run_id) ?? [];
+    turns.push(turn);
+    agentTurns.set(run.run_id, turns);
+    run.turn_count = turns.length;
+    run.transcript_bytes += Buffer.byteLength(turn.text, 'utf8');
+  }
+
+  function setAgentState(run: AgentRunRecord, state: string, wake: string | null = null) {
+    run.state = state;
+    run.revision += 1;
+    run.wake_condition = wake;
+  }
+
+  function advanceAgentRun(runId: string) {
+    const run = agentRuns.get(runId);
+    if (!run || run.state !== 'queued') return;
+    scheduleAgent(runId, () => {
+      if (run.state !== 'queued' || run.epoch !== epoch) return;
+      setAgentState(run, 'running', 'tool_dispatch');
+      scheduleAgent(runId, () => {
+        if (run.state !== 'running') return;
+        const names = run.targets.map(agentTargetLabel).join(', ') || 'no targets';
+        addAgentTurn(run, { turn_no: 2, speaker: 'tool', ordinal: 1, text: `Scoped read of ${names} via party.get_summary / opportunity.get_summary` });
+        scheduleAgent(runId, () => {
+          if (run.state !== 'running') return;
+          addAgentTurn(run, { turn_no: 2, speaker: 'assistant', ordinal: 0, text: `Completed scoped read of ${names} using only the granted read permissions.` });
+          setAgentState(run, 'succeeded', 'completed');
+        }, 600);
+      }, 600);
+    }, 600);
+  }
+
+  function encodeAgentCursor(turnNo: number, ordinal: number): string {
+    return Buffer.from(`${turnNo}:${ordinal}`, 'utf8').toString('hex');
+  }
+
+  function decodeAgentCursor(cursor: string): [number, number] {
+    const [turn, ordinal] = Buffer.from(cursor, 'hex').toString('utf8').split(':');
+    const turnNo = Number(turn);
+    const position = Number(ordinal);
+    return Number.isSafeInteger(turnNo) && Number.isSafeInteger(position) ? [turnNo, position] : [0, 0];
+  }
+
+  function agentRunDto(run: AgentRunRecord) {
+    return {
+      run_id: run.run_id, state: run.state, revision: run.revision,
+      granted_actions: run.permissions, targets: run.targets,
+      deadline_at: run.deadline_at, phase: 'queued',
+    };
+  }
+
+  function agentStatusDto(run: AgentRunRecord) {
+    return {
+      run_id: run.run_id, state: run.state, revision: run.revision, deadline_at: run.deadline_at,
+      turn_count: run.turn_count, transcript_bytes: run.transcript_bytes, wake_condition: run.wake_condition,
     };
   }
 
@@ -806,6 +924,122 @@ export function createMockApi(): MockApi {
       };
       commandReceipts.set(receiptKey, { digest, status: outcome.status, body: failure, audit_id: auditId });
       return json(response, outcome.status, failure);
+    }
+
+    if (url.pathname === '/api/v1/agent/runs' && request.method === 'POST') {
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key.trim()) return fail(response, 400, 'INVALID_KEY', 'An Idempotency-Key is required');
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      if (typeof input.task !== 'string' || !input.task.trim() || Buffer.byteLength(input.task, 'utf8') > 8192) {
+        return fail(response, 422, 'invalid_args', 'Task must be 1..=8192 bytes');
+      }
+      const targets = input.targets as unknown;
+      if (!Array.isArray(targets) || targets.some((raw) => {
+        const target = raw as RecordData | null;
+        return !target || typeof target !== 'object' || Array.isArray(target)
+          || !AGENT_TARGET_KINDS.includes(String(target.kind)) || typeof target.id !== 'string' || !target.id;
+      })) return fail(response, 422, 'invalid_args', 'Targets are invalid');
+      const permissions = input.permissions as unknown;
+      if (!Array.isArray(permissions) || permissions.some((permission) => typeof permission !== 'string' || !AGENT_PERMISSIONS.includes(permission))) {
+        return fail(response, 422, 'invalid_args', 'Permissions are invalid');
+      }
+      if (typeof input.allow_created_opportunities !== 'boolean') {
+        return fail(response, 422, 'invalid_args', 'allow_created_opportunities must be a boolean');
+      }
+      const digest = createHash('sha256').update(canonicalArgs({
+        epoch, task: input.task, targets, permissions, allow_created_opportunities: input.allow_created_opportunities,
+      })).digest('hex');
+      const receiptKey = `${epoch}|${key}`;
+      const previous = agentStartKeys.get(receiptKey);
+      if (previous) {
+        return previous.digest === digest
+          ? json(response, 201, previous.body)
+          : fail(response, 409, 'KEY_REUSED', 'Operation key was used for a different run');
+      }
+      const runId = `agent-run-${randomHex(8)}`;
+      const run: AgentRunRecord = {
+        run_id: runId, epoch, state: 'queued', revision: 1,
+        deadline_at: new Date(testClock + 15 * 60_000).toISOString(),
+        targets: (targets as AgentRunTarget[]).map((target) => ({ kind: target.kind, id: target.id })),
+        permissions: permissions as string[], turn_count: 1,
+        transcript_bytes: Buffer.byteLength(input.task, 'utf8'), wake_condition: 'queued',
+      };
+      agentRuns.set(runId, run);
+      agentTurns.set(runId, [{ turn_no: 1, speaker: 'owner', ordinal: 1, text: input.task }]);
+      const body = agentRunDto(run);
+      agentStartKeys.set(receiptKey, { digest, run_id: runId, body });
+      advanceAgentRun(runId);
+      return json(response, 201, body);
+    }
+
+    if (url.pathname === '/api/v1/agent/runs' && request.method === 'GET') {
+      const state = url.searchParams.get('status') ?? '';
+      if (state && !AGENT_STATES.includes(state)) return fail(response, 400, 'invalid_args', 'Unknown status filter');
+      const limitRaw = url.searchParams.get('limit');
+      const limit = limitRaw === null ? 10 : Number(limitRaw);
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) return fail(response, 400, 'invalid_args', 'Limit must be between 1 and 20');
+      const cursor = url.searchParams.get('cursor') ?? '';
+      const rows = [...agentRuns.values()]
+        .filter((run) => run.epoch === epoch && (!state || run.state === state) && run.run_id > cursor)
+        .sort((left, right) => left.run_id.localeCompare(right.run_id));
+      const page = rows.slice(0, limit);
+      return json(response, 200, {
+        items: page.map((run) => ({ run_id: run.run_id, state: run.state, revision: run.revision, deadline_at: run.deadline_at })),
+        next_cursor: rows.length > page.length && page.length ? page[page.length - 1]!.run_id : null,
+      });
+    }
+
+    const agentCancelRoute = /^\/api\/v1\/agent\/runs\/([^/]+)\/cancel$/.exec(url.pathname);
+    if (agentCancelRoute && request.method === 'POST') {
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key.trim()) return fail(response, 400, 'INVALID_KEY', 'An Idempotency-Key is required');
+      const id = decodeURIComponent(agentCancelRoute[1]!);
+      const run = agentRuns.get(id);
+      if (!run || run.epoch !== epoch) return fail(response, 404, 'target_unavailable', 'Run is not available');
+      const digest = createHash('sha256').update(canonicalArgs({ epoch, path: url.pathname })).digest('hex');
+      const receiptKey = `${epoch}|${id}|${key}`;
+      const previous = agentCancelKeys.get(receiptKey);
+      if (previous) {
+        return previous.digest === digest ? json(response, 200, previous.body) : fail(response, 409, 'KEY_REUSED', 'Operation key was used for a different cancellation');
+      }
+      clearAgentTimers(id);
+      let state = 'unchanged';
+      if (!['succeeded', 'failed', 'cancelled', 'expired'].includes(run.state)) {
+        setAgentState(run, 'cancelled', 'cancelled');
+        state = 'cancelled';
+      }
+      const body = { run_id: id, state };
+      agentCancelKeys.set(receiptKey, { digest, body });
+      return json(response, 200, body);
+    }
+
+    const agentTranscriptRoute = /^\/api\/v1\/agent\/runs\/([^/]+)\/transcript$/.exec(url.pathname);
+    if (agentTranscriptRoute && request.method === 'GET') {
+      const id = decodeURIComponent(agentTranscriptRoute[1]!);
+      const run = agentRuns.get(id);
+      if (!run || run.epoch !== epoch) return fail(response, 404, 'target_unavailable', 'Run is not available');
+      const limitRaw = url.searchParams.get('limit');
+      const limit = limitRaw === null ? 20 : Number(limitRaw);
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) return fail(response, 400, 'invalid_args', 'Limit must be between 1 and 20');
+      const [turnNo, ordinal] = decodeAgentCursor(url.searchParams.get('cursor') ?? '');
+      const turns = (agentTurns.get(id) ?? [])
+        .filter((turn) => turn.turn_no > turnNo || (turn.turn_no === turnNo && turn.ordinal > ordinal))
+        .sort((left, right) => left.turn_no - right.turn_no || left.ordinal - right.ordinal || left.speaker.localeCompare(right.speaker));
+      const page = turns.slice(0, limit);
+      const last = page[page.length - 1];
+      return json(response, 200, {
+        items: page.map((turn) => ({ turn_no: turn.turn_no, speaker: turn.speaker, ordinal: turn.ordinal, text: turn.text })),
+        next_cursor: turns.length > page.length && last ? encodeAgentCursor(last.turn_no, last.ordinal) : null,
+      });
+    }
+
+    const agentStatusRoute = /^\/api\/v1\/agent\/runs\/([^/]+)$/.exec(url.pathname);
+    if (agentStatusRoute && request.method === 'GET') {
+      const id = decodeURIComponent(agentStatusRoute[1]!);
+      const run = agentRuns.get(id);
+      if (!run || run.epoch !== epoch) return fail(response, 404, 'target_unavailable', 'Run is not available');
+      return json(response, 200, agentStatusDto(run));
     }
 
     const importRoute = /^\/api\/v1\/party-imports(?:\/([^/]+)\/(preview|commit))?$/.exec(url.pathname);

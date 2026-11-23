@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/AgentRunList","body":{"items":[{"run_id":"agent-run_sample_02","state":"succeeded","revision":4,"deadline_at":"2026-11-23T12:45:00.000Z"},{"run_id":"agent-run_sample_03","state":"cancelled","revision":2,"deadline_at":"2026-11-23T13:00:00.000Z"}],"next_cursor":"agent-run_sample_03"}}

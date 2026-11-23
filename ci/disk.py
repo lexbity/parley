@@ -57,6 +57,8 @@ REGENERABLE_PATHS = {
     REPO_ROOT / "artifacts",
     REPO_ROOT / "web" / "dist",
     REPO_ROOT / "web" / "artifacts",
+    REPO_ROOT / "fuzz" / "target",
+    REPO_ROOT / "fuzz" / "corpus",
 }
 REGENERABLE_DIR_NAMES = {
     "node_modules",
@@ -144,6 +146,9 @@ def scan_repo() -> tuple[int, int, int, list[Path]]:
                 artifacts_size += size
             elif path.is_relative_to(REPO_ROOT / ".git") or path.is_relative_to(
                 REPO_ROOT / "web" / "dist"
+            ) or any(
+                path.is_relative_to(path_root)
+                for path_root in (REPO_ROOT / "fuzz" / "target", REPO_ROOT / "fuzz" / "corpus")
             ):
                 continue
             elif {p.name for p in path.parents} & REGENERABLE_DIR_NAMES:
@@ -278,7 +283,11 @@ def prune(dry_run: bool, playwright_cache: bool, registry: bool) -> None:
 
     before = measure([path for _, path in deletions])
     for label, path in deletions:
-        shutil.rmtree(path)
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            # Scratch names may match a plain file as well as a directory.
+            path.unlink()
         print(f"pruned: {label}")
     run(["pnpm", "store", "prune"])
     print("pruned: pnpm store (unreferenced packages only)")

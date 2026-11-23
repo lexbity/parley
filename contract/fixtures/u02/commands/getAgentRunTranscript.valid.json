@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/AgentTranscript","body":{"items":[{"turn_no":1,"speaker":"owner","ordinal":1,"text":"Summarise the granted record."},{"turn_no":1,"speaker":"tool","ordinal":2,"text":"{\"name\":\"Sample Party\",\"focus\":\"sample focus\"}"},{"turn_no":2,"speaker":"assistant","ordinal":1,"text":"Sample Party has a recorded focus."}],"next_cursor":"310a323a32"}}

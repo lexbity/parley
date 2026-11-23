@@ -15,6 +15,7 @@ import InterviewerWorkspace from '../features/resources/InterviewerWorkspace.vue
 import QueueWorkspace from '../features/queue/QueueWorkspace.vue';
 import PartyDesk from '../features/parties/PartyDesk.vue';
 import AgentPolicySettings from '../features/settings/AgentPolicySettings.vue';
+import DelegatedRuns from '../features/settings/DelegatedRuns.vue';
 import MaintenanceSettings from '../features/settings/MaintenanceSettings.vue';
 import CapacitySettings from '../features/settings/CapacitySettings.vue';
 import Packs from '../features/settings/Packs.vue';
@@ -517,6 +518,7 @@ watch(() => route.value.recordId, () => { void focusRouteLocation(); });
           </p>
         </form>
         <AgentPolicySettings />
+        <DelegatedRuns />
         <CapacitySettings />
         <Packs />
         <MaintenanceSettings

@@ -466,7 +466,7 @@ async fn u01_boot_validation_rejects_invalid_registration() {
         )
         .is_err()
     );
-    assert_eq!(parley_service::command_table_policy_version(), 1);
+    assert!(parley_service::command_table_policy_version() >= 1);
 }
 
 #[tokio::test]

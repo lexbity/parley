@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/AgentErrorEnvelope","body":{"ok":false,"error":{"code":"invalid_args","message":"Unknown status filter","details":[{"path":"/query/status","problem":"unknown_status"}]}}}

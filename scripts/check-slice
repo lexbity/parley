@@ -76,6 +76,10 @@ step python3 ci/trace.py --through "$slice" --check-manifest
 # UCR-001 U01: application operations carry no transport/status sentinels,
 # route strings, replay envelopes or raw transaction control statements.
 step scripts/absent 'HeaderMap|StatusCode|/api/v1|_replay_status|BEGIN IMMEDIATE' crates/parley-service/src/application/phase.rs
+# UCR-001 U02: tool dispatch is authority-free — no owner session headers,
+# route strings or process spawning in the tool bridge. A tool can only act
+# through the server-side agent principal and its immutable grant.
+step scripts/absent 'parley_session|X-Parley-Token|/api/v1/|std::process::Command' crates/parley-service/src/agent_runtime/tools.rs
 # UCR-001: production command and application modules contain no abandoned
 # implementations or ignored tests; this scans Rust production modules after
 # every slice, including future ones as their directories land.

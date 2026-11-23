@@ -1,4 +1,4 @@
-"""Migration verifier for Parley (RFC-0002 BE-01/BE-04, RFC-0004 S01, UCR-001 U01).
+"""Migration verifier for Parley (RFC-0002 BE-01/BE-04, RFC-0004 S01, UCR-001 U01/U02).
 
 For `--through SLICE` this script:
 
@@ -35,7 +35,7 @@ from common import REPO_ROOT, VerificationError, fail, run, slices_through
 MIGRATIONS_DIR = REPO_ROOT / "migrations"
 MIGRATION_PREFIX = re.compile(r"^(\d{4})_")
 
-# Slice -> owned migration file (RFC-0004 implementation plan, UCR-001 U01).
+# Slice -> owned migration file (RFC-0004 implementation plan, UCR-001 U01/U02).
 SLICE_MIGRATIONS: dict[str, list[str]] = {
     "s01": ["0001_workspace.sql"],
     "s02": ["0002_graph.sql"],
@@ -63,6 +63,7 @@ SLICE_MIGRATIONS: dict[str, list[str]] = {
     "r03": [],
     "r04": ["0020_resource_workspace.sql"],
     "u01": ["0021_command_ledger.sql"],
+    "u02": ["0022_agent_runs.sql"],
 }
 
 # Ownership entries removed one at a time by the negative self-test.

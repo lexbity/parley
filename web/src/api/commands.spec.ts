@@ -131,3 +131,82 @@ describe('CommandClient', () => {
     await expect(commands.invoke('opportunity.set_phase', { version: 1, args: {}, dry_run: false }, 'key-4')).rejects.toThrow(/receipt is malformed/);
   });
 });
+
+const startInput = {
+  task: 'Summarise the granted party',
+  targets: [{ kind: 'party' as const, id: 'party-1' }],
+  permissions: ['party.read' as const],
+  allow_created_opportunities: false,
+};
+const startedReceipt = {
+  run_id: 'run-1', state: 'queued', revision: 1, granted_actions: ['party.read'],
+  targets: startInput.targets, deadline_at: '2026-11-23T10:00:00Z', phase: 'queued',
+};
+
+describe('Agent run client (U02)', () => {
+  it('starts a scoped run with the shared session and its own operation key', async () => {
+    const fetchMock = stubFetch(startedReceipt, 201);
+    const result = await commands.startRun(startInput, 'start-key-1');
+    expect(result).toEqual(startedReceipt);
+    const [url, init] = fetchMock.mock.calls[0]! as [string, RequestInit];
+    expect(url).toBe('/api/v1/agent/runs');
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>)['Idempotency-Key']).toBe('start-key-1');
+    expect((init.headers as Record<string, string>)['X-Parley-Token']).toBe('token-1');
+    expect(JSON.parse(String(init.body))).toEqual(startInput);
+  });
+
+  it('rejects an empty or oversized task before any request', async () => {
+    const fetchMock = stubFetch(startedReceipt);
+    await expect(commands.startRun({ ...startInput, task: '' }, 'k')).rejects.toThrow(/1\.\.8192 bytes/);
+    await expect(commands.startRun({ ...startInput, task: 'ø'.repeat(4097) }, 'k')).rejects.toThrow(/1\.\.8192 bytes/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('lists runs with a closed status filter, bounded limit and cursor', async () => {
+    const fetchMock = stubFetch({ items: [{ run_id: 'run-1', state: 'succeeded', revision: 3, deadline_at: '2026-11-23T10:00:00Z' }], next_cursor: 'run-1' });
+    const result = await commands.listRuns({ status: 'succeeded', limit: 2, cursor: 'run-0' });
+    expect(result.items[0]?.state).toBe('succeeded');
+    expect(fetchMock.mock.calls[0]![0]).toBe('/api/v1/agent/runs?status=succeeded&limit=2&cursor=run-0');
+    await expect(commands.listRuns({ status: 'unknown' as never })).rejects.toThrow(/unknown status/);
+    await expect(commands.listRuns({ limit: 21 })).rejects.toThrow(/1\.\.20/);
+  });
+
+  it('reads authoritative run status and plain-text transcript pages', async () => {
+    stubFetch({ run_id: 'run-1', state: 'succeeded', revision: 4, deadline_at: '2026-11-23T10:00:00Z', turn_count: 2, transcript_bytes: 90, wake_condition: null });
+    const status = await commands.getRun('run/1');
+    expect(status).toMatchObject({ turn_count: 2, wake_condition: null });
+    const fetchMock = stubFetch({ items: [{ turn_no: 2, speaker: 'tool', ordinal: 1, text: 'Scoped Party' }, { turn_no: 2, speaker: 'assistant', ordinal: 2, text: 'Done.' }], next_cursor: '323a31' });
+    const page = await commands.getRunTranscript('run-1', { limit: 2, cursor: '323a30' });
+    expect(page.items.map((item) => item.speaker)).toEqual(['tool', 'assistant']);
+    expect(page.next_cursor).toBe('323a31');
+    expect(fetchMock.mock.calls[0]![0]).toBe('/api/v1/agent/runs/run-1/transcript?limit=2&cursor=323a30');
+  });
+
+  it('cancels with a separate key and decodes unchanged replays', async () => {
+    const fetchMock = stubFetch({ run_id: 'run-1', state: 'unchanged' });
+    expect((await commands.cancelRun('run-1', 'cancel-key-1')).state).toBe('unchanged');
+    const [url, init] = fetchMock.mock.calls[0]! as [string, RequestInit];
+    expect(url).toBe('/api/v1/agent/runs/run-1/cancel');
+    expect((init.headers as Record<string, string>)['Idempotency-Key']).toBe('cancel-key-1');
+  });
+
+  it('rejects malformed run receipts and surfaces the standard error envelope', async () => {
+    stubFetch({ ...startedReceipt, state: 'running' });
+    await expect(commands.startRun(startInput, 'k')).rejects.toThrow(/must be queued/);
+    stubFetch({ ...startedReceipt, targets: [{ kind: 'root', id: 'x' }] });
+    await expect(commands.startRun(startInput, 'k')).rejects.toThrow(/target is malformed/);
+    stubFetch({ items: [{ run_id: 'r', state: 'pending', revision: 1, deadline_at: 'x' }], next_cursor: null });
+    await expect(commands.listRuns()).rejects.toThrow(/unknown state/);
+    stubFetch({ run_id: 'r', state: 'queued', revision: 0, deadline_at: 'x', turn_count: 0, transcript_bytes: 0, wake_condition: null });
+    await expect(commands.getRun('r')).rejects.toThrow(/revision must be a positive integer/);
+    stubFetch({ items: [{ turn_no: 1, speaker: 'root', ordinal: 1, text: 'x' }], next_cursor: null });
+    await expect(commands.getRunTranscript('r')).rejects.toThrow(/turn is malformed/);
+    stubFetch({ items: [], next_cursor: 'not-hex!' });
+    await expect(commands.getRunTranscript('r')).rejects.toThrow(/next_cursor is malformed/);
+    stubFetch({ run_id: 'r', state: 'done' });
+    await expect(commands.cancelRun('r', 'k')).rejects.toThrow(/cancellation receipt is malformed/);
+    stubFetch({ error: { code: 'target_unavailable', message: 'Run is not available', details: [] } }, 404);
+    await expect(commands.getRun('missing')).rejects.toMatchObject({ status: 404, code: 'target_unavailable' });
+  });
+});

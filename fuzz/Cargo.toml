@@ -14,6 +14,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 parley-domain = { path = "../crates/parley-domain" }
+parley-service = { path = "../crates/parley-service" }
 
 # Each target is a standalone bin; cargo-fuzz drives them with libFuzzer.
 [[bin]]
@@ -31,5 +32,11 @@ doc = false
 [[bin]]
 name = "template_slots"
 path = "fuzz_targets/template_slots.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "command_wire"
+path = "fuzz_targets/command_wire.rs"
 test = false
 doc = false

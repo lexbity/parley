@@ -297,7 +297,43 @@ export class CommandClient {
     return decodeSuccess(value);
   }
 
+  /** Start one scoped run. Every distinct intent needs a fresh operation key. */
+  async startRun(input: StartRunInput, operationKey: string, signal?: AbortSignal): Promise<StartedRun> {
+    const bytes = new TextEncoder().encode(input.task).length;
+    if (bytes < 1 || bytes > 8192) throw new Error('Task must be 1..8192 bytes');
+    return decodeStartedRun(await this.requestApi('/agent/runs', {
+      method: 'POST',
+      body: JSON.stringify(input),
+      headers: { 'Idempotency-Key': operationKey },
+      ...(signal ? { signal } : {}),
+    }));
+  }
+
+  async listRuns(options: { status?: RunState; limit?: number; cursor?: string } = {}): Promise<RunList> {
+    return decodeRunList(await this.requestApi(`/agent/runs${runQuery(options)}`, { method: 'GET' }));
+  }
+
+  async getRun(runId: string): Promise<RunStatus> {
+    return decodeRunStatus(await this.requestApi(`/agent/runs/${encodeURIComponent(runId)}`, { method: 'GET' }));
+  }
+
+  async getRunTranscript(runId: string, options: { limit?: number; cursor?: string } = {}): Promise<TranscriptPage> {
+    return decodeTranscript(await this.requestApi(`/agent/runs/${encodeURIComponent(runId)}/transcript${runQuery(options)}`, { method: 'GET' }));
+  }
+
+  /** Cancellation takes its own operation key, never the start key. */
+  async cancelRun(runId: string, operationKey: string): Promise<CancelRunResult> {
+    return decodeCancel(await this.requestApi(`/agent/runs/${encodeURIComponent(runId)}/cancel`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': operationKey },
+    }));
+  }
+
   private async request(path: string, init: RequestInit = {}): Promise<unknown> {
+    return this.requestApi(`/commands${path}`, init);
+  }
+
+  private async requestApi(path: string, init: RequestInit = {}): Promise<unknown> {
     await parley.connect();
     const headers = parley.authHeaders(
       init.headers instanceof Headers
@@ -306,7 +342,7 @@ export class CommandClient {
     );
     let response: Response;
     try {
-      response = await fetch(`/api/v1/commands${path}`, {
+      response = await fetch(`/api/v1${path}`, {
         ...init,
         headers,
         credentials: 'same-origin',
@@ -336,3 +372,174 @@ export class CommandClient {
 }
 
 export const commands = new CommandClient();
+
+// --- Delegated runs (UCR-001 U02). These DTOs are owner-visible projections;
+// no tool, provider or worker credential is ever accepted by this client.
+export const RUN_STATES = ['queued', 'running', 'waiting_owner', 'waiting_job', 'succeeded', 'failed', 'cancelled', 'expired'] as const;
+export type RunState = typeof RUN_STATES[number];
+export const RUN_TARGET_KINDS = ['party', 'opportunity', 'resource', 'material', 'segment'] as const;
+export type RunTargetKind = typeof RUN_TARGET_KINDS[number];
+export const RUN_PERMISSIONS = ['party.read', 'opportunity.read', 'opportunity.phase.edit'] as const;
+export type RunPermission = typeof RUN_PERMISSIONS[number];
+export const RUN_TRANSCRIPT_SPEAKERS = ['owner', 'assistant', 'tool', 'system'] as const;
+
+export interface RunTarget { kind: RunTargetKind; id: string }
+export interface StartRunInput {
+  task: string;
+  targets: RunTarget[];
+  permissions: RunPermission[];
+  allow_created_opportunities: boolean;
+}
+export interface StartedRun {
+  run_id: string;
+  state: 'queued';
+  revision: number;
+  granted_actions: string[];
+  targets: RunTarget[];
+  deadline_at: string;
+  phase: string;
+}
+export interface RunListItem { run_id: string; state: RunState; revision: number; deadline_at: string }
+export interface RunList { items: RunListItem[]; next_cursor: string | null }
+export interface RunStatus {
+  run_id: string;
+  state: RunState;
+  revision: number;
+  deadline_at: string;
+  turn_count: number;
+  transcript_bytes: number;
+  wake_condition: string | null;
+}
+export interface TranscriptTurn { turn_no: number; speaker: 'owner' | 'assistant' | 'tool' | 'system'; ordinal: number; text: string }
+export interface TranscriptPage { items: TranscriptTurn[]; next_cursor: string | null }
+export interface CancelRunResult { run_id: string; state: 'cancelled' | 'unchanged' }
+
+function decodeRunState(value: unknown, field: string): RunState {
+  if (!RUN_STATES.includes(value as RunState)) throw new Error(`Invalid run response: ${field} has an unknown state`);
+  return value as RunState;
+}
+
+function decodeRunTarget(value: unknown): RunTarget {
+  const target = object(value);
+  if (!target || !RUN_TARGET_KINDS.includes(target.kind as RunTargetKind)) {
+    throw new Error('Invalid run response: target is malformed');
+  }
+  return { kind: target.kind as RunTargetKind, id: requiredString(target.id, 'target.id') };
+}
+
+function decodeRunTargets(value: unknown): RunTarget[] {
+  if (!Array.isArray(value)) throw new Error('Invalid run response: targets must be a list');
+  return value.map(decodeRunTarget);
+}
+
+function decodeRunRevision(value: unknown): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 1) throw new Error('Invalid run response: revision must be a positive integer');
+  return Number(value);
+}
+
+function decodeNullableText(value: unknown, field: string): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') throw new Error(`Invalid run response: ${field} must be text or null`);
+  return value;
+}
+
+function decodeRunCursor(value: unknown): string | null {
+  const cursor = decodeNullableText(value, 'next_cursor');
+  if (cursor !== null && !/^[0-9a-f]+$/.test(cursor)) throw new Error('Invalid run response: next_cursor is malformed');
+  return cursor;
+}
+
+function decodeStartedRun(value: unknown): StartedRun {
+  const run = object(value);
+  if (!run) throw new Error('Invalid run response: start receipt is malformed');
+  const state = decodeRunState(run.state, 'state');
+  if (state !== 'queued') throw new Error('Invalid run response: a new run must be queued');
+  if (!Number.isSafeInteger(run.revision)) throw new Error('Invalid run response: revision is malformed');
+  return {
+    run_id: requiredString(run.run_id, 'run_id'),
+    state: 'queued',
+    revision: decodeRunRevision(run.revision),
+    granted_actions: stringList(run.granted_actions, 'granted_actions'),
+    targets: decodeRunTargets(run.targets),
+    deadline_at: requiredString(run.deadline_at, 'deadline_at'),
+    phase: requiredString(run.phase, 'phase'),
+  };
+}
+
+function decodeRunList(value: unknown): RunList {
+  const list = object(value);
+  if (!list || !Array.isArray(list.items)) throw new Error('Invalid run response: run list is malformed');
+  return {
+    items: list.items.map((raw) => {
+      const item = object(raw);
+      if (!item || !Number.isSafeInteger(item.revision)) throw new Error('Invalid run response: run row is malformed');
+      return {
+        run_id: requiredString(item.run_id, 'run_id'),
+        state: decodeRunState(item.state, 'state'),
+        revision: decodeRunRevision(item.revision),
+        deadline_at: requiredString(item.deadline_at, 'deadline_at'),
+      };
+    }),
+    next_cursor: decodeNullableText(list.next_cursor, 'next_cursor'),
+  };
+}
+
+function decodeRunStatus(value: unknown): RunStatus {
+  const status = object(value);
+  if (!status || !Number.isSafeInteger(status.turn_count) || !Number.isSafeInteger(status.transcript_bytes)) {
+    throw new Error('Invalid run response: status is malformed');
+  }
+  return {
+    run_id: requiredString(status.run_id, 'run_id'),
+    state: decodeRunState(status.state, 'state'),
+    revision: decodeRunRevision(status.revision),
+    deadline_at: requiredString(status.deadline_at, 'deadline_at'),
+    turn_count: Number(status.turn_count),
+    transcript_bytes: Number(status.transcript_bytes),
+    wake_condition: decodeNullableText(status.wake_condition, 'wake_condition'),
+  };
+}
+
+function decodeTranscript(value: unknown): TranscriptPage {
+  const page = object(value);
+  if (!page || !Array.isArray(page.items)) throw new Error('Invalid run response: transcript is malformed');
+  return {
+    items: page.items.map((raw) => {
+      const turn = object(raw);
+      if (!turn || !Number.isSafeInteger(turn.turn_no) || !Number.isSafeInteger(turn.ordinal)
+        || !RUN_TRANSCRIPT_SPEAKERS.includes(turn.speaker as TranscriptTurn['speaker'])) {
+        throw new Error('Invalid run response: transcript turn is malformed');
+      }
+      return {
+        turn_no: Number(turn.turn_no),
+        speaker: turn.speaker as TranscriptTurn['speaker'],
+        ordinal: Number(turn.ordinal),
+        text: requiredString(turn.text, 'turn.text'),
+      };
+    }),
+    next_cursor: decodeRunCursor(page.next_cursor),
+  };
+}
+
+function decodeCancel(value: unknown): CancelRunResult {
+  const result = object(value);
+  if (!result || !['cancelled', 'unchanged'].includes(String(result.state))) {
+    throw new Error('Invalid run response: cancellation receipt is malformed');
+  }
+  return { run_id: requiredString(result.run_id, 'run_id'), state: result.state as CancelRunResult['state'] };
+}
+
+function runQuery(params: { status?: string; limit?: number; cursor?: string }): string {
+  const query = new URLSearchParams();
+  if (params.status) {
+    if (!RUN_STATES.includes(params.status as RunState)) throw new Error('Invalid run filter: unknown status');
+    query.set('status', params.status);
+  }
+  if (params.limit !== undefined) {
+    if (!Number.isSafeInteger(params.limit) || params.limit < 1 || params.limit > 20) throw new Error('Invalid run page: limit must be 1..20');
+    query.set('limit', String(params.limit));
+  }
+  if (params.cursor) query.set('cursor', params.cursor);
+  const text = query.toString();
+  return text ? `?${text}` : '';
+}
