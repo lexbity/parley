@@ -150,5 +150,65 @@ async fn p02_related_and_existing_edges() {
     )
     .await;
     assert_eq!(found.body["data"][0]["id"], node);
+    let artifact=request(&s,&sess,"POST","/api/v1/graph/related",Some(json!({"kind":"artifact","name":"Quoted fixture","related_entity_id":org,"verb":"could_help","occurrence_id":occurrence,"quote":quoted,"x":50,"y":30,"view_scope":"leads","view_id":org,"direction":"incoming","expected_parent_revision":1})),&[("Idempotency-Key",&next_key())]).await;
+    assert_eq!(artifact.status, 201, "{artifact:?}");
+    let aid = artifact.body["id"].as_str().unwrap();
+    let resource_path = format!("/api/v1/entities/{aid}");
+    let resource = request(&s, &sess, "GET", &resource_path, None, &[]).await;
+    assert_eq!(resource.body["data"]["title"], "Quoted fixture");
+    let renamed = request(
+        &s,
+        &sess,
+        "PATCH",
+        &resource_path,
+        Some(json!({"title":"CSV fixture","body":{}})),
+        &[
+            ("Idempotency-Key", &next_key()),
+            ("If-Match", resource.body["data"]["etag"].as_str().unwrap()),
+        ],
+    )
+    .await;
+    assert_eq!(renamed.status, 200, "{renamed:?}");
+    let root = request(
+        &s,
+        &sess,
+        "GET",
+        &format!("/api/v1/entities/{org}/dossier"),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(
+        root.body["data"]["associated_resources"][0]["paths"][0]["via"],
+        "edge"
+    );
+    let selected = request(
+        &s,
+        &sess,
+        "GET",
+        &format!("{resource_path}/dossier"),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(selected.body["data"]["entity"]["name"], "CSV fixture");
+    let card_title = request(
+        &s,
+        &sess,
+        "PATCH",
+        &resource_path,
+        Some(json!({"name":"Accepted fixture"})),
+        &[
+            ("Idempotency-Key", &next_key()),
+            (
+                "If-Match",
+                selected.body["data"]["entity"]["etag"].as_str().unwrap(),
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(card_title.status, 200, "{card_title:?}");
+    let card = request(&s, &sess, "GET", &resource_path, None, &[]).await;
+    assert_eq!(card.body["data"]["title"], "Accepted fixture");
     s.shutdown().await;
 }

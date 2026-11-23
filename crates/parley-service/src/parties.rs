@@ -616,7 +616,7 @@ async fn directory(
         let mut tx=s.workspace.pool().begin().await?;
         let cursor:i64=sqlx::query_scalar("SELECT COALESCE(MAX(cursor),0) FROM event").fetch_one(&mut *tx).await?;
         // sort is a closed enum above; all user-provided predicates are bound.
-        let mut query=sqlx::QueryBuilder::new("SELECT e.id,e.kind,e.name,e.focus,e.revision FROM entity e WHERE ");
+        let mut query=sqlx::QueryBuilder::new("SELECT e.id,e.kind,e.name,e.focus,e.revision FROM graph_card e WHERE ");
         if let Some(k)=q.kind {query.push("e.kind=").push_bind(k);}else{query.push("e.kind IN ('person','org')");}
         if let Some(t)=q.q.filter(|v|!v.is_empty()){query.push(" AND (instr(lower(e.name),lower(").push_bind(t.clone()).push("))>0 OR instr(lower(e.focus),lower(").push_bind(t).push("))>0)");}
         if let Some(b)=q.batch_id{query.push(" AND EXISTS(SELECT 1 FROM party_import_origin o WHERE o.party_id=e.id AND o.batch_id=").push_bind(b).push(")");}

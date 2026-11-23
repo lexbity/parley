@@ -346,14 +346,16 @@ pub struct DossierResource {
     pub id: String,
     pub title: String,
     pub kind: String,
-    pub opportunity_id: String,
-    pub opportunity_title: String,
+    pub opportunity_id: Option<String>,
+    pub opportunity_title: Option<String>,
+    pub paths: Vec<Value>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct EntityDossier {
     pub entity: EntityRecord,
     pub direct_links: Vec<DossierLink>,
+    pub import_origin: Option<Value>,
     pub files: Vec<DossierFile>,
     pub opportunities: Vec<DossierOpportunity>,
     pub associated_resources: Vec<DossierResource>,
@@ -873,7 +875,8 @@ impl Workspace {
         &self,
         kinds: &[&str],
     ) -> Result<Vec<EntityRecord>, WorkspaceError> {
-        let mut builder = sqlx::QueryBuilder::new("SELECT id,kind,name,focus,revision FROM entity");
+        let mut builder =
+            sqlx::QueryBuilder::new("SELECT id,kind,name,focus,revision FROM graph_card");
         if !kinds.is_empty() {
             builder.push(" WHERE kind IN (");
             let mut separated = builder.separated(", ");
@@ -903,7 +906,7 @@ impl Workspace {
     /// kind entity). None when the ID is unknown or belongs to a resource.
     pub async fn get_entity(&self, id: &str) -> Result<Option<EntityRecord>, WorkspaceError> {
         let row = sqlx::query_as::<_, (String, String, String, String, i64)>(
-            "SELECT id,kind,name,focus,revision FROM entity WHERE id=?",
+            "SELECT id,kind,name,focus,revision FROM graph_card WHERE id=?",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -984,7 +987,7 @@ impl Workspace {
             return Ok(record);
         }
         let row = sqlx::query_as::<_, (String, String, String, i64)>(
-            "SELECT kind,name,focus,revision FROM entity WHERE id=?",
+            "SELECT kind,name,focus,revision FROM graph_card WHERE id=?",
         )
         .bind(id)
         .fetch_optional(&mut *tx)
@@ -999,7 +1002,19 @@ impl Workspace {
         let next_focus = focus.unwrap_or(current_focus);
         let next_revision = revision + 1;
         let now = now_utc();
-        sqlx::query("UPDATE entity SET name=?,focus=?,revision=?,updated_at=? WHERE id=?")
+        let resource: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM resource WHERE id=?)")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+        if resource && next_name.chars().count() > 240 {
+            return Err(WorkspaceError::Invalid(
+                "Resource title exceeds 240 characters.".into(),
+            ));
+        }
+        if resource {
+            sqlx::query("UPDATE resource SET title=?,revision=revision+1,updated_at=? WHERE id=? AND title<>?").bind(&next_name).bind(&now).bind(id).bind(&next_name).execute(&mut *tx).await?;
+        }
+        sqlx::query("UPDATE entity SET name=CASE WHEN EXISTS(SELECT 1 FROM resource r WHERE r.id=entity.id) THEN '' ELSE ? END,focus=?,revision=?,updated_at=? WHERE id=?")
             .bind(&next_name)
             .bind(&next_focus)
             .bind(next_revision)
@@ -1231,34 +1246,50 @@ impl Workspace {
                 role,
             })
             .collect();
-        let resources = sqlx::query_as::<_, (String, String, String, String, String)>(
-            "SELECT r.id,r.title,r.kind,m.opportunity_id,o.title \
-             FROM resource r \
-             JOIN resource_use ru ON ru.resource_id=r.id \
-             JOIN material_version mv ON mv.material_id=ru.material_id AND mv.version_no=ru.version_no \
-             JOIN material m ON m.id=mv.material_id \
-             JOIN opportunity o ON o.id=m.opportunity_id \
-             JOIN opportunity_party op ON op.opportunity_id=o.id AND op.party_id=? \
-             WHERE o.state='open' \
-             GROUP BY r.id ORDER BY r.title COLLATE NOCASE LIMIT 60",
-        )
-        .bind(id)
-        .fetch_all(&self.pool)
-        .await?;
-        let associated_resources = resources
-            .into_iter()
-            .map(
-                |(resource_id, title, kind, opportunity_id, opportunity_title)| DossierResource {
+        let paths=sqlx::query_as::<_,(String,String,String,String,String,String)>(
+            "WITH paths AS (SELECT r.id,r.title,r.kind,'edge' AS via,eg.id AS hop,eg.verb AS label FROM edge eg JOIN resource r ON r.id=CASE WHEN eg.from_id=? THEN eg.to_id ELSE eg.from_id END WHERE (eg.from_id=? OR eg.to_id=?) AND eg.state='active' AND r.readiness<>'retired'
+            UNION SELECT r.id,r.title,r.kind,'opportunity',o.id,o.title FROM opportunity_party op JOIN opportunity o ON o.id=op.opportunity_id JOIN material m ON m.opportunity_id=o.id JOIN resource_use ru ON ru.material_id=m.id AND ru.version_no=m.head_version JOIN resource r ON r.id=ru.resource_id WHERE op.party_id=? AND o.state='open' AND r.readiness<>'retired')
+            SELECT * FROM paths WHERE id IN (SELECT id FROM paths GROUP BY id ORDER BY title COLLATE NOCASE,id LIMIT 60) ORDER BY title COLLATE NOCASE,id,via,hop")
+            .bind(id).bind(id).bind(id).bind(id).fetch_all(&self.pool).await?;
+        let mut associated_resources: Vec<DossierResource> = Vec::new();
+        for (resource_id, title, kind, via, hop, label) in paths {
+            if associated_resources
+                .last()
+                .is_none_or(|r| r.id != resource_id)
+            {
+                associated_resources.push(DossierResource {
                     id: resource_id,
                     title,
                     kind,
-                    opportunity_id,
-                    opportunity_title,
-                },
-            )
-            .collect();
+                    opportunity_id: None,
+                    opportunity_title: None,
+                    paths: vec![],
+                });
+            }
+            let resource = associated_resources
+                .last_mut()
+                .expect("resource group was initialized");
+            let path = if via == "edge" {
+                json!({"via":"edge","edge_id":hop,"verb":label,"participant_id":id})
+            } else {
+                resource.opportunity_id.get_or_insert_with(|| hop.clone());
+                resource
+                    .opportunity_title
+                    .get_or_insert_with(|| label.clone());
+                json!({"via":"opportunity","opportunity_id":hop,"opportunity_title":label,"participant_id":id})
+            };
+            resource.paths.push(path);
+        }
+        let import_origin = sqlx::query_as::<_, (String, i64)>(
+            "SELECT batch_id,source_record FROM party_import_origin WHERE party_id=?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(|(batch, record)| json!({"batch_id":batch,"source_record":record}));
         Ok(Some(EntityDossier {
             entity,
+            import_origin,
             direct_links,
             files,
             opportunities,
@@ -1273,21 +1304,21 @@ impl Workspace {
         view_id: &str,
     ) -> Result<GraphSnapshot, WorkspaceError> {
         let total_nodes = if let Some(center) = center_id {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM entity e WHERE e.id=? OR e.id IN (SELECT from_id FROM edge WHERE state='active' AND to_id=?) OR e.id IN (SELECT to_id FROM edge WHERE state='active' AND from_id=?)")
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM graph_card e WHERE e.id=? OR e.id IN (SELECT from_id FROM edge WHERE state='active' AND to_id=?) OR e.id IN (SELECT to_id FROM edge WHERE state='active' AND from_id=?)")
                 .bind(center).bind(center).bind(center).fetch_one(&self.pool).await?
         } else {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM entity")
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM graph_card")
                 .fetch_one(&self.pool)
                 .await?
         };
         let mut rows = if let Some(center) = center_id {
             sqlx::query_as::<_, (String, String, String, i64, f64, f64, i64)>(
-                "SELECT e.id,e.kind,e.name,e.revision,COALESCE(v.x,((ROW_NUMBER() OVER(ORDER BY e.name COLLATE NOCASE,e.id)-1)%8)*240.0),COALESCE(v.y,((ROW_NUMBER() OVER(ORDER BY e.name COLLATE NOCASE,e.id)-1)/8)*160.0),COALESCE(v.revision,0) FROM entity e LEFT JOIN view_position v ON v.entity_id=e.id AND v.view_scope=? AND v.view_id=? WHERE e.id=? OR e.id IN (SELECT from_id FROM edge WHERE state='active' AND to_id=?) OR e.id IN (SELECT to_id FROM edge WHERE state='active' AND from_id=?) ORDER BY (e.id=?) DESC,e.name COLLATE NOCASE,e.id LIMIT 201",
+                "SELECT e.id,e.kind,e.name,e.revision,COALESCE(v.x,((ROW_NUMBER() OVER(ORDER BY e.name COLLATE NOCASE,e.id)-1)%8)*240.0),COALESCE(v.y,((ROW_NUMBER() OVER(ORDER BY e.name COLLATE NOCASE,e.id)-1)/8)*160.0),COALESCE(v.revision,0) FROM graph_card e LEFT JOIN view_position v ON v.entity_id=e.id AND v.view_scope=? AND v.view_id=? WHERE e.id=? OR e.id IN (SELECT from_id FROM edge WHERE state='active' AND to_id=?) OR e.id IN (SELECT to_id FROM edge WHERE state='active' AND from_id=?) ORDER BY (e.id=?) DESC,e.name COLLATE NOCASE,e.id LIMIT 201",
             )
             .bind(view_scope).bind(view_id).bind(center).bind(center).bind(center).bind(center).fetch_all(&self.pool).await?
         } else {
             sqlx::query_as::<_, (String, String, String, i64, f64, f64, i64)>(
-                "SELECT e.id,e.kind,e.name,e.revision,COALESCE(v.x,((ROW_NUMBER() OVER(ORDER BY e.name COLLATE NOCASE,e.id)-1)%8)*240.0),COALESCE(v.y,((ROW_NUMBER() OVER(ORDER BY e.name COLLATE NOCASE,e.id)-1)/8)*160.0),COALESCE(v.revision,0) FROM entity e LEFT JOIN view_position v ON v.entity_id=e.id AND v.view_scope=? AND v.view_id=? ORDER BY e.name COLLATE NOCASE,e.id LIMIT 201",
+                "SELECT e.id,e.kind,e.name,e.revision,COALESCE(v.x,((ROW_NUMBER() OVER(ORDER BY e.name COLLATE NOCASE,e.id)-1)%8)*240.0),COALESCE(v.y,((ROW_NUMBER() OVER(ORDER BY e.name COLLATE NOCASE,e.id)-1)/8)*160.0),COALESCE(v.revision,0) FROM graph_card e LEFT JOIN view_position v ON v.entity_id=e.id AND v.view_scope=? AND v.view_id=? ORDER BY e.name COLLATE NOCASE,e.id LIMIT 201",
             )
             .bind(view_scope).bind(view_id).fetch_all(&self.pool).await?
         };
@@ -1748,6 +1779,25 @@ impl Workspace {
         name: &str,
         focus: &str,
     ) -> Result<EntityRecord, WorkspaceError> {
+        self.create_card(idempotency_key, kind, name, focus, "", &[])
+            .await
+    }
+
+    async fn create_card(
+        &self,
+        idempotency_key: &str,
+        kind: &str,
+        name: &str,
+        focus: &str,
+        notes: &str,
+        uploads: &[String],
+    ) -> Result<EntityRecord, WorkspaceError> {
+        if uploads.len() > 100 || notes.len() > 512 * 1024 {
+            return Err(WorkspaceError::Invalid(
+                "Card notes or file count exceeds the permitted limit.".into(),
+            ));
+        }
+        let notes = canonical_markdown(notes);
         if idempotency_key.trim().is_empty() || idempotency_key.len() > 200 {
             return Err(WorkspaceError::Invalid(
                 "idempotency key must contain 1–200 bytes".into(),
@@ -1766,7 +1816,11 @@ impl Workspace {
                 "focus exceeds 250 characters".into(),
             ));
         }
-        let canonical = digest(format!("entity\0{kind}\0{name}\0{focus}").as_bytes());
+        let canonical = digest(
+            json!(["create-card", kind, name, focus, notes, uploads])
+                .to_string()
+                .as_bytes(),
+        );
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         if let Some((old_digest, result)) = sqlx::query_as::<_, (String, String)>(
             "SELECT canonical_digest,result_json FROM idempotency_receipt WHERE owner_id=1 AND epoch=? AND key=?",
@@ -1787,18 +1841,22 @@ impl Workspace {
         let id = new_id(name);
         let now = now_utc();
         sqlx::query(
-            "INSERT INTO entity(id,kind,name,focus,revision,created_at,updated_at) VALUES(?,?,?,?,1,?,?)",
+            "INSERT INTO entity(id,kind,name,focus,notes_md,revision,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?)",
         )
         .bind(&id)
         .bind(kind)
         .bind(name)
         .bind(focus)
+        .bind(notes)
         .bind(&now)
         .bind(&now)
         .execute(&mut *tx)
         .await?;
         sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'entity',?,1,'entity.created','{}')")
             .bind(new_id(&id)).bind(&now).bind(&id).execute(&mut *tx).await?;
+        for upload in uploads {
+            parties::bind_upload(&mut tx, &id, upload).await?;
+        }
         let record = EntityRecord {
             id: id.clone(),
             kind: kind.to_owned(),
@@ -2503,9 +2561,13 @@ async fn list_entities(
             }
         }
     }
+    let already_listed: std::collections::HashSet<String> = items
+        .iter()
+        .filter_map(|v| v["id"].as_str().map(str::to_owned))
+        .collect();
     if !graph_kinds.is_empty() || kinds.is_empty() {
         match state.workspace.list_entities_filtered(&graph_kinds).await {
-            Ok(entities) => items.extend(entities.into_iter().map(|entity| {
+            Ok(entities) => items.extend(entities.into_iter().filter(|entity|!already_listed.contains(&entity.id)).map(|entity| {
                 json!({"id": entity.id, "kind": entity.kind, "name": entity.name, "focus": entity.focus, "revision": entity.revision, "etag": entity_etag(state.workspace.epoch(), &entity.id, entity.revision)})
             })),
             Err(_) => {
@@ -2532,7 +2594,12 @@ struct ResourceCreateInput {
     body: Value,
 }
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GraphEntityCreateInput {
+    #[serde(default)]
+    notes: String,
+    #[serde(default)]
+    staged_upload_ids: Vec<String>,
     kind: String,
     name: String,
     focus: Option<String>,
@@ -2621,11 +2688,13 @@ async fn create_entity(
         };
         match state
             .workspace
-            .create_entity(
+            .create_card(
                 &key,
                 &input.kind,
                 &input.name,
                 input.focus.as_deref().unwrap_or(""),
+                &input.notes,
+                &input.staged_upload_ids,
             )
             .await
         {
@@ -2713,6 +2782,7 @@ struct UpdateInput {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GraphEntityUpdateInput {
     name: Option<String>,
     focus: Option<String>,
@@ -2994,7 +3064,14 @@ async fn get_entity_dossier(
     }
     match state.workspace.entity_dossier(&id).await {
         Ok(Some(dossier)) => {
-            let mut response = Json(json!({"data": dossier})).into_response();
+            let etag = entity_etag(
+                state.workspace.epoch(),
+                &dossier.entity.id,
+                dossier.entity.revision,
+            );
+            let mut value = json!(dossier);
+            value["entity"]["etag"] = Value::String(etag);
+            let mut response = Json(json!({"data": value})).into_response();
             private_headers(&mut response, state.workspace.epoch());
             response
         }

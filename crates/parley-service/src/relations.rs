@@ -99,11 +99,12 @@ fn legal(from: &str, to: &str, verb: &str) -> bool {
 }
 
 async fn kind(tx: &mut Tx<'_>, id: &str, expected: Option<i64>) -> Result<String, WorkspaceError> {
-    let (kind, rev): (String, i64) = sqlx::query_as("SELECT kind,revision FROM entity WHERE id=?")
-        .bind(id)
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or(WorkspaceError::NotFound)?;
+    let (kind, rev): (String, i64) =
+        sqlx::query_as("SELECT kind,revision FROM graph_card WHERE id=?")
+            .bind(id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or(WorkspaceError::NotFound)?;
     if expected.is_some_and(|e| e != rev) {
         return Err(WorkspaceError::StaleRevision);
     }
@@ -287,7 +288,21 @@ async fn create_card(tx: &mut Tx<'_>, input: RelatedCard) -> Result<Value, Works
         ));
     }
     let now = now_utc();
-    sqlx::query("INSERT INTO entity(id,kind,name,revision,notes_md,created_at,updated_at) VALUES(?,?,?,1,?,?,?)").bind(&id).bind(&input.kind).bind(name).bind(canonical_markdown(&input.notes)).bind(&now).bind(now).execute(&mut **tx).await?;
+    if input.kind == "artifact" {
+        if name.chars().count() > 240 {
+            return Err(invalid("Resource title exceeds 240 characters."));
+        }
+        sqlx::query("INSERT INTO resource(id,kind,title,body_json,readiness,revision,created_at,updated_at) VALUES(?,'artifact',?,'{}','draft',1,?,?)")
+            .bind(&id).bind(name).bind(&now).bind(&now).execute(&mut **tx).await?;
+        sqlx::query("UPDATE entity SET notes_md=? WHERE id=?")
+            .bind(canonical_markdown(&input.notes))
+            .bind(&id)
+            .execute(&mut **tx)
+            .await?;
+        event(tx, "resource", &id, 1, "resource.created").await?;
+    } else {
+        sqlx::query("INSERT INTO entity(id,kind,name,revision,notes_md,created_at,updated_at) VALUES(?,?,?,1,?,?,?)").bind(&id).bind(&input.kind).bind(name).bind(canonical_markdown(&input.notes)).bind(&now).bind(now).execute(&mut **tx).await?;
+    }
     event(tx, "entity", &id, 1, "entity.created").await?;
     save_edge(
         tx,
