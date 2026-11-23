@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /* global MouseEvent, HTMLElement */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { parley, type AdminOperation, type ContactThread, type GraphEntity, type Material, type Opportunity, type ProviderConfig, type ReleasedMaterial, type Resource, type SavedSource } from '../api/client';
+import { parley, type AdminOperation, type ContactThread, type GraphEntity, type Material, type OpportunitySummary, type ProviderConfig, type ReleasedMaterial, type Resource, type SavedSource } from '../api/client';
 import { tabs } from './tabs';
 import { resolveRoute, routeForTab } from './router';
 import ResourcesWorkspace from '../features/resources/ResourcesWorkspace.vue';
@@ -24,6 +24,8 @@ const qualifiedTabs = tabs;
 const route = ref(resolveRoute(globalThis.location.pathname));
 const active = computed(() => route.value.tab);
 const writingOpen = ref(false);
+const writingMounted = ref(false);
+const writingToggle = ref<HTMLElement | null>(null);
 const outputStatus = ref('');
 const openedMaterials = ref(new Set<string>());
 const parties = ref<GraphEntity[]>([]);
@@ -41,15 +43,21 @@ const resourcesWorkspace = ref<InstanceType<typeof ResourcesWorkspace> | null>(n
 const partyDesk = ref<InstanceType<typeof PartyDesk> | null>(null);
 const lastTabPaths = new Map<string, string>();
 const sources = ref<SavedSource[]>([]);
-const opportunities = ref<Opportunity[]>([]);
+const opportunities = ref<OpportunitySummary[]>([]);
 const outputs = ref<Material[]>([]);
+const outputLoading = ref(false);
+const outputLoaded = ref(false);
+const outputError = ref('');
 const materialQuery = ref('');
+const materialSearch = ref<HTMLElement | null>(null);
+const outputStates = ['draft', 'approved', 'released'] satisfies Material['status'][];
+const opportunityTitles = computed(() => new Map(opportunities.value.map(item => [item.id, item.title])));
+const reviewedMaterials = computed(() => outputs.value.filter(material => openedMaterials.value.has(material.id)));
 const visibleOutputs = computed(() => {
   const query = materialQuery.value.trim().toLocaleLowerCase();
   return outputs.value.filter(material => {
     if (outputStatus.value && outputStatus.value !== material.status) return false;
-    const opportunity = opportunities.value.find(item => item.id === material.opportunity_id);
-    return [material.recipient_name, opportunity?.title, material.kind, material.status]
+    return [material.recipient_name, opportunityTitles.value.get(material.opportunity_id), material.kind, material.status, `v${material.version}`]
       .some(field => field?.toLocaleLowerCase().includes(query));
   });
 });
@@ -65,11 +73,19 @@ const connected = ref(false);
 const provider = ref<ProviderConfig>({ endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' });
 const providerHealth = ref('');
 const workspaceRefreshRequired = ref(false);
+const settingsSections = [
+  { id: 'settings-provider', label: 'Local provider' },
+  { id: 'settings-agent-policy', label: 'Role policy' },
+  { id: 'settings-capacity', label: 'Capacity ledger' },
+  { id: 'settings-packs', label: 'Packs' },
+  { id: 'settings-data', label: 'Backup and data' },
+];
 let adminChannel: InstanceType<typeof globalThis.BroadcastChannel> | null = null;
 
 let tabRequest = 0;
 async function refreshTab(tab = active.value) {
   const request = ++tabRequest;
+  if (tab === 'Output') { outputLoading.value = true; outputError.value = ''; }
   try {
     if (tab === 'Parties') {
       const result = await Promise.all([parley.listParties(), parley.listSources(), parley.listOpportunities()]);
@@ -78,14 +94,23 @@ async function refreshTab(tab = active.value) {
       const result = await Promise.all([parley.listParties(), parley.listOutputs()]);
       if (request === tabRequest) [parties.value, outputs.value] = result;
     } else if (tab === 'Output') {
-      const result = await Promise.all([parley.listParties(), parley.listOpportunities(), parley.listOutputs(), parley.listResources(), parley.listThreads()]);
-      if (request === tabRequest) [parties.value, opportunities.value, outputs.value, resources.value, threads.value] = result;
+      const result = await Promise.all([parley.listOpportunities(), parley.listOutputs(), parley.listResources(), parley.listThreads()]);
+      if (request === tabRequest) {
+        [opportunities.value, outputs.value, resources.value, threads.value] = result;
+        outputLoaded.value = true;
+      }
     } else if (tab === 'Settings') {
       const [directory] = await Promise.all([parley.listParties(), loadProvider()]);
       if (request === tabRequest) parties.value = directory;
     }
   } catch (reason) {
-    if (request === tabRequest) error.value = reason instanceof Error ? reason.message : `Could not load ${tab}.`;
+    if (request === tabRequest) {
+      const message = reason instanceof Error ? reason.message : `Could not load ${tab}.`;
+      if (tab === 'Output') outputError.value = message;
+      else error.value = message;
+    }
+  } finally {
+    if (tab === 'Output' && request === tabRequest) outputLoading.value = false;
   }
 }
 
@@ -115,6 +140,7 @@ function commitNavigation(path: string, replace: boolean) {
 function selectTab(tab: (typeof tabs)[number], event: MouseEvent) {
   if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
   event.preventDefault();
+  if (tab === route.value.tab) return;
   navigate(lastTabPaths.get(tab) ?? routeForTab(tab));
 }
 
@@ -129,34 +155,66 @@ function handlePopState() {
     if (target.path !== globalThis.location.pathname) globalThis.history.replaceState({ parleyIndex: historyIndex }, '', target.path);
   };
   if (allowPop) { allowPop = false; apply(); return; }
-  if (!resourcesWorkspace.value?.hasDraft || route.value.tab !== 'Resources') { apply(); return; }
+  const guarded = route.value.tab === 'Resources' ? resourcesWorkspace.value : route.value.tab === 'Parties' ? partyDesk.value : null;
+  if (!guarded?.hasDraft) { apply(); return; }
   if (delta) {
     returningFromPop = true;
     globalThis.history.go(-delta);
-    resourcesWorkspace.value.requestSwitch(() => {
+    guarded.requestSwitch(() => {
       allowPop = true;
       globalThis.history.go(delta);
     });
   } else {
     globalThis.history.replaceState({ parleyIndex: historyIndex }, '', route.value.path);
-    resourcesWorkspace.value.requestSwitch(() => commitNavigation(target.path, true));
+    guarded.requestSwitch(() => commitNavigation(target.path, true));
   }
 }
 
 async function focusRouteLocation() {
-  if (route.value.location === 'templates') writingOpen.value = true;
+  if (route.value.location === 'templates') {
+    showWriting();
+    return;
+  }
   if (route.value.tab === 'Output' && route.value.recordId) {
+    writingOpen.value = false;
     openedMaterials.value.add(route.value.recordId);
-    if (!visibleOutputs.value.some(item => item.id === route.value.recordId)) { materialQuery.value = ''; outputStatus.value = ''; }
   }
   await nextTick();
   const targetId = route.value.location === 'inbox' ? 'leads-inbox'
-    : route.value.location === 'templates' ? 'output-templates'
-      : route.value.tab === 'Output' && route.value.recordId ? `output-material-${route.value.recordId}` : null;
+    : route.value.tab === 'Output' && route.value.recordId ? `output-review-${route.value.recordId}` : null;
   if (!targetId) return;
   const target = globalThis.document.getElementById(targetId);
-  target?.scrollIntoView({ block: 'center' });
   target?.focus();
+}
+
+function goToSettings(id: string) {
+  globalThis.document.getElementById(id)?.focus();
+}
+function showWriting() {
+  writingMounted.value = true;
+  writingOpen.value = true;
+  void nextTick(() => {
+    const id = route.value.location === 'templates' ? 'output-templates' : 'writing-heading';
+    globalThis.document.getElementById(id)?.focus();
+  });
+}
+function closeWriting() {
+  writingOpen.value = false;
+  if (route.value.location === 'templates') navigate('/output');
+  void nextTick(() => writingToggle.value?.focus());
+}
+function clearMaterialFilters() {
+  materialQuery.value = '';
+  outputStatus.value = '';
+  void nextTick(() => materialSearch.value?.focus());
+}
+function closeMaterial() {
+  const id = route.value.recordId;
+  navigate('/output');
+  void nextTick(() => {
+    const trigger = id ? globalThis.document.getElementById(`output-material-${id}`) : null;
+    (trigger ?? materialSearch.value)?.focus();
+  });
 }
 
 async function loadProvider() {
@@ -180,6 +238,7 @@ async function checkProvider() {
 function installMaterial(updated: Material) {
   const index = outputs.value.findIndex((item) => item.id === updated.id);
   if (index >= 0) outputs.value[index] = updated;
+  else outputs.value = [updated, ...outputs.value];
   if (deliveredReleases.value[updated.id]?.version !== updated.version) delete deliveredReleases.value[updated.id];
 }
 
@@ -243,7 +302,10 @@ watch([connected, active], async ([ready, tab]) => {
   await refreshTab(tab);
   if (active.value === tab) void focusRouteLocation();
 });
-watch(() => route.value.recordId, () => { void focusRouteLocation(); });
+watch(route, (current, previous) => {
+  if (current.tab === 'Output' && current.location !== 'templates' && previous.location === 'templates') writingOpen.value = false;
+  void focusRouteLocation();
+});
 </script>
 
 <template>
@@ -343,69 +405,106 @@ watch(() => route.value.recordId, () => { void focusRouteLocation(); });
       />
       <section
         v-if="active === 'Settings'"
-        aria-labelledby="settings-heading"
+        class="settings-workspace"
+        aria-label="Workspace settings"
       >
-        <h2 id="settings-heading">
-          Local agent settings
-        </h2>
-        <p>Extractor runs only through a loopback provider. Manual capture, review, and other workspace actions remain available when the model is unavailable.</p>
-        <form @submit.prevent="saveProvider">
-          <label>Local endpoint<input
-            v-model="provider.endpoint"
-            required
-            autocomplete="off"
-          ></label>
-          <label>Installed model tag<input
-            v-model="provider.model"
-            required
-            autocomplete="off"
-          ></label>
-          <label>Context budget<input
-            v-model.number="provider.num_ctx"
-            type="number"
-            min="2048"
-            max="131072"
-            required
-          ></label>
-          <label>Output budget<input
-            v-model.number="provider.num_predict"
-            type="number"
-            min="64"
-            max="8192"
-            required
-          ></label>
-          <label>Evaluated language tag<input
-            v-model="provider.locale"
-            required
-            maxlength="40"
-          ></label>
-          <button
-            type="submit"
-            :disabled="busy"
+        <nav
+          class="settings-index"
+          aria-label="Settings sections"
+        >
+          <a
+            v-for="section in settingsSections"
+            :key="section.id"
+            :href="'#' + section.id"
+            @click.prevent="goToSettings(section.id)"
           >
-            Save provider
-          </button>
-          <button
-            type="button"
-            :disabled="busy"
-            @click="checkProvider"
+            {{ section.label }}
+          </a>
+        </nav>
+        <div class="settings-panels">
+          <section
+            id="settings-provider"
+            tabindex="-1"
+            aria-labelledby="settings-heading"
           >
-            Check local model
-          </button>
-          <p
-            v-if="providerHealth"
-            role="status"
-          >
-            {{ providerHealth }}
-          </p>
-        </form>
-        <AgentPolicySettings />
-        <CapacitySettings />
-        <Packs />
-        <MaintenanceSettings
-          :parties="parties"
-          @erased="refreshTab"
-        />
+            <h2 id="settings-heading">
+              Local provider
+            </h2>
+            <p>Configure the Extractor’s local model and check its connection.</p>
+            <form @submit.prevent="saveProvider">
+              <label>Local endpoint<input
+                v-model="provider.endpoint"
+                required
+                autocomplete="off"
+              ></label>
+              <label>Installed model tag<input
+                v-model="provider.model"
+                required
+                autocomplete="off"
+              ></label>
+              <label>Context budget<input
+                v-model.number="provider.num_ctx"
+                type="number"
+                min="2048"
+                max="131072"
+                required
+              ></label>
+              <label>Output budget<input
+                v-model.number="provider.num_predict"
+                type="number"
+                min="64"
+                max="8192"
+                required
+              ></label>
+              <label>Evaluated language tag<input
+                v-model="provider.locale"
+                required
+                maxlength="40"
+              ></label>
+              <div class="provider-actions">
+                <button
+                  class="primary"
+                  type="submit"
+                  :disabled="busy"
+                >
+                  Save provider
+                </button>
+                <button
+                  type="button"
+                  :disabled="busy"
+                  @click="checkProvider"
+                >
+                  Check local model
+                </button>
+              </div>
+              <p
+                v-if="providerHealth"
+                class="provider-health"
+                role="status"
+              >
+                {{ providerHealth }}
+              </p>
+            </form>
+          </section>
+          <AgentPolicySettings
+            id="settings-agent-policy"
+            tabindex="-1"
+          />
+          <CapacitySettings
+            id="settings-capacity"
+            tabindex="-1"
+          />
+          <Packs
+            id="settings-packs"
+            tabindex="-1"
+          />
+          <MaintenanceSettings
+            id="settings-data"
+            tabindex="-1"
+            :parties="parties"
+            @erased="refreshTab"
+          />
+        </div>
       </section>
       <div
         v-if="openedTabs.has('Queue')"
@@ -416,120 +515,268 @@ watch(() => route.value.recordId, () => { void focusRouteLocation(); });
           :outputs="outputs"
           :active="active === 'Queue'"
           :route-id="route.tab === 'Queue' ? route.recordId : null"
-          @material-updated="installMaterial"
           @navigate="navigate"
         />
       </div>
-      <section
-        v-if="active === 'Output'"
-        aria-labelledby="output-heading"
+      <div
+        v-if="openedTabs.has('Output')"
+        v-show="active === 'Output'"
+        class="output-workspace"
       >
-        <h2
-          id="output-heading"
-          class="sr-only"
-        >
-          Approved materials
-        </h2>
-        <div class="office-tools">
+        <div class="output-tools">
           <button
+            ref="writingToggle"
             class="primary"
+            type="button"
             :aria-expanded="writingOpen"
-            @click="writingOpen = !writingOpen"
+            @click="writingOpen ? closeWriting() : showWriting()"
           >
-            Create output
+            {{ writingOpen ? 'Back to materials' : 'Create output' }}
           </button>
-          <button @click="writingOpen = true; navigate('/output/templates')">
+          <button
+            v-if="route.location !== 'templates'"
+            type="button"
+            @click="navigate('/output/templates')"
+          >
             Manage templates
           </button>
-          <input
-            v-model="materialQuery"
-            aria-label="Find materials"
-            type="search"
-            placeholder="Find material, opportunity or contact"
-          >
-          <select
-            v-model="outputStatus"
-            aria-label="Filter material status"
-          >
-            <option value="">
-              All statuses
-            </option><option
-              v-for="state in ['draft','approved','released']"
-              :key="state"
-            >
-              {{ state }}
-            </option>
-          </select>
         </div>
-        <div
-          class="registry"
-          tabindex="0"
-          role="region"
-          aria-label="Material registry"
+        <p
+          v-if="outputError"
+          role="alert"
+          class="output-notice"
         >
-          <table>
-            <thead><tr><th>Material</th><th>Opportunity</th><th>Contact</th><th>Status</th><th>Release</th></tr></thead><tbody>
-              <template
-                v-for="material in visibleOutputs"
-                :key="material.id"
-              >
-                <tr
-                  :id="`output-material-${material.id}`"
-                  tabindex="-1"
+          {{ outputError }}
+          <button
+            type="button"
+            @click="refreshTab('Output')"
+          >
+            Retry
+          </button>
+        </p>
+        <div
+          v-show="!writingOpen"
+          class="output-layout"
+          :class="{ 'review-open': route.tab === 'Output' && !!route.recordId }"
+        >
+          <section
+            class="registry"
+            aria-label="Material registry"
+          >
+            <div class="output-filters">
+              <label>Find materials
+                <input
+                  ref="materialSearch"
+                  v-model="materialQuery"
+                  type="search"
+                  placeholder="Material, opportunity or contact"
                 >
-                  <td>
-                    <button @click="navigate('/output/' + encodeURIComponent(material.id))">
+              </label>
+              <label>Status
+                <select
+                  v-model="outputStatus"
+                  aria-label="Filter material status"
+                >
+                  <option value="">All statuses</option>
+                  <option
+                    v-for="state in outputStates"
+                    :key="state"
+                    :value="state"
+                  >{{ state }}</option>
+                </select>
+              </label>
+            </div>
+            <p
+              v-if="outputLoading && !outputLoaded"
+              role="status"
+              class="output-notice"
+            >
+              Loading materials…
+            </p>
+            <div
+              v-else-if="outputLoaded"
+              class="registry-scroll"
+            >
+              <table role="table">
+                <thead role="rowgroup">
+                  <tr role="row">
+                    <th
+                      scope="col"
+                      role="columnheader"
+                    >
+                      Material
+                    </th>
+                    <th
+                      scope="col"
+                      role="columnheader"
+                    >
+                      Opportunity
+                    </th>
+                    <th
+                      scope="col"
+                      role="columnheader"
+                    >
+                      Contact
+                    </th>
+                    <th
+                      scope="col"
+                      role="columnheader"
+                    >
+                      Status
+                    </th>
+                    <th
+                      scope="col"
+                      role="columnheader"
+                    >
+                      Release
+                    </th>
+                  </tr>
+                </thead>
+                <tbody role="rowgroup">
+                  <tr
+                    v-for="material in visibleOutputs"
+                    :key="material.id"
+                    role="row"
+                    :class="{ selected: route.tab === 'Output' && route.recordId === material.id }"
+                  >
+                    <th
+                      scope="row"
+                      role="rowheader"
+                    >
                       {{ material.kind }} · v{{ material.version }}
-                    </button>
-                  </td><td>
-                    <button @click="navigate('/queue/' + encodeURIComponent(material.opportunity_id))">
-                      {{ opportunities.find(item => item.id === material.opportunity_id)?.title || material.opportunity_id }}
-                    </button>
-                  </td><td>{{ material.recipient_name }}</td><td>{{ material.status }}</td><td>
-                    <button @click="navigate('/output/' + encodeURIComponent(material.id))">
-                      Review
-                    </button>
-                  </td>
-                </tr>
-                <tr
-                  v-if="openedMaterials.has(material.id)"
-                  v-show="route.recordId === material.id"
+                    </th>
+                    <td
+                      role="cell"
+                      class="material-opportunity"
+                    >
+                      <button
+                        v-if="opportunityTitles.has(material.opportunity_id)"
+                        type="button"
+                        class="text-action"
+                        @click="navigate('/queue/' + encodeURIComponent(material.opportunity_id))"
+                      >
+                        {{ opportunityTitles.get(material.opportunity_id) }}
+                      </button>
+                      <span v-else>Unavailable</span>
+                    </td>
+                    <td
+                      role="cell"
+                      class="material-recipient"
+                    >
+                      {{ material.recipient_name }}
+                    </td>
+                    <td
+                      role="cell"
+                      class="material-status"
+                    >
+                      {{ material.status }}
+                    </td>
+                    <td
+                      role="cell"
+                      class="material-review"
+                    >
+                      <button
+                        :id="`output-material-${material.id}`"
+                        type="button"
+                        :aria-label="`Review ${material.kind} v${material.version} for ${material.recipient_name}`"
+                        :aria-pressed="route.tab === 'Output' && route.recordId === material.id"
+                        @click="navigate('/output/' + encodeURIComponent(material.id))"
+                      >
+                        Review
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <div
+                v-if="!visibleOutputs.length"
+                class="output-notice"
+              >
+                <p>{{ outputs.length ? 'No matching materials.' : 'No materials yet.' }}</p>
+                <button
+                  v-if="materialQuery || outputStatus"
+                  type="button"
+                  @click="clearMaterialFilters"
                 >
-                  <td colspan="5">
-                    <button @click="navigate('/output')">
-                      Close material
-                    </button>
-                    <MaterialActions
-                      :material="material"
-                      @updated="installMaterial"
-                      @delivered="deliveredReleases[material.id] = $event"
-                    />
-                    <ContactThreadPanel
-                      :opportunity-id="material.opportunity_id"
-                      :material="material"
-                      :delivered="deliveredReleases[material.id] ?? null"
-                      :threads="threads"
-                      @changed="refreshTab"
-                    />
-                  </td>
-                </tr>
-              </template>
-              <tr v-if="!visibleOutputs.length">
-                <td colspan="5">
-                  {{ outputs.length ? 'No matching materials.' : 'No materials yet.' }}
-                </td>
-              </tr>
-            </tbody>
-          </table>
+                  Clear filters
+                </button>
+              </div>
+            </div>
+          </section>
+          <aside
+            class="output-review"
+            aria-label="Material review"
+          >
+            <section
+              v-for="material in reviewedMaterials"
+              v-show="route.tab === 'Output' && route.recordId === material.id"
+              :key="material.id"
+              class="material-detail"
+              :aria-labelledby="`output-review-${material.id}`"
+              @keydown.esc.stop="closeMaterial"
+            >
+              <header class="material-heading">
+                <div>
+                  <small>{{ material.recipient_name }}</small>
+                  <h3
+                    :id="`output-review-${material.id}`"
+                    tabindex="-1"
+                  >
+                    {{ material.kind }} · v{{ material.version }}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  @click="closeMaterial"
+                >
+                  Close material
+                </button>
+              </header>
+              <div class="material-workflow">
+                <MaterialActions
+                  :material="material"
+                  @updated="installMaterial"
+                  @delivered="deliveredReleases[material.id] = $event"
+                />
+                <ContactThreadPanel
+                  :opportunity-id="material.opportunity_id"
+                  :material="material"
+                  :delivered="deliveredReleases[material.id] ?? null"
+                  :threads="threads"
+                  @changed="refreshTab('Output')"
+                />
+              </div>
+            </section>
+            <div
+              v-if="route.tab !== 'Output' || !route.recordId"
+              class="output-notice"
+            >
+              <h3>Material review</h3>
+              <p>Select a version to review its content, release checks, and contact thread.</p>
+            </div>
+            <div
+              v-else-if="outputLoaded && !outputs.some(material => material.id === route.recordId)"
+              class="output-notice"
+            >
+              <h3>Material unavailable</h3>
+              <button
+                type="button"
+                @click="closeMaterial"
+              >
+                Back to materials
+              </button>
+            </div>
+          </aside>
         </div>
         <WritingWorkspace
+          v-if="writingMounted"
           v-show="writingOpen"
           :opportunities="opportunities"
-          :parties="parties"
           :resources="resources"
           :outputs="outputs"
+          @saved="refreshTab('Output')"
         />
-      </section>
+      </div>
     </template>
     <p
       v-else-if="!error"
@@ -561,13 +808,9 @@ button:not(:disabled):hover, .app-header a:hover { background: #eaf0eb; }
 button:not(:disabled):active { background: #d6e5da; }
 button[aria-pressed="true"], button[aria-current="true"] { background: #deebe2; box-shadow: inset 3px 0 #367757; }
 :focus-visible { outline: 2px solid #32735b; outline-offset: 2px; }
-.workspace-grid, .lead-desk { display: grid; gap: .85rem; align-items: start; }
+.workspace-grid { display: grid; gap: .85rem; align-items: start; }
 .workspace-grid { grid-template-columns: repeat(auto-fit,minmax(min(100%, 19rem),1fr)); }
-.lead-desk { grid-template-columns: minmax(14rem, 1fr) minmax(0, 3fr); }
-.lead-desk > section, .lead-desk aside, form, section section, .record-card { min-width: 0; background: white; border: 1px solid #d1dbd2; border-radius: .45rem; padding: .8rem; }
-.directory-rows, .output-list { list-style: none; padding: 0; }
-.directory-rows { max-height: 40vh; overflow: auto; }
-.directory-rows button { width: 100%; text-align: left; }
+form, section section, .record-card { min-width: 0; background: white; border: 1px solid #d1dbd2; border-radius: .45rem; padding: .8rem; }
 label { display: grid; gap: .2rem; margin: .48rem 0; }
 input, select, textarea { min-width: 0; width: 100%; padding: .38rem .5rem; border: 1px solid #95a59a; border-radius: .32rem; background: white; }
 input:is([type="checkbox"],[type="radio"]) { width: auto; justify-self: start; accent-color: #276348; }
@@ -575,8 +818,12 @@ small { color: #58665f; } .record-card { margin: .55rem 0; overflow-wrap: anywhe
 @media (prefers-reduced-motion: no-preference) {
   button, .app-header a, input, textarea, select { transition: background-color 120ms ease-out, border-color 120ms ease-out, box-shadow 120ms ease-out; }
 }
-@media (max-width: 54rem) { .lead-desk { grid-template-columns: 1fr; } }
-@media (max-width: 38rem) { .app-header { flex-wrap: wrap; gap: 0; } .app-header nav { flex-basis: 100%; } .app-header > strong { margin-top: .35rem; } }
+@media (max-width: 38rem) {
+  .app-header { flex-wrap: wrap; gap: 0; }
+  .app-header nav { flex-basis: 100%; min-width: 0; }
+  .app-header a { justify-content: center; flex: 1 0 auto; padding-inline: .42rem; }
+  .app-header > strong { margin-top: .35rem; }
+}
 
 :root { background:#f8f7f3; }
 .app-header { min-height:54px; }
@@ -586,37 +833,87 @@ small { color: #58665f; } .record-card { margin: .55rem 0; overflow-wrap: anywhe
 .resource-agent { position: absolute; z-index: 10; inset-inline-end: 0; inset-block-start: 0; width: min(31rem, 100%); max-height: min(46rem, 80dvh); overflow: auto; background: #fffdf7; border: 1px solid #abbcac; border-radius: .55rem; box-shadow: 0 9px 36px #173b2940; }
 .resource-agent > .close-agent { display: block; margin: .65rem .75rem .25rem auto; }
 .resource-agent .chat-pane { padding: 0; border: 0; background: transparent; }
-.lead-desk { grid-template-columns:minmax(12rem,.8fr) minmax(0,2.2fr) minmax(15rem,1fr); align-items:stretch; }
-.lead-desk > section, .lead-desk aside, .lead-chat-column { background:white; border:1px solid #ccd5cc; border-radius:.55rem; padding:0; min-width:0; }
-.lead-desk aside > section, .lead-chat-column section { border:0; border-radius:0; }
-.lead-desk aside > section { padding:0; }
-.lead-desk aside label,.lead-desk aside p { margin:.6rem; }
 .pane-bar {display:flex;align-items:center;justify-content:space-between;gap:.5rem;padding:.8rem 1rem;border-bottom:1px solid #dce2db;}
 .pane-bar h2 {font-size:1rem;margin:0}
-.pane-bar select,.office-tools select,.office-tools input,.queue-filter-sort input {width:auto;max-width:100%}
+.pane-bar select {width:auto;max-width:100%}
 .pane-bar small {text-transform:uppercase;font-size:.7rem;letter-spacing:.08em}
 .primary,.queue-views button[aria-pressed=true] {background:#235e51;color:white;border-color:#235e51;}
 .primary:not(:disabled):hover {background:#174b40}
 .chat-pane {display:flex;flex-direction:column;min-width:0;}
 .chat-prompt {margin:1rem;padding:.7rem;background:#f2f4ed;border-radius:.4rem}
-.chat-options,.resource-directory,.graph-inspector,.evidence-strip,.lead-chat-column > details {padding:.7rem 1rem;}
+.chat-options,.resource-directory,.graph-inspector {padding:.7rem 1rem;}
 .start-chat {align-self:flex-end;margin:auto 1rem 1rem;}
 .chat-pane .interviewer-grid {padding:.7rem;}
-.directory-rows li button {border:0;border-top:1px solid #e3e9e2;border-radius:0;padding:.55rem .85rem;}
-.directory-rows small {display:block;}
-.office-tools,.queue-views,.queue-filter-sort {display:flex;flex-wrap:wrap;align-items:center;gap:.45rem;margin:.5rem 0;}
-.registry {background:white;border:1px solid #ccd5cc;border-radius:.5rem;padding:.6rem 1rem;overflow-x:auto}
-.registry table {border-collapse:collapse;width:100%;text-align:left;}
-.registry th,.registry td {padding:.65rem .4rem;border-bottom:1px solid #e0e5df}
 .sr-only {position:absolute;clip-path:inset(50%);height:1px;width:1px;overflow:hidden;white-space:nowrap;}
-@media(max-width:800px){.lead-desk{grid-template-columns:minmax(0,1fr)}.chat-pane {min-height:18rem}}
+@media(max-width:800px){.chat-pane {min-height:18rem}}
 
 .chat-composer {margin-top:auto;padding:.8rem;border:0;border-top:1px solid #dce2db;border-radius:0;}
 .chat-composer textarea {resize:vertical;}
 .chat-composer > div {display:flex;gap:.5rem;align-items:center}
 .chat-composer .primary {margin-left:auto;}
-.lead-chat-column {display:flex;flex-direction:column;}
-.lead-chat-column > .chat-pane {flex:1;padding:0;}
-.lead-desk {min-height:min(73vh,52rem);}
 .resource-directory,.graph-inspector {border-top:1px solid #dce2db;}
+</style>
+
+<style scoped>
+.output-workspace, .settings-workspace { --line: #c7d1c3; --panel: #fffef9; --muted: #53665b; }
+.output-tools { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: .85rem; }
+.output-tools button, .material-heading button, .output-filters input, .output-filters select { min-height: 2.5rem; }
+.output-layout { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); align-items: start; gap: 1rem; }
+.registry, .output-review { min-width: 0; padding: 0; border: 1px solid var(--line); border-radius: .55rem; background: var(--panel); overflow: hidden; }
+.output-filters { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: .65rem; padding: .8rem 1rem; }
+.output-filters label { margin: 0; }
+.registry-scroll { overflow: auto; max-height: min(66dvh, 46rem); }
+.registry table { border-collapse: separate; border-spacing: 0; table-layout: fixed; width: 100%; text-align: left; }
+.registry th, .registry td { padding: .75rem .6rem; border-top: 1px solid #d7dcd1; vertical-align: top; overflow-wrap: anywhere; }
+.registry th:first-child { padding-inline-start: 1rem; }
+.registry thead th { position: sticky; top: 0; z-index: 1; color: #445b4d; background: #f0f2e9; font: .83rem/1.5 ui-monospace, monospace; }
+.registry thead th:nth-child(2) { width: 29%; }
+.registry thead th:nth-child(4) { width: 15%; }
+.registry thead th:last-child { width: 17%; }
+.registry tbody th { font-weight: 650; }
+.registry tr.selected { background: #e8efe6; }
+.material-status { text-transform: capitalize; }
+.text-action { background: transparent; color: #225744; border: 0; padding: 0; text-align: left; overflow-wrap: anywhere; }
+.text-action:hover { text-decoration: underline; }
+.output-notice { padding: .7rem 1rem; margin: 0; overflow-wrap: anywhere; color: var(--muted); }
+.output-notice h3 { color: #182d25; }
+.material-detail { border: 0; padding: 0; border-radius: 0; background: none; }
+.material-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: start; gap: .55rem; padding: .9rem 1rem; border-bottom: 1px solid var(--line); background: #edf2e8; overflow-wrap: anywhere; }
+.material-heading h3 { margin: 0; font: 1.75rem/1.17 Georgia, serif; }
+.material-workflow { display: grid; gap: .65rem; min-width: 0; padding: .8rem; overflow-wrap: anywhere; }
+.material-workflow :deep(button) { margin-block: .15rem; }
+.settings-workspace { display: grid; grid-template-columns: minmax(11rem, 13rem) minmax(0, 1fr); align-items: start; gap: 1rem; }
+.settings-index { position: sticky; top: .75rem; display: grid; gap: .15rem; padding: .45rem; background: var(--panel); border: 1px solid var(--line); border-radius: .55rem; }
+.settings-index a { display: block; padding: .6rem .7rem; color: #225744; border-radius: .3rem; text-decoration: none; }
+.settings-index a:hover { background: #edf2e8; text-decoration: underline; }
+.settings-panels { min-width: 0; display: grid; gap: .85rem; }
+.settings-panels > section { margin: 0; padding: clamp(.85rem, 2vw, 1.3rem); border: 1px solid var(--line); border-radius: .55rem; background: var(--panel); scroll-margin-top: .75rem; overflow-wrap: anywhere; }
+.settings-panels > section > :is(h2, h3):first-child { margin: 0 0 .6rem; font: 1.65rem/1.2 Georgia, serif; }
+#settings-provider form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem .75rem; border: 0; background: transparent; padding: 0; }
+#settings-provider label { margin: 0; }
+#settings-provider label:first-child { grid-column: 1 / -1; }
+#settings-provider input, #settings-provider button { min-height: 2.5rem; }
+.provider-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: .45rem; }
+.provider-health { grid-column: 1 / -1; }
+@media (max-width: 1020px) {
+  .output-layout { grid-template-columns: minmax(0, 1fr); }
+  .output-layout:not(.review-open) .output-review, .output-layout.review-open .registry { display: none; }
+}
+@media (max-width: 680px) {
+  .settings-workspace { grid-template-columns: minmax(0, 1fr); }
+  .settings-index { position: static; display: flex; flex-wrap: wrap; }
+  .registry-scroll { max-height: none; }
+  .registry table, .registry tbody { display: block; }
+  .registry thead { position: absolute; clip-path: inset(50%); width: 1px; height: 1px; overflow: hidden; white-space: nowrap; }
+  .registry tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .25rem .6rem; padding: .7rem .85rem; border-top: 1px solid #d7dcd1; }
+  .registry tbody th, .registry tbody td { padding: 0; border: 0; }
+  .material-opportunity, .material-recipient { grid-column: 1 / -1; color: var(--muted); }
+  .material-status { grid-column: 2; grid-row: 1; text-align: end; }
+  .material-review { grid-column: 2; justify-self: end; }
+  .material-review button { min-height: 2.4rem; }
+}
+@media (max-width: 430px) {
+  #settings-provider form { grid-template-columns: minmax(0, 1fr); }
+  .output-filters { grid-template-columns: minmax(0, 1fr); }
+}
 </style>

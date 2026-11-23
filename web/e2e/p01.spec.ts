@@ -10,7 +10,7 @@ test('p01_party_sheet_rename_alias_focus_edit_and_card_notes', async ({ page }) 
 
   const suffix = randomUUID();
   const orgName = `Fieldwork ${suffix}`;
-  await addParty(page, orgName, 'org');
+  await addParty(page, orgName, 'org', 'Welcomes **fixtures**.');
   const region = partiesRegion(page);
   const row = region.getByRole('button', { name: orgName });
   await expect(row).toBeVisible();
@@ -26,9 +26,16 @@ test('p01_party_sheet_rename_alias_focus_edit_and_card_notes', async ({ page }) 
 
   // The card editor opens anchored to the selected node and shows notes.
   await region.getByRole('button', { name: 'Open card' }).click();
-  await expect(page.getByRole('region', { name: 'Card editor' })).toBeVisible();
+  const editor = page.getByRole('region', { name: 'Card editor' });
+  await expect(editor).toBeVisible();
   await expect(page.getByRole('heading', { name: /Edit card ·/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Save notes' })).toBeVisible();
+  const notes = editor.getByRole('textbox', { name: 'Owner notes' });
+  await expect(notes).toHaveText('Welcomes **fixtures**.');
+  await expect(notes).toHaveCSS('font-family', /monospace/);
+  await notes.fill('Welcomes **multiline fixtures**.');
+  await editor.getByText('Preview Markdown', { exact: true }).click();
+  await expect(editor.locator('strong')).toHaveText('multiline fixtures');
+  await expect(deskStatus(page)).toContainText('Notes saved.');
 
   // Tab switcher and the graph heading use the renamed surface.
   await page.getByRole('link', { name: 'Resources' }).click();

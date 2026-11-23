@@ -34,7 +34,7 @@ describe('PartyDesk', () => {
     await wrapper.findAll('.row-party')[0]!.trigger('click');
     await flushPromises();
     expect(getDossier).toHaveBeenCalledWith('p1');
-    expect(wrapper.text()).toContain('Inspector');
+    expect(wrapper.text()).toContain('Selected card');
     expect(wrapper.text()).toContain('Fieldwork');
     // A different row replaces root and selection.
     await wrapper.findAll('.row-party')[1]!.trigger('click');
@@ -70,11 +70,7 @@ describe('PartyDesk', () => {
     await flushPromises();
     expect(parley.getEntityNotes).toHaveBeenCalledWith('p1');
     expect(wrapper.text()).toContain('Edit card · Fieldwork');
-    // Drive a deterministic document change through the CodeMirror view so the
-    // draft differs from the loaded revision and Save is enabled.
-    const editor = wrapper.findComponent(MarkdownEditor);
-    const view = (editor.vm as { getView(): { state: { doc: { toString(): string } }; dispatch(options: object): void } }).getView();
-    view.dispatch({ changes: { from: 0, to: view.state.doc.toString().length, insert: 'New owner note\n' } });
+    wrapper.getComponent(MarkdownEditor).vm.$emit('update:modelValue', 'New owner note\n');
     await flushPromises();
     const saveNotes = wrapper.findAll('button').find((button) => button.text() === 'Save notes')!;
     await saveNotes.trigger('click');
@@ -128,9 +124,7 @@ describe('PartyDesk', () => {
     await wrapper.findAll('button').find((button) => button.text() === 'Open card')!.trigger('click');
     await flushPromises();
     expect(wrapper.text()).toContain('dossier unavailable');
-    const editor = wrapper.findComponent(MarkdownEditor);
-    const view = (editor.vm as { getView(): { state: { doc: { toString(): string } }; dispatch(options: object): void } }).getView();
-    view.dispatch({ changes: { from: 0, to: view.state.doc.toString().length, insert: 'New owner note\n' } });
+    wrapper.getComponent(MarkdownEditor).vm.$emit('update:modelValue', 'New owner note\n');
     await vi.advanceTimersByTimeAsync(800);
     await flushPromises();
     expect(updateNotes).toHaveBeenCalledWith('p1', 'New owner note\n', 1, '"p1.epoch.notes.p1.1"', expect.any(String));
@@ -190,9 +184,7 @@ describe('PartyDesk', () => {
     await flushPromises();
     await wrapper.findAll('button').find((button) => button.text() === 'Open card')!.trigger('click');
     await flushPromises();
-    const editor = wrapper.findComponent(MarkdownEditor);
-    const view = (editor.vm as { getView(): { state: { doc: { toString(): string } }; dispatch(options: object): void } }).getView();
-    view.dispatch({ changes: { from: 0, to: view.state.doc.toString().length, insert: 'New note\n' } });
+    wrapper.getComponent(MarkdownEditor).vm.$emit('update:modelValue', 'New note\n');
     await flushPromises();
     await wrapper.findAll('button').find((button) => button.text() === 'Save notes')!.trigger('click');
     await flushPromises();

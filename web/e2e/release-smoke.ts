@@ -125,10 +125,22 @@ async function verifyUI({ api, bootstrap }: Running) {
     await board.getByRole('button', { name: 'Add card to Inbox' }).click();
     const editor = page.getByRole('form', { name: 'Resource card editor' });
     await editor.getByLabel('Title').fill('Packaged Resource');
+    const notes = editor.getByRole('textbox', { name: 'Owner notes', exact: true });
+    await expect(notes).toHaveCSS('font-family', /monospace/);
+    await notes.fill('Packaged **Markdown**.');
     await editor.getByRole('button', { name: 'Save card' }).click();
     await expect(board.getByRole('button', { name: /^Artifact Packaged Resource/ })).toBeVisible();
     await page.reload();
     await expect(board.getByRole('button', { name: /^Artifact Packaged Resource/ })).toBeVisible();
+    await page.getByRole('link', { name: 'Parties', exact: true }).click();
+    await page.getByRole('button', { name: 'Import CSV', exact: true }).click();
+    const importer = page.getByRole('dialog', { name: 'Import parties from CSV' });
+    await importer.getByLabel('Or paste CSV').fill('Name\nPackaged party\n');
+    await importer.getByRole('button', { name: 'Read columns' }).click();
+    await importer.getByRole('button', { name: 'Preview mapped rows' }).click();
+    const sheet = importer.getByRole('region', { name: 'CSV preview spreadsheet' });
+    await expect(sheet.getByText('Packaged party', { exact: true })).toBeVisible();
+    await importer.getByRole('button', { name: 'Cancel', exact: true }).click();
     expect(externalRequests).toEqual([]);
   } finally {
     await browser.close();

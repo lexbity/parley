@@ -1,8 +1,9 @@
 <script setup lang="ts">
-/* global HTMLDialogElement, File, Blob */
-import { computed, reactive, ref } from 'vue';
+/* global HTMLDialogElement, HTMLSelectElement, File, Blob */
+import { computed, defineAsyncComponent, nextTick, reactive, ref } from 'vue';
 import { ApiError, newOperationKey, parley, type PartyImportMapping, type PartyImportPreview, type PartyImportReceipt, type PartyImportStage } from '../../api/client';
 
+const PartyImportSheet = defineAsyncComponent(() => import('./PartyImportSheet.vue'));
 const emit = defineEmits<{ imported: [PartyImportReceipt]; viewImported: [PartyImportReceipt] }>();
 const dialog = ref<HTMLDialogElement>();
 const csv = ref('');
@@ -10,9 +11,14 @@ const file = ref<File>();
 const stage = ref<PartyImportStage>();
 const mapping = reactive<PartyImportMapping>({ party_type: 'person', name_column: 0, focus_column: null, notes_column: null, excluded_records: [], distinct_records: [] });
 const preview = ref<PartyImportPreview>();
+const selectedRecord = ref<number | null>(null);
+const selectedRow = computed(() => preview.value?.rows.find(row => row.source_record === selectedRecord.value));
+const recordPicker = ref<HTMLSelectElement>();
 const receipt = ref<PartyImportReceipt>();
 const busy = ref(false);
 const message = ref('');
+const canImport = computed(() => Boolean(preview.value?.create_count
+  && !preview.value.error_count && !preview.value.rows.some(row => row.decision === 'review')));
 const skippedHeaders = computed(() => stage.value?.headers.flatMap((header, i) =>
   [mapping.name_column, mapping.focus_column, mapping.notes_column].includes(i) ? [] : [columnLabel(header, i)]) ?? []);
 type Commit = { stageId: string; preview_id: string; digest: string; key: string };
@@ -20,20 +26,36 @@ const pending = ref<Commit>();
 const storageKey = () => 'parley.party-import.' + parley.workspaceId + '.' + parley.workspaceEpoch;
 function remember(intent?: Commit) {
   pending.value = intent;
-  if (intent) globalThis.sessionStorage.setItem(storageKey(), JSON.stringify(intent));
-  else globalThis.sessionStorage.removeItem(storageKey());
+  try {
+    if (intent) globalThis.sessionStorage.setItem(storageKey(), JSON.stringify(intent));
+    else globalThis.sessionStorage.removeItem(storageKey());
+  } catch { /* The open importer still holds the submitted intent. */ }
 }
-function open() {
+function resetDialog() {
   csv.value = ''; file.value = undefined; stage.value = undefined; preview.value = undefined;
   receipt.value = undefined; message.value = ''; pending.value = undefined;
-  const saved = globalThis.sessionStorage.getItem(storageKey());
-  if (saved) pending.value = JSON.parse(saved) as Commit;
+  selectedRecord.value = null;
+}
+function open() {
+  resetDialog();
+  try {
+    const saved = globalThis.sessionStorage.getItem(storageKey());
+    if (saved) {
+      const intent: Partial<Commit> | null = JSON.parse(saved);
+      if (intent && typeof intent.stageId === 'string' && typeof intent.preview_id === 'string'
+        && typeof intent.digest === 'string' && typeof intent.key === 'string') pending.value = intent as Commit;
+    }
+  } catch { /* Start with an empty importer when its saved receipt cannot be read. */ }
   dialog.value?.showModal();
+}
+function closed() {
+  if (!dialog.value?.open) resetDialog();
 }
 function columnLabel(header: string, i: number) { return (i + 1) + ' · ' + (header || '(blank header)'); }
 function reasonText(reason: unknown) { return reason instanceof Error ? reason.message : 'The import could not be completed.'; }
 function clearReview() {
   preview.value = undefined;
+  selectedRecord.value = null;
   mapping.excluded_records = []; mapping.distinct_records = [];
   message.value = '';
 }
@@ -47,14 +69,21 @@ async function readCsv() {
   } catch (reason) { message.value = reasonText(reason); }
   finally { busy.value = false; }
 }
-async function review() {
+async function review(focusPicker = false) {
   if (!stage.value || busy.value) return;
   busy.value = true; message.value = '';
-  try { preview.value = await parley.previewPartyImport(stage.value.stage_id, mapping, newOperationKey()); }
+  try {
+    const result = await parley.previewPartyImport(stage.value.stage_id, mapping, newOperationKey());
+    preview.value = result;
+    if (!result.rows.some(row => row.source_record === selectedRecord.value)) selectedRecord.value = result.rows[0]?.source_record ?? null;
+  }
   catch (reason) { message.value = reasonText(reason); preview.value = undefined; }
   finally { busy.value = false; }
+  if (focusPicker) void nextTick(() => recordPicker.value?.focus());
 }
-function decide(record: number, decision: string) {
+function decide(decision: string) {
+  const record = selectedRecord.value;
+  if (busy.value || record === null) return;
   mapping.excluded_records = mapping.excluded_records.filter(n => n !== record);
   mapping.distinct_records = mapping.distinct_records.filter(n => n !== record);
   if (decision === 'skip') mapping.excluded_records.push(record);
@@ -63,7 +92,7 @@ function decide(record: number, decision: string) {
 }
 async function commit() {
   if (busy.value) return;
-  if (!pending.value && preview.value && stage.value) {
+  if (!pending.value && canImport.value && preview.value && stage.value) {
     remember({ stageId: stage.value.stage_id, preview_id: preview.value.preview_id, digest: preview.value.digest, key: newOperationKey() });
   }
   const intent = pending.value;
@@ -84,6 +113,10 @@ function viewImported() {
   if (receipt.value) emit('viewImported', receipt.value);
   dialog.value?.close();
 }
+function nextIssue() {
+  const issues = preview.value?.rows.filter(row => row.decision === 'review' || row.decision === 'error') ?? [];
+  selectedRecord.value = (issues.find(row => row.source_record > (selectedRecord.value ?? 0)) ?? issues[0])?.source_record ?? selectedRecord.value;
+}
 </script>
 
 <template>
@@ -98,6 +131,7 @@ function viewImported() {
     ref="dialog"
     aria-label="Import parties from CSV"
     @cancel="busy && $event.preventDefault()"
+    @close="closed"
   >
     <header>
       <h2>Import parties from CSV</h2><button
@@ -148,11 +182,12 @@ function viewImported() {
       <label>CSV file<input
         type="file"
         accept=".csv,text/csv"
+        :disabled="busy"
         @change="file = ($event.target as HTMLInputElement).files?.[0]"
       ></label>
       <label>Or paste CSV<textarea
         v-model="csv"
-        :disabled="!!file"
+        :disabled="!!file || busy"
         rows="6"
       /></label>
       <button
@@ -191,54 +226,83 @@ function viewImported() {
       <button
         type="button"
         :disabled="busy"
-        @click="review"
+        @click="review(true)"
       >
         Preview mapped rows
       </button>
       <template v-if="preview">
-        <p aria-live="polite">
+        <p
+          class="review-count"
+          aria-live="polite"
+        >
           {{ preview.create_count }} create · {{ preview.skip_count }} skip · {{ preview.error_count }} need review
         </p>
-        <div class="table-scroll">
-          <table>
-            <thead><tr><th>Record</th><th>Name</th><th>Type</th><th>Focus</th><th>Notes</th><th>Row decision</th></tr></thead>
-            <tbody>
-              <tr
-                v-for="row in preview.rows"
-                :key="row.source_record"
-              >
-                <td>{{ row.source_record }}</td><td>{{ row.name }}</td><td>{{ mapping.party_type === 'org' ? 'Organization' : 'Person' }}</td><td>{{ row.focus }}</td><td>{{ row.notes.slice(0, 160) }}</td>
-                <td>
-                  <small v-if="row.duplicates.length">Possible matches · {{ row.duplicates.join(', ') }}</small><small v-if="row.decision === 'error'">Check name or field limits, or skip this row.</small>
-                  <select
-                    :aria-label="'Decision for record ' + row.source_record"
-                    :disabled="busy"
-                    :value="mapping.excluded_records.includes(row.source_record) ? 'skip' : mapping.distinct_records.includes(row.source_record) ? 'distinct' : 'include'"
-                    @change="decide(row.source_record, ($event.target as HTMLSelectElement).value)"
-                  >
-                    <option value="include">
-                      {{ row.duplicates.length ? 'Choose a decision' : 'Include' }}
-                    </option>
-                    <option
-                      v-if="row.duplicates.length"
-                      value="distinct"
-                    >
-                      Create distinct
-                    </option><option value="skip">
-                      Skip
-                    </option>
-                  </select>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <PartyImportSheet
+          v-if="preview.rows.length"
+          :rows="preview.rows"
+          :selected-record="selectedRecord"
+          :party-type="mapping.party_type"
+          @select="selectedRecord = $event"
+        />
+        <fieldset
+          v-if="selectedRow"
+          class="record-review"
+          :disabled="busy"
+        >
+          <legend>Review a record</legend>
+          <label>Record<select
+            ref="recordPicker"
+            v-model="selectedRecord"
+          ><option
+            v-for="row in preview.rows"
+            :key="row.source_record"
+            :value="row.source_record"
+          >{{ row.source_record }} · {{ row.name || 'Missing name' }}</option></select></label>
+          <button
+            v-if="preview.rows.some(row => row.decision === 'review' || row.decision === 'error')"
+            type="button"
+            @click="nextIssue"
+          >
+            Next issue
+          </button>
+          <label>Decision<select
+            :value="mapping.excluded_records.includes(selectedRow.source_record) ? 'skip' : mapping.distinct_records.includes(selectedRow.source_record) ? 'distinct' : 'include'"
+            @change="decide(($event.target as HTMLSelectElement).value)"
+          >
+            <option value="include">{{ selectedRow.duplicates.length ? 'Choose a decision' : 'Include' }}</option>
+            <option
+              v-if="selectedRow.duplicates.length"
+              value="distinct"
+            >Create distinct</option>
+            <option value="skip">Skip</option>
+          </select></label>
+          <p
+            v-if="selectedRow.duplicates.length"
+            class="record-detail"
+          >
+            Possible matches · {{ selectedRow.duplicates.join(', ') }}
+          </p>
+          <p
+            v-if="selectedRow.decision === 'error'"
+            class="record-detail"
+          >
+            Review the mapping and field lengths, or skip this record.
+          </p>
+          <details
+            v-if="selectedRow.notes"
+            class="record-detail"
+          >
+            <summary>Show full Markdown notes</summary>
+            <pre>{{ selectedRow.notes }}</pre>
+          </details>
+        </fieldset>
         <button
           type="button"
-          :disabled="busy || !preview.create_count || !!preview.error_count || preview.rows.some(row => row.decision === 'review')"
+          class="primary"
+          :disabled="busy || !canImport"
           @click="commit"
         >
-          Import {{ preview.create_count }} parties
+          Import {{ preview.create_count }} {{ preview.create_count === 1 ? 'party' : 'parties' }}
         </button>
       </template>
     </template>
@@ -252,7 +316,11 @@ h2 { margin: 0; font-family: Georgia, serif; font-weight: 500; }
 form, fieldset { display: grid; gap: .6rem; margin: .8rem 0; }
 fieldset { grid-template-columns: repeat(auto-fit,minmax(9rem,1fr)); }
 label { display: grid; gap: .2rem; }
-.table-scroll { overflow: auto; max-height: 40vh; margin-bottom: .8rem; }
-table { width: 100%; border-collapse: collapse; } td,th { text-align: left; padding: .35rem; border-bottom: 1px solid #d7ded3; } td { max-width: 16rem; overflow-wrap: anywhere; }
-td small { display: block; }
+.review-count { margin-top: 1rem; }
+.record-review { grid-template-columns: minmax(10rem, 1.5fr) auto minmax(9rem, 1fr); align-items: end; }
+.record-review label { margin: 0; }
+.record-review button { justify-self: start; }
+.record-detail { grid-column: 1 / -1; margin: 0; overflow-wrap: anywhere; }
+.record-detail pre { margin-bottom: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 630px) { .record-review { grid-template-columns: minmax(0, 1fr); } }
 </style>

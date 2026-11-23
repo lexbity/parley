@@ -778,11 +778,19 @@ function discardQuarantined() {
               :subtype="relation.createSubtype"
               :disabled="saving"
             />
-            <label>Notes<textarea
-              v-model="relation.createNotes"
-              rows="2"
-              :disabled="saving"
-            /></label>
+            <div class="notes-block">
+              <h4>Related card notes · Markdown</h4>
+              <MarkdownEditor
+                v-model="relation.createNotes"
+                label="Related card notes"
+                :readonly="saving"
+                compact
+              />
+              <details v-if="relation.createNotes">
+                <summary>Preview Markdown</summary>
+                <MarkdownPreview :source="relation.createNotes" />
+              </details>
+            </div>
             <div v-if="relation.createSubtype !== 'person' && relation.createSubtype !== 'org'">
               <label>Add files to related card<input
                 type="file"

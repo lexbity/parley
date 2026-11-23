@@ -16,12 +16,13 @@ export function addPartyForm(page: Page): Locator {
   return partiesRegion(page).locator('form.add-party');
 }
 
-export async function addParty(page: Page, name: string, kind: 'person' | 'org' = 'person'): Promise<void> {
+export async function addParty(page: Page, name: string, kind: 'person' | 'org' = 'person', notes?: string): Promise<void> {
   const region = partiesRegion(page);
   await region.getByRole('button', { name: 'Add party' }).first().click();
   const form = addPartyForm(page);
   await form.getByLabel('Type').selectOption(kind);
   await form.getByLabel('Name').fill(name);
+  if (notes) await form.getByRole('textbox', { name: 'Owner notes' }).fill(notes);
   await form.getByRole('button', { name: /^(Add party|Create distinct party)$/ }).click();
 }
 

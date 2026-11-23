@@ -2,7 +2,7 @@
 /* global document, URL, File, FileList */
 import { onBeforeUnmount, reactive, ref } from 'vue';
 import { ApiError, newOperationKey, parley, type DossierFile } from '../../api/client';
-const props = defineProps<{ entityId?: string; files?: DossierFile[] }>();
+const props = defineProps<{ entityId?: string; files?: DossierFile[]; readonly?: boolean }>();
 const emit = defineEmits<{ changed: []; staged: [uploadIds: string[]]; busy: [pending: boolean] }>();
 type Staged = { file: File; key: string; uploadId?: string; percent: number; state: 'uploading' | 'staged' | 'binding' | 'failed'; error: string };
 const queue = ref<Staged[]>([]);
@@ -31,6 +31,7 @@ async function stage(item: Staged) {
   finally { if (active) update(); }
 }
 function add(files: FileList | null) {
+  if (props.readonly) return;
   for (const file of Array.from(files ?? [])) {
     const item = reactive<Staged>({ file, key: newOperationKey(), percent: 0, state: 'uploading', error: '' });
     queue.value.push(item);
@@ -77,13 +78,15 @@ async function handleFile(file: DossierFile, unlink: boolean) {
 </script>
 <template>
   <section
-    v-if="parley.supports('party.attachments')"
+    v-if="readonly || parley.supports('party.attachments')"
     class="file-controls"
     aria-label="Private card files"
     @dragover.prevent
     @drop.prevent="add($event.dataTransfer?.files ?? null)"
   >
-    <h4>Private files</h4>
+    <h4 v-if="!readonly">
+      Private files
+    </h4>
     <ul v-if="files?.length">
       <li
         v-for="file in files"
@@ -91,6 +94,7 @@ async function handleFile(file: DossierFile, unlink: boolean) {
       >
         <strong>{{ file.filename }}</strong><small>{{ file.content_type }} · {{ file.size }} bytes · {{ file.share_permission ? 'Sharing permitted' : 'Owner only' }}</small>
         <button
+          v-if="parley.supports('party.attachments')"
           type="button"
           :disabled="fileBusy[file.id]"
           @click="handleFile(file, false)"
@@ -98,6 +102,7 @@ async function handleFile(file: DossierFile, unlink: boolean) {
           Download {{ file.filename }}
         </button>
         <button
+          v-if="!readonly"
           type="button"
           :disabled="fileBusy[file.id]"
           @click="handleFile(file, true)"
@@ -110,7 +115,7 @@ async function handleFile(file: DossierFile, unlink: boolean) {
         >{{ fileErrors[file.id] }}</span>
       </li>
     </ul>
-    <label>Attach files<input
+    <label v-if="!readonly">Attach files<input
       type="file"
       multiple
       @change="add(($event.target as HTMLInputElement).files); ($event.target as HTMLInputElement).value = ''"

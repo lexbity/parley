@@ -34,8 +34,7 @@ test('s05_keyboard_board_list_card_order_and_archive', async ({ page }) => {
   }
 
   // Keyboard: Enter activates a row and opens its inspector.
-  const firstRow = sheet.locator('tbody tr[data-opportunity-id]').first();
-  await firstRow.locator('button.open').focus();
+  await sheet.getByRole('button', { name: 'Onboarding map', exact: true }).focus();
   await page.keyboard.press('Enter');
   await expect(page.getByRole('complementary', { name: 'Scenario details' })).toContainText('Onboarding map');
 
@@ -64,6 +63,5 @@ test('s05_keyboard_board_list_card_order_and_archive', async ({ page }) => {
   await page.getByLabel('Phase filter').selectOption('');
   await expect(sheet.locator('tbody tr[data-opportunity-id]')).toHaveCount(2);
   await page.getByLabel('Order').selectOption('Scenario name');
-  const titles = await sheet.locator('tbody tr[data-opportunity-id] button.open').allTextContents();
-  expect([...titles].sort()).toEqual(titles);
+  await expect(sheet.locator('tbody tr[data-opportunity-id] button.open')).toHaveText(['Fieldwork review', 'Onboarding map']);
 });

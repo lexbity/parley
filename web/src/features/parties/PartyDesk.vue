@@ -1,10 +1,10 @@
 <script setup lang="ts">
-/* global HTMLElement, HTMLInputElement */
+/* global HTMLElement, HTMLDialogElement, HTMLInputElement */
 import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import {
   newOperationKey, parley, ApiError,
   type PartyImportReceipt, type Dossier, type EntityNotes, type ExtractorJob, type ExtractorProposal,
-  type GraphSnapshot, type GraphEntity, type Opportunity, type SavedSource,
+  type GraphSnapshot, type GraphEntity, type OpportunitySummary, type SavedSource,
 } from '../../api/client';
 import ClaimCorrection from './ClaimCorrection.vue';
 import PartyFiles from './PartyFiles.vue';
@@ -19,7 +19,7 @@ import MarkdownPreview from '../../shared/MarkdownPreview.vue';
 const props = defineProps<{
   parties: GraphEntity[];
   sources: SavedSource[];
-  opportunities: Opportunity[];
+  opportunities: OpportunitySummary[];
   partyId?: string;
   active?: boolean;
   inbox?: boolean;
@@ -51,6 +51,7 @@ let createKey = '';
 let createIntent = '';
 const focusEdit = ref<string | null>(null);
 const focusDraft = ref('');
+const focusBase = ref('');
 const busy = ref(false);
 const status = ref('');
 const error = ref('');
@@ -65,7 +66,7 @@ const correctingClaim = ref(false);
 let removalKey = '';
 function correctEdge() {
   if (!inspectedEdge.value) return;
-  pane.value = 'graph'; drawer.value = false;
+  pane.value = 'graph';
   graph.value?.openRelated(inspectedEdge.value);
 }
 async function removeEdge() {
@@ -115,8 +116,12 @@ async function retireSelection() {
   finally { busy.value = false; }
 }
 const pane = ref<'sheet' | 'graph' | 'details'>('sheet');
-const drawer = ref(false);
 const auxiliary = ref<'inspector' | 'chat'>('inspector');
+const desk = ref<HTMLElement | null>(null);
+const cardEditor = ref<HTMLElement | null>(null);
+const draftDialog = ref<HTMLDialogElement | null>(null);
+const partyForm = ref<HTMLElement | null>(null);
+const addPartyButton = ref<HTMLElement | null>(null);
 const openingOpportunity = ref(false);
 const opportunityTitle = ref('');
 async function startOpportunity() {
@@ -178,7 +183,9 @@ const sheetRows = computed(() => remoteDirectory ? directoryRows.value : props.p
 const pendingSwitch = ref<(() => void) | null>(null);
 const quarantined = ref(false);
 const dirty = computed(() => cardOpen.value && (notes.value && notesDraft.value !== notes.value.markdown || nameDraft.value !== nameBase.value));
+const hasDraft = computed(() => Boolean(dirty.value || notesBusy.value || (cardOpen.value && (busy.value || frozenNotes)) || (focusEdit.value && focusDraft.value !== focusBase.value)));
 let invocation: HTMLElement | null = null;
+let switchInvocation: HTMLElement | null = null;
 let requestVersion = 0;
 let frozenNotes: { markdown: string; key: string; etag: string } | null = null;
 let pendingSave: Promise<boolean> | null = null;
@@ -193,16 +200,21 @@ const dossier = ref<Dossier | null>(null);
 const dossierLoading = ref(false);
 const dossierError = ref('');
 const captureText = ref('');
+let captureIntent: { text: string; key: string } | null = null;
 const reviewJob = ref<ExtractorJob | null>(null);
 const reviewTargetId = ref('');
 const reviewOpportunityId = ref('');
 const inboxOpen = ref(props.inbox ?? false);
-watch(() => props.inbox, open => { if (open) inboxOpen.value = true; });
+watch(() => props.inbox, open => {
+  if (open) { inboxOpen.value = true; pane.value = 'details'; }
+}, { immediate: true });
 
 const selectedParty = computed(() => directoryRows.value.find(p => p.id === selectedRecordId.value) ?? props.parties.find(p => p.id === selectedRecordId.value)
   ?? graphNodes.value.find(p => p.id === selectedRecordId.value)
   ?? (dossier.value?.entity.id === selectedRecordId.value ? dossier.value.entity : null));
-const rootName = computed(() => props.parties.find(p => p.id === rootPartyId.value)?.name ?? '');
+const rootName = computed(() => (directoryRows.value.find(p => p.id === rootPartyId.value)
+  ?? graphNodes.value.find(p => p.id === rootPartyId.value)
+  ?? props.parties.find(p => p.id === rootPartyId.value))?.name ?? '');
 async function loadDossier() {
   const id = selectedRecordId.value;
   const own = ++requestVersion;
@@ -219,14 +231,29 @@ async function loadDossier() {
 }
 
 function requestSwitch(action: () => void) {
-  if (dirty.value || pendingSave || notesBusy.value || focusEdit.value && focusDraft.value !== (props.parties.find(p => p.id === focusEdit.value)?.focus ?? '')) {
+  if (pendingSwitch.value) return;
+  if (hasDraft.value) {
     if (notesTimer) globalThis.clearTimeout(notesTimer);
+    switchInvocation = focusedElement();
     pendingSwitch.value = action;
+    void nextTick(() => {
+      if (pendingSwitch.value && draftDialog.value && !draftDialog.value.open) draftDialog.value.showModal();
+    });
     return;
   }
   action();
 }
-function selectRow(id: string) {
+function focusedElement() {
+  const element = globalThis.document.activeElement;
+  return element instanceof HTMLElement ? element : null;
+}
+function focusPanel(selector: string) {
+  void nextTick(() => {
+    const element = desk.value?.querySelector<HTMLElement>(selector);
+    if (element?.getClientRects().length) element.focus();
+  });
+}
+function selectRow(id: string, moveFocus = false) {
   requestSwitch(() => {
     closeCard();
     focusEdit.value = null;
@@ -234,6 +261,7 @@ function selectRow(id: string) {
     rootPartyId.value = id;
     selectedRecordId.value = id;
     pane.value = 'graph';
+    if (moveFocus && globalThis.matchMedia?.('(max-width: 767px)').matches) focusPanel('#relationship-graph-heading');
   });
 }
 function selectNode(id: string) {
@@ -257,24 +285,37 @@ function makeRoot(id: string) {
   status.value = `Network root is now ${props.parties.find(p => p.id === id)?.name ?? id}.`;
 }
 function inspectEdge(edge: GraphSnapshot['edges'][number]) {
-  requestSwitch(() => { closeCard(); inspectedEdge.value = edge; correctingClaim.value = false; auxiliary.value = 'inspector'; removingEdge.value = false; removalKey = ''; pane.value = 'details'; drawer.value = true; });
+  requestSwitch(() => {
+    closeCard();
+    inspectedEdge.value = edge;
+    correctingClaim.value = false;
+    auxiliary.value = 'inspector';
+    removingEdge.value = false;
+    removalKey = '';
+    pane.value = 'details';
+    focusPanel('#party-relationship-heading');
+  });
 }
 
 function startFocusEdit(id: string) {
   const party = sheetRows.value.find((item) => item.id === id);
   if (!party) return;
-  focusEdit.value = id;
-  focusDraft.value = party.focus ?? '';
+  requestSwitch(() => {
+    focusEdit.value = id;
+    focusBase.value = focusDraft.value = party.focus ?? '';
+    focusPanel('.focus-input');
+  });
 }
 
 async function saveFocus(id: string) {
+  if (busy.value || focusEdit.value !== id) return;
   const party = sheetRows.value.find((item) => item.id === id);
   if (!party || !party.etag) { error.value = 'The party row is not editable in this session.'; return; }
   busy.value = true; error.value = ''; status.value = '';
   try {
     await parley.updateParty(id, { focus: focusDraft.value }, party.etag, newOperationKey());
     changed();
-    focusEdit.value = null;
+    cancelFocusEdit();
     if (selectedRecordId.value === id) {
       await loadDossier();
     }
@@ -289,6 +330,16 @@ function resetPartyForm() {
   partyName.value = ''; partyFocus.value = ''; partyNotes.value = '';
   newPartyFiles.value = []; newPartyFilesBusy.value = false; addOpen.value = false;
   createIntent = ''; createKey = '';
+}
+function togglePartyForm() {
+  if (addOpen.value) {
+    resetPartyForm();
+    addPartyButton.value?.focus();
+  } else {
+    addPartyButton.value = focusedElement();
+    addOpen.value = true;
+    void nextTick(() => partyForm.value?.querySelector('input')?.focus());
+  }
 }
 async function saveNewParty() {
   const name = partyName.value.trim();
@@ -325,13 +376,14 @@ async function loadNotes() {
 }
 async function openCard() {
   if (cardOpen.value || !selectedRecordId.value || dossier.value?.retired_at) return;
-  invocation = globalThis.document.activeElement instanceof HTMLElement ? globalThis.document.activeElement : null;
+  invocation = focusedElement();
+  graph.value?.anchorTo(selectedRecordId.value);
   nameDraft.value = nameBase.value = selectedParty.value?.name ?? '';
   cardOpen.value = true;
   pane.value = 'graph';
   inspectedEdge.value = null;
   await nextTick();
-  globalThis.document.querySelector<HTMLInputElement>('.card-editor input')?.focus();
+  cardEditor.value?.querySelector<HTMLInputElement>('input')?.focus();
 }
 function scheduleNotesAutosave() {
   if (notesTimer) globalThis.clearTimeout(notesTimer);
@@ -398,10 +450,20 @@ function closeCard() {
 }
 function stayOnCard() {
   pendingSwitch.value = null;
+  if (draftDialog.value?.open) draftDialog.value.close();
+  if (switchInvocation && desk.value?.contains(switchInvocation)) switchInvocation.focus();
+  else if (cardOpen.value) focusPanel('.card-editor input');
+  else if (focusEdit.value) focusPanel('.focus-input');
   scheduleNotesAutosave();
 }
 function dismissCard() {
-  requestSwitch(() => { closeCard(); void nextTick(() => invocation?.focus()); });
+  requestSwitch(() => {
+    closeCard();
+    void nextTick(() => {
+      if (invocation?.getClientRects().length) invocation.focus();
+      else focusPanel('#relationship-graph-heading');
+    });
+  });
 }
 async function resolveSwitch(save: boolean) {
   if (pendingSave) await pendingSave;
@@ -409,24 +471,34 @@ async function resolveSwitch(save: boolean) {
   if (save && focusEdit.value) { await saveFocus(focusEdit.value); if (focusEdit.value) return; }
   const action = pendingSwitch.value;
   pendingSwitch.value = null;
+  if (draftDialog.value?.open) draftDialog.value.close();
   closeCard(); cancelFocusEdit(); action?.();
 }
 function quarantine() {
   if (notesTimer) globalThis.clearTimeout(notesTimer);
   quarantined.value = true;
 }
-defineExpose({ requestSwitch });
+defineExpose({ requestSwitch, hasDraft });
 function cancelFocusEdit() {
+  const id = focusEdit.value;
   focusEdit.value = null;
-  focusDraft.value = '';
+  focusBase.value = focusDraft.value = '';
+  if (id) void nextTick(() => {
+    const row = [...(desk.value?.querySelectorAll<HTMLElement>('[data-party-id]') ?? [])].find(item => item.dataset.partyId === id);
+    if (row?.getClientRects().length) row.querySelector<HTMLElement>('.focus-cell')?.focus();
+  });
 }
 
 // --- Sources inbox / capture review (kept from the former Leads desk) ---
 
 async function saveCapture() {
+  if (busy.value || quarantined.value || !captureText.value.trim()) return;
+  if (captureIntent?.text !== captureText.value) captureIntent = { text: captureText.value, key: newOperationKey() };
+  const { text, key } = captureIntent;
   busy.value = true; error.value = ''; status.value = '';
   try {
-    const source = await parley.saveSource({ text: captureText.value, title: null, url: null });
+    const source = await parley.saveSource({ text, title: null, url: null }, key);
+    captureIntent = null;
     changed();
     captureText.value = '';
     inboxOpen.value = true;
@@ -486,12 +558,11 @@ if (prefsKey) {
       selectedRecordId.value = typeof saved.selected === 'string' ? saved.selected : saved.root;
     }
     if (['sheet','graph','details'].includes(saved.pane)) pane.value = saved.pane;
-    drawer.value = saved.drawer === true;
     if (saved.auxiliary === 'chat') auxiliary.value = 'chat';
   } catch { /* Storage can be unavailable in a private browsing session. */ }
 }
-watch([query,kind,sort,rootPartyId,selectedRecordId,pane,drawer,auxiliary], () => {
-  if (prefsKey) try { globalThis.sessionStorage.setItem(prefsKey, JSON.stringify({ query:query.value,kind:kind.value,sort:sort.value,root:rootPartyId.value,selected:selectedRecordId.value,pane:pane.value,drawer:drawer.value,auxiliary:auxiliary.value })); } catch { /* Keep in-memory navigation. */ }
+watch([query,kind,sort,rootPartyId,selectedRecordId,pane,auxiliary], () => {
+  if (prefsKey) try { globalThis.sessionStorage.setItem(prefsKey, JSON.stringify({ query:query.value,kind:kind.value,sort:sort.value,root:rootPartyId.value,selected:selectedRecordId.value,pane:pane.value,auxiliary:auxiliary.value })); } catch { /* Keep in-memory navigation. */ }
 });
 watch([query, kind, sort, importBatch, directoryRevision, () => props.active], (_, previous, cleanup) => {
   if (!remoteDirectory || props.active === false) return;
@@ -541,11 +612,10 @@ onBeforeUnmount(() => {
 
 <template>
   <section
+    ref="desk"
     class="party-desk"
     :data-pane="pane"
-    :class="{ drawer }"
     aria-labelledby="parties-heading"
-    @keydown.esc="pendingSwitch ? stayOnCard() : drawer = false"
   >
     <h2
       id="parties-heading"
@@ -574,16 +644,17 @@ onBeforeUnmount(() => {
       <button
         type="button"
         :aria-pressed="pane === 'details'"
-        @click="pane = 'details'; drawer = !drawer"
+        @click="pane = 'details'"
       >
         Details
       </button>
     </nav>
-    <div
-      v-if="pendingSwitch"
+    <dialog
+      ref="draftDialog"
       class="draft-prompt"
       role="alertdialog"
       aria-label="Unsaved changes"
+      @cancel.prevent="stayOnCard"
     >
       <strong>Unsaved changes</strong>
       <button
@@ -598,10 +669,13 @@ onBeforeUnmount(() => {
       >
         Discard unsaved changes
       </button>
-      <button @click="stayOnCard()">
+      <button
+        autofocus
+        @click="stayOnCard"
+      >
         Stay
       </button>
-    </div>
+    </dialog>
     <aside
       class="sheet-column"
       aria-label="Party sheet"
@@ -626,12 +700,12 @@ onBeforeUnmount(() => {
         @update:kind="kind = $event"
         @update:sort="sort = $event"
         @update:focus-draft="focusDraft = $event"
-        @select-row="selectRow"
+        @select-row="selectRow($event, true)"
         @edit-focus="startFocusEdit"
         @save-focus="saveFocus"
         @cancel-focus="cancelFocusEdit"
         @first-visible="id => { if (!rootPartyId) { rootPartyId = id; selectedRecordId = id; } }"
-        @add-party="addOpen ? resetPartyForm() : addOpen = true"
+        @add-party="togglePartyForm"
       >
         <template #import>
           <PartyImport
@@ -656,7 +730,9 @@ onBeforeUnmount(() => {
       </p>
       <form
         v-if="addOpen"
+        ref="partyForm"
         class="add-party"
+        @keydown.esc.stop="togglePartyForm"
         @submit.prevent="saveNewParty"
       >
         <h3>Add a party</h3>
@@ -687,10 +763,19 @@ onBeforeUnmount(() => {
             </li>
           </ul>
         </div>
-        <label>Owner notes <textarea
-          v-model="partyNotes"
-          rows="3"
-        /></label>
+        <div>
+          <h4>Owner notes · Markdown</h4>
+          <MarkdownEditor
+            v-model="partyNotes"
+            label="Owner notes"
+            :readonly="busy || quarantined"
+            compact
+          />
+          <details v-if="partyNotes">
+            <summary>Preview Markdown</summary>
+            <MarkdownPreview :source="partyNotes" />
+          </details>
+        </div>
         <PartyFiles
           @staged="newPartyFiles = $event"
           @busy="newPartyFilesBusy = $event"
@@ -705,7 +790,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           :disabled="busy"
-          @click="resetPartyForm"
+          @click="togglePartyForm"
         >
           Cancel
         </button>
@@ -715,6 +800,7 @@ onBeforeUnmount(() => {
       <RelationshipGraph
         ref="graph"
         :sources="props.sources"
+        :active="props.active"
         :root-name="rootName"
         :refresh="graphRevision"
         :editor-open="cardOpen"
@@ -730,6 +816,7 @@ onBeforeUnmount(() => {
         <template #editor>
           <section
             v-if="cardOpen && selectedParty"
+            ref="cardEditor"
             class="card-editor"
             aria-label="Card editor"
             @keydown.esc.stop="dismissCard"
@@ -792,6 +879,7 @@ onBeforeUnmount(() => {
                 v-model="notesDraft"
                 label="Owner notes"
                 :readonly="quarantined"
+                compact
                 @composition="composing = $event; scheduleNotesAutosave()"
                 @update:model-value="scheduleNotesAutosave"
               />
@@ -833,312 +921,302 @@ onBeforeUnmount(() => {
             </footer>
           </section>
         </template>
-        <template #summary>
-          <article
-            v-if="selectedParty"
-            class="selection-summary"
-          >
-            <small>Selected card</small>
-            <h3>{{ selectedParty.name }}</h3>
-            <MarkdownPreview
-              v-if="notes?.markdown"
-              :source="notes.markdown"
-            />
-            <p v-else-if="selectedParty.focus">
-              {{ selectedParty.focus }}
-            </p>
-          </article>
-        </template>
       </RelationshipGraph>
-    </div>
-    <aside
-      class="inspector-column"
-      aria-label="Inspector and chat"
-    >
-      <div
-        class="auxiliary-tabs"
-        aria-label="Party details and research"
+      <aside
+        class="inspector-column"
+        aria-label="Inspector and chat"
       >
-        <button
-          :aria-pressed="auxiliary === 'inspector'"
-          @click="auxiliary = 'inspector'"
+        <div
+          class="auxiliary-tabs"
+          aria-label="Party details and research"
         >
-          Details
-        </button>
-        <button
-          :aria-pressed="auxiliary === 'chat'"
-          @click="auxiliary = 'chat'"
-        >
-          Research chat
-        </button>
-      </div>
-      <div v-show="auxiliary === 'inspector'">
-        <section
-          v-if="inspectedEdge"
-          class="edge-detail"
-        >
-          <h3>{{ inspectedEdge.verb.replaceAll('_', ' ') }}</h3>
-          <p>{{ graphNodes.find(n => n.id === inspectedEdge?.from_id)?.name }} → {{ graphNodes.find(n => n.id === inspectedEdge?.to_id)?.name }}</p>
-          <blockquote>{{ inspectedEdge.quote }}</blockquote>
-          <small>{{ inspectedEdge.source_title }} · {{ inspectedEdge.speaker_kind }} · T{{ inspectedEdge.tier }}</small>
-          <ClaimCorrection
-            v-if="correctingClaim"
-            :edge="inspectedEdge"
-            :parties="props.parties"
-            @cancel="correctingClaim = false"
-            @saved="claimSaved"
-          />
-          <div v-else-if="parley.supports('party.relations')">
-            <button
-              v-if="inspectedEdge.claim_id"
-              @click="correctingClaim = true"
+          <button
+            :aria-pressed="auxiliary === 'inspector'"
+            @click="auxiliary = 'inspector'"
+          >
+            Details
+          </button>
+          <button
+            :aria-pressed="auxiliary === 'chat'"
+            @click="auxiliary = 'chat'"
+          >
+            Research chat
+          </button>
+        </div>
+        <div v-show="auxiliary === 'inspector'">
+          <section
+            v-if="inspectedEdge"
+            class="edge-detail"
+          >
+            <h3
+              id="party-relationship-heading"
+              tabindex="-1"
             >
-              Correct attribution
-            </button>
-            <button @click="correctEdge">
-              Correct relationship
-            </button>
-            <button
-              v-if="!removingEdge"
-              @click="removingEdge = true"
-            >
-              Remove link
-            </button>
-            <template v-else>
-              <p>Remove this relationship from both cards?</p><button
-                :disabled="busy"
-                @click="removeEdge"
+              {{ inspectedEdge.verb.replaceAll('_', ' ') }}
+            </h3>
+            <p>{{ graphNodes.find(n => n.id === inspectedEdge?.from_id)?.name }} → {{ graphNodes.find(n => n.id === inspectedEdge?.to_id)?.name }}</p>
+            <blockquote>{{ inspectedEdge.quote }}</blockquote>
+            <small>{{ inspectedEdge.source_title }} · {{ inspectedEdge.speaker_kind }} · T{{ inspectedEdge.tier }}</small>
+            <ClaimCorrection
+              v-if="correctingClaim"
+              :edge="inspectedEdge"
+              :parties="props.parties"
+              @cancel="correctingClaim = false"
+              @saved="claimSaved"
+            />
+            <div v-else-if="parley.supports('party.relations')">
+              <button
+                v-if="inspectedEdge.claim_id"
+                @click="correctingClaim = true"
               >
-                Confirm removal
-              </button><button @click="removingEdge = false">
-                Cancel
+                Correct attribution
               </button>
-            </template>
-          </div>
-        </section>
-        <PartyInspector
-          v-else
-          :markdown="notes?.markdown"
-          :nodes="graphNodes"
-          :party="selectedParty"
-          :dossier="dossier"
-          :loading="dossierLoading"
-          :root-party-id="rootPartyId"
-          :notes-error="dossierError"
-          @select-node="selectNode"
-          @inspect-link="graph?.inspectEdge($event)"
-          @navigate="emit('navigate', $event)"
-          @open-card="openCard"
-          @start-opportunity="requestSwitch(() => { openingOpportunity = true; })"
-          @review-retirement="requestSwitch(() => { void reviewRetirement(); })"
-          @return-to-results="returnToRootList"
-          @make-root="makeRoot"
-        />
-        <section
-          v-if="retirement"
-          aria-label="Retirement impact"
-        >
-          <h3>Used by</h3>
-          <p>{{ retirement.counts.links }} relationships · {{ retirement.counts.opportunities }} opportunities · {{ retirement.counts.materials }} materials · {{ retirement.counts.recommendations }} recommendations</p>
-          <ul>
-            <li
-              v-for="link in retirement.links"
-              :key="link.id"
-            >
-              {{ link.verb.replaceAll('_', ' ') }}
-            </li>
-            <li
-              v-for="opportunity in retirement.opportunities"
-              :key="opportunity.id"
-            >
-              <button @click="emit('navigate', '/queue/' + opportunity.id)">
-                {{ opportunity.title }}
+              <button @click="correctEdge">
+                Correct relationship
               </button>
-            </li>
-            <li
-              v-for="material in retirement.materials"
-              :key="material.id"
-            >
-              <button @click="emit('navigate', '/output/' + material.id)">
-                {{ material.kind }}
+              <button
+                v-if="!removingEdge"
+                @click="removingEdge = true"
+              >
+                Remove link
               </button>
-            </li>
-          </ul>
-          <button
-            :disabled="busy"
-            @click="retireSelection"
+              <template v-else>
+                <p>Remove this relationship from both cards?</p><button
+                  :disabled="busy"
+                  @click="removeEdge"
+                >
+                  Confirm removal
+                </button><button @click="removingEdge = false">
+                  Cancel
+                </button>
+              </template>
+            </div>
+          </section>
+          <PartyInspector
+            v-else
+            :markdown="notes?.markdown"
+            :nodes="graphNodes"
+            :party="selectedParty"
+            :dossier="dossier"
+            :loading="dossierLoading && !dossier"
+            :root-party-id="rootPartyId"
+            :notes-error="dossierError"
+            @select-node="selectNode"
+            @inspect-link="graph?.inspectEdge($event)"
+            @navigate="emit('navigate', $event)"
+            @open-card="openCard"
+            @start-opportunity="requestSwitch(() => { openingOpportunity = true; })"
+            @review-retirement="requestSwitch(() => { void reviewRetirement(); })"
+            @return-to-results="returnToRootList"
+            @make-root="makeRoot"
+          />
+          <section
+            v-if="retirement"
+            aria-label="Retirement impact"
           >
-            Confirm retirement
-          </button>
-          <button
-            :disabled="busy"
-            @click="retirement = null"
-          >
-            Cancel
-          </button>
-        </section>
-        <form
-          v-if="openingOpportunity && selectedParty"
-          @submit.prevent="startOpportunity"
-        >
-          <h3>Start opportunity</h3>
-          <p>Participant · {{ selectedParty.name }}</p>
-          <label>Opportunity title <input
-            v-model="opportunityTitle"
-            required
-            maxlength="500"
-          ></label>
-          <button
-            type="submit"
-            :disabled="busy"
-          >
-            Create opportunity
-          </button>
-          <button
-            type="button"
-            @click="openingOpportunity = false"
-          >
-            Cancel
-          </button>
-        </form>
-      </div>
-      <BriefWorkspace
-        v-show="auxiliary === 'chat'"
-        :parties="props.parties"
-        :party-id="rootPartyId || undefined"
-      />
-      <section
-        class="sources-inbox"
-        role="navigation"
-        aria-label="Lead workspaces"
-      >
-        <h3 class="inbox-heading">
-          <button
-            type="button"
-            :aria-expanded="inboxOpen"
-            @click="inboxOpen = !inboxOpen"
-          >
-            Sources inbox
-          </button>
-        </h3>
-        <div v-show="inboxOpen">
+            <h3>Used by</h3>
+            <p>{{ retirement.counts.links }} relationships · {{ retirement.counts.opportunities }} opportunities · {{ retirement.counts.materials }} materials · {{ retirement.counts.recommendations }} recommendations</p>
+            <ul>
+              <li
+                v-for="link in retirement.links"
+                :key="link.id"
+              >
+                {{ link.verb.replaceAll('_', ' ') }}
+              </li>
+              <li
+                v-for="opportunity in retirement.opportunities"
+                :key="opportunity.id"
+              >
+                <button @click="emit('navigate', '/queue/' + opportunity.id)">
+                  {{ opportunity.title }}
+                </button>
+              </li>
+              <li
+                v-for="material in retirement.materials"
+                :key="material.id"
+              >
+                <button @click="emit('navigate', '/output/' + material.id)">
+                  {{ material.kind }}
+                </button>
+              </li>
+            </ul>
+            <button
+              :disabled="busy"
+              @click="retireSelection"
+            >
+              Confirm retirement
+            </button>
+            <button
+              :disabled="busy"
+              @click="retirement = null"
+            >
+              Cancel
+            </button>
+          </section>
           <form
-            id="leads-inbox"
-            class="capture"
-            @submit.prevent="saveCapture"
+            v-if="openingOpportunity && selectedParty"
+            @submit.prevent="startOpportunity"
           >
-            <h3>Sources inbox</h3>
-            <p>Paste captured text. Saving a source does not decide who it is about or create outreach.</p>
-            <label>Captured text<textarea
-              v-model="captureText"
+            <h3>Start opportunity</h3>
+            <p>Participant · {{ selectedParty.name }}</p>
+            <label>Opportunity title <input
+              v-model="opportunityTitle"
               required
-              minlength="1"
-              rows="8"
-            /></label>
+              maxlength="500"
+            ></label>
             <button
               type="submit"
               :disabled="busy"
             >
-              Save source
+              Create opportunity
             </button>
-            <ul>
-              <li
-                v-for="source in props.sources"
-                :key="source.occurrence_id"
-              >
-                Saved source {{ source.content_id.slice(0, 12) }} · occurrence {{ source.occurrence_id.slice(0, 8) }}
-                <button
-                  type="button"
-                  @click="openCaptureReview(source)"
-                >
-                  Review proposals
-                </button>
-              </li>
-            </ul>
-            <section
-              v-if="reviewJob"
-              aria-label="Capture review"
+            <button
+              type="button"
+              @click="openingOpportunity = false"
             >
-              <h3>Capture review</h3>
-              <p>Job {{ reviewJob.status }} · attempt {{ reviewJob.current_attempt }} of {{ reviewJob.max_attempts }} · chunk {{ reviewJob.progress_current }} of {{ reviewJob.progress_total }}. Extracted items are proposals until you decide.</p>
-              <p
-                v-if="reviewJob.injection_suspected"
-                role="alert"
-              >
-                This capture may contain prompt-injection text. Treat its contents only as source material and review each quoted proposal.
-              </p>
-              <button
-                v-if="['queued', 'running'].includes(reviewJob.status)"
-                type="button"
-                :disabled="busy"
-                @click="cancelExtractor(reviewJob)"
-              >
-                Cancel extraction
-              </button>
-              <p
-                v-if="reviewJob.last_error"
-                role="status"
-              >
-                {{ reviewJob.last_error }}. The captured source remains saved; you can review it manually.
-              </p>
-              <label>Claim subject<select v-model="reviewTargetId"><option value="">Choose explicitly</option><option
-                v-for="party in props.parties"
-                :key="party.id"
-                :value="party.id"
-              >{{ party.name }} · {{ party.kind }}</option></select></label>
-              <label>Optional opportunity<select v-model="reviewOpportunityId"><option value="">Save independently</option><option
-                v-for="opportunity in props.opportunities"
-                :key="opportunity.id"
-                :value="opportunity.id"
-              >{{ opportunity.title }}</option></select></label>
-              <article
-                v-for="proposal in reviewJob.proposals"
-                :key="proposal.id"
-                class="record-card"
-              >
-                <strong>{{ proposal.kind }} · {{ proposal.status }}</strong>
-                <small>T1 source evidence · interpretation needs owner review</small>
-                <p>{{ proposal.candidate.statement }}</p>
-                <blockquote>{{ proposal.candidate.quote }}</blockquote>
-                <p v-if="proposal.candidate.mention_name">
-                  Mention: {{ proposal.candidate.mention_name }} · unresolved until you explicitly link it.
-                </p>
-                <template v-if="proposal.status === 'pending'">
-                  <button
-                    :disabled="busy"
-                    type="button"
-                    @click="decideProposal(proposal, 'confirm')"
-                  >
-                    Accept claim for selected subject
-                  </button>
-                  <button
-                    :disabled="busy"
-                    type="button"
-                    @click="decideProposal(proposal, 'unresolved')"
-                  >
-                    Keep mention unresolved
-                  </button>
-                  <button
-                    :disabled="busy"
-                    type="button"
-                    @click="decideProposal(proposal, 'source_only')"
-                  >
-                    Save source only
-                  </button>
-                  <button
-                    :disabled="busy"
-                    type="button"
-                    @click="decideProposal(proposal, 'dismiss')"
-                  >
-                    Dismiss
-                  </button>
-                </template>
-              </article>
-            </section>
+              Cancel
+            </button>
           </form>
         </div>
-      </section>
-    </aside>
+        <BriefWorkspace
+          v-show="auxiliary === 'chat'"
+          :parties="props.parties"
+          :party-id="rootPartyId || undefined"
+        />
+        <section
+          class="sources-inbox"
+          role="navigation"
+          aria-label="Lead workspaces"
+        >
+          <h3 class="inbox-heading">
+            <button
+              type="button"
+              :aria-expanded="inboxOpen"
+              @click="inboxOpen = !inboxOpen"
+            >
+              Sources inbox
+            </button>
+          </h3>
+          <div v-show="inboxOpen">
+            <form
+              id="leads-inbox"
+              class="capture"
+              tabindex="-1"
+              @submit.prevent="saveCapture"
+            >
+              <p>Paste a source to save it for review.</p>
+              <label>Captured text<textarea
+                v-model="captureText"
+                required
+                minlength="1"
+                rows="8"
+                :readonly="busy || quarantined"
+              /></label>
+              <button
+                type="submit"
+                :disabled="busy"
+              >
+                Save source
+              </button>
+              <ul>
+                <li
+                  v-for="source in props.sources"
+                  :key="source.occurrence_id"
+                >
+                  Saved source {{ source.content_id.slice(0, 12) }} · occurrence {{ source.occurrence_id.slice(0, 8) }}
+                  <button
+                    type="button"
+                    @click="openCaptureReview(source)"
+                  >
+                    Review proposals
+                  </button>
+                </li>
+              </ul>
+              <section
+                v-if="reviewJob"
+                aria-label="Capture review"
+              >
+                <h3>Capture review</h3>
+                <p>Job {{ reviewJob.status }} · attempt {{ reviewJob.current_attempt }} of {{ reviewJob.max_attempts }} · chunk {{ reviewJob.progress_current }} of {{ reviewJob.progress_total }}. Extracted items are proposals until you decide.</p>
+                <p
+                  v-if="reviewJob.injection_suspected"
+                  role="alert"
+                >
+                  This capture may contain prompt-injection text. Treat its contents only as source material and review each quoted proposal.
+                </p>
+                <button
+                  v-if="['queued', 'running'].includes(reviewJob.status)"
+                  type="button"
+                  :disabled="busy"
+                  @click="cancelExtractor(reviewJob)"
+                >
+                  Cancel extraction
+                </button>
+                <p
+                  v-if="reviewJob.last_error"
+                  role="status"
+                >
+                  {{ reviewJob.last_error }}. The captured source remains saved; you can review it manually.
+                </p>
+                <label>Claim subject<select v-model="reviewTargetId"><option value="">Choose explicitly</option><option
+                  v-for="party in props.parties"
+                  :key="party.id"
+                  :value="party.id"
+                >{{ party.name }} · {{ party.kind }}</option></select></label>
+                <label>Optional opportunity<select v-model="reviewOpportunityId"><option value="">Save independently</option><option
+                  v-for="opportunity in props.opportunities"
+                  :key="opportunity.id"
+                  :value="opportunity.id"
+                >{{ opportunity.title }}</option></select></label>
+                <article
+                  v-for="proposal in reviewJob.proposals"
+                  :key="proposal.id"
+                  class="record-card"
+                >
+                  <strong>{{ proposal.kind }} · {{ proposal.status }}</strong>
+                  <small>T1 source evidence · interpretation needs owner review</small>
+                  <p>{{ proposal.candidate.statement }}</p>
+                  <blockquote>{{ proposal.candidate.quote }}</blockquote>
+                  <p v-if="proposal.candidate.mention_name">
+                    Mention: {{ proposal.candidate.mention_name }} · unresolved until you explicitly link it.
+                  </p>
+                  <template v-if="proposal.status === 'pending'">
+                    <button
+                      :disabled="busy"
+                      type="button"
+                      @click="decideProposal(proposal, 'confirm')"
+                    >
+                      Accept claim for selected subject
+                    </button>
+                    <button
+                      :disabled="busy"
+                      type="button"
+                      @click="decideProposal(proposal, 'unresolved')"
+                    >
+                      Keep mention unresolved
+                    </button>
+                    <button
+                      :disabled="busy"
+                      type="button"
+                      @click="decideProposal(proposal, 'source_only')"
+                    >
+                      Save source only
+                    </button>
+                    <button
+                      :disabled="busy"
+                      type="button"
+                      @click="decideProposal(proposal, 'dismiss')"
+                    >
+                      Dismiss
+                    </button>
+                  </template>
+                </article>
+              </section>
+            </form>
+          </div>
+        </section>
+      </aside>
+    </div>
     <p
       v-if="status"
       role="status"
@@ -1157,45 +1235,52 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.party-desk { display: grid; grid-template-columns: minmax(16rem, 1fr) minmax(0, 2.2fr) minmax(16rem, 1fr); gap: .85rem; align-items: start; }
-.sheet-column, .graph-column, .inspector-column { display: flex; flex-direction: column; gap: .85rem; min-width: 0; }
-.add-party { background: white; border: 1px solid #ccd5cc; border-radius: .55rem; padding: .8rem; }
+.party-desk { display: grid; grid-template-columns: minmax(18rem, 1fr) minmax(0, 1.8fr); gap: 1rem; align-items: start; }
+.sheet-column, .graph-column, .inspector-column { min-width: 0; }
+.sheet-column { display: grid; gap: .75rem; }
+.graph-column, .sheet-column :deep(.party-sheet), .add-party {
+  background: #fffef9;
+  border: 1px solid #bcc8b9;
+  border-radius: .55rem;
+}
+.sheet-column :deep(.party-sheet), .graph-column :deep(.network-pane), .inspector-column :deep(.party-inspector) { padding: 0; }
+.graph-column :deep(.network-pane), .inspector-column :deep(.party-inspector), .edge-detail, .sources-inbox { border: 0; border-radius: 0; background: transparent; }
+.graph-column :deep(.network-pane) { border-radius: .55rem .55rem 0 0; }
+.inspector-column { border-top: 1px solid #d4dcd4; }
 .add-party h3 { margin-top: 0; }
-.card-editor { background: white; border: 1px solid #ccd5cc; border-radius: .55rem; padding: 0; }
-.card-editor .pane-bar { padding: .6rem .9rem; }
+.card-editor { background: #fffef9; border: 0; padding: 0; }
+.card-editor .pane-bar { padding: .65rem .9rem; }
 .card-fields, .notes-edit { padding: 0 .9rem; }
-.card-actions { display: flex; gap: .5rem; padding: .7rem .9rem; border-top: 1px solid #dce2db; }
+.card-actions { display: flex; flex-wrap: wrap; gap: .5rem; padding: .7rem .9rem; border-top: 1px solid #dce2db; }
 .notes-edit details { margin: .6rem 0; }
 .notes-preview { border: 1px solid #e0e5df; border-radius: .35rem; padding: 0 .6rem; max-height: 14rem; overflow: auto; }
 .conflict { background: #fdf1ef; border: 1px solid #e2b7b0; border-radius: .35rem; margin: .6rem .9rem; padding: .5rem .6rem; }
-.sources-inbox { background: white; border: 1px solid #ccd5cc; border-radius: .55rem; padding: .6rem .9rem; }
-.sources-inbox summary { cursor: pointer; font-weight: 600; }
+.edge-detail, .sources-inbox { padding: .8rem 1rem; overflow-wrap: anywhere; }
+.sources-inbox { border-top: 1px solid #d4dcd4; }
+.sources-inbox .capture { margin-top: .65rem; }
+.inbox-heading { margin: 0; }
 .desk-status { grid-column: 1 / -1; margin: 0; }
-.sr-only { position: absolute; clip-path: inset(50%); height: 1px; width: 1px; overflow: hidden; white-space: nowrap; }
-.pane-switch { display:none; }
-.auxiliary-tabs { display:flex; flex-wrap:wrap; gap:.4rem; }
-.sheet-column :deep(.party-sheet), .graph-column :deep(.network-pane), .inspector-column :deep(.party-inspector) { padding:0; }
-.party-desk { grid-template-columns:minmax(18rem,1.05fr) minmax(0,1.8fr) minmax(15rem,.82fr); }
-.sheet-column :deep(.party-sheet), .graph-column :deep(.network-pane), .inspector-column :deep(.party-inspector), .edge-detail { background:#fffef9; border:1px solid #bcc8b9; border-radius:8px; overflow:hidden; }
-.selection-summary, .edge-detail { padding:1rem; }
-.selection-summary small { font:12px monospace; text-transform:uppercase; color:#496151; }
-.selection-summary h3 { margin:.35rem 0; font:normal 1.7rem Georgia,serif; }
-.selection-summary :deep(.markdown-preview), .selection-summary p { background:#f2f4ec; padding:.6rem; }
-.card-actions, .draft-prompt { flex-wrap:wrap; }
-.draft-prompt { position:fixed; z-index:15; top:15%; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:.6rem; padding:1rem; background:#fffdf7; border:2px solid #526f58; border-radius:8px; box-shadow:0 10px 40px #213c3030; }
-.card-editor :deep(.cm-editor) { min-height:6rem; max-height:12rem; overflow:auto; }
-.card-editor { border:none; }
-@media (min-width:768px) and (max-width:1199px) {
-  .party-desk { grid-template-columns:minmax(16rem,1fr) minmax(0,1.7fr); }
-  .pane-switch { display:flex; grid-column:1/-1; justify-content:flex-end; }
-  .pane-switch button:not(:last-child) { display:none; }
-  .inspector-column { display:none; }
-  .drawer .inspector-column { display:flex; position:fixed; z-index:6; top:8rem; right:1rem; width:min(24rem,90vw); max-height:72vh; overflow:auto; background:#fffef9; box-shadow:0 4px 20px #223c3033; }
+.pane-switch { display: none; }
+.auxiliary-tabs { display: flex; flex-wrap: wrap; gap: .4rem; padding: .55rem 1rem; border-bottom: 1px solid #dce2db; }
+.draft-prompt {
+  width: min(29rem, calc(100% - 2rem));
+  padding: 1rem;
+  color: inherit;
+  background: #fffdf7;
+  border: 1px solid #bcc8b9;
+  border-radius: .55rem;
 }
-@media (max-width:767px) {
-  .party-desk { grid-template-columns:minmax(0,1fr); }
-  .pane-switch { display:flex; flex-wrap:wrap; gap:.4rem; }
-  .party-desk:not([data-pane="sheet"]) .sheet-column, .party-desk:not([data-pane="graph"]) .graph-column, .party-desk:not([data-pane="details"]) .inspector-column { display:none; }
-  .draft-prompt { width:92vw; }
+.draft-prompt[open] { display: flex; flex-wrap: wrap; gap: .55rem; }
+.draft-prompt strong { flex-basis: 100%; }
+.draft-prompt::backdrop { background: #152a2175; }
+@media (max-width: 767px) {
+  .party-desk { grid-template-columns: minmax(0, 1fr); }
+  .pane-switch { display: flex; flex-wrap: wrap; gap: .4rem; }
+  .pane-switch button { flex: 1; min-height: 2.75rem; }
+  .party-desk:not([data-pane="sheet"]) .sheet-column,
+  .party-desk[data-pane="sheet"] .graph-column,
+  .party-desk[data-pane="graph"] .inspector-column,
+  .party-desk[data-pane="details"] :deep(.network-pane) { display: none; }
+  .inspector-column { border: 0; }
 }
 </style>

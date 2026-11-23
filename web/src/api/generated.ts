@@ -2866,7 +2866,7 @@ export interface components {
         RestoreCommitInput: {
             preview_id: string;
             preview_digest: string;
-            acknowledge_erasure_resurrection?: boolean;
+            acknowledge_erased_resurrection: boolean;
         };
         ImportPreview: components["schemas"]["RestorePreview"];
         ImportCommitInput: {

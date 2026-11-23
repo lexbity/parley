@@ -107,7 +107,7 @@ describe('QueueWorkspace sheet: search, phase edit, undo', () => {
       target_stage_id: 'preparing',
       pack_version: '1.0.0',
       expected_phase_revision: 1,
-    });
+    }, expect.any(String));
     expect(wrapper.get('[role="status"]').text()).toContain('moved to Preparing');
     // The canonical label is reflected back in the row control.
     expect(wrapper.get('select[aria-label="Phase for Onboarding"]').element).toMatchObject({ value: 'preparing' });
@@ -120,6 +120,39 @@ describe('QueueWorkspace sheet: search, phase edit, undo', () => {
     await wrapper.get('select[aria-label="Phase for Onboarding"]').setValue('exploring');
     await flushPromises();
     expect(parley.setOpportunityPhase).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it('retries a phase change with the same intent after the response is lost', async () => {
+    const wrapper = stub();
+    await flushPromises();
+    const change = vi.mocked(parley.setOpportunityPhase);
+    change.mockRejectedValueOnce(new TypeError('Connection lost'));
+
+    await wrapper.get('select[aria-label="Phase for Onboarding"]').setValue('preparing');
+    await flushPromises();
+    expect(wrapper.get('select[aria-label="Phase for Onboarding"]').attributes('disabled')).toBeDefined();
+    await wrapper.findAll('button').find(button => button.text() === 'Retry phase change')!.trigger('click');
+    await flushPromises();
+
+    expect(change.mock.calls[1]).toEqual(change.mock.calls[0]);
+    expect(wrapper.get('select[aria-label="Phase for Onboarding"]').element).toMatchObject({ value: 'preparing' });
+    wrapper.unmount();
+  });
+
+  it('expires an unconfirmed phase change after the workspace epoch changes', async () => {
+    const epoch = vi.spyOn(parley, 'workspaceEpoch', 'get').mockReturnValue('first-epoch');
+    const wrapper = stub();
+    await flushPromises();
+    const change = vi.mocked(parley.setOpportunityPhase);
+    change.mockRejectedValueOnce(new TypeError('Connection lost'));
+    await wrapper.get('select[aria-label="Phase for Onboarding"]').setValue('preparing');
+    await flushPromises();
+    epoch.mockReturnValue('second-epoch');
+    await wrapper.findAll('button').find(button => button.text() === 'Retry phase change')!.trigger('click');
+    await flushPromises();
+    expect(change).toHaveBeenCalledTimes(1);
+    expect(wrapper.text()).toContain('The workspace changed. Review the current phase before editing.');
     wrapper.unmount();
   });
 
@@ -140,7 +173,7 @@ describe('QueueWorkspace sheet: search, phase edit, undo', () => {
       target_stage_id: 'preparing',
       original_event_id: 'ev-o1-exploring',
       expected_phase_revision: 3,
-    }));
+    }), expect.any(String));
     // Undo restores the row into the filter and appends a reversal event.
     expect(wrapper.findAll('tbody tr[data-opportunity-id]')).toHaveLength(2);
     wrapper.unmount();
@@ -218,9 +251,9 @@ describe('QueueWorkspace sheet: search, phase edit, undo', () => {
     const wrapper = mount(QueueWorkspace, { props: { parties, outputs: [] } });
     await flushPromises();
     const cells = wrapper.findAll('td.date');
-    expect(cells[0]!.text()).toBe('Today');
+    expect(cells[0]!.text()).toContain('Today');
     expect(cells[0]!.classes()).toContain('due');
-    expect(cells[1]!.text()).toBe('May 4');
+    expect(cells[1]!.text()).toContain('May 4');
     wrapper.unmount();
   });
 
@@ -269,7 +302,7 @@ describe('QueueWorkspace sheet: search, phase edit, undo', () => {
     expect(inspector.text()).toContain('We incorporated the setup edits into the quickstart.');
     expect(inspector.text()).toContain('party · T1');
     expect(inspector.text()).toContain('thread waiting');
-    expect(inspector.text()).toContain('SCENARIO HISTORY (1)');
+    expect(inspector.text()).toContain('Scenario history (1)');
     wrapper.unmount();
   });
 });

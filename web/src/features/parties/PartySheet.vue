@@ -128,6 +128,7 @@ function typeLabel(kind: string): string {
     <p
       v-if="loading && !props.parties.length"
       class="sheet-empty"
+      role="status"
     >
       Loading parties…
     </p>
@@ -135,13 +136,19 @@ function typeLabel(kind: string): string {
       v-else-if="!props.parties.length && !query && kind === 'all'"
       class="sheet-empty"
     >
-      No parties yet. Add a person or organization. People do not need an organization.
+      No parties yet. Add a person or organization, or import a CSV.
     </p>
     <p
       v-else-if="!visibleParties.length"
       class="sheet-empty"
     >
       No matching parties.
+      <button
+        type="button"
+        @click="clearFilters"
+      >
+        Clear filters
+      </button>
     </p>
     <div
       v-else
@@ -164,6 +171,7 @@ function typeLabel(kind: string): string {
             v-for="party in visibleParties"
             :key="party.id"
             :class="{ root: party.id === props.rootPartyId }"
+            :data-party-id="party.id"
           >
             <td>
               <button
@@ -182,25 +190,29 @@ function typeLabel(kind: string): string {
                 <input
                   class="focus-input"
                   :value="props.focusDraft"
+                  :readonly="props.busy"
                   maxlength="250"
                   :aria-label="`Focus for ${party.name}`"
                   @keydown.enter.prevent="emit('save-focus', party.id)"
-                  @keydown.esc.prevent="emit('cancel-focus')"
+                  @keydown.esc.stop.prevent="emit('cancel-focus')"
                   @input="emit('update:focus-draft', ($event.target as HTMLInputElement).value)"
                 >
-                <button
-                  type="button"
-                  :disabled="props.busy"
-                  @click="emit('save-focus', party.id)"
-                >
-                  Save
-                </button>
-                <button
-                  type="button"
-                  @click="emit('cancel-focus')"
-                >
-                  Cancel
-                </button>
+                <div class="focus-actions">
+                  <button
+                    type="button"
+                    :disabled="props.busy"
+                    @click="emit('save-focus', party.id)"
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="props.busy"
+                    @click="emit('cancel-focus')"
+                  >
+                    Cancel
+                  </button>
+                </div>
               </template>
               <template v-else>
                 <button
@@ -218,7 +230,7 @@ function typeLabel(kind: string): string {
       </table>
     </div>
     <p
-      v-if="rootPartyId && (rootKnown || parties.some(p => p.id === rootPartyId)) && (query || kind !== 'all') && !more && !visibleParties.some(p => p.id === rootPartyId)"
+      v-if="visibleParties.length && rootPartyId && (rootKnown || parties.some(p => p.id === rootPartyId)) && (query || kind !== 'all') && !more && !visibleParties.some(p => p.id === rootPartyId)"
       class="sheet-empty"
     >
       Outside current filter <button @click="clearFilters">
@@ -226,7 +238,7 @@ function typeLabel(kind: string): string {
       </button>
     </p>
     <footer class="sheet-foot">
-      {{ visibleParties.length }} {{ more ? 'loaded rows' : 'party rows' }} · name, type and focus
+      <span aria-live="polite">{{ visibleParties.length }} {{ more ? 'loaded rows' : visibleParties.length === 1 ? 'party' : 'parties' }}</span>
       <button
         v-if="more"
         :disabled="loading"
@@ -240,20 +252,26 @@ function typeLabel(kind: string): string {
 
 <style scoped>
 .party-sheet { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.sheet-actions { display: flex; gap: .4rem; flex-wrap: wrap; }
-.sheet-toolbar { display: flex; gap: .45rem; padding: .6rem .8rem; border-bottom: 1px solid #dce2db; flex-wrap: wrap; }
-.sheet-toolbar input { min-width: 8rem; flex: 1 1 10rem; }
-.sheet-toolbar select { width: auto; }
-.sheet-scroll { overflow: auto; max-height: 52vh; }
-table { border-collapse: collapse; width: 100%; text-align: left; }
-th, td { padding: .45rem .6rem; border-bottom: 1px solid #e3e9e2; vertical-align: middle; overflow-wrap:anywhere; }
-th { font-size:.92rem; font-weight:550; color:#2e4739; background:#f2f5ed; }
+.pane-bar, .sheet-actions { display: flex; gap: .4rem; flex-wrap: wrap; }
+.sheet-actions :deep(button) { min-height: 2.5rem; }
+.sheet-toolbar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .45rem; padding: .7rem .85rem; border-bottom: 1px solid #dce2db; }
+.sheet-toolbar input { grid-column: 1 / -1; }
+.sheet-toolbar select, .sheet-toolbar input { min-height: 2.5rem; }
+.sheet-scroll { overflow: auto; max-height: min(55dvh, 36rem); }
+table { table-layout: fixed; border-collapse: separate; border-spacing: 0; width: 100%; text-align: left; }
+th, td { padding: .4rem .65rem; border-bottom: 1px solid #e3e9e2; vertical-align: middle; overflow-wrap: anywhere; }
+th { position: sticky; top: 0; z-index: 1; font-weight: 600; color: #2e4739; background: #f2f5ed; }
+th:first-child { width: 36%; }
+th:nth-child(2) { width: 27%; }
 tr.root { background: #e2ecdf; }
-.row-party { width: 100%; text-align: left; font-weight:600; border: 0; background: transparent; padding: .2rem .3rem; }
-.row-party[aria-pressed="true"] { background: #deebe2; }
-.focus-cell { border: 0; background: transparent; color: #58665f; padding: .2rem .3rem; }
-.focus-input { width: 10rem; padding: .25rem .4rem; }
-.sheet-empty, .sheet-foot { margin: .6rem .8rem; color: #58665f; }
-.sheet-foot { margin-top: auto; border-top: 1px solid #dce2db; padding: .5rem .8rem; font-size: .8rem; }
-.sr-only { position: absolute; clip-path: inset(50%); height: 1px; width: 1px; overflow: hidden; white-space: nowrap; }
+tr.root td:first-child { box-shadow: inset 3px 0 #367757; }
+.row-party, .focus-cell { width: 100%; text-align: left; border: 0; background: transparent; padding: .3rem 0; overflow-wrap: anywhere; }
+.row-party { font-weight: 650; }
+.row-party[aria-pressed="true"], .row-party[aria-current="true"] { box-shadow: none; background: transparent; }
+.focus-cell { color: #445b4e; }
+.row-party:hover, .focus-cell:hover { text-decoration: underline; }
+.focus-input { padding: .25rem .4rem; }
+.focus-actions { display: flex; flex-wrap: wrap; gap: .25rem; margin-top: .3rem; }
+.sheet-empty { margin: .75rem .85rem; color: #58665f; }
+.sheet-foot { display: flex; justify-content: space-between; align-items: center; gap: .5rem; padding: .6rem .85rem; color: #58665f; font-size: .88rem; }
 </style>

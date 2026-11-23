@@ -1,13 +1,13 @@
 <script setup lang="ts">
-/* global HTMLElement, HTMLDetailsElement, HTMLSelectElement */
-import { computed, nextTick, ref, shallowRef, watch } from 'vue';
+/* global HTMLElement, HTMLDetailsElement, HTMLSelectElement, KeyboardEvent, ResizeObserver */
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { Background, Controls, Handle, Position, MiniMap, VueFlow, type Edge, type Node, type VueFlowInstance } from '@xyflow/vue';
 import { newOperationKey, parley, type GraphSnapshot, type SavedSource } from '../../api/client';
 
 import RelationshipEditor from '../parties/RelationshipEditor.vue';
 import { kindLabel } from '../parties/relations';
 
-const props = defineProps<{ focusEntityId?: string; viewRootId?: string; rootName?: string; sources?: SavedSource[]; refresh?: number; editorOpen?: boolean; canOpen?: boolean }>();
+const props = defineProps<{ focusEntityId?: string; viewRootId?: string; rootName?: string; sources?: SavedSource[]; refresh?: number; editorOpen?: boolean; canOpen?: boolean; active?: boolean }>();
 const emit = defineEmits<{ 'select-node': [id: string]; 'select-edge': [id: string]; 'related-saved': []; 'nodes-loaded': [nodes: GraphSnapshot['nodes']]; 'open-card': []; 'inspect-edge': [edge: GraphSnapshot['edges'][number]] }>();
 const snapshot = ref<GraphSnapshot>({ nodes: [], edges: [], omitted_nodes: 0, omitted_edges: 0 });
 const flow = shallowRef<VueFlowInstance | null>(null);
@@ -24,6 +24,8 @@ const layoutBusy = ref(false);
 const frame = ref<HTMLElement | null>(null);
 const relations = ref<HTMLDetailsElement | null>(null);
 const anchor = ref({ left: '0.6rem', top: '0.6rem' });
+let initializedRoot: string | undefined;
+let resizeObserver: ResizeObserver | undefined;
 const nodes = computed<Node[]>(() => {
   const neighbors = snapshot.value.nodes.filter(node => node.id !== props.viewRootId);
   return snapshot.value.nodes.map(node => {
@@ -38,7 +40,8 @@ const nodes = computed<Node[]>(() => {
 });
 const edges = computed<Edge[]>(() => snapshot.value.edges.map(edge => ({
   id: edge.id, type: 'straight', source: edge.from_id, target: edge.to_id,
-  label: edge.from_id === props.viewRootId ? edge.verb.replaceAll('_', ' ') + ' →' : '← ' + edge.verb.replaceAll('_', ' '),
+  label: edge.verb.replaceAll('_', ' ') + (edge.from_id === props.viewRootId ? ' →' : ''),
+  markerEnd: { type: 'arrowclosed', color: edge.tier === 2 ? '#8b6725' : '#71957f' },
   labelStyle: { fill: '#365341', fontFamily: 'monospace', fontSize: 13 },
   labelBgStyle: { fill: '#eff3eb' }, style: { stroke: edge.tier === 2 ? '#8b6725' : '#71957f', strokeWidth: 1.6 },
 })));
@@ -49,14 +52,14 @@ async function load() {
   const centerId = props.viewRootId;
   if (!centerId) {
     snapshot.value = { nodes: [], edges: [], omitted_nodes: 0, omitted_edges: 0 };
-    loading.value = false;
+    emit('nodes-loaded', []);
+    loading.value = false; error.value = '';
     return;
   }
   loading.value = true; error.value = '';
   try {
-    const viewRoot = props.viewRootId ?? props.focusEntityId ?? 'directory';
     const [result, savedSources] = await Promise.all([
-      parley.getGraph({ center_id: centerId, view_scope: 'leads', view_id: viewRoot }),
+      parley.getGraph({ center_id: centerId, view_scope: 'leads', view_id: centerId }),
       props.sources ?? parley.listSources(),
     ]);
     if (ownGeneration !== generation.value || centerId !== props.viewRootId) return;
@@ -96,18 +99,54 @@ async function savePosition(event: { node: { id: string; position: { x: number; 
 
 function focusNode(id: string) {
   selectedEdgeId.value = '';
-  setAnchor(id);
   emit('select-node', id);
 }
-function setAnchor(id: string) {
+function anchorTo(id: string) {
   const node = Array.from(frame.value?.querySelectorAll('[data-id]') ?? []).find(el => el.getAttribute('data-id') === id);
   if (!node || !frame.value) return;
   const bounds = frame.value.getBoundingClientRect();
   const rect = node.getBoundingClientRect();
   anchor.value = {
-    left: Math.max(6, Math.min(rect.left - bounds.left, bounds.width - 410)) + 'px',
-    top: Math.max(6, Math.min(rect.top - bounds.top, bounds.height - 360)) + 'px',
+    left: Math.max(8, Math.min(rect.left - bounds.left, bounds.width - 408)) + 'px',
+    top: Math.max(8, Math.min(rect.top - bounds.top, bounds.height - 320)) + 'px',
   };
+}
+function alignEditor() {
+  if (props.editorOpen && props.focusEntityId) anchorTo(props.focusEntityId);
+}
+function viewportKey(root: string) {
+  return parley.workspaceEpoch && `parley.parties.graph.${parley.workspaceId}.${parley.workspaceEpoch}.${root}`;
+}
+async function restoreViewport() {
+  const instance = flow.value;
+  const root = props.viewRootId;
+  if (props.active === false || !root || initializedRoot === root || !instance || !frame.value?.clientWidth || !nodes.value.length) return;
+  initializedRoot = root;
+  try {
+    const key = viewportKey(root);
+    const saved = key ? JSON.parse(globalThis.sessionStorage.getItem(key) ?? 'null') : null;
+    if (saved && [saved.x, saved.y, saved.zoom].every(Number.isFinite)) {
+      await instance.setViewport(saved);
+      return;
+    }
+  } catch { /* The graph can still fit the current neighborhood. */ }
+  await instance.fitView({ nodes: nodes.value.slice(0, 8).map(node => ({ id: node.id })), padding: .16, maxZoom: 1.15 });
+}
+function rememberViewport() {
+  const root = props.viewRootId;
+  if (!root || root !== initializedRoot || !flow.value || props.active === false) return;
+  const key = viewportKey(root);
+  if (!key) return;
+  try { globalThis.sessionStorage.setItem(key, JSON.stringify(flow.value.getViewport())); } catch { /* Keep the live viewport. */ }
+}
+function openFocusedNode(event: KeyboardEvent) {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  const id = target.closest<HTMLElement>('.vue-flow__node')?.dataset.id ?? (target === frame.value ? props.focusEntityId : undefined);
+  if (!id) return;
+  event.preventDefault();
+  event.stopPropagation();
+  focusNode(id);
 }
 function inspectEdge(id: string) {
   const edge = snapshot.value.edges.find(item => item.id === id);
@@ -120,14 +159,33 @@ function openRelated(edge?: GraphSnapshot['edges'][number]) {
   relations.value.open = true;
   void nextTick(() => relations.value?.querySelector<HTMLSelectElement>('form select')?.focus());
 }
-defineExpose({ openRelated, inspectEdge, reload: load });
+defineExpose({ anchorTo, openRelated, inspectEdge, reload: load });
 watch(() => props.focusEntityId, id => { if (id) relatedEntityId.value = id; });
 watch(() => props.viewRootId, () => {
+  initializedRoot = undefined;
+  flow.value = null;
   snapshot.value = { nodes: [], edges: [], omitted_nodes: 0, omitted_edges: 0 };
+  emit('nodes-loaded', []);
+  if (relations.value) relations.value.open = false;
+  correction.value = null;
+  relationStatus.value = '';
+  relationForm.value = true;
   selectedEdgeId.value = '';
+});
+watch(() => [props.editorOpen, props.focusEntityId, props.active], async () => {
+  await nextTick();
+  alignEditor();
+  void restoreViewport();
 });
 watch(() => [props.viewRootId, props.refresh], () => { void load(); }, { immediate: true });
 watch(() => props.sources, current => { if (current) savedSourcesForGraph.value = current; });
+onMounted(() => {
+  if (frame.value && typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(() => { alignEditor(); void restoreViewport(); });
+    resizeObserver.observe(frame.value);
+  }
+});
+onBeforeUnmount(() => { generation.value++; resizeObserver?.disconnect(); });
 </script>
 
 <template>
@@ -136,28 +194,39 @@ watch(() => props.sources, current => { if (current) savedSourcesForGraph.value 
     aria-label="Party network"
   >
     <header class="pane-bar">
-      <h2 id="relationship-graph-heading">
+      <h2
+        id="relationship-graph-heading"
+        tabindex="-1"
+      >
         {{ rootName ? rootName + ' · neighborhood' : 'Party network' }}
       </h2>
       <button
         v-if="focusEntityId && canOpen !== false"
         type="button"
-        @click="setAnchor(focusEntityId); emit('open-card')"
+        @click="emit('open-card')"
       >
         Open selected card
       </button>
     </header>
     <p
-      v-if="loading"
+      v-if="loading && !nodes.length"
       role="status"
+      class="graph-notice"
     >
       Loading the current graph neighborhood…
     </p>
     <p
       v-if="error"
       role="alert"
+      class="graph-notice"
     >
       {{ error }}
+      <button
+        type="button"
+        @click="load"
+      >
+        Retry
+      </button>
     </p>
     <p v-if="snapshot.omitted_nodes">
       Showing a bounded neighborhood; {{ snapshot.omitted_nodes }} or more nodes were omitted. Narrow the directory selection.
@@ -169,30 +238,33 @@ watch(() => props.sources, current => { if (current) savedSourcesForGraph.value 
       <div
         ref="frame"
         class="canvas-frame"
+        :class="{ editing: editorOpen }"
         tabindex="0"
         aria-label="Relationship graph canvas"
         data-testid="relationship-canvas"
+        @keydown.enter.capture="openFocusedNode"
       >
         <VueFlow
           v-if="viewRootId && nodes.length"
           :key="viewRootId"
           :nodes="nodes"
           :edges="edges"
-          :fit-view="true"
-          :fit-view-options="{ padding: 0.12, maxZoom: 1.35 }"
-          :nodes-draggable="!layoutBusy"
+          :nodes-draggable="!layoutBusy && !editorOpen"
           :nodes-connectable="false"
-          elements-selectable
+          :delete-key-code="null"
+          :zoom-on-scroll="false"
           aria-label="Relationship graph"
           @node-drag-stop="savePosition"
           @init="instance => flow = instance"
+          @nodes-initialized="restoreViewport"
+          @move="alignEditor"
+          @move-end="rememberViewport"
           @node-click="({ node }) => focusNode(node.id)"
           @edge-click="({ edge }) => inspectEdge(edge.id)"
         >
-          <template #node-card="{ id, data }">
+          <template #node-card="{ data }">
             <div
               :class="['graph-card', { home: data.root, inspecting: data.selected }]"
-              @keydown.enter.stop="focusNode(id)"
             >
               <Handle
                 type="target"
@@ -209,7 +281,7 @@ watch(() => props.sources, current => { if (current) savedSourcesForGraph.value 
             color="#bbcbbb"
             :gap="16"
           />
-          <Controls />
+          <Controls :show-interactive="false" />
           <MiniMap
             v-if="nodes.length > 12"
             pannable
@@ -230,23 +302,15 @@ watch(() => props.sources, current => { if (current) savedSourcesForGraph.value 
           Select a party to see its neighborhood.
         </p>
       </div>
-      <slot name="summary" />
-      <div class="pane-bar">
-        <span>{{ nodes.length }} visible · {{ edges.length }} relationships</span>
-      </div>
-      <article
-        v-if="selectedEdge"
-        class="evidence-strip"
-      >
-        <strong>{{ selectedEdge.verb }}</strong><blockquote>{{ selectedEdge.quote }}</blockquote>
-      </article>
       <details
+        v-if="viewRootId"
         ref="relations"
         class="graph-inspector"
       >
-        <summary>Relationships and evidence</summary><h4>Relationship list</h4>
+        <summary>Relationships and evidence <span class="graph-count">{{ edges.length }}</span></summary>
+        <h4>Relationship list</h4>
         <p v-if="!snapshot.edges.length">
-          No accepted relationships in this neighborhood yet. A name or search result does not create a relationship.
+          No accepted relationships in this neighborhood yet.
         </p>
         <ul aria-label="Attributed relationships">
           <li
@@ -321,20 +385,28 @@ watch(() => props.sources, current => { if (current) savedSourcesForGraph.value 
 </template>
 
 <style scoped>
- .network-pane { min-width:0; overflow:hidden; }
-.graph-inspector, .evidence-strip { padding:.7rem 1rem; }
-.canvas-frame { position:relative; }
+.network-pane { min-width: 0; overflow: hidden; }
+.network-pane .pane-bar { flex-wrap: wrap; border-bottom: 0; }
+.network-pane .pane-bar button { min-height: 2.5rem; }
+.graph-inspector, .graph-notice { padding: .7rem 1rem; }
+.graph-inspector summary { font-weight: 600; }
+.graph-count { margin-left: .25rem; font-weight: 400; color: #58665f; }
+.canvas-frame { position: relative; }
 .anchored-editor { position:absolute; z-index:5; width:min(400px,calc(100% - 12px)); max-height:calc(100% - 3rem); overflow:auto; border:2px solid #436b55; border-radius:8px; background:#fffdf7; box-shadow:0 5px 24px #223c3026; }
-.empty-network { position:absolute; inset:42% 0 auto; text-align:center; pointer-events:none; }
+.empty-network { position:absolute; inset:42% 0 auto; padding: 0 1rem; text-align:center; pointer-events:none; }
 .graph-card { display:grid; align-content:center; gap:2px; width:225px; min-height:60px; padding:8px; border:1px solid #acbeab; background:#e4ecdf; border-radius:5px; text-align:center; color:#233d30; }
 .graph-card small { font:12px monospace; }
 .graph-card strong { font:19px Georgia,serif; overflow-wrap:anywhere; }
 .graph-card.home { border:2px solid #426b51; background:#d8e8db; }
 .graph-card.inspecting { outline:2px solid #37694f; outline-offset:-2px; }
 .graph-card :deep(.vue-flow__handle) { opacity:0; }
-.graph-layout { display:block; }
-.canvas-frame { height:clamp(23rem,51vh,41rem); min-width:0; border-block:1px solid #d4dcd4; background:#eff3ed; }
-.canvas-frame:focus-visible { outline:3px solid #32735b; outline-offset:2px; }
+.canvas-frame { height: clamp(21rem, 49vh, 37rem); min-width:0; border-block:1px solid #d4dcd4; background:#eef2e8; }
+.canvas-frame:focus-visible { outline: 3px solid #32735b; outline-offset: -3px; }
 blockquote { margin:.5rem 0; padding:.5rem .75rem; border-left:3px solid #32735b; }
-@media(max-width:767px) { .graph-layout { grid-template-columns:1fr; } .canvas-frame { height:22rem; } }
+@media (max-width: 767px) {
+  .canvas-frame { height: clamp(17rem, 48dvh, 23rem); }
+  .canvas-frame.editing { height: auto; }
+  .canvas-frame.editing :deep(.vue-flow) { display: none; }
+  .anchored-editor { position: static; width: auto; max-height: none; border: 0; border-radius: 0; box-shadow: none; }
+}
 </style>

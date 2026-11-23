@@ -15,8 +15,10 @@ test('s09_recipient_exchange_template_lifecycle_and_uncalibrated_manual_path', a
   await queue.getByLabel('Opportunity title').fill('S09 writing opportunity');
   await queue.getByLabel('Participant').selectOption({ label: `${name} · person` });
   await queue.getByRole('button', { name: 'Create opportunity' }).click();
+  await expect(queue.getByRole('heading', { name: 'S09 writing opportunity' })).toBeVisible();
 
   await page.getByRole('link', { name: 'Output' }).click();
+  await page.getByRole('button', { name: 'Create output', exact: true }).click();
   const output = page.getByRole('region', { name: 'Composer, evidence and templates' });
   await output.getByLabel('Opportunity').selectOption({ label: 'S09 writing opportunity' });
   await output.getByLabel('Named participant').selectOption({ label: name });

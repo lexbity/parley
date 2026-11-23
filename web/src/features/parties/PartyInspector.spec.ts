@@ -34,7 +34,7 @@ describe('PartyInspector', () => {
     const wrapper = mountInspector({ party, dossier, rootPartyId: 'p0' });
     expect(wrapper.text()).toContain('Fieldwork');
     expect(wrapper.text()).toContain('CSV tools');
-    expect(wrapper.text()).toContain('member_of');
+    expect(wrapper.text()).toContain('member of');
     expect(wrapper.text()).toContain('guide.pdf');
     expect(wrapper.text()).toContain('Onboarding exchange');
     expect(wrapper.text()).toContain('Checklist');

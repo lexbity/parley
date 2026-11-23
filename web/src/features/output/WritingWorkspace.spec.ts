@@ -1,12 +1,15 @@
 import { mount, flushPromises } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { parley, type GraphEntity, type Opportunity, type WritingTemplate } from '../../api/client';
+import { parley, type OpportunitySummary, type WritingTemplate } from '../../api/client';
 import WritingWorkspace from './WritingWorkspace.vue';
 
 afterEach(() => vi.restoreAllMocks());
 
-const party: GraphEntity = { id: 'person-1', kind: 'person', name: 'Dana Lee', revision: 1 };
-const opportunity: Opportunity = { id: 'opp-1', title: 'Onboarding', state: 'open', revision: 1, participant_ids: [party.id], source_variant_ids: [], material_ids: [] };
+const party = { id: 'person-1', kind: 'person' as const, name: 'Dana Lee' };
+const opportunity: OpportunitySummary = {
+  id: 'opp-1', title: 'Onboarding', state: 'open', revision: 1, participants: [party],
+  tags: [], next_task: null, next_deadline: null, missing_material: true,
+};
 const template: WritingTemplate = { id: 'template-1', family_id: 'family-1', name: 'One ask', version: 1, status: 'draft', body: '{{their_name:name}},\nI can offer {{gift:guide}}.\nWould a review help {{ask:next_step}}?', sentence_rules: ['R1', 'R2'], stage_class: 'identified', channel: 'email', parent_version_id: null };
 
 function setup() {
@@ -15,7 +18,7 @@ function setup() {
   vi.spyOn(parley, 'getEmbeddingModel').mockResolvedValue({ model: '', model_digest: null, calibrated_kinds: [] });
   vi.spyOn(parley, 'getWritingInterests').mockResolvedValue([]);
   vi.spyOn(parley, 'getWritingExchange').mockResolvedValue({ current: null, versions: [] });
-  return mount(WritingWorkspace, { props: { opportunities: [opportunity], parties: [party], resources: [], outputs: [] } });
+  return mount(WritingWorkspace, { props: { opportunities: [opportunity], resources: [], outputs: [] } });
 }
 
 describe('WritingWorkspace', () => {
@@ -65,30 +68,42 @@ describe('WritingWorkspace', () => {
   });
 
   it('refuses to save a composer proposal generated for one opportunity under another', async () => {
-    const secondOpportunity: Opportunity = { id: 'opp-2', title: 'Second onboarding', state: 'open', revision: 1, participant_ids: [party.id], source_variant_ids: [], material_ids: [] };
-    vi.spyOn(parley, 'listWritingTemplates').mockResolvedValue([]);
+    const secondOpportunity = { ...opportunity, id: 'opp-2', title: 'Second onboarding' };
+    vi.spyOn(parley, 'listWritingTemplates').mockResolvedValue([{ ...template, status: 'active', body: 'Hello.' }]);
     vi.spyOn(parley, 'listTemplateFamilies').mockResolvedValue([]);
     vi.spyOn(parley, 'listVoiceSamples').mockResolvedValue([]);
     vi.spyOn(parley, 'getEmbeddingModel').mockResolvedValue({ model: 'local', model_digest: 'digest-1', calibrated_kinds: ['gift'] });
     vi.spyOn(parley, 'getWritingInterests').mockResolvedValue([]);
-    vi.spyOn(parley, 'getWritingExchange').mockResolvedValue({ current: null, versions: [] });
+    vi.spyOn(parley, 'getWritingExchange').mockResolvedValue({ current: { version: 1, fairness_attested: true }, versions: [] });
     vi.spyOn(parley, 'startMatching').mockResolvedValue({ job_id: 'job-a', role: 'matcher' });
-    vi.spyOn(parley, 'getRoleJob').mockResolvedValue({ status: 'succeeded', result: { body: 'stale proposal body' } } as unknown as Awaited<ReturnType<typeof parley.getRoleJob>>);
+    vi.spyOn(parley, 'composeWritingMaterial').mockResolvedValue({ job_id: 'job-b', role: 'composer' });
+    vi.spyOn(parley, 'getRoleJob').mockImplementation(async id => ({
+      status: 'succeeded', result: { body: id === 'job-a' ? 'matcher result' : 'original proposal' },
+    }) as unknown as Awaited<ReturnType<typeof parley.getRoleJob>>);
     vi.spyOn(parley, 'getWritingMatch').mockResolvedValue({ id: 'match-a', opportunity_id: 'opp-1', recipient_id: party.id, embed_model_digest: 'digest-1', calibration_json: '{}', shortlist_json: '[]', why_job_id: null } as Awaited<ReturnType<typeof parley.getWritingMatch>>);
     const save = vi.spyOn(parley, 'saveWritingDraft').mockResolvedValue({ material_id: 'mat-1' });
-    const wrapper = mount(WritingWorkspace, { props: { opportunities: [opportunity, secondOpportunity], parties: [party], resources: [], outputs: [] } });
+    const wrapper = mount(WritingWorkspace, { props: { opportunities: [opportunity, secondOpportunity], resources: [], outputs: [] } });
     await flushPromises();
 
     await wrapper.findAll('select')[0]!.setValue('opp-1'); await wrapper.findAll('select')[1]!.setValue(party.id); await flushPromises();
     await wrapper.findAll('button').find((item) => item.text() === 'Run exact matcher')!.trigger('click'); await flushPromises();
-    expect(wrapper.text()).toContain('stale proposal body');
+    const saveButton = wrapper.findAll('button').find(item => item.text() === 'Save proposal as draft')!;
+    expect(saveButton.attributes('disabled')).toBeDefined();
+    await wrapper.findAll('select').at(-1)!.setValue(template.id);
+    await wrapper.findAll('button').find(item => item.text() === 'Generate recipient-bound proposal')!.trigger('click');
+    await flushPromises();
+    expect(wrapper.get('.proposal-body').text()).toBe('original proposal');
 
     // Switch to a different opportunity. The proposal belongs to opp-1 and
     // must not be savable under opp-2 (F-FR-1).
     await wrapper.findAll('select')[0]!.setValue('opp-2'); await flushPromises();
-    await wrapper.findAll('button').find((item) => item.text() === 'Save proposal as draft')!.trigger('click'); await flushPromises();
+    await saveButton.trigger('click'); await flushPromises();
     expect(save).not.toHaveBeenCalled();
-    expect(wrapper.text()).toContain('belongs to');
+    expect(saveButton.attributes('disabled')).toBeDefined();
+    expect(wrapper.find('.proposal-body').exists()).toBe(false);
+    await wrapper.findAll('select')[0]!.setValue('opp-1'); await wrapper.findAll('select')[1]!.setValue(party.id); await flushPromises();
+    await saveButton.trigger('click'); await flushPromises();
+    expect(save).toHaveBeenCalledWith('opp-1', 'job-b', 'original proposal');
     wrapper.unmount();
   });
 });

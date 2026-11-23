@@ -15,11 +15,16 @@ describe('MaintenanceSettings S11 owner data operations', () => {
     vi.spyOn(parley, 'refreshSession').mockResolvedValue();
     vi.spyOn(parley, 'getMaintenanceOperation').mockResolvedValue({ id: 'op-1', kind: 'erase', state: 'complete', epoch: 'epoch-new', external_copies_requiring_disposal: 2 });
     const party: GraphEntity = { id: 'p1', kind: 'person', name: 'Dana Lee', revision: 1 };
-    const wrapper = mount(MaintenanceSettings, { props: { parties: [party] } }); await flushPromises();
+    const wrapper = mount(MaintenanceSettings, { props: { parties: [party, { ...party, id: 'p2', name: 'Mira Chen' }] } }); await flushPromises();
     expect(wrapper.text()).toContain('does not approve or release recipient-facing content');
     await wrapper.findAll('select').at(-1)!.setValue('p1');
     await wrapper.findAll('button').find((button) => button.text() === 'Preview erasure')!.trigger('click'); await flushPromises();
     expect(wrapper.text()).toContain('Records affected: Dana Lee');
+    await wrapper.findAll('select').at(-1)!.setValue('p2');
+    expect(wrapper.text()).not.toContain('Records affected:');
+    expect(wrapper.text()).not.toContain('Type exact party name');
+    await wrapper.findAll('select').at(-1)!.setValue('p1');
+    await wrapper.findAll('button').find((button) => button.text() === 'Preview erasure')!.trigger('click'); await flushPromises();
     await wrapper.findAll('input[autocomplete="off"]').at(-1)!.setValue('Dana Lee');
     expect(wrapper.text()).toContain('Erase Dana Lee');
     await wrapper.findAll('button').find((button) => button.text() === 'Erase Dana Lee')!.trigger('click'); await flushPromises();

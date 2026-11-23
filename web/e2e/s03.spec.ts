@@ -5,64 +5,74 @@ import { addParty, openParties } from './parties';
 
 test('s03_reviewed_manual_message_copy_is_recipient_and_version_bound', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { (window as Window & { parleyClipboardText?: string }).parleyClipboardText = text; } } });
-  });
   await page.goto('/');
   await openParties(page);
-  const suffix = randomUUID();
-  // Letters-only suffix: generic sentences are grounded-checked, and digits
-  // inside them are hard gate failures (RFC-0001 GR-2).
-  const leadName = `Dana ${suffix.replace(/[^a-z]/gi, '')}`;
-  await addParty(page, leadName, 'person');
-  await page.getByRole('link', { name: 'Output' }).click();
-  const workspace = page.getByLabel('Output registry workspace');
-  await workspace.getByRole('textbox', { name: 'Title', exact: true }).fill(`Onboarding ${suffix}`);
-  await workspace.getByLabel(new RegExp(`${leadName}.*person`)).check();
-  await workspace.getByRole('button', { name: 'Create opportunity' }).click();
-  await expect(workspace.getByRole('heading', { name: new RegExp(`Onboarding ${suffix}`) })).toBeVisible();
-  await workspace.getByRole('button', { name: new RegExp(`Onboarding ${suffix}`) }).click();
-
-  await workspace.getByLabel('Interest side').selectOption('them');
-  await workspace.getByLabel('Interest statement').fill('They want a smoother onboarding handoff.');
-  await workspace.getByRole('button', { name: 'Save interest' }).click();
-  await expect(workspace.getByText('T3 · them: They want a smoother onboarding handoff.')).toBeVisible();
-  await workspace.getByLabel('Interest side').selectOption('me');
-  await workspace.getByLabel('Interest statement').fill('I want to learn whether the checklist is useful.');
-  await workspace.getByRole('button', { name: 'Save interest' }).click();
-  await expect(workspace.getByText('T3 · me: I want to learn whether the checklist is useful.')).toBeVisible();
-  await workspace.getByLabel('They get').fill('A practical checklist they can use without replying.');
-  await workspace.getByLabel('I get').fill('An opportunity to learn from their onboarding practice.');
-  await workspace.getByRole('checkbox', { name: /them: They want/ }).check();
-  await workspace.getByRole('checkbox', { name: /me: I want/ }).check();
-  await workspace.getByRole('checkbox', { name: /I believe both sides come out ahead/ }).check();
-  await workspace.getByRole('button', { name: 'Save exchange version' }).click();
-
-  await workspace.getByLabel('Recipient').selectOption({ index: 1 });
-  await workspace.getByLabel('Material title').fill('Checklist note');
-  await workspace.getByRole('button', { name: 'Create draft material' }).click();
-  await workspace.getByRole('button', { name: 'Start an incomplete draft version' }).click();
-  const editor = workspace.getByLabel('Material editor');
-  await editor.getByLabel('Message text').fill(`Hello ${leadName}.`);
-  await editor.getByRole('button', { name: 'Add claim' }).click();
-  await editor.getByLabel('Claim type').selectOption('generic');
-  await editor.getByRole('button', { name: 'Save as a new version' }).click();
-  await expect(editor.getByRole('status')).toContainText('Showing the saved version');
-  for (const reason of await editor.locator('textarea[minlength="10"]').all()) {
-    await reason.fill('I reviewed this soft failure and choose to proceed for this recipient.');
-  }
-  await editor.getByRole('button', { name: 'Approve this version' }).click();
-  await expect(page.getByText('Exact version approved for its named recipient.')).toBeVisible();
-  await editor.getByRole('button', { name: 'Prepare approved copy' }).click();
-  await editor.getByRole('button', { name: 'Copy approved text' }).click();
-  await expect(page.getByText(/Clipboard promise succeeded and its receipt was recorded/)).toBeVisible();
-  await page.getByRole('link', { name: 'Output' }).click();
-  await expect(page.getByRole('button', { name: /Checklist note/ })).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Material editor', exact: true })).toContainText(leadName);
-  expect(await page.evaluate(() => (window as Window & { parleyClipboardText?: string }).parleyClipboardText)).toBe(`Hello ${leadName}.`);
-  await expect(page.getByText(/Copying text does not mark it sent or start a reply timer/)).toBeVisible();
+  const recipient = 'Dana Lee';
+  const title = 'Onboarding checklist';
+  await addParty(page, recipient);
   await page.getByRole('link', { name: 'Queue' }).click();
-  const queue = page.getByRole('region', { name: 'Opportunity queue' });
-  await queue.getByRole('button', { name: new RegExp(`Onboarding ${suffix}`) }).first().click();
-  await expect(queue.getByRole('button', { name: /Checklist note/ })).toBeVisible();
+  await page.getByRole('button', { name: 'New opportunity' }).click();
+  await page.getByLabel('Opportunity title').fill(title);
+  await page.getByLabel('Participant').selectOption({ label: recipient + ' · person' });
+  await page.getByRole('button', { name: 'Create opportunity', exact: true }).click();
+  const scenario = page.getByRole('complementary', { name: 'Scenario details' });
+  await expect(scenario.getByRole('heading', { name: title })).toBeVisible();
+
+  const session = await (await page.request.get('/api/v1/session')).json();
+  const auth = { 'X-Parley-Token': String(session.mutation_token), 'X-Parley-Epoch': String(session.epoch) };
+  async function post(path: string, data: object, status: number) {
+    const response = await page.request.post('/api/v1' + path, {
+      headers: { ...auth, 'Idempotency-Key': randomUUID() },
+      data,
+    });
+    expect(response.status(), await response.text()).toBe(status);
+    if (status !== 204) return response.json();
+  }
+  const inventory: Array<{ id: string; title: string; participants: Array<{ id: string; name: string }> }> =
+    await (await page.request.get('/api/v1/opportunities', { headers: auth })).json();
+  const opportunity = inventory.find(item => item.title === title)!;
+  const recipientId = opportunity.participants.find(item => item.name === recipient)!.id;
+  const path = '/opportunities/' + opportunity.id;
+  const theirInterest = await post(path + '/interests', {
+    recipient_id: recipientId, side: 'them', statement: 'A smoother handoff', knowledge_kind: 'hypothesis',
+    check_suggestion: 'Ask the recipient whether the handoff is a priority.',
+  }, 201);
+  const ownerInterest = await post(path + '/interests', {
+    recipient_id: recipientId, side: 'me', statement: 'Learn from their onboarding process', knowledge_kind: 'owner_report',
+  }, 201);
+  const exchange = await post(path + '/exchange', {
+    recipient_id: recipientId, they_get: 'A checklist', i_get: 'Feedback',
+    interest_ids: [theirInterest.id, ownerInterest.id],
+  }, 201);
+  await post(path + '/exchange/' + recipientId + '/attest', {}, 200);
+  const template = await post('/templates', { name: 'Short introduction', body: 'Hello.' }, 201);
+  await post('/templates/' + template.id + '/approve', {}, 204);
+  await post('/templates/' + template.id + '/activate', {}, 204);
+
+  const body = 'Hello.';
+  const material = await post(path + '/materials', {
+    recipient_id: recipientId, kind: 'outreach', template_version_id: template.id, body,
+    exchange_version: exchange.version, slot_fills: [], sentence_bindings: [{ sentence_index: 0, claim_type: 'generic' }],
+  }, 201);
+  await post('/materials/' + material.id + '/approve', {
+    override_reasons: {
+      'S1 GIVE_FIRST': 'The reviewer confirmed that the recipient requested a short introduction.',
+      'S2 ANCHOR': 'The reviewer checked the wording of this specific version.',
+      'S7 CADENCE': 'The introduction is scheduled at the approved cadence.',
+    },
+  }, 200);
+
+  await page.getByRole('link', { name: 'Output' }).click();
+  await page.getByRole('button', { name: 'Review outreach v1 for Dana Lee' }).click();
+  const review = page.getByRole('complementary', { name: 'Material review' });
+  await expect(review.getByRole('heading', { name: 'outreach · v1' })).toBeVisible();
+  await review.getByRole('button', { name: 'Copy approved text' }).click();
+  await expect(review.getByRole('status')).toContainText('Copy confirmed for Dana Lee, version 1');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(body);
+  await expect(review.getByText('No send has been recorded', { exact: false })).toBeVisible();
+
+  await page.getByRole('link', { name: 'Queue' }).click();
+  await scenario.getByText('Linked material (1)', { exact: true }).click();
+  await scenario.getByRole('button', { name: 'Review outreach v1 in Output' }).click();
+  await expect(page).toHaveURL('/output/' + material.id);
 });

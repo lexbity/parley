@@ -24,13 +24,21 @@ export type OwnerSession = {
   cookie: string;
   /** A one-time bootstrap URL for a second, independent owner session. */
   secondBootstrapUrl(): Promise<string>;
+  nextBootstrapUrl?(): Promise<string>;
 };
 
 type Fixtures = {
   ownerSession: OwnerSession;
+  pauseExtractor: boolean;
 };
 
 const BOOTSTRAP_PREFIX = 'Bootstrap URL: ';
+
+function stopLauncherGroup(pid: number | undefined) {
+  if (pid === undefined) return;
+  try { process.kill(-pid, 'SIGTERM'); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+}
 
 async function redeemBootstrap(origin: string, secret: string): Promise<string> {
   const response = await fetch(`${origin}/api/v1/session/bootstrap`, {
@@ -49,16 +57,15 @@ async function redeemBootstrap(origin: string, secret: string): Promise<string> 
 /** Open a second independent owner page from a bootstrap URL (RFC-0004 S01). */
 export async function openOwnerPage(page: Page, bootstrapUrl: string): Promise<void> {
   await page.goto(bootstrapUrl);
-  await expect(page.getByRole('heading', { name: 'Resources' })).toBeVisible();
-  await expect(page.getByRole('status')).toContainText('Workspace ready');
+  await expect(page.getByRole('region', { name: 'Resource board', exact: true })).toBeVisible();
 }
 
 export const test = base.extend<Fixtures>({
+  pauseExtractor: [false, { option: true }],
   ownerSession: [
-    // eslint-disable-next-line no-empty-pattern -- Playwright requires a destructured fixture argument.
-    async ({}, use, testInfo) => {
+    async ({ pauseExtractor }, use, testInfo) => {
       if (testInfo.project.name === 'mock') {
-        const mock: MockApi = createMockApi();
+        const mock: MockApi = createMockApi({ pauseExtractor });
         const server = await createServer({
           root: webRoot,
           plugins: [mock.plugin],
@@ -99,6 +106,7 @@ export const test = base.extend<Fixtures>({
       const workspace = await mkdtemp(join(tmpdir(), 'parley-e2e-'));
       const child = spawn(parleyBinary, ['--workspace', join(workspace, 'owner', 'workspace.sqlite'), '--headless'], {
         stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
       });
       const closed = new Promise<void>((resolve) => child.once('close', () => resolve()));
       let stderr = '';
@@ -106,19 +114,28 @@ export const test = base.extend<Fixtures>({
         stderr = (stderr + chunk).slice(-8192);
       });
       const lines = createInterface({ input: child.stdout });
+      const bootstrapUrls: string[] = [];
+      let waitingForBootstrap: ((url: string) => void) | undefined;
+      lines.on('line', line => {
+        if (!line.startsWith(BOOTSTRAP_PREFIX)) return;
+        const url = line.slice(BOOTSTRAP_PREFIX.length);
+        if (waitingForBootstrap) {
+          waitingForBootstrap(url);
+          waitingForBootstrap = undefined;
+        } else bootstrapUrls.push(url);
+      });
+      function nextBootstrapUrl() {
+        const queued = bootstrapUrls.shift();
+        return queued ? Promise.resolve(queued) : new Promise<string>(resolve => { waitingForBootstrap = resolve; });
+      }
       try {
-        const line = await Promise.race([
-          (async () => {
-            for await (const line of lines) {
-              if (line.startsWith(BOOTSTRAP_PREFIX)) return line;
-            }
-            throw new Error('Parley exited without printing its bootstrap URL.');
-          })(),
+        const url = await Promise.race([
+          nextBootstrapUrl(),
           once(child, 'exit').then(([code, signal]) => {
             throw new Error(`Parley exited before reporting its bootstrap URL (${code ?? signal}).`);
           }),
         ]);
-        const bootstrapUrl = new URL(line.slice(BOOTSTRAP_PREFIX.length));
+        const bootstrapUrl = new URL(url);
         if (bootstrapUrl.protocol !== 'http:' || bootstrapUrl.hostname !== '127.0.0.1') {
           throw new Error('Parley did not report a loopback bootstrap URL.');
         }
@@ -127,6 +144,7 @@ export const test = base.extend<Fixtures>({
         await use({
           origin,
           cookie,
+          nextBootstrapUrl,
           secondBootstrapUrl: async () => {
             // A second launcher redeems the control channel of the live
             // workspace, proves the single-writer handoff, prints a fresh
@@ -168,7 +186,9 @@ export const test = base.extend<Fixtures>({
         throw error;
       } finally {
         lines.close();
-        child.kill();
+        // The launcher can replace itself during maintenance and the new
+        // service inherits this fixture's process group and stdout.
+        stopLauncherGroup(child.pid);
         await closed;
         await rm(workspace, { recursive: true, force: true });
       }

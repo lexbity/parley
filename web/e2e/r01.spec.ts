@@ -64,6 +64,9 @@ test('r01_board_create_edit_move_remove_and_related_card', async ({ page }) => {
   await editor.getByRole('checkbox', { name: 'Include a relationship in this save' }).check();
   await editor.getByLabel('Relationship target').selectOption('create');
   await editor.getByLabel('New card title').fill('Fixture walkthrough');
+  await editor.getByRole('textbox', { name: 'Related card notes' }).fill('Keep the **quoted newline**.');
+  await editor.locator('.notes-block').filter({ hasText: 'Related card notes' }).getByText('Preview Markdown').click();
+  await expect(editor.locator('strong').filter({ hasText: 'quoted newline' })).toBeVisible();
   await editor.getByLabel('Relationship verb').selectOption('includes');
   await editor.getByLabel('Basis').fill('Owner linked the checklist fixture');
   await editor.getByRole('button', { name: 'Save card' }).click();

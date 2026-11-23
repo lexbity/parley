@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises } from '@vue/test-utils';
-import { parley, type BoardOpportunity, type BoardSnapshot, type ExtractorJob, type GraphEntity, type Material, type Opportunity, type SavedSource } from '../api/client';
+import { parley, type BoardOpportunity, type BoardSnapshot, type ExtractorJob, type GraphEntity, type Material, type OpportunitySummary, type SavedSource } from '../api/client';
 import AppShell from './AppShell.vue';
 import { tabs } from './tabs';
 
@@ -108,7 +108,7 @@ describe('AppShell', () => {
     await parties.get('#leads-inbox textarea').setValue('Hiring update with an unresolved Dana mention.');
     await parties.get('#leads-inbox').trigger('submit');
     await flushPromises();
-    expect(saveSource).toHaveBeenCalledWith({ text: 'Hiring update with an unresolved Dana mention.', title: null, url: null });
+    expect(saveSource).toHaveBeenCalledWith({ text: 'Hiring update with an unresolved Dana mention.', title: null, url: null }, expect.any(String));
     expect(wrapper.text()).toContain('No person was inferred or linked');
     wrapper.unmount();
   });
@@ -139,7 +139,10 @@ describe('AppShell', () => {
   it('reopens a durable capture review, requires a subject, and records proposal decisions', async () => {
     const party: GraphEntity = { id: 'p1', kind: 'person', name: 'Dana Lee', revision: 1 };
     const source: SavedSource = { content_id: 'c1', variant_id: 'v1', occurrence_id: 'o1', normalized_sha256: 'a', raw_sha256: 'b' };
-    const opportunity: Opportunity = { id: 'opp1', title: 'Onboarding', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: [] };
+    const opportunity: OpportunitySummary = {
+      id: 'opp1', title: 'Onboarding', state: 'open', revision: 1, participants: [{ id: party.id, name: party.name, kind: 'person' }],
+      tags: [], next_task: null, next_deadline: null, missing_material: true,
+    };
     const job: ExtractorJob = {
       id: 'job1', role: 'extractor', status: 'succeeded', current_attempt: 1, max_attempts: 3,
       progress_current: 1, progress_total: 1, injection_suspected: true, last_error_code: null, last_error: null,
@@ -337,7 +340,8 @@ describe('AppShell', () => {
     await flushPromises();
     expect(wrapper.text()).toContain('Review outreach v1 in Output');
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(4)').trigger('click');
-    expect(wrapper.text()).toContain('Approved materials');
+    await flushPromises();
+    expect(wrapper.find('[aria-label="Material registry"]').exists()).toBe(true);
     expect(wrapper.text()).toContain('outreach · v1');
     expect(wrapper.text()).toContain('Dana Lee');
     wrapper.unmount();

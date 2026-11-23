@@ -5,17 +5,33 @@ test('p04_csv_mapping_duplicate_decisions_and_receipt', async ({ page }) => {
   await page.goto('/parties');
   await page.getByRole('button', { name: 'Import CSV' }).click();
   const dialog = page.getByRole('dialog', { name: 'Import parties from CSV' });
-  const csv = '\uFEFFName,Focus,Notes,Notes\r\n"Alder, Inc",Docs,"First\r\nsecond",skip\r\nMira,CSV,One,skip\r\nMira,Tools,Two,skip\r\n,missing,Missing,skip\r\n';
+  const csv = '\uFEFFName,Focus,Notes,Notes\r\n"Alder, Inc",=1+1,"First\r\nsecond",skip\r\nMira,CSV,<b>Literal</b>,skip\r\nMira,Tools,Two,skip\r\n,missing,Missing,skip\r\n';
   await dialog.getByLabel('CSV file').setInputFiles({ name: 'parties.csv', mimeType: 'text/csv', buffer: Buffer.from(csv) });
   await dialog.getByRole('button', { name: 'Read columns' }).click();
   await dialog.getByRole('combobox', { name: 'Focus column', exact: true }).selectOption('1');
   await dialog.getByRole('combobox', { name: 'Markdown notes column', exact: true }).selectOption('2');
   await expect(dialog.getByText('Skipped columns · 4 · Notes')).toBeVisible();
   await dialog.getByRole('button', { name: 'Preview mapped rows' }).click();
-  await expect(dialog.getByRole('button', { name: /Import \d+ parties/ })).toBeDisabled();
-  await dialog.getByLabel('Decision for record 3').selectOption('distinct');
-  await dialog.getByLabel('Decision for record 4').selectOption('skip');
-  await dialog.getByLabel('Decision for record 5').selectOption('skip');
+  const sheetPreview = dialog.getByRole('region', { name: 'CSV preview spreadsheet' });
+  await expect(sheetPreview.getByRole('columnheader', { name: 'Markdown notes' })).toBeVisible();
+  await expect(sheetPreview.getByText('=1+1', { exact: true })).toBeVisible();
+  await expect(sheetPreview.getByText('<b>Literal</b>', { exact: true })).toBeVisible();
+  await expect(sheetPreview.locator('b')).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Import 1 party' })).toBeDisabled();
+  const record = dialog.getByRole('combobox', { name: 'Record', exact: true });
+  await expect(record).toBeFocused();
+  await dialog.getByText('Show full Markdown notes').click();
+  await expect(dialog.locator('pre')).toHaveText('First\nsecond');
+  await sheetPreview.getByText('Mira', { exact: true }).first().click();
+  await expect(record).toHaveValue('3');
+  const decision = dialog.getByRole('combobox', { name: 'Decision', exact: true });
+  await decision.selectOption('distinct');
+  await expect(sheetPreview.getByText('Possible duplicate', { exact: true })).toHaveCount(1);
+  await record.selectOption('4');
+  await decision.selectOption('skip');
+  await dialog.getByRole('button', { name: 'Next issue' }).click();
+  await expect(record).toHaveValue('5');
+  await decision.selectOption('skip');
   await dialog.getByRole('button', { name: 'Import 2 parties' }).click();
   await expect(dialog.getByRole('status')).toContainText('2 created · 2 skipped');
   await dialog.getByRole('button', { name: 'View imported parties' }).click();
@@ -25,12 +41,14 @@ test('p04_csv_mapping_duplicate_decisions_and_receipt', async ({ page }) => {
 });
 
 test('p04_recovers_commit_after_disconnect_and_reload', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
   await page.goto('/parties');
   await page.getByRole('button', { name: 'Import CSV' }).click();
   const dialog = page.getByRole('dialog', { name: 'Import parties from CSV' });
   await dialog.getByLabel('Or paste CSV').fill('Name\nFieldwork\n');
   await dialog.getByRole('button', { name: 'Read columns' }).click();
   await dialog.getByRole('button', { name: 'Preview mapped rows' }).click();
+  await expect(dialog.getByRole('region', { name: 'CSV preview spreadsheet' }).getByText('Fieldwork', { exact: true })).toBeVisible();
   let originalKey: string | undefined;
   const commitUrl = '**/api/v1/party-imports/*/commit';
   await page.route(commitUrl, async route => {
@@ -39,7 +57,7 @@ test('p04_recovers_commit_after_disconnect_and_reload', async ({ page }) => {
     expect(result.ok()).toBeTruthy();
     await route.abort('failed');
   });
-  await dialog.getByRole('button', { name: 'Import 1 parties' }).click();
+  await dialog.getByRole('button', { name: 'Import 1 party' }).click();
   await expect(dialog.getByRole('alert')).toBeVisible();
   await page.unroute(commitUrl);
   await page.reload();

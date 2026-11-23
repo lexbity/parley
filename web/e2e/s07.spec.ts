@@ -110,7 +110,8 @@ test('s07_browser_explicit_mark_sent_deadline_outcome_and_resolution', async ({ 
   // from the same material and recipient surface.
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.getByRole('link', { name: 'Output' }).click();
-  const outputRow = page.locator(`#output-material-${material.id}`);
+  await page.locator(`#output-material-${material.id}`).click();
+  const outputRow = page.getByRole('complementary', { name: 'Material review' });
   await expect(outputRow).toBeVisible();
   await outputRow.getByRole('button', { name: 'Copy approved text' }).click();
   await expect(outputRow.getByRole('status')).toContainText('Copy confirmed');

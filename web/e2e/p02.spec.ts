@@ -19,7 +19,9 @@ test('p02_related_and_existing_edges', async ({ page }) => {
   await related.getByLabel('Name', { exact: true }).fill('Contributor guide');
   await related.getByLabel('Saved source').selectOption({ index: 1 });
   await related.getByLabel('Exact supporting quote').fill('Fieldwork publishes the contributor guide.');
-  await related.getByLabel('Initial owner notes').fill('Use **small fixtures**.');
+  await related.getByRole('textbox', { name: 'Initial owner notes', exact: true }).fill('Use **small fixtures**.');
+  await related.getByText('Preview Markdown', { exact: true }).click();
+  await expect(related.locator('strong')).toHaveText('small fixtures');
   await related.getByRole('button', { name: 'Save related entity and relationship' }).click();
   const editor = workspace.getByRole('region', { name: 'Card editor' });
   await expect(editor.getByRole('heading', { name: 'Edit card · Contributor guide' })).toBeVisible();

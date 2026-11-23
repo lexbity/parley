@@ -39,6 +39,7 @@ test('s06_browser_verified_file_handoff_downloads_exact_bytes_once', async ({ pa
   await addParty(page, name, 'person');
 
   await page.getByRole('link', { name: 'Queue' }).click();
+  await page.getByRole('button', { name: 'New opportunity' }).click();
   await page.getByLabel('Opportunity title').fill('Handoff exchange');
   await page.getByLabel('Participant').selectOption({ label: `${name} · person` });
   await page.getByRole('button', { name: 'Create opportunity' }).click();
@@ -159,5 +160,8 @@ test('s06_browser_verified_file_handoff_downloads_exact_bytes_once', async ({ pa
 
   // The shell still renders the Output workspace with the released material.
   await page.getByRole('link', { name: 'Output' }).click();
-  await expect(page.getByRole('region', { name: 'Composer, evidence and templates' })).toBeVisible();
+  const registry = page.getByRole('region', { name: 'Material registry' });
+  await registry.getByRole('button', { name: `Review handoff v1 for ${name}` }).click();
+  const reviewPanel = page.getByRole('complementary', { name: 'Material review' });
+  await expect(reviewPanel.getByRole('heading', { name: 'handoff · v1', exact: true })).toBeVisible();
 });

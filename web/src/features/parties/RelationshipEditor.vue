@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { parley, newOperationKey, type GraphEntity, type GraphSnapshot, type SavedSource } from '../../api/client';
 import PartyFiles from './PartyFiles.vue';
+import MarkdownEditor from '../../shared/MarkdownEditor.vue';
 import MarkdownPreview from '../../shared/MarkdownPreview.vue';
 import { relationshipTypes, kindLabel } from './relations';
 
@@ -170,10 +171,13 @@ async function save() {
         rows="2"
       /></label>
       <template v-if="mode === 'create'">
-        <label>Initial owner notes<textarea
+        <p>Initial owner notes · Markdown</p>
+        <MarkdownEditor
           v-model="notes"
-          rows="3"
-        /></label>
+          label="Initial owner notes"
+          :readonly="busy"
+          compact
+        />
         <details v-if="notes">
           <summary>Preview Markdown</summary><MarkdownPreview :source="notes" />
         </details>

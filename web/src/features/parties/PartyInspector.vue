@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { parley, type Dossier, type GraphEntity } from '../../api/client';
 import MarkdownPreview from '../../shared/MarkdownPreview.vue';
+import PartyFiles from './PartyFiles.vue';
 
 const props = defineProps<{
   party: GraphEntity | null;
@@ -24,11 +25,12 @@ function typeLabel(kind: string): string {
     class="party-inspector"
     aria-labelledby="inspector-heading"
   >
-    <header class="pane-bar">
-      <h2 id="inspector-heading">
-        Inspector
-      </h2>
-    </header>
+    <h2
+      id="inspector-heading"
+      class="sr-only"
+    >
+      Selected card
+    </h2>
     <p
       v-if="props.loading"
       role="status"
@@ -55,12 +57,11 @@ function typeLabel(kind: string): string {
     <template v-else>
       <div class="inspector-head">
         <h3>{{ props.party.name }}</h3>
-        <small>{{ typeLabel(props.party.kind) }} · {{ props.party.focus || 'no focus' }}</small>
+        <small>{{ typeLabel(props.party.kind) }}<template v-if="props.party.focus"> · {{ props.party.focus }}</template></small>
         <p
           v-if="['person', 'org'].includes(props.party.kind) && props.rootPartyId && props.rootPartyId !== props.party.id"
           class="outside-root"
         >
-          Sheet root is {{ props.rootPartyId === props.party.id ? 'this party' : 'a different root' }}.
           <button
             type="button"
             @click="emit('make-root', props.party.id)"
@@ -80,24 +81,17 @@ function typeLabel(kind: string): string {
         v-if="dossier?.import_origin"
         class="pad-line"
       >
-        CSV import · record {{ dossier.import_origin.source_record }}
+        CSV import · row {{ dossier.import_origin.source_record }}
       </p>
-      <details
-        class="inspector-section"
-        :open="true"
-      >
-        <summary>Notes</summary>
-        <div class="notes-preview">
+      <div class="inspector-section">
+        <div
+          v-if="markdown"
+          class="notes-preview"
+          aria-label="Owner notes"
+        >
           <MarkdownPreview
-            v-if="markdown"
             :source="markdown"
           />
-          <p
-            v-else
-            class="pad-line"
-          >
-            No owner notes.
-          </p>
         </div>
         <button
           type="button"
@@ -106,12 +100,9 @@ function typeLabel(kind: string): string {
         >
           Open card
         </button>
-      </details>
-      <details
-        class="inspector-section"
-        :open="!(props.dossier?.direct_links?.length)"
-      >
-        <summary>Direct links</summary>
+      </div>
+      <details class="inspector-section">
+        <summary>Direct links ({{ dossier?.direct_links.length ?? 0 }})</summary>
         <p
           v-if="!props.dossier?.direct_links?.length"
           class="pad-line"
@@ -128,33 +119,29 @@ function typeLabel(kind: string): string {
           >
             <button @click="emit('inspect-link', link.id)">
               {{ link.from_id === party?.id ? '→' : '←' }} {{ link.verb.replaceAll('_',' ') }} · {{ nodes?.find(n => n.id === (link.from_id === party?.id ? link.to_id : link.from_id))?.name ?? (link.from_id === party?.id ? link.to_id : link.from_id) }}
-            </button> <small>{{ link.verb }}</small>
+            </button>
             <small> · T{{ link.tier ?? '—' }}{{ link.wording ? ` · “${link.wording}”` : '' }}</small>
           </li>
         </ul>
       </details>
       <details class="inspector-section">
-        <summary>Files</summary>
+        <summary>Files ({{ dossier?.files?.length ?? 0 }})</summary>
         <p
           v-if="!props.dossier?.files?.length"
           class="pad-line"
         >
           No files attached to this card.
         </p>
-        <ul
+        <PartyFiles
           v-else
-          class="inspector-list"
-        >
-          <li
-            v-for="file in props.dossier.files"
-            :key="file.id"
-          >
-            {{ file.filename }} <small> · {{ file.content_type }} · {{ file.size }} B · {{ file.share_permission ? 'shareable' : 'private' }}</small>
-          </li>
-        </ul>
+          :key="props.party.id"
+          :entity-id="props.party.id"
+          :files="props.dossier.files"
+          readonly
+        />
       </details>
       <details class="inspector-section">
-        <summary>Open opportunities</summary>
+        <summary>Open opportunities ({{ dossier?.opportunities?.length ?? 0 }})</summary>
         <p
           v-if="!props.dossier?.opportunities?.length"
           class="pad-line"
@@ -182,7 +169,7 @@ function typeLabel(kind: string): string {
         </button>
       </details>
       <details class="inspector-section">
-        <summary>Associated resources</summary>
+        <summary>Associated resources ({{ dossier?.associated_resources?.length ?? 0 }})</summary>
         <p
           v-if="!props.dossier?.associated_resources?.length"
           class="pad-line"
@@ -239,16 +226,18 @@ function typeLabel(kind: string): string {
 </template>
 
 <style scoped>
-.party-inspector { display: flex; flex-direction: column; min-width: 0; }
-.inspector-head { padding: .7rem .9rem; border-bottom: 1px solid #dce2db; }
-.inspector-head h3 { margin: 0 0 .15rem; }
-.inspector-section { border-top: 1px solid #e3e9e2; padding: .35rem .9rem; }
+.party-inspector { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
+.inspector-head { padding: .85rem 1rem .5rem; }
+.inspector-head h3 { margin: 0 0 .15rem; font: 1.75rem/1.17 Georgia, serif; }
+.inspector-section { border-top: 1px solid #e3e9e2; padding: .4rem 1rem; }
+.inspector-head + .inspector-section { border: 0; }
 .inspector-section summary { cursor: pointer; font-weight: 600; padding: .3rem 0; }
 .inspector-list { margin: .3rem 0 .6rem; padding-left: 1.1rem; }
 .inspector-list li { margin: .3rem 0; }
 .pad-line { margin: .5rem .9rem; }
-.outside-root { background: #fbf6e8; border: 1px solid #e5d9ae; border-radius: .35rem; padding: .45rem .6rem; }
-.notes-preview { max-height: 14rem; overflow: auto; border: 1px solid #e0e5df; border-radius: .35rem; padding: 0 .6rem; }
+.outside-root { margin: .45rem 0 0; }
+.notes-preview { background: #eff3e9; border-radius: .35rem; padding: .1rem .75rem; }
+.notes-preview :deep(pre) { overflow: auto; }
 .retire { align-self:start; margin:.55rem .9rem; }
 .open-card { margin: .5rem 0 .7rem; }
 .association-paths { list-style: none; margin: .15rem 0 0; padding-left: 1.1rem; }

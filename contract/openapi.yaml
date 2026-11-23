@@ -5164,7 +5164,7 @@ components:
       properties:
         preview_id: {type: string}
         preview_digest: {type: string, pattern: '^[a-f0-9]{64}$'}
-        acknowledge_erasure_resurrection: {type: boolean}
+        acknowledge_erased_resurrection: {type: boolean}
       additionalProperties: false
     ImportPreview:
       allOf:

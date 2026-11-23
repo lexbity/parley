@@ -15,6 +15,7 @@ export type SavedSource = components['schemas']['SavedSource'];
 export type EntityInput = components['schemas']['EntityInput'];
 export type CaptureInput = components['schemas']['CaptureInput'];
 export type Opportunity = components['schemas']['Opportunity'];
+export type OpportunitySummary = components['schemas']['OpportunitySummary'];
 export type GateCheck = { id: string; severity: 'hard' | 'soft'; pass: boolean; detail: string; overridden: boolean };
 export type GateReport = { checks: GateCheck[]; copy_enabled: boolean };
 export type Material = Omit<components['schemas']['MaterialRecord'], 'gate'> & { gate: GateReport | null };
@@ -256,6 +257,26 @@ function decodeOpportunity(value: unknown): Opportunity {
     participant_ids: stringArray(item.participant_ids, 'opportunity.participant_ids'),
     source_variant_ids: stringArray(item.source_variant_ids, 'opportunity.source_variant_ids'),
     material_ids: stringArray(item.material_ids, 'opportunity.material_ids'),
+  };
+}
+
+function decodeOpportunitySummary(value: unknown): OpportunitySummary {
+  const item = object(value);
+  if (!item || !Number.isSafeInteger(item.revision) || Number(item.revision) < 1 || !Array.isArray(item.participants)
+    || typeof item.missing_material !== 'boolean' || (item.next_task !== null && typeof item.next_task !== 'string')
+    || (item.next_deadline !== null && typeof item.next_deadline !== 'string')) {
+    throw new Error('Invalid response: opportunity summary is malformed');
+  }
+  const participants = item.participants.map((value): OpportunitySummary['participants'][number] => {
+    const party = object(value);
+    if (!party || (party.kind !== 'person' && party.kind !== 'org')) throw new Error('Invalid response: opportunity participant is malformed');
+    return { id: requiredString(party.id, 'participant.id'), name: requiredString(party.name, 'participant.name'), kind: party.kind };
+  });
+  return {
+    id: requiredString(item.id, 'opportunity.id'), title: requiredString(item.title, 'opportunity.title'),
+    state: requiredString(item.state, 'opportunity.state'), revision: Number(item.revision), participants,
+    tags: stringArray(item.tags, 'opportunity.tags'), next_task: item.next_task,
+    next_deadline: item.next_deadline, missing_material: item.missing_material,
   };
 }
 
@@ -1081,8 +1102,8 @@ export class ParleyClient {
     return data as Resource;
   }
 
-  async saveSource(input: CaptureInput): Promise<SavedSource> {
-    const response = await this.request('/captures', { method: 'POST', body: JSON.stringify(input) });
+  async saveSource(input: CaptureInput, key = newOperationKey()): Promise<SavedSource> {
+    const response = await this.mutate('/captures', 'POST', input, { 'Idempotency-Key': key });
     return decodeSavedSource(response);
   }
 
@@ -1127,8 +1148,12 @@ export class ParleyClient {
     return decodeOpportunity(await this.request('/opportunities', { method: 'POST', body: JSON.stringify({ title, primary_party_id }) }));
   }
 
-  async listOpportunities(): Promise<Opportunity[]> {
-    return decodeArray(await this.request('/opportunities'), 'opportunities', decodeOpportunity);
+  async listOpportunities(): Promise<OpportunitySummary[]> {
+    return decodeArray(await this.request('/opportunities'), 'opportunities', decodeOpportunitySummary);
+  }
+
+  async getOpportunity(id: string, signal?: AbortSignal): Promise<Opportunity> {
+    return decodeOpportunity(await this.request(`/opportunities/${encodeURIComponent(id)}`, { signal }));
   }
 
   async listOutputs(): Promise<Material[]> {
@@ -1216,12 +1241,12 @@ export class ParleyClient {
     return decodeDailyQueue(await this.request(`/queue?${query.toString()}`));
   }
 
-  async getQueueSheet(filters: { search?: string; phase?: string; sort?: 'due' | 'name'; cursor?: string; limit?: number; status?: string; party_id?: string; tag?: string; missing_material?: boolean } = {}): Promise<QueueSheetResponse> {
+  async getQueueSheet(filters: { search?: string; phase?: string; sort?: 'due' | 'name'; cursor?: string; limit?: number; status?: string; party_id?: string; tag?: string; missing_material?: boolean } = {}, signal?: AbortSignal): Promise<QueueSheetResponse> {
     const query = new URLSearchParams({ view: 'sheet' });
     for (const [key, value] of Object.entries(filters)) if (typeof value === 'string' && value.length) query.set(key, value);
     if (typeof filters.limit === 'number') query.set('limit', String(filters.limit));
     if (filters.missing_material) query.set('missing_material', 'true');
-    return decodeQueueSheet(await this.request(`/queue?${query.toString()}`));
+    return decodeQueueSheet(await this.request(`/queue?${query.toString()}`, { signal }));
   }
 
   async setOpportunityPhase(id: string, input: SetPhaseInput, key = newOperationKey()): Promise<SetPhaseResult> {
@@ -1270,8 +1295,9 @@ export class ParleyClient {
     return object(await this.mutate('/imports/commit', 'POST', { preview_id: preview.id, preview_digest: preview.digest, target_must_be_empty: true }, { 'Idempotency-Key': key })) ?? {};
   }
 
-  async commitRestore(preview: RestorePreview, acknowledge_erasure_resurrection: boolean, key = newOperationKey()): Promise<Record<string, unknown>> {
-    return object(await this.mutate('/restore/commit', 'POST', { preview_id: preview.id, preview_digest: preview.digest, acknowledge_erasure_resurrection }, { 'Idempotency-Key': key })) ?? {};
+  async commitRestore(preview: RestorePreview, acknowledge_erased_resurrection: boolean, key = newOperationKey()): Promise<Record<string, unknown>> {
+    const input: components['schemas']['RestoreCommitInput'] = { preview_id: preview.id, preview_digest: preview.digest, acknowledge_erased_resurrection };
+    return object(await this.mutate('/restore/commit', 'POST', input, { 'Idempotency-Key': key })) ?? {};
   }
 
   async previewPartyErasure(id: string): Promise<ErasePreview> {

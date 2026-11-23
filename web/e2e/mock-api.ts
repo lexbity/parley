@@ -84,7 +84,7 @@ export interface MockApi {
   issueBootstrap(): string;
 }
 
-export function createMockApi(): MockApi {
+export function createMockApi({ pauseExtractor = false } = {}): MockApi {
   let epoch = 'ffeeddccbbaa99887766554433221100';
   const bootstraps = new Map<string, number>();
   const sessions = new Map<string, string>();
@@ -1692,7 +1692,21 @@ export function createMockApi(): MockApi {
       return json(response, 200, { archived_list: source, destination_list: destination, moved: moved.map((card, index) => ({ opportunity_id: card.opportunity.id, position: nextPosition + index, placement_revision: placements.get(String(card.opportunity.id))!.placement_revision })) });
     }
     if (url.pathname === '/api/v1/opportunities' && request.method === 'GET') {
-      return json(response, 200, [...opportunities.values()]);
+      return json(response, 200, [...opportunities.values()].map(opportunity => {
+        const id = String(opportunity.id);
+        const participants = (opportunity.participant_ids as string[]).flatMap(partyId => {
+          const entity = directory.get(partyId);
+          return entity ? [{ id: partyId, name: entity.name, kind: entity.kind }] : [];
+        });
+        const deadlines = [...threads.values()].flatMap(thread =>
+          thread.opportunity_id === id && thread.state === 'waiting' && typeof thread.expires_at === 'string'
+            ? [thread.expires_at] : []);
+        return {
+          id, title: opportunity.title, state: opportunity.state, revision: opportunity.revision, participants,
+          tags: opportunity.tags ?? [], next_task: notesRecord(id).next_task,
+          next_deadline: deadlines.sort()[0] ?? null, missing_material: ![...materialRecords.values()].some(material => material.opportunity_id === id),
+        };
+      }));
     }
     const opportunityById = /^\/api\/v1\/opportunities\/([^/]+)$/.exec(url.pathname);
     if (opportunityById && request.method === 'GET') {
@@ -2144,38 +2158,36 @@ export function createMockApi(): MockApi {
         job_status: 'queued',
       };
       sourceTextByOccurrence.set(result.occurrence_id, { text: input.text, title: typeof input.title === 'string' ? input.title : null, url: typeof input.url === 'string' ? input.url : null });
-      // The mock uses a fixed deterministic proposal so browser tests exercise
-      // review semantics without invoking a model. The Rust project remains
-      // the authority for unavailable-provider persistence and real jobs.
+      // Fixture extraction keeps each nonblank line an independently
+      // reviewable proposal.
       const jobId = randomHex();
       const batchId = randomHex();
-      const proposalId = randomHex();
       result.job_id = jobId;
-      const proposal = {
-        id: proposalId,
+      const proposals = input.text.split(/\r?\n/).filter(line => line.trim()).map(line => ({
+        id: randomHex(),
         kind: 'signal',
         status: 'pending',
         candidate: {
-          statement: input.text,
-          quote: input.text,
-          mention_name: input.text.includes('Dana Lee') ? 'Dana Lee' : null,
-          mention_kind: input.text.includes('Dana Lee') ? 'person' : null,
+          statement: line,
+          quote: line,
+          mention_name: line.includes('Dana Lee') ? 'Dana Lee' : null,
+          mention_kind: line.includes('Dana Lee') ? 'person' : null,
         },
-      };
+      }));
       const job = {
         id: jobId,
         role: 'extractor',
-        status: 'succeeded',
-        current_attempt: 1,
+        status: pauseExtractor ? 'queued' : 'succeeded',
+        current_attempt: pauseExtractor ? 0 : 1,
         max_attempts: 3,
-        progress_current: 1,
+        progress_current: pauseExtractor ? 0 : 1,
         progress_total: 1,
-        injection_suspected: false,
+        injection_suspected: /ignore previous instructions/i.test(input.text),
         last_error_code: null,
         last_error: null,
         source_occurrence_id: result.occurrence_id,
-        proposal_batch_id: batchId,
-        proposals: [proposal],
+        proposal_batch_id: pauseExtractor ? null : batchId,
+        proposals: pauseExtractor ? [] : proposals,
       };
       extractorJobs.set(jobId, job);
       jobsByOccurrence.set(result.occurrence_id, jobId);
@@ -2198,6 +2210,7 @@ export function createMockApi(): MockApi {
     if (jobMatch && request.method === 'POST') {
       const job = extractorJobs.get(jobMatch[1]!);
       if (!job) return fail(response, 404, 'NOT_FOUND', 'Extractor job does not exist');
+      if (!['queued', 'running'].includes(String(job.status))) return fail(response, 409, 'JOB_TERMINAL', 'Terminal jobs cannot be cancelled');
       job.status = 'cancelled';
       job.last_error = 'Cancelled by owner';
       return json(response, 204, null);

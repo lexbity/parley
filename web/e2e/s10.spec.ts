@@ -13,7 +13,7 @@ test('s10_daily_queue_renders_ranked_items_blocked_reason_and_insight_counts_wit
   await page.getByLabel('Opportunity title').fill(`S10 daily ${name}`);
   await page.getByLabel('Participant').selectOption({ label: `${name} · person` });
   await page.getByRole('button', { name: 'Create opportunity' }).click();
-  await page.getByRole('button', { name: 'Daily work and insights' }).click();
+  await page.getByRole('button', { name: 'Daily work', exact: true }).click();
   const daily = page.getByRole('region', { name: 'Daily priorities' });
   await expect(daily).toBeVisible();
   await expect(page.getByText('Queue reads do not start model jobs')).toBeVisible();
