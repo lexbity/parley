@@ -26,7 +26,7 @@ use super::ledger::{
     lookup_receipt, redact_args,
 };
 use super::phase::{PhaseCommand, RunError, args_allowlist, args_sensitive, run as run_phase};
-use super::{Registry, validator_for};
+use super::{Actor, Registry, validator_for};
 use crate::application::phase::PhaseError;
 use crate::application::writer::{Failure as WriterFailure, JobResult, WriteOutcome, Writer};
 use crate::{AppState, OwnerPrincipal, private_headers};
@@ -356,7 +356,7 @@ async fn run(
     Path(id): Path<String>,
     body: Bytes,
 ) -> Response {
-    let (principal, registry, writer) = match auth_owner(&headers, &state).await {
+    let (principal, registry, _writer) = match auth_owner(&headers, &state).await {
         Ok(value) => value,
         Err(response) => return response,
     };
@@ -416,6 +416,32 @@ async fn run(
     if !input.args.is_object() {
         return error403(&state, "invalid_args", "Args must be an object", 422);
     }
+    let actor = Actor::owner(principal.pseudonym.clone());
+    submit(
+        &state,
+        command,
+        &input,
+        &key,
+        actor,
+        body.len() as i64,
+        fault,
+    )
+    .await
+}
+
+/// Submit a prepared invocation through the shared registry pipeline. Both
+/// the owner HTTP adapter and the in-process agent tool adapter call this;
+/// neither bypasses admission, authorization, audit or the writer.
+#[allow(clippy::needless_borrow)] // shared adapter: state may be owned or borrowed
+async fn submit(
+    state: &AppState,
+    command: &CommandDescriptor,
+    input: &InvocationInput,
+    key: &str,
+    actor: Actor,
+    request_bytes: i64,
+    fault: &'static str,
+) -> Response {
     let args_value = input.args.clone();
     let wire_digest = match parley_domain::jcs::canonicalize_value(&args_value) {
         Ok(canonical) => crate::digest(canonical.as_bytes()),
@@ -427,7 +453,7 @@ async fn run(
         Mode::Execute
     };
     let epoch = state.workspace.epoch().to_string();
-    let principal_pseudonym = principal.pseudonym.clone();
+    let principal_pseudonym = actor.pseudonym.clone();
     let generation_secret = state.workspace.command_secret();
     let key_digest = key_digest(
         &generation_secret,
@@ -441,7 +467,6 @@ async fn run(
         args_allowlist(),
         args_sensitive(),
     );
-    let request_bytes = body.len() as i64;
     let command_id = command.id.to_string();
     let command_version = command.version;
     let result_schema = command.result_schema;
@@ -449,7 +474,7 @@ async fn run(
     let audit_id = match admit_attempt(
         state.workspace.pool(),
         &epoch,
-        &principal_pseudonym,
+        &actor,
         &command_id,
         command_version,
         mode,
@@ -490,16 +515,17 @@ async fn run(
     // Retained outside the `move` job closure so a rejected attempt still
     // receives its terminal audit outcome and its correlation ID.
     let rejection_epoch = epoch.clone();
-    let rejection_principal = principal_pseudonym.clone();
     let rejection_command = command_id.clone();
     let audit_id_for_job = audit_id.clone();
+    let job_actor = actor.clone();
+    let permission = command.requires_permission.as_str();
     let job = crate::application::writer::WriterJob {
         deadline: Instant::now() + crate::application::writer::EXECUTION_DEADLINE,
         generation,
         run: Box::new(
             move |connection: &mut sqlx::sqlite::SqliteConnection, deadline: Instant| {
                 let epoch = epoch.clone();
-                let principal = principal_pseudonym.clone();
+                let actor = job_actor.clone();
                 let command_id = command_id.clone();
                 let key_digest = key_digest.clone();
                 let wire_digest = wire_digest.clone();
@@ -521,7 +547,7 @@ async fn run(
                     let reply = match pipeline(
                         &mut tx,
                         &epoch,
-                        &principal,
+                        &actor,
                         &command_id,
                         command_version,
                         mode,
@@ -530,6 +556,7 @@ async fn run(
                         &audit_id,
                         &args,
                         result_schema,
+                        permission,
                     )
                     .await
                     {
@@ -559,7 +586,7 @@ async fn run(
         ),
         reply: tokio::sync::oneshot::channel().0,
     };
-    match writer.run(job).await {
+    match state.writer.run(job).await {
         WriteOutcome::Committed(body) => {
             let reply: RunReply = serde_json::from_value(body).unwrap_or(RunReply {
                 status: 500,
@@ -636,7 +663,7 @@ async fn run(
                 state.workspace.pool(),
                 &rejection_epoch,
                 &audit_id,
-                &rejection_principal,
+                &actor,
                 &rejection_command,
                 command_version,
                 mode,
@@ -664,11 +691,166 @@ async fn run(
     }
 }
 
+/// In-process agent invocation. The actor is constructed only from a durable
+/// run grant by `agent_runtime::grants`; no HTTP credential is accepted here.
+pub(crate) async fn invoke_agent(
+    state: &AppState,
+    actor: Actor,
+    id: &str,
+    version: u32,
+    key: &str,
+    args: Value,
+) -> (u16, Value) {
+    let registry = state.registry.clone();
+    let command = match registry.agent_visible(id, &actor.permissions) {
+        Some(command) => command,
+        None => {
+            return (
+                404,
+                json!({"ok": false, "error": {"code": "unknown_command", "message": "Command is not available", "details": []}}),
+            );
+        }
+    };
+    if version != command.version {
+        return (
+            409,
+            json!({"ok": false, "error": {"code": "version_mismatch", "message": "Command version is stale", "details": []}}),
+        );
+    }
+    let input = InvocationInput {
+        version,
+        args,
+        dry_run: false,
+    };
+    let response = submit(state, command, &input, key, actor, 0, "").await;
+    let status = response.status().as_u16();
+    let body = axum::body::to_bytes(response.into_body(), MAX_REQUEST_BYTES)
+        .await
+        .unwrap_or_default();
+    let value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    (status, value.get("data").cloned().unwrap_or(value))
+}
+
+/// Re-check a delegated grant inside the reserved transaction, on both the
+/// replay and fresh-execution paths. The grant rows are immutable while the
+/// run is active and a cancellation revokes them under the same writer.
+#[allow(clippy::type_complexity)] // bounded run/grant row
+async fn agent_scope_denial(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    actor: &Actor,
+    required_permission: &str,
+    args: &Value,
+) -> Result<Option<(i64, &'static str, String)>, crate::application::writer::Failure> {
+    if actor.kind == super::ActorKind::Owner {
+        return Ok(None);
+    }
+    let failure = crate::application::writer::Failure::Unavailable;
+    let run_id = actor.run_id.as_deref().unwrap_or("");
+    let row: Option<(String, String, Option<String>, Option<String>, String, String)> =
+        sqlx::query_as(
+            "SELECT state,epoch,lease_token,lease_deadline,grant_json,deadline_at FROM agent_run WHERE run_id=?",
+        )
+        .bind(run_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|_| failure)?;
+    let Some((state, run_epoch, lease_token, lease_deadline, grant_json, deadline_at)) = row else {
+        return Ok(Some((
+            404,
+            "target_unavailable",
+            "Run is not available".into(),
+        )));
+    };
+    let now = crate::now_utc();
+    let expired = |value: Option<&String>| {
+        value
+            .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+            .map(|time| time < chrono::Utc::now())
+            .unwrap_or(true)
+    };
+    if run_epoch != actor.epoch
+        || state != "running"
+        || lease_token.as_deref() != actor.lease_token.as_deref()
+        || expired(lease_deadline.as_ref())
+        || expired(Some(&deadline_at))
+    {
+        return Ok(Some((
+            409,
+            "epoch_changed",
+            "The run grant is no longer active".into(),
+        )));
+    }
+    let grant: Value = serde_json::from_str(&grant_json).map_err(|_| failure)?;
+    let allowed = grant
+        .get("permissions")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .any(|value| value.as_str() == Some(required_permission))
+        })
+        .unwrap_or(false);
+    if !allowed {
+        // A concealed command and a concealed target use the same public
+        // denial so neither can be probed through the tool surface.
+        return Ok(Some((
+            404,
+            "unknown_command",
+            "Command is not available".into(),
+        )));
+    }
+    if let Some((field, id)) = actor.target_field(args) {
+        let kind = match field {
+            "party_id" => "party",
+            "opportunity_id" => "opportunity",
+            "resource_id" => "resource",
+            "material_id" => "material",
+            _ => "",
+        };
+        let granted: Option<String> = if kind.is_empty() {
+            None
+        } else {
+            sqlx::query_scalar(
+                "SELECT target_id FROM agent_run_target WHERE run_id=? AND kind=? AND target_id=?",
+            )
+            .bind(run_id)
+            .bind(kind)
+            .bind(id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|_| failure)?
+        };
+        if granted.is_none() {
+            return Ok(Some((
+                404,
+                "target_unavailable",
+                "Target record is not available".into(),
+            )));
+        }
+    }
+    let invocations: i64 =
+        sqlx::query_scalar("SELECT invocations FROM agent_run_budget WHERE run_id=?")
+            .bind(run_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|_| failure)?
+            .unwrap_or(0);
+    if invocations >= super::ledger::RUN_RATE_PER_MINUTE {
+        return Ok(Some((
+            429,
+            "budget_exceeded",
+            "Run invocation budget is exhausted".into(),
+        )));
+    }
+    let _ = now;
+    Ok(None)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn pipeline(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     epoch: &str,
-    principal: &str,
+    actor: &Actor,
     command_id: &str,
     command_version: u32,
     mode: Mode,
@@ -677,6 +859,7 @@ async fn pipeline(
     audit_id: &str,
     args: &Value,
     result_schema: &'static Value,
+    required_permission: &'static str,
 ) -> Result<RunReply, crate::application::writer::Failure> {
     // Recheck the epoch under reservation.
     let current_epoch: Option<String> =
@@ -695,8 +878,45 @@ async fn pipeline(
         });
     }
 
+    // Authorize every retry against current authority *before* looking up a
+    // receipt. A revoked run never replays (Q2).
+    if let Some((status, code, message)) =
+        agent_scope_denial(tx, actor, required_permission, args).await?
+    {
+        finalize_attempt(
+            tx,
+            epoch,
+            audit_id,
+            actor,
+            command_id,
+            command_version,
+            mode,
+            PolicyResult::DomainError,
+            Some(code),
+            Some(audit_id),
+            Some(code),
+            Some(&message),
+            0,
+            0,
+            None,
+        )
+        .await
+        .map_err(|_| crate::application::writer::Failure::Unavailable)?;
+        return Ok(RunReply {
+            status,
+            ok: false,
+            inner: json!({
+                "code": code,
+                "message": message,
+                "details": []
+            }),
+            replayed: false,
+            original_audit_id: None,
+        });
+    }
+
     // Replay path: same key, same intent.
-    if let Some(record) = lookup_receipt(tx, epoch, principal, command_id, key_digest)
+    if let Some(record) = lookup_receipt(tx, epoch, &actor.pseudonym, command_id, key_digest)
         .await
         .map_err(|_| crate::application::writer::Failure::Unavailable)?
     {
@@ -708,7 +928,7 @@ async fn pipeline(
                 tx,
                 epoch,
                 audit_id,
-                principal,
+                actor,
                 command_id,
                 command_version,
                 mode,
@@ -736,7 +956,7 @@ async fn pipeline(
             tx,
             epoch,
             audit_id,
-            principal,
+            actor,
             command_id,
             command_version,
             mode,
@@ -764,6 +984,68 @@ async fn pipeline(
         });
     }
 
+    // U02 read commands run on the same pipeline but never mutate facts.
+    if let Some(read_command) = super::read::ReadCommand::for_id(command_id) {
+        let party_ids = actor.party_ids();
+        let reply = match super::read::run(read_command, tx, args, &party_ids).await {
+            Ok(value) => RunReply {
+                status: 200,
+                ok: true,
+                inner: value,
+                replayed: false,
+                original_audit_id: None,
+            },
+            Err(_) => RunReply {
+                status: 404,
+                ok: false,
+                inner: json!({
+                    "code": "target_unavailable",
+                    "message": "Target record is not available",
+                    "details": []
+                }),
+                replayed: false,
+                original_audit_id: None,
+            },
+        };
+        let bytes = reply.inner.to_string().len() as i64;
+        let (policy_result, outcome_code, error_code, error_message) = if reply.ok {
+            (PolicyResult::Allowed, "ok", None, None)
+        } else {
+            (
+                PolicyResult::DomainError,
+                "target_unavailable",
+                Some("target_unavailable"),
+                Some("Target record is not available"),
+            )
+        };
+        finalize_attempt(
+            tx,
+            epoch,
+            audit_id,
+            actor,
+            command_id,
+            command_version,
+            mode,
+            policy_result,
+            Some(outcome_code),
+            Some(audit_id),
+            error_code,
+            error_message,
+            0,
+            bytes,
+            Some(super::ledger::ReceiptWrite {
+                key_digest,
+                wire_args_digest: wire_digest,
+                status: reply.status,
+                body: &reply.inner,
+                bytes,
+            }),
+        )
+        .await
+        .map_err(|_| crate::application::writer::Failure::Unavailable)?;
+        return Ok(reply);
+    }
+
     let phase_command = match PhaseCommand::for_id(command_id) {
         Some(command) => command,
         None => {
@@ -771,7 +1053,7 @@ async fn pipeline(
                 tx,
                 epoch,
                 audit_id,
-                principal,
+                actor,
                 command_id,
                 command_version,
                 mode,
@@ -817,7 +1099,7 @@ async fn pipeline(
             tx,
             epoch,
             audit_id,
-            principal,
+            actor,
             command_id,
             command_version,
             mode,
@@ -979,7 +1261,7 @@ async fn pipeline(
                 tx,
                 epoch,
                 audit_id,
-                principal,
+                actor,
                 command_id,
                 command_version,
                 mode,
@@ -1014,7 +1296,7 @@ async fn pipeline(
         tx,
         epoch,
         audit_id,
-        principal,
+        actor,
         command_id,
         command_version,
         mode,

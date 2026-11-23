@@ -362,6 +362,9 @@ async fn process(workspace: &Workspace, job_id: &str) {
         .ok()
         .flatten();
     if let Some(role) = role.as_deref().filter(|role| *role != "extractor") {
+        // One active local inference: delegated runs hold the same permit.
+        let inference = workspace.inference();
+        let _inference = inference.acquire().await;
         if matches!(role, "matcher" | "template_builder" | "composer" | "linter") {
             super::writing_jobs::process_role(workspace, job_id, role).await;
         } else {
@@ -916,7 +919,9 @@ pub(crate) async fn finish_attempt_error(
     let _ = tx.commit().await;
 }
 
-async fn provider_config(workspace: &Workspace) -> Result<ProviderConfig, WorkspaceError> {
+pub(crate) async fn provider_config(
+    workspace: &Workspace,
+) -> Result<ProviderConfig, WorkspaceError> {
     let row: (String, String, i64, i64, String) = sqlx::query_as(
         "SELECT endpoint,model,num_ctx,num_predict,locale FROM agent_provider WHERE singleton=1",
     )
@@ -931,7 +936,7 @@ async fn provider_config(workspace: &Workspace) -> Result<ProviderConfig, Worksp
     })
 }
 
-fn validate_endpoint(endpoint: &str) -> Result<(String, u16), String> {
+pub(crate) fn validate_endpoint(endpoint: &str) -> Result<(String, u16), String> {
     let Some(rest) = endpoint.strip_prefix("http://") else {
         return Err("Provider endpoint must use local HTTP".into());
     };
@@ -1001,7 +1006,7 @@ pub(crate) async fn ollama_chat(
     };
     serde_json::from_str(&payload).map_err(|e| format!("provider response was invalid JSON: {e}"))
 }
-fn decode_chunks(mut rest: &str) -> Result<String, String> {
+pub(crate) fn decode_chunks(mut rest: &str) -> Result<String, String> {
     let mut bytes = Vec::new();
     loop {
         let (size, tail) = rest.split_once("\r\n").ok_or("invalid chunk framing")?;

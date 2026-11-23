@@ -22,11 +22,16 @@ use std::{
 
 /// Versioned table policy for transient UCR-001 command state. Backups carry
 /// scrubbed metadata only; portable exports omit the rows entirely (FR-10).
-pub(crate) const COMMAND_TABLE_POLICY_VERSION: u32 = 1;
+pub(crate) const COMMAND_TABLE_POLICY_VERSION: u32 = 2;
 pub(crate) const SCRUB_ON_BACKUP: &[&str] = &[
     "command_audit_event",
     "command_receipt",
     "command_ledger_meta",
+    "agent_run",
+    "agent_run_target",
+    "agent_run_turn",
+    "agent_tool_intent",
+    "agent_run_budget",
 ];
 pub(crate) const OMIT_FROM_EXPORT: &[&str] = SCRUB_ON_BACKUP;
 

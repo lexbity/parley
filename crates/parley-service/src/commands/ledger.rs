@@ -20,6 +20,7 @@ pub(crate) const AUDIT_LOGICAL_QUOTA: i64 = 256 * 1024 * 1024;
 pub(crate) const AUDIT_TERMINAL_RESERVE: i64 = 4 * 1024 * 1024;
 pub(crate) const RECEIPT_LOGICAL_QUOTA: i64 = 128 * 1024 * 1024;
 pub(crate) const OWNER_RATE_PER_MINUTE: i64 = 120;
+pub(crate) const RUN_RATE_PER_MINUTE: i64 = 60;
 pub(crate) const WORKSPACE_RATE_PER_MINUTE: i64 = 1_200;
 pub(crate) const KEY_DIGEST_DOMAIN: &[u8] = b"command-key";
 
@@ -203,7 +204,7 @@ pub(crate) enum AdmitError {
 pub(crate) async fn admit_attempt(
     pool: &SqlitePool,
     epoch: &str,
-    principal: &str,
+    actor: &super::Actor,
     command_id: &str,
     command_version: u32,
     mode: Mode,
@@ -225,15 +226,17 @@ pub(crate) async fn admit_attempt(
         "SELECT COUNT(*) FROM command_audit_event WHERE kind='attempt' AND epoch=? AND principal_pseudonym=? AND occurred_at > ?",
     )
     .bind(epoch)
-    .bind(principal)
+    .bind(&actor.pseudonym)
     .bind(&window_start)
     .fetch_one(&mut *tx)
     .await
     .map_err(|_| AdmitError::Unavailable)?;
-    if owned >= OWNER_RATE_PER_MINUTE {
-        return Err(AdmitError::RateLimited {
-            limit: OWNER_RATE_PER_MINUTE,
-        });
+    let limit = match actor.kind {
+        super::ActorKind::Owner => OWNER_RATE_PER_MINUTE,
+        super::ActorKind::Agent => RUN_RATE_PER_MINUTE,
+    };
+    if owned >= limit {
+        return Err(AdmitError::RateLimited { limit });
     }
     let aggregate: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM command_audit_event WHERE kind='attempt' AND epoch=? AND occurred_at > ?",
@@ -263,11 +266,13 @@ pub(crate) async fn admit_attempt(
     let audit_id = crate::new_id(command_id);
     let occurred = now_utc();
     sqlx::query(
-        "INSERT INTO command_audit_event(audit_id,kind,epoch,actor_kind,principal_pseudonym,command_id,command_version,mode,policy_result,key_digest,args_json,request_bytes,occurred_at) VALUES(?, 'attempt',?, 'owner',?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO command_audit_event(audit_id,kind,epoch,actor_kind,principal_pseudonym,run_pseudonym,command_id,command_version,mode,policy_result,key_digest,args_json,request_bytes,occurred_at) VALUES(?, 'attempt', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&audit_id)
     .bind(epoch)
-    .bind(principal)
+    .bind(actor.actor_kind())
+    .bind(&actor.pseudonym)
+    .bind(actor.run_id.as_deref())
     .bind(command_id)
     .bind(command_version as i64)
     .bind(mode.as_str())
@@ -300,7 +305,7 @@ pub(crate) async fn finalize_attempt(
     tx: &mut Transaction<'_, Sqlite>,
     epoch: &str,
     attempt_audit_id: &str,
-    principal: &str,
+    actor: &super::Actor,
     command_id: &str,
     command_version: u32,
     mode: Mode,
@@ -316,11 +321,13 @@ pub(crate) async fn finalize_attempt(
 ) -> Result<(), WorkspaceError> {
     let occurred = now_utc();
     sqlx::query(
-        "INSERT INTO command_audit_event(audit_id,kind,epoch,actor_kind,principal_pseudonym,command_id,command_version,mode,policy_result,outcome_code,attempt_audit_id,replay_pointer,error_code,error_message,duration_ms,result_bytes,occurred_at) VALUES(?, 'outcome',?, 'owner',?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO command_audit_event(audit_id,kind,epoch,actor_kind,principal_pseudonym,run_pseudonym,command_id,command_version,mode,policy_result,outcome_code,attempt_audit_id,replay_pointer,error_code,error_message,duration_ms,result_bytes,occurred_at) VALUES(?, 'outcome', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(crate::new_id(command_id))
     .bind(epoch)
-    .bind(principal)
+    .bind(actor.actor_kind())
+    .bind(&actor.pseudonym)
+    .bind(actor.run_id.as_deref())
     .bind(command_id)
     .bind(command_version as i64)
     .bind(mode.as_str())
@@ -353,7 +360,7 @@ pub(crate) async fn finalize_attempt(
         store_receipt(
             tx,
             epoch,
-            principal,
+            &actor.pseudonym,
             command_id,
             command_version as i64,
             mode,
@@ -505,7 +512,7 @@ pub(crate) async fn record_rejection(
     pool: &SqlitePool,
     epoch: &str,
     attempt_audit_id: &str,
-    principal: &str,
+    actor: &super::Actor,
     command_id: &str,
     command_version: u32,
     mode: Mode,
@@ -516,11 +523,13 @@ pub(crate) async fn record_rejection(
     let result = async {
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query(
-            "INSERT OR IGNORE INTO command_audit_event(audit_id,kind,epoch,actor_kind,principal_pseudonym,command_id,command_version,mode,policy_result,outcome_code,attempt_audit_id,occurred_at) VALUES(?, 'outcome', ?, 'owner', ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO command_audit_event(audit_id,kind,epoch,actor_kind,principal_pseudonym,run_pseudonym,command_id,command_version,mode,policy_result,outcome_code,attempt_audit_id,occurred_at) VALUES(?, 'outcome', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&outcome_id)
         .bind(epoch)
-        .bind(principal)
+        .bind(actor.actor_kind())
+        .bind(&actor.pseudonym)
+        .bind(actor.run_id.as_deref())
         .bind(command_id)
         .bind(command_version as i64)
         .bind(mode.as_str())

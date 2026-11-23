@@ -15,6 +15,7 @@ import InterviewerWorkspace from '../features/resources/InterviewerWorkspace.vue
 import QueueWorkspace from '../features/queue/QueueWorkspace.vue';
 import PartyDesk from '../features/parties/PartyDesk.vue';
 import AgentPolicySettings from '../features/settings/AgentPolicySettings.vue';
+import DelegatedRuns from '../features/settings/DelegatedRuns.vue';
 import MaintenanceSettings from '../features/settings/MaintenanceSettings.vue';
 import CapacitySettings from '../features/settings/CapacitySettings.vue';
 import Packs from '../features/settings/Packs.vue';
@@ -82,6 +83,7 @@ const workspaceRefreshRequired = ref(false);
 const settingsSections = [
   { id: 'settings-provider', label: 'Local provider' },
   { id: 'settings-agent-policy', label: 'Role policy' },
+  { id: 'settings-delegated-runs', label: 'Delegated runs' },
   { id: 'settings-capacity', label: 'Capacity ledger' },
   { id: 'settings-packs', label: 'Packs' },
   { id: 'settings-data', label: 'Backup and data' },
@@ -622,6 +624,10 @@ watch(route, (current, previous) => {
           </section>
           <AgentPolicySettings
             id="settings-agent-policy"
+            tabindex="-1"
+          />
+          <DelegatedRuns
+            id="settings-delegated-runs"
             tabindex="-1"
           />
           <CapacitySettings

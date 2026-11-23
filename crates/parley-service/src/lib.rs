@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -233,6 +233,7 @@ fn legacy_value(row: &sqlx::sqlite::SqliteRow, columns: &[String], field: &str) 
     None
 }
 
+mod agent_runtime;
 mod application;
 mod assistant;
 mod blob;
@@ -526,6 +527,8 @@ pub struct Workspace {
     /// Adopted-operation generation token. A generation publisher holds the
     /// exclusive lock; writer jobs hold the shared lock.
     generation: Arc<tokio::sync::RwLock<u64>>,
+    /// One active local inference across fixed roles and delegated runs.
+    inference: Arc<tokio::sync::Semaphore>,
 }
 
 impl Workspace {
@@ -624,6 +627,7 @@ impl Workspace {
             database_path: path.to_path_buf(),
             command_secret,
             generation,
+            inference: Arc::new(tokio::sync::Semaphore::new(1)),
         };
         maintenance::initialize_settings(&workspace).await?;
         maintenance::complete_startup_operations(&workspace, removed_generation_bytes).await?;
@@ -694,6 +698,12 @@ impl Workspace {
 
     pub async fn generation_token(&self) -> u64 {
         *self.generation.read().await
+    }
+
+    /// The single local inference lane. Fixed-role jobs and delegated runs
+    /// share this permit; waiting runs release it while awaiting owner input.
+    pub(crate) fn inference(&self) -> Arc<tokio::sync::Semaphore> {
+        self.inference.clone()
     }
 
     pub async fn bump_generation(&self) {
@@ -1907,6 +1917,13 @@ pub(crate) fn new_id(seed: &str) -> String {
     digest(format!("{seed}:{nanos}:{nonce}").as_bytes())[..32].to_owned()
 }
 
+/// UTC RFC 3339 timestamp offset from trusted wall time, used for leases and
+/// run deadlines.
+fn now_utc_offset(seconds: i64) -> String {
+    let value = chrono::Utc::now() + chrono::Duration::seconds(seconds);
+    value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
 fn now_utc() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2048,6 +2065,9 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
     let (restart_sender, restart_receiver) = tokio::sync::watch::channel(false);
     let restart_wait = restart_receiver.clone();
     let (jobs, job_task) = jobs::start(workspace.clone(), 32);
+    // One owner session polls the same writer; the delegated runtime starts
+    // after AppState construction below so it can dispatch through the
+    // registry with a server-derived actor.
     // Registry boot validation completes before the listener starts; zero
     // descriptors are published unless every registration passes (FR-4).
     let registry = Arc::new(
@@ -2096,6 +2116,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         registry,
         writer,
     };
+    let agent_task = agent_runtime::start(Arc::new(state.clone()));
     let bootstrap_shared = state.bootstrap.clone();
     let mut shell = Router::new().route("/", get(index));
     for tab in [
@@ -2147,6 +2168,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         .merge(resource_board::routes())
         .merge(maintenance::routes())
         .merge(commands::http::routes())
+        .merge(agent_runtime::routes())
         .with_state(state)
         .layer(axum::extract::DefaultBodyLimit::max(2_100_000));
     let (shutdown, receiver) = tokio::sync::oneshot::channel();
@@ -2166,7 +2188,13 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         task,
         restart: restart_wait,
         restart_sender,
-        background: vec![job_task, writer_task, reconcile_task, backup_task],
+        background: vec![
+            job_task,
+            writer_task,
+            reconcile_task,
+            backup_task,
+            agent_task,
+        ],
     })
 }
 
@@ -2399,6 +2427,58 @@ pub(crate) async fn authenticate_owner(
     Ok(OwnerPrincipal {
         pseudonym: digest(format!("parley-session\0{session_id}").as_bytes()),
     })
+}
+
+/// Verify one arbitrary wire payload against the real command catalogue.
+/// Feature/test entry point used by the fuzz target: duplicate keys, nesting,
+/// canonical digests, mapped tool names and schema/serde agreement all run
+/// through the production code paths.
+pub fn validate_command_wire(input: &[u8]) -> Result<(), String> {
+    static REGISTRY: OnceLock<commands::Registry> = OnceLock::new();
+    let registry = REGISTRY
+        .get_or_init(|| commands::Registry::build().expect("boot-validated registry must build"));
+    let value = decode_unique(input).map_err(|_| "duplicate keys or invalid JSON".to_owned())?;
+    if value_depth(&value) > 16 {
+        return Err("nesting exceeds 16".into());
+    }
+    let canonical = parley_domain::jcs::canonicalize_value(&value)
+        .map_err(|_| "value is not canonicalizable".to_owned())?;
+    let _digest = digest(canonical.as_bytes());
+    let Some(object) = value.as_object() else {
+        return Err("command wire input must be an object".into());
+    };
+    if let Some(id) = object.get("id").and_then(Value::as_str)
+        && let Some(descriptor) = registry.command(id)
+    {
+        let validator = commands::validator_for(descriptor.args_schema)
+            .map_err(|_| "schema failed to build".to_owned())?;
+        let args = object.get("args").cloned().unwrap_or(Value::Null);
+        if validator.validate(&args).is_err() {
+            return Err("wire args do not match the closed schema".into());
+        }
+    }
+    let mut mapped = std::collections::BTreeSet::new();
+    for id in registry.descriptor_ids() {
+        if !mapped.insert(id.replace('.', "__")) {
+            return Err("mapped tool name collision".into());
+        }
+    }
+    Ok(())
+}
+
+fn value_depth(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Array(items) => 1 + items.iter().map(value_depth).max().unwrap_or(0),
+        serde_json::Value::Object(map) => 1 + map.values().map(value_depth).max().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+/// Finalize interrupted agent turns: an active lease whose deadline has
+/// passed is returned to the queue for same-ordinal reconciliation. Called at
+/// startup and by maintenance after a workspace replacement.
+pub async fn recover_agent_runs(workspace: &Workspace) {
+    agent_runtime::recover(workspace).await;
 }
 
 /// Version of the explicit table policy that scrubs command state from

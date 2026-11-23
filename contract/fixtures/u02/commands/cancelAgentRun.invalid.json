@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/AgentErrorEnvelope","body":{"ok":false,"error":{"code":"idempotency_mismatch","message":"Idempotency-Key is required for cancellation","details":[{"path":"/Idempotency-Key","problem":"missing"}]}}}

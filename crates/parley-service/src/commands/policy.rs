@@ -10,18 +10,41 @@ use serde::Serialize;
 pub(crate) enum Permission {
     #[serde(rename = "opportunity.phase.edit")]
     OpportunityPhaseEdit,
+    #[serde(rename = "party.read")]
+    PartyRead,
+    #[serde(rename = "opportunity.read")]
+    OpportunityRead,
 }
 
 impl Permission {
     pub fn as_str(&self) -> &'static str {
         match self {
             Permission::OpportunityPhaseEdit => "opportunity.phase.edit",
+            Permission::PartyRead => "party.read",
+            Permission::OpportunityRead => "opportunity.read",
         }
+    }
+
+    /// Every permission an owner may grant to a delegated run.
+    pub fn all() -> &'static [Permission] {
+        &[
+            Permission::OpportunityPhaseEdit,
+            Permission::PartyRead,
+            Permission::OpportunityRead,
+        ]
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::all()
+            .iter()
+            .copied()
+            .find(|permission| permission.as_str() == value)
     }
 }
 
 /// Closed set of permission values the registry can declare.
-pub(crate) const PERMISSION_ALLOWLIST: &[&str] = &["opportunity.phase.edit"];
+pub(crate) const PERMISSION_ALLOWLIST: &[&str] =
+    &["opportunity.phase.edit", "party.read", "opportunity.read"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

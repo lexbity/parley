@@ -4,6 +4,7 @@
 # Rust
 /target
 /fuzz/target/
+/fuzz/corpus/
 
 # Node / frontend build output
 node_modules/

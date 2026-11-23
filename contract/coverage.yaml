@@ -1411,3 +1411,186 @@ slices:
       owner_role: owner
       package_target: rust+mock
       evidence_path: evidence/u01.md
+  u02:
+    - requirement: UCR-FR-3
+      operationId: startAgentRun
+      test_id: u02_scoped_read_reaches_real_result_and_persists_run
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u02.md
+    - requirement: UCR-FR-9
+      operationId: startAgentRun
+      test_id: u02_scoped_read_reaches_real_result_and_persists_run
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u02.md
+    - requirement: UCR-FR-9
+      operationId: getAgentRun
+      test_id: u02_scoped_read_reaches_real_result_and_persists_run
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u02.md
+    - requirement: UCR-FR-3
+      operationId: getAgentRunTranscript
+      test_id: u02_scoped_read_reaches_real_result_and_persists_run
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u02.md
+    - requirement: UCR-FR-6
+      operationId: getAgentRunTranscript
+      test_id: u02_scoped_read_reaches_real_result_and_persists_run
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u02.md
+    - requirement: UCR-NFR-1
+      operationId: getAgentRunTranscript
+      test_id: u02_scoped_read_reaches_real_result_and_persists_run
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u02.md
+    - requirement: UCR-FR-3
+      operationId: getAgentRunTranscript
+      test_id: u02_unknown_and_concealed_tools_share_public_denial
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u02.md
+    - requirement: UCR-A2
+      operationId: getAgentRunTranscript
+      test_id: u02_unknown_and_concealed_tools_share_public_denial
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u02.md
+    - requirement: UCR-NFR-1
+      operationId: getAgentRunTranscript
+      test_id: u02_unknown_and_concealed_tools_share_public_denial
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u02.md
+    - requirement: UCR-FR-3
+      operationId: getAgentRunTranscript
+      test_id: u02_foreign_target_and_out_of_scope_command_are_denied
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u02.md
+    - requirement: UCR-A2
+      operationId: startAgentRun
+      test_id: u02_foreign_target_and_out_of_scope_command_are_denied
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u02.md
+    - requirement: UCR-FR-9
+      operationId: cancelAgentRun
+      test_id: u02_cancel_revokes_grant_while_provider_is_delayed
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u02.md
+    - requirement: UCR-A5
+      operationId: getAgentRun
+      test_id: u02_cancel_revokes_grant_while_provider_is_delayed
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u02.md
+    - requirement: UCR-FR-9
+      operationId: getAgentRunTranscript
+      test_id: u02_expired_lease_recovery_keeps_one_tool_ordinal
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u02.md
+    - requirement: UCR-FR-2
+      operationId: startAgentRun
+      test_id: u02_budget_limit_and_plus_one_are_distinct
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u02.md
+    - requirement: UCR-NFR-4
+      operationId: startAgentRun
+      test_id: u02_budget_limit_and_plus_one_are_distinct
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u02.md
+    - requirement: UCR-FR-6
+      operationId: getAgentRunTranscript
+      test_id: u02_discovery_respects_permission_filter_and_bounds
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u02.md
+    - requirement: UCR-NFR-4
+      operationId: getAgentRunTranscript
+      test_id: u02_discovery_respects_permission_filter_and_bounds
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u02.md
+    - requirement: UCR-NFR-3
+      operationId: n/a
+      test_id: u02_wire_fuzz_cases_and_malformed_provider_are_rejected
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u02.md
+    - requirement: UCR-A2
+      operationId: n/a
+      test_id: u02_wire_fuzz_cases_and_malformed_provider_are_rejected
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u02.md
+    - requirement: UCR-FR-3
+      operationId: startAgentRun
+      test_id: u02_owner_starts_scoped_read_and_sees_result
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u02.md
+    - requirement: UCR-FR-9
+      operationId: getAgentRunTranscript
+      test_id: u02_owner_starts_scoped_read_and_sees_result
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u02.md
+    - requirement: UCR-FR-9
+      operationId: cancelAgentRun
+      test_id: u02_cancel_and_reopen_persists_state
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u02.md
+    - requirement: UCR-FR-2
+      operationId: getAgentRun
+      test_id: u02_cancel_and_reopen_persists_state
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u02.md
+    - requirement: UCR-A5
+      operationId: listAgentRuns
+      test_id: u02_session_and_epoch_invalidation
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u02.md
+    - requirement: UCR-FR-3
+      operationId: getAgentRun
+      test_id: u02_session_and_epoch_invalidation
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u02.md

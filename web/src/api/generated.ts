@@ -1187,6 +1187,90 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/agent/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the owner's delegated runs, newest first.
+         * @description Bounded, owner-scoped page. An unknown status filter is rejected; the limit is clamped to 1..20 and the cursor is an opaque run ID.
+         */
+        get: operations["listAgentRuns"];
+        put?: never;
+        /**
+         * Start one owner-approved delegated read run.
+         * @description Owner session, mutation token, epoch and a mandatory Idempotency-Key are required. The permission and target grant is immutable after start. Tier 1 read commands are offered to the model as tool names only; commands__search, commands__describe and commands__run are tool names, not HTTP operations. The model never receives owner session credentials.
+         */
+        post: operations["startAgentRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/runs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the owner-visible state of one delegated run.
+         * @description A run outside the owner's epoch and pseudonym is indistinguishable from a missing run.
+         */
+        get: operations["getAgentRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/runs/{id}/transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one bounded page of the plain-text run transcript.
+         * @description Items are ordered by turn number and ordinal. The cursor encodes the last (turn_no, ordinal) pair; an invalid cursor starts from the beginning rather than widening the owner's scope.
+         */
+        get: operations["getAgentRunTranscript"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/runs/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke a run grant and fence any late tool result.
+         * @description Owner session, mutation token, epoch and a mandatory Idempotency-Key are required. Cancellation is terminal for an active run and reports "unchanged" for a run that already reached a terminal state.
+         */
+        post: operations["cancelAgentRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/insights": {
         parameters: {
             query?: never;
@@ -3602,6 +3686,82 @@ export interface components {
             error: components["schemas"]["CommandError"];
         };
         CommandRunResult: components["schemas"]["CommandRunSuccess"] | components["schemas"]["CommandRunFailure"];
+        /**
+         * @description Closed delegated-run state machine, including waiting and terminal states.
+         * @enum {string}
+         */
+        AgentRunState: "queued" | "running" | "waiting_owner" | "waiting_job" | "succeeded" | "failed" | "cancelled" | "expired";
+        /**
+         * @description Closed permission value an owner may grant to a delegated run.
+         * @enum {string}
+         */
+        AgentPermission: "opportunity.phase.edit" | "party.read" | "opportunity.read";
+        /** @description One immutable target record in the owner-approved grant. */
+        AgentRunTarget: {
+            /** @enum {string} */
+            kind: "party" | "opportunity" | "resource" | "material" | "segment";
+            id: string;
+        };
+        StartAgentRunInput: {
+            task: string;
+            targets: components["schemas"]["AgentRunTarget"][];
+            permissions: components["schemas"]["AgentPermission"][];
+            /** @default false */
+            allow_created_opportunities: boolean;
+        };
+        /** @description Admission receipt carrying the immutable grant and the initial run state. */
+        AgentRunSummary: {
+            run_id: string;
+            state: components["schemas"]["AgentRunState"];
+            revision: number;
+            granted_actions: components["schemas"]["AgentPermission"][];
+            targets: components["schemas"]["AgentRunTarget"][];
+            /** Format: date-time */
+            deadline_at: string;
+            phase: components["schemas"]["AgentRunState"];
+        };
+        AgentRunListItem: {
+            run_id: string;
+            state: components["schemas"]["AgentRunState"];
+            revision: number;
+            /** Format: date-time */
+            deadline_at: string;
+        };
+        AgentRunList: {
+            items: components["schemas"]["AgentRunListItem"][];
+            next_cursor: string | null;
+        };
+        AgentRunStatus: {
+            run_id: string;
+            state: components["schemas"]["AgentRunState"];
+            revision: number;
+            /** Format: date-time */
+            deadline_at: string;
+            turn_count: number;
+            transcript_bytes: number;
+            wake_condition: string | null;
+        };
+        AgentTranscriptItem: {
+            turn_no: number;
+            speaker: string;
+            ordinal: number;
+            text: string;
+        };
+        AgentTranscript: {
+            items: components["schemas"]["AgentTranscriptItem"][];
+            next_cursor: string | null;
+        };
+        AgentCancelResult: {
+            run_id: string;
+            /** @enum {string} */
+            state: "cancelled" | "unchanged";
+        };
+        /** @description Stable delegated-run error envelope; details are typed path/problem pairs, never model text. */
+        AgentErrorEnvelope: {
+            /** @constant */
+            ok: false;
+            error: components["schemas"]["CommandError"];
+        };
     };
     responses: {
         /** @description Stable error envelope. */
@@ -3633,6 +3793,17 @@ export interface components {
                 "application/json": components["schemas"]["CommandRunFailure"];
             };
         };
+        /** @description Stable delegated-run error envelope with a typed detail array. */
+        AgentError: {
+            headers: {
+                "Cache-Control": components["headers"]["PrivateNoStore"];
+                "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["AgentErrorEnvelope"];
+            };
+        };
     };
     parameters: {
         MutationToken: string;
@@ -3640,6 +3811,8 @@ export interface components {
         IdempotencyKey: string;
         /** @description Bounded invocation key. A retry reuses this key with the same version and canonical arguments. */
         CommandIdempotencyKey: string;
+        /** @description Bounded run/cancel key. A retry with the same key and epoch reuses the original run. */
+        AgentIdempotencyKey: string;
     };
     requestBodies: never;
     headers: {
@@ -6352,6 +6525,173 @@ export interface operations {
             500: components["responses"]["CommandError"];
             503: components["responses"]["CommandError"];
             504: components["responses"]["CommandError"];
+        };
+    };
+    listAgentRuns: {
+        parameters: {
+            query?: {
+                status?: components["schemas"]["AgentRunState"];
+                limit?: number;
+                cursor?: string;
+            };
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded page of run summaries; never cached or shared. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRunList"];
+                };
+            };
+            400: components["responses"]["AgentError"];
+            401: components["responses"]["AgentError"];
+            409: components["responses"]["AgentError"];
+        };
+    };
+    startAgentRun: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                /** @description Bounded run/cancel key. A retry with the same key and epoch reuses the original run. */
+                "Idempotency-Key": components["parameters"]["AgentIdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartAgentRunInput"];
+            };
+        };
+        responses: {
+            /** @description Run admitted and grant persisted; never cached or shared. */
+            201: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRunSummary"];
+                };
+            };
+            400: components["responses"]["AgentError"];
+            401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
+            409: components["responses"]["AgentError"];
+            422: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
+            503: components["responses"]["AgentError"];
+        };
+    };
+    getAgentRun: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current fenced run status; never cached or shared. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRunStatus"];
+                };
+            };
+            401: components["responses"]["AgentError"];
+            404: components["responses"]["AgentError"];
+            409: components["responses"]["AgentError"];
+        };
+    };
+    getAgentRunTranscript: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded transcript page; never cached or shared. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentTranscript"];
+                };
+            };
+            401: components["responses"]["AgentError"];
+            404: components["responses"]["AgentError"];
+            409: components["responses"]["AgentError"];
+        };
+    };
+    cancelAgentRun: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                /** @description Bounded run/cancel key. A retry with the same key and epoch reuses the original run. */
+                "Idempotency-Key": components["parameters"]["AgentIdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cancellation committed under the writer fence; never cached or shared. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentCancelResult"];
+                };
+            };
+            400: components["responses"]["AgentError"];
+            401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
+            409: components["responses"]["AgentError"];
+            503: components["responses"]["AgentError"];
         };
     };
     getInsights: {

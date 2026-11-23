@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/AgentRunStatus","body":{"run_id":"agent-run_sample_01","state":"succeeded","revision":5,"deadline_at":"2026-11-23T12:30:00.000Z","turn_count":3,"transcript_bytes":512,"wake_condition":"provider_finished"}}
