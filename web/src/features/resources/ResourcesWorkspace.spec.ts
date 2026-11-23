@@ -176,7 +176,7 @@ describe('ResourcesWorkspace', () => {
       send_id: 's1', sent_at: '2026-11-18T09:00:00Z',
       recipient_id: 'p1', recipient_name: 'Mira Chen',
       opportunity_id: 'o1', opportunity_title: 'Northline review',
-      material_id: 'm1', material_version: 1,
+      material_id: 'm1', material_version: 1, material_kind: 'outreach',
     }]);
     const wrapper = mount(ResourcesWorkspace);
     await flushPromises();

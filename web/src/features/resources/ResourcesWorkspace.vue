@@ -729,7 +729,13 @@ defineExpose({ refresh: refreshBoard });
               :key="delivery.send_id"
             >
               <span>{{ delivery.sent_at.slice(0, 10) }} · {{ delivery.recipient_name }} · {{ delivery.opportunity_title }}</span>
-              <small>material {{ delivery.material_id.slice(0, 8) }} · v{{ delivery.material_version }}</small>
+              <small>{{ delivery.material_kind }} · v{{ delivery.material_version }} · {{ delivery.material_id.slice(0, 8) }}</small>
+              <button
+                type="button"
+                @click="emit('navigate', `/output/${encodeURIComponent(delivery.material_id)}`)"
+              >
+                Open material
+              </button>
             </li>
           </ul>
           <button
@@ -884,7 +890,9 @@ button.retire { color: #852521; border-color: #d9a49c; }
 .eligibility p { margin: .2rem 0 0; font-size: .85rem; }
 .deliveries { border-top: 1px solid #dce2db; padding: .5rem .9rem; }
 .deliveries ul { list-style: none; padding: 0; max-height: 10rem; overflow: auto; }
-.deliveries li { display: grid; gap: .15rem; border-bottom: 1px solid #eef1ec; padding: .3rem 0; }
+.deliveries li { display: grid; grid-template-columns: 1fr auto; gap: .15rem .5rem; align-items: center; border-bottom: 1px solid #eef1ec; padding: .3rem 0; }
+.deliveries li small { grid-column: 1 / -1; }
+.deliveries li button { justify-self: end; }
 .picker { border-top: 1px solid #dce2db; padding: .5rem .9rem; }
 .picker ul { list-style: none; padding: 0; max-height: 12rem; overflow: auto; }
 .picker li { display: flex; gap: .4rem; align-items: center; justify-content: space-between; border-bottom: 1px solid #eef1ec; padding: .3rem 0; }

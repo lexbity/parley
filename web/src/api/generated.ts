@@ -2884,6 +2884,7 @@ export interface components {
             opportunity_title: string;
             material_id: string;
             material_version: number;
+            material_kind: string;
         };
         DeliveryList: {
             data: components["schemas"]["DeliveryRow"][];

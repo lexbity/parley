@@ -4705,7 +4705,7 @@ components:
       additionalProperties: false
     DeliveryRow:
       type: object
-      required: [send_id, sent_at, recipient_id, recipient_name, opportunity_id, opportunity_title, material_id, material_version]
+      required: [send_id, sent_at, recipient_id, recipient_name, opportunity_id, opportunity_title, material_id, material_version, material_kind]
       properties:
         send_id: {type: string}
         sent_at: {type: string}
@@ -4715,6 +4715,7 @@ components:
         opportunity_title: {type: string}
         material_id: {type: string}
         material_version: {type: integer}
+        material_kind: {type: string}
       additionalProperties: false
     DeliveryList:
       type: object

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/* global Event, HTMLInputElement, Blob, URL, document, File */
+/* global Event, HTMLInputElement, Blob, URL, document, File, navigator */
 import { computed, reactive, ref, watch } from 'vue';
 import { ApiError, newOperationKey, parley, type EntityAttachment, type EntityCard, type PlacementView, type ResourceColumn, type ResourcePlacementInput } from '../../api/client';
 import MarkdownEditor from '../../shared/MarkdownEditor.vue';
@@ -50,6 +50,7 @@ type ConflictView = {
   currentCard: EntityCard | null;
 };
 const conflict = ref<ConflictView | null>(null);
+const epochQuarantined = ref<{ title: string; notes: string } | null>(null);
 /** The revision target for edits: the card as last confirmed by the server. */
 const liveCard = ref<EntityCard | null>(props.card ?? null);
 
@@ -219,7 +220,7 @@ function freezeTitle(): string {
 }
 
 async function save() {
-  if (saving.value) return;
+  if (saving.value || epochQuarantined.value) return;
   const trimmedTitle = freezeTitle();
   if (!trimmedTitle) { error.value = 'A card needs a title.'; return; }
   const payload: Record<string, unknown> = {};
@@ -255,7 +256,10 @@ async function save() {
     status.value = 'Card saved.';
     emit('saved', { entity: result.entity, placement: result.placement, createdRelated: result.created_related });
   } catch (reason) {
-    if (reason instanceof ApiError && reason.status === 412) {
+    if (reason instanceof ApiError && reason.status === 409 && reason.code === 'WORKSPACE_REPLACED') {
+      epochQuarantined.value = { title: trimmedTitle, notes: notesMd };
+      status.value = 'The workspace epoch changed while saving; this draft is quarantined and cannot be saved into the restored workspace.';
+    } else if (reason instanceof ApiError && reason.status === 412) {
       const base = { title: props.card?.title ?? '', notes: props.card?.notes?.markdown ?? '' };
       const mine = { title: trimmedTitle, notes: notesMd };
       conflict.value = { base, mine, current: null, currentCard: null };
@@ -299,6 +303,22 @@ function keepMineAndRetry() {
 function cancel() {
   emit('cancel');
 }
+
+async function copyQuarantined() {
+  const text = `${epochQuarantined.value?.title ?? ''}\n\n${epochQuarantined.value?.notes ?? ''}`;
+  try {
+    await navigator.clipboard.writeText(text);
+    status.value = 'Quarantined draft copied. It remains isolated until you discard it.';
+  } catch {
+    status.value = 'Clipboard access was denied; select and copy the text manually.';
+  }
+}
+
+function discardQuarantined() {
+  epochQuarantined.value = null;
+  dirty.value = false;
+  emit('cancel');
+}
 </script>
 
 <template>
@@ -330,6 +350,34 @@ function cancel() {
       {{ error }}
     </p>
 
+    <div
+      v-if="epochQuarantined"
+      class="quarantine-box"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="quarantine-heading"
+    >
+      <strong id="quarantine-heading">Unsaved draft quarantined</strong>
+      <p>The workspace was replaced while this card was unsaved. It is not replayed into the restored data.</p>
+      <textarea
+        readonly
+        aria-label="Quarantined draft text"
+        :value="`${epochQuarantined.title}\n\n${epochQuarantined.notes}`"
+        rows="6"
+      />
+      <button
+        type="button"
+        @click="copyQuarantined"
+      >
+        Copy draft
+      </button>
+      <button
+        type="button"
+        @click="discardQuarantined"
+      >
+        Discard draft
+      </button>
+    </div>
     <div
       v-if="conflict"
       class="conflict-box"
@@ -662,6 +710,8 @@ function cancel() {
 .form-error { color: #852521; }
 .upload-error { color: #852521; }
 .conflict-box { background: #fdf1ef; border: 1px solid #e2b7b0; border-radius: .35rem; margin: .6rem .9rem; padding: .5rem .7rem; }
+.quarantine-box { background: #fff8e6; border: 1px solid #dcc98f; border-radius: .35rem; margin: .6rem .9rem; padding: .5rem .7rem; display: grid; gap: .4rem; }
+.quarantine-box textarea { font-family: ui-monospace, monospace; }
 .conflict-versions { margin: .4rem 0; display: grid; gap: .25rem; }
 .conflict-versions > div { display: grid; grid-template-columns: 12rem 1fr; gap: .5rem; }
 .conflict-versions dt { color: #852521; font-weight: 600; font-size: .85rem; }

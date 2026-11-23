@@ -654,6 +654,7 @@ function decodeDeliveryRow(value: unknown): DeliveryRow {
     recipient_id: requiredString(item.recipient_id, 'delivery.recipient_id'), recipient_name: requiredString(item.recipient_name, 'delivery.recipient_name'),
     opportunity_id: requiredString(item.opportunity_id, 'delivery.opportunity_id'), opportunity_title: requiredString(item.opportunity_title, 'delivery.opportunity_title'),
     material_id: requiredString(item.material_id, 'delivery.material_id'), material_version: Number(item.material_version),
+    material_kind: typeof item.material_kind === 'string' ? item.material_kind : 'outreach',
   };
 }
 

@@ -51,7 +51,17 @@ type CardRow = (
 type OffBoardRow = (String, String, String, String, String, i64, i64, i64, i64);
 type LegacyRow = (String, String, String, String, i64);
 type EditCardRow = (String, String, String, String, String, i64, i64, String);
-type DeliveryRowTuple = (String, String, String, String, String, String, String, i64);
+type DeliveryRowTuple = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    String,
+);
 type AttachmentListRow = (
     String,
     String,
@@ -167,6 +177,8 @@ pub struct DeliveryRow {
     pub opportunity_title: String,
     pub material_id: String,
     pub material_version: i64,
+    /// Material kind (outreach/followup/handoff) as the channel-like label.
+    pub material_kind: String,
 }
 
 /// Deterministic missing-typed-field computation shared by board summaries,
@@ -419,12 +431,13 @@ impl Workspace {
             return Err(WorkspaceError::NotFound);
         }
         let rows: Vec<DeliveryRowTuple> = sqlx::query_as(
-            "SELECT s.id,s.sent_at,s.recipient_id,e.name,t.opportunity_id,o.title,sp.material_id,sp.version_no \
+            "SELECT s.id,s.sent_at,s.recipient_id,e.name,t.opportunity_id,o.title,sp.material_id,sp.version_no,m.kind \
              FROM send s \
              JOIN entity e ON e.id=s.recipient_id \
              JOIN contact_thread t ON t.id=s.thread_id \
              JOIN opportunity o ON o.id=t.opportunity_id \
              JOIN send_part sp ON sp.send_id=s.id \
+             JOIN material m ON m.id=sp.material_id \
              JOIN version_dependency d ON d.material_id=sp.material_id AND d.version_no=sp.version_no \
              WHERE (d.kind='resource' AND d.source_id=?) \
                 OR (d.kind='blob' AND d.source_id IN (SELECT sha256 FROM entity_attachment WHERE entity_id=?)) \
@@ -446,6 +459,7 @@ impl Workspace {
                     opportunity_title,
                     material_id,
                     material_version,
+                    material_kind,
                 )| {
                     DeliveryRow {
                         send_id,
@@ -456,6 +470,7 @@ impl Workspace {
                         opportunity_title,
                         material_id,
                         material_version,
+                        material_kind,
                     }
                 },
             )
