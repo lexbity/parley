@@ -2424,6 +2424,14 @@ async fn get_resource_card_deliveries(
     }
 }
 
+#[derive(Serialize, sqlx::FromRow)]
+struct DeliveredResourceVersion {
+    resource_title: String,
+    resource_revision: i64,
+    body: String,
+    filename: Option<String>,
+}
+
 async fn get_delivered_resource_version(
     State(state): State<AppState>,
     Path((id, send_id, material_id, version)): Path<(String, String, String, i64)>,
@@ -2432,7 +2440,7 @@ async fn get_delivered_resource_version(
     if let Err(error) = authenticate(&headers, &state).await {
         return error.into_response();
     }
-    let row: Result<Option<(String, i64, String, Option<String>)>, _> = sqlx::query_as(
+    let row = sqlx::query_as::<_, DeliveredResourceVersion>(
         "SELECT d.resource_title,d.resource_revision,mv.body,mv.filename
          FROM delivered_resource_version d
          JOIN send_part sp ON sp.material_id=d.material_id AND sp.version_no=d.version_no
@@ -2446,8 +2454,8 @@ async fn get_delivered_resource_version(
     .fetch_optional(state.workspace.pool())
     .await;
     match row {
-        Ok(Some((title, revision, body, filename))) => {
-            let mut response = Json(json!({"resource_title":title,"resource_revision":revision,"body":body,"filename":filename})).into_response();
+        Ok(Some(version)) => {
+            let mut response = Json(version).into_response();
             super::private_headers(&mut response, state.workspace.epoch());
             response
         }

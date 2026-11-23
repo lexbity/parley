@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf '%s\n' 'Usage: scripts/dev-install {web|full} [--with-browser-deps]' \
+    '  web  Install and verify the mock frontend and Chromium.' \
+    '  full Include Rust, SQLx, the verifier environment, and the embedded launcher.' \
+    '  --with-browser-deps  Also ask Playwright to install system libraries where supported.'
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  web|full) profile=$1; shift ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+browser_options=()
+if [[ "${1:-}" == --with-browser-deps ]]; then
+  browser_options=(--with-deps)
+  shift
+fi
+if [[ $# -ne 0 ]]; then usage >&2; exit 2; fi
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+root=$PWD
+tools="$root/artifacts/dev-tools"
+
+fail() { printf 'dev-install: %s\n' "$*" >&2; exit 1; }
+announce() { printf '\n%s\n' "$*"; }
+pin() { awk -v "key=$1:" '$1 == key {print $2; exit}' ci/toolchain-versions.yaml; }
+
+node_version=$(<.nvmrc)
+command -v node >/dev/null || fail "Install Node $node_version from .nvmrc with your version manager."
+[[ "$(node --version)" == "v$node_version" ]] || fail "Activate Node $node_version from .nvmrc."
+pnpm_version=$(node -p 'require("./package.json").packageManager.split("@")[1]')
+command -v pnpm >/dev/null || fail "Install pnpm $pnpm_version from package.json. See docs/GETTING_STARTED.md."
+[[ "$(pnpm --version)" == "$pnpm_version" ]] || fail "Activate pnpm $pnpm_version from package.json."
+
+if [[ "$profile" == full ]]; then
+  case "$(uname -s)" in
+    Linux|Darwin) ;;
+    *) fail 'The full launcher setup requires Linux or macOS. The web profile is available in a Bash environment.' ;;
+  esac
+  python=${PARLEY_PYTHON:-python3}
+  python_version=$(pin python)
+  command -v "$python" >/dev/null || fail "Install Python $python_version before running the full profile."
+  [[ "$("$python" --version)" == "Python $python_version" ]] ||
+    fail "Activate Python $python_version or point PARLEY_PYTHON at its executable."
+  rust_channel=$(pin rust_channel)
+  if command -v rustup >/dev/null; then
+    installed=$(rustup component list --installed --toolchain "$rust_channel" 2>/dev/null || true)
+    if [[ "$installed" != *rustfmt-* || "$installed" != *clippy-* || "$installed" != *llvm-tools-* ]]; then
+      announce "Installing Rust toolchain $rust_channel and its pinned components"
+      rustup toolchain install "$rust_channel" --profile minimal --component rustfmt,clippy,llvm-tools-preview
+    fi
+    export RUSTUP_TOOLCHAIN="$rust_channel"
+  fi
+  command -v cargo >/dev/null || fail "Install rustup or Rust $rust_channel."
+  [[ "$(rustc --version)" == "rustc $rust_channel "* ]] || fail "Activate Rust $rust_channel."
+fi
+
+announce "Installing locked JavaScript dependencies"
+if [[ "$profile" == web ]]; then
+  pnpm --filter parley-web install --frozen-lockfile
+else
+  pnpm install --frozen-lockfile
+fi
+announce "Installing the locked Chromium build"
+pnpm --dir web exec playwright install "${browser_options[@]}" chromium
+
+if [[ "$profile" == web ]]; then
+  announce "Verifying the mock frontend"
+  pnpm --dir web run typecheck
+  pnpm --dir web exec playwright test e2e/workspace-layout.spec.ts --project=mock --reporter=line
+  printf '\nStart the mock app with pnpm --dir web run dev:mock\n'
+  exit 0
+fi
+
+announce "Installing the locked Rust dependencies and verifier tooling"
+cargo fetch --locked
+"$python" -m venv "$tools/venv"
+"$tools/venv/bin/python3" -m pip install --disable-pip-version-check -r ci/requirements.txt
+
+sqlx_version=$(pin sqlx_cli)
+export PATH="$tools/venv/bin:$tools/sqlx/bin:$PATH"
+if ! command -v sqlx >/dev/null || [[ "$(sqlx --version)" != "sqlx-cli $sqlx_version" ]]; then
+  cargo install --locked --root "$tools/sqlx" --version "=$sqlx_version" --no-default-features --features sqlite sqlx-cli
+fi
+PYTHONDONTWRITEBYTECODE=1 scripts/check-toolchain
+
+announce "Building and verifying the development launcher"
+pnpm --dir web run build
+cargo_target=${CARGO_TARGET_DIR:-"$root/target"}
+if [[ "$cargo_target" != /* ]]; then cargo_target="$root/$cargo_target"; fi
+PARLEY_REQUIRE_WEB_ASSETS=1 cargo build --locked --bin parley --target-dir "$cargo_target"
+pnpm --dir web exec node e2e/release-smoke.ts "$cargo_target/debug/parley"
+printf '\nStart the local app with %q\n' "$cargo_target/debug/parley"
+printf 'Activate the verifier tools with export PATH=%q:%q:"$PATH"\n' "$tools/venv/bin" "$tools/sqlx/bin"

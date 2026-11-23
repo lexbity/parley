@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""Build and qualify a Linux x86_64 Parley launcher archive."""
+
+import argparse
+import gzip
+import hashlib
+import json
+import os
+import platform
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import tomllib
+
+
+ROOT = Path(__file__).resolve().parents[1]
+TARGET = "linux-x86_64"
+VERSION = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?")
+
+
+class ReleaseError(Exception):
+    pass
+
+
+def run(*args, env=None, capture=False):
+    result = subprocess.run(args, cwd=ROOT, env=env, text=True, check=True, stdout=subprocess.PIPE if capture else None)
+    return result.stdout.strip() if capture else None
+
+
+def sha256(path):
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def write_json(path, data):
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def source_info(tag, version):
+    commit = run("git", "rev-parse", "HEAD", capture=True)
+    dirty = bool(run("git", "status", "--porcelain", capture=True))
+    if tag:
+        if tag != f"v{version}":
+            raise ReleaseError(f"Expected tag v{version} to match the Cargo workspace version, got {tag}.")
+        if dirty:
+            raise ReleaseError("Tagged artifacts require a clean checkout.")
+        tagged = run("git", "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}", capture=True)
+        if tagged != commit:
+            raise ReleaseError(f"{tag} must point to the checked-out commit.")
+    return commit, dirty
+
+
+def prior_tag():
+    result = subprocess.run(
+        ["git", "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", "HEAD^"],
+        cwd=ROOT, text=True, capture_output=True,
+    )
+    if result.returncode == 0:
+        return result.stdout.strip()
+    if "no tags can describe" in result.stderr or "No names found" in result.stderr:
+        return None
+    # A repository with an initial root commit has no predecessor.
+    if int(run("git", "rev-list", "--count", "HEAD", capture=True)) == 1 and run("git", "rev-parse", "--is-shallow-repository", capture=True) == "false":
+        return None
+    raise ReleaseError("Could not determine the previous version tag. Fetch full history and tags.")
+
+
+def extract_launcher(archive, destination, prefix):
+    with tarfile.open(archive, "r:gz") as bundle:
+        manifest_member = bundle.getmember(prefix + "/release-manifest.json")
+        binary_member = bundle.getmember(prefix + "/parley")
+        if not (manifest_member.isfile() and binary_member.isfile() and manifest_member.size <= 1024 * 1024
+                and binary_member.mode & 0o111 and binary_member.size > 0):
+            raise ReleaseError(f"{archive.name} does not contain a valid installer manifest and executable.")
+        with bundle.extractfile(manifest_member) as handle:
+            manifest = json.load(handle)
+        with bundle.extractfile(binary_member) as source, destination.open("xb") as output:
+            shutil.copyfileobj(source, output)
+    destination.chmod(0o755)
+    if manifest.get("target") != TARGET or sha256(destination) != manifest.get("launcher_sha256"):
+        raise ReleaseError(f"The target or launcher digest in {archive.name} does not match.")
+    return manifest
+
+
+def previous_package(archive, checksums, expected_tag, scratch):
+    if not archive:
+        if expected_tag:
+            raise ReleaseError(f"Provide the {expected_tag} launcher archive and SHA256SUMS to qualify upgrades.")
+        return None, None
+    checksum = sha256(archive)
+    expected = [line.split("  ", 1)[0] for line in checksums.read_text(encoding="utf-8").splitlines()
+                if line.endswith("  " + archive.name)]
+    if expected != [checksum]:
+        raise ReleaseError(f"{archive.name} does not match a unique entry in {checksums.name}.")
+    binary = scratch / "previous-parley"
+    manifest = extract_launcher(archive, binary, archive.name.removesuffix(".tar.gz"))
+    if expected_tag and manifest.get("tag") != expected_tag:
+        raise ReleaseError(f"The predecessor package must be from {expected_tag}.")
+    if expected_tag and manifest.get("commit") != run("git", "rev-parse", f"refs/tags/{expected_tag}^{{commit}}", capture=True):
+        raise ReleaseError(f"The predecessor package commit must match {expected_tag}.")
+    return binary, {**{key: manifest[key] for key in ("version", "tag", "commit")}, "archive_sha256": checksum}
+
+
+def web_hashes():
+    dist = ROOT / "web/dist"
+    manifest = json.loads((dist / ".vite/manifest.json").read_text(encoding="utf-8"))
+    if not manifest:
+        raise ReleaseError("Vite produced an empty manifest.")
+    assets = {entry["file"] for entry in manifest.values()}
+    for entry in manifest.values():
+        assets.update(entry.get("css", []))
+        assets.update(entry.get("assets", []))
+    if not any(name.endswith(".js") for name in assets) or not any(name.endswith(".css") for name in assets):
+        raise ReleaseError("The Vue bundle must contain JavaScript and styles.")
+    for asset in assets:
+        parts = Path(asset).parts
+        if not parts or parts[0] != "assets" or ".." in parts:
+            raise ReleaseError(f"Unexpected Vite asset path: {asset}.")
+    return {name: sha256(dist / name) for name in sorted(assets | {"index.html"})}
+
+
+def package(output, prefix, binary, metadata, timestamp):
+    paths = {
+        "parley": binary,
+        "release-manifest.json": metadata,
+        "LICENSE": ROOT / "LICENSE",
+        "INSTALL.md": ROOT / "packaging/launcher/INSTALL.md",
+    }
+    with output.open("xb") as handle, gzip.GzipFile(fileobj=handle, mode="wb", filename="", mtime=timestamp) as zipped:
+        with tarfile.open(fileobj=zipped, mode="w") as archive:
+            for name, source in paths.items():
+                member = tarfile.TarInfo(f"{prefix}/{name}")
+                member.size = source.stat().st_size
+                member.mode = 0o755 if name == "parley" else 0o644
+                member.mtime = timestamp
+                with source.open("rb") as entry:
+                    archive.addfile(member, entry)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--tag", help="Require this exact version tag at clean HEAD. Omit for a local build.")
+    parser.add_argument("--output", type=Path, help="New directory for the qualified artifacts.")
+    parser.add_argument("--previous", type=Path, help="Previous same-platform launcher archive.")
+    parser.add_argument("--previous-checksums", type=Path, help="Trusted SHA256SUMS for the previous archive.")
+    args = parser.parse_args()
+    if bool(args.previous) != bool(args.previous_checksums):
+        parser.error("--previous and --previous-checksums must be supplied together")
+    if platform.system() != "Linux" or platform.machine() != "x86_64":
+        raise ReleaseError("This launcher pipeline qualifies Linux x86_64. Build on a matching host.")
+    if os.environ.get("CARGO_BUILD_TARGET"):
+        raise ReleaseError("Unset CARGO_BUILD_TARGET. The archive is qualified with a native build.")
+    workspace = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+    version = workspace["workspace"]["package"]["version"]
+    if not VERSION.fullmatch(version):
+        raise ReleaseError("Cargo must declare a supported semantic version.")
+    commit, dirty = source_info(args.tag, version)
+    if args.tag and run("git", "rev-parse", "--is-shallow-repository", capture=True) != "false":
+        raise ReleaseError("Tagged builds require full history to identify the previous version.")
+    predecessor = prior_tag() if args.tag else None
+    prefix = f"parley-{version}-{TARGET}" if args.tag else f"parley-{version}-{TARGET}-local-{commit[:12]}"
+    output = args.output.resolve() if args.output else ROOT / "artifacts" / "releases" / prefix
+    if output.exists():
+        raise ReleaseError(f"Output already exists: {output}. Choose a new directory.")
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    tools = ROOT / "artifacts/dev-tools"
+    python = tools / "venv/bin/python3"
+    if not python.is_file():
+        raise ReleaseError("Run scripts/dev-install full to provision the verifier environment.")
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PATH": os.pathsep.join([str(python.parent), str(tools / "sqlx/bin"), os.environ["PATH"]])}
+    target_dir = Path(env.get("CARGO_TARGET_DIR", ROOT / "target"))
+    if not target_dir.is_absolute():
+        target_dir = ROOT / target_dir
+    native_dir = target_dir / "release"
+
+    with tempfile.TemporaryDirectory(prefix=".parley-release-", dir=output.parent) as directory:
+        scratch = Path(directory)
+        previous_launcher, previous_info = previous_package(args.previous, args.previous_checksums, predecessor, scratch)
+        stage = scratch / "artifacts"
+        stage.mkdir()
+        run("scripts/check-toolchain", env=env)
+        run("cargo", "fmt", "--all", "--", "--check", env=env)
+        run("cargo", "clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings", env=env)
+        run("cargo", "test", "--locked", "--workspace", env=env)
+        for script in ("typecheck", "lint", "test", "build"):
+            run("pnpm", "--dir", "web", "run", script, env=env)
+        for verifier, flag in (("contract", "--check-generated"), ("migrations", None), ("trace", "--check-manifest")):
+            command = [str(python), f"ci/{verifier}.py", "--through", "r04"]
+            if flag:
+                command.append(flag)
+            run(*command, env=env)
+        digests = web_hashes()
+        timestamp = int(run("git", "show", "-s", "--format=%ct", "HEAD", capture=True))
+        run("cargo", "build", "--locked", "--release", "--bin", "parley", "--target-dir", str(target_dir),
+            env={**env, "PARLEY_REQUIRE_WEB_ASSETS": "1", "SOURCE_DATE_EPOCH": str(timestamp)})
+        binary = native_dir / "parley"
+        if run(str(binary), "--version", capture=True) != f"parley {version}":
+            raise ReleaseError("Launcher version does not match the workspace version.")
+
+        manifest = stage / "release-manifest.json"
+        write_json(manifest, {
+            "format": 1, "distribution": "internal-launcher", "target": TARGET,
+            "version": version, "tag": args.tag, "commit": commit, "dirty": dirty,
+            "build_host": platform.platform(), "launcher_sha256": sha256(binary), "web_assets": digests,
+            "toolchain_manifest_sha256": sha256(ROOT / "ci/toolchain-versions.yaml"),
+            "input_sha256": {path: sha256(ROOT / path) for path in ("Cargo.lock", "pnpm-lock.yaml", "contract/openapi.yaml")},
+            "migrations": {path.name: sha256(path) for path in sorted((ROOT / "migrations").glob("*.sql"))},
+            "predecessor": previous_info,
+        })
+        archive = stage / f"{prefix}.tar.gz"
+        package(archive, prefix, binary, manifest, timestamp)
+        extracted = scratch / "parley"
+        extract_launcher(archive, extracted, prefix)
+        smoke = ["pnpm", "--dir", "web", "exec", "node", "e2e/release-smoke.ts", str(extracted), str(manifest)]
+        if previous_launcher:
+            smoke.append(str(previous_launcher))
+        run(*smoke, env=env)
+
+        write_json(stage / "qualification.json", {
+            "archive_sha256": sha256(archive),
+            "checks": ["locked Rust and frontend checks", "contract and migrations", "embedded asset digests",
+                       "packaged Chromium UI", "verified backup", "copied workspace restart and recovery"],
+            "predecessor_archive_tested": bool(previous_launcher),
+        })
+        notes = run("git", "log", "-12", "--format=- %s", f"{predecessor}..HEAD" if predecessor else "HEAD", capture=True)
+        (stage / "RELEASE_NOTES.md").write_text(
+            f"# Parley {version} internal launcher\n\n"
+            "This archive runs the local workspace in the system browser on Linux x86_64. "
+            "The public desktop release has separate Tauri qualification.\n\n"
+            f"Source commit `{commit}`.\n\n"
+            + ("The previous launcher passed the copied-workspace upgrade and recovery drill.\n\n" if previous_launcher
+               else "This build passed same-version restart and recovery on a copied workspace.\n\n")
+            + (f"## Changes\n\n{notes}\n" if notes else ""), encoding="utf-8",
+        )
+        (stage / "SHA256SUMS").write_text(
+            "".join(f"{sha256(path)}  {path.name}\n" for path in sorted(stage.iterdir())), encoding="utf-8",
+        )
+        if args.tag:
+            source_info(args.tag, version)
+        stage.rename(output)
+    print(f"Qualified launcher artifacts are in {output}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ReleaseError, OSError, ValueError, KeyError, tarfile.TarError, subprocess.CalledProcessError) as error:
+        sys.exit(f"release: {error}")

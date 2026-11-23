@@ -385,7 +385,10 @@ async fn s12_events_filter_returns_scoped_history_with_timestamps() {
     let mut previous_cursor = 0i64;
     for item in items {
         assert!(
-            item["occurred_at"].as_str().map(|value| !value.is_empty()).unwrap_or(false),
+            item["occurred_at"]
+                .as_str()
+                .map(|value| !value.is_empty())
+                .unwrap_or(false),
             "{item}"
         );
         let cursor: i64 = item["cursor"].as_str().unwrap().parse().unwrap();

@@ -98,18 +98,10 @@ Never attach a Workspace file or raw Owner text.
 Use synthetic fixtures for reproductions.
 
 Feature proposals should name the Owner task, the affected components, and the test that would prove it.
+
 ## Releases
 
-The app ships as a local binary and a packaged frontend bundle.
-A release build embeds the Vite output in the Rust binary.
-
-```sh
-pnpm --dir web exec vite build
-cargo build --locked --release --bin parley
-./target/release/parley --version
-```
-
-RFC-0004 assigns the release evidence to slice S12.
+Use `scripts/release` to qualify an internal Linux launcher archive locally. A version tag runs the same checks and stages a draft with checksums and workspace recovery evidence. [Release process](RELEASING.md)
 
 ## Community
 
@@ -119,4 +111,3 @@ By participating you agree to the [CODE_OF_CONDUCT](../CODE_OF_CONDUCT.md).
 
 - [TESTING](TESTING.md) — test layers and commands.
 - [OPERATIONS](OPERATIONS.md) — maintenance and recovery behavior.
-- [CHANGELOG](../CHANGELOG.md) — version history.

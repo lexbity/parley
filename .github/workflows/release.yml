@@ -1,0 +1,145 @@
+name: Internal launcher release
+
+on:
+  push:
+    tags: ['v[0-9]*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: launcher-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  predecessor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Download draft assets without granting release permissions to build commands.
+    permissions:
+      contents: write
+    outputs:
+      archive: ${{ steps.previous.outputs.archive }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download the previous tagged archive
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if git rev-parse --verify --quiet HEAD^ >/dev/null; then
+            previous=$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^ 2>/dev/null || true)
+            if [[ -n "$previous" ]]; then
+              archive="parley-${previous#v}-linux-x86_64.tar.gz"
+              gh release download --repo "$GITHUB_REPOSITORY" --dir predecessor \
+                --pattern "$archive" --pattern SHA256SUMS -- "$previous"
+              test -s "predecessor/$archive"
+              test -s predecessor/SHA256SUMS
+              printf 'archive=%s\n' "$archive" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: steps.previous.outputs.archive != ''
+        with:
+          name: predecessor-launcher
+          path: predecessor/
+          if-no-files-found: error
+
+  qualify:
+    needs: predecessor
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Read Python pin
+        id: pins
+        run: awk '$1 == "python:" {print "python=" $2}' ci/toolchain-versions.yaml >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ steps.pins.outputs.python }}
+
+      - name: Provision developer and browser tooling
+        run: scripts/dev-install full --with-browser-deps
+
+      - uses: actions/download-artifact@v4
+        if: needs.predecessor.outputs.archive != ''
+        with:
+          name: predecessor-launcher
+          path: artifacts/releases/predecessor
+
+      - name: Build and qualify the internal archive
+        env:
+          PREVIOUS_ARCHIVE: ${{ needs.predecessor.outputs.archive }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ -n "$PREVIOUS_ARCHIVE" ]]; then
+            directory=artifacts/releases/predecessor
+            args=(--previous "$directory/$PREVIOUS_ARCHIVE" --previous-checksums "$directory/SHA256SUMS")
+          fi
+          scripts/release --tag "$GITHUB_REF_NAME" --output artifacts/releases/candidate "${args[@]}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qualified-launcher
+          path: artifacts/releases/candidate/
+          if-no-files-found: error
+
+  draft:
+    needs: qualify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: qualified-launcher
+          path: candidate
+
+      - name: Stage a draft prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          sha256sum --check SHA256SUMS
+          tag="$GITHUB_REF_NAME"
+          if state=$(gh release view --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft -- "$tag"); then
+            [[ "$state" == true ]] || { echo "Refusing to change a published release." >&2; exit 1; }
+            existing=$(mktemp -d)
+            assets=$(gh release view --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' -- "$tag")
+            missing=()
+            for file in *; do
+              if [[ -n "$assets" ]] && printf '%s\n' "$assets" | grep -Fxq -- "$file"; then
+                gh release download --repo "$GITHUB_REPOSITORY" --dir "$existing" --pattern "$file" -- "$tag"
+                cmp -- "$file" "$existing/$file"
+              else
+                missing+=("$file")
+              fi
+            done
+            if (( ${#missing[@]} )); then
+              gh release upload --repo "$GITHUB_REPOSITORY" -- "$tag" "${missing[@]}"
+            fi
+          else
+            gh release create --repo "$GITHUB_REPOSITORY" --verify-tag --draft --prerelease --latest=false \
+              --title "Parley $tag internal launcher" --notes-file RELEASE_NOTES.md -- "$tag" ./*
+          fi

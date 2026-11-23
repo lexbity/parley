@@ -19,65 +19,30 @@ Do not substitute newer versions without updating the pinned files.
 | Playwright | 1.65.1, Chromium build 1255 | `web/package.json`, `ci/toolchain-versions.yaml` |
 | `pi` agent | 1.6.0 | `agent/package.json` |
 
-Check the active toolchain after installation:
-
-```sh
-scripts/check-toolchain
-```
-
 ## Install
 
-Run the commands below from the repository root.
-
-### Rust
-
-Install the toolchain with `rustup`.
-`rust-toolchain.toml` selects the channel and components.
+Run setup from the repository root. Activate the pinned Node and pnpm versions first. With `nvm`:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --component rustfmt,clippy,llvm-tools-preview
-```
-
-### Node and pnpm
-
-Install Node 26.12.0 with your version manager.
-With `nvm`, run:
-
-```sh
-nvm install 26.12.0
+nvm install
 nvm use
-```
-
-Install the pinned pnpm version:
-
-```sh
 npm install --global pnpm@12.21.0
 ```
 
-### Python and SQLx CLI
+Choose a development profile:
 
-Python runs the verifiers in `ci/`.
-Install version 3.14.10 with your version manager.
-Use your version manager's standard install command.
+| Command | What it installs and verifies |
+|---|---|
+| `scripts/dev-install web` | Locked web dependencies and Chromium, followed by a typecheck and mock browser smoke test. |
+| `scripts/dev-install full` | All locked dependencies, the pinned Rust toolchain through rustup, a local Python verifier environment, and SQLx CLI if a matching version is unavailable. Builds and exercises the embedded launcher. Requires the pinned Python and a native build toolchain. |
 
-```sh
-python3 -m pip install -r ci/requirements.txt
-```
+The full profile uses Linux or macOS. Install Python with your version manager and install a C linker with your system's build tools. Set `PARLEY_PYTHON` to the pinned interpreter if `python3` points elsewhere. For Playwright-managed system libraries on supported Linux distributions, add `--with-browser-deps`.
 
-SQLx CLI must match the SQLx library version.
-The Rust CI lane installs it with `cargo binstall`:
+Full setup installs Python tools and any required SQLx CLI under `artifacts/dev-tools`. To use the same tools when running verifiers manually:
 
 ```sh
-cargo binstall -y sqlx-cli@0.9.1
-```
-
-### Project dependencies
-
-Install both workspaces with frozen locks:
-
-```sh
-pnpm install --frozen-lockfile
-cargo fetch --locked
+export PATH="$PWD/artifacts/dev-tools/venv/bin:$PWD/artifacts/dev-tools/sqlx/bin:$PATH"
+scripts/check-toolchain
 ```
 
 ## Environment variables
@@ -104,8 +69,8 @@ Never commit a Workspace file.
 Build and start the launcher in headless mode:
 
 ```sh
-cargo build --locked --release --bin parley
-./target/release/parley --workspace /tmp/parley-demo --headless
+scripts/dev-install full
+./target/debug/parley --workspace /tmp/parley-demo --headless
 ```
 
 Headless mode prints a one-time local bootstrap URL.
@@ -115,7 +80,7 @@ The URL secret is single-use and expires.
 Omit `--headless` to let the launcher open the browser for you:
 
 ```sh
-./target/release/parley --workspace /tmp/parley-demo
+./target/debug/parley --workspace /tmp/parley-demo
 ```
 
 A second launch against the same Workspace reuses the running service.
@@ -125,7 +90,7 @@ Do not delete a live Workspace lock.
 Check the binary version:
 
 ```sh
-./target/release/parley --version
+./target/debug/parley --version
 ```
 
 The app starts without a model installed.
@@ -134,9 +99,9 @@ Agent-backed features need a local provider.
 
 ## Frontend-only setup
 
-You can work on the client without Rust, SQLite, or a model.
+Run `scripts/dev-install web` for frontend work with fixture data.
 
-Start Vite against the real service on loopback:
+Start Vite against the real service on loopback when the full launcher is running:
 
 ```sh
 pnpm --dir web run dev

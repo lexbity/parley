@@ -15,6 +15,7 @@
 - [Prerequisites](#prerequisites)
 - [Quick start](#quick-start)
 - [Usage examples](#usage-examples)
+- [Software versions](#software-versions)
 - [Documentation](#documentation)
 - [Screenshots](#screenshots)
 - [License](#license)
@@ -69,31 +70,33 @@ Frontend-only work needs Node and pnpm.
 
 ## Quick start
 
-1. Install the pinned toolchains in [GETTING_STARTED](docs/GETTING_STARTED.md#toolchain-versions).
-2. Install frontend dependencies: `pnpm install --frozen-lockfile`.
-3. Start the development UI: `pnpm --dir web run dev`.
-4. Run the mock browser tests: `pnpm --dir web run e2e:mock`.
-5. To run the full local app, build the launcher and start it headless:
-   `cargo build --locked --release --bin parley`
-   `./target/release/parley --workspace /tmp/parley-demo --headless`
+Activate the pinned tools in [Getting started](docs/GETTING_STARTED.md#toolchain-versions). To run the full app against a disposable Workspace:
 
-The headless launch prints a one-time local bootstrap URL.
-Open that URL to reach the app.
-See [GETTING_STARTED](docs/GETTING_STARTED.md#first-launch) for the full sequence.
+```sh
+scripts/dev-install full
+./target/debug/parley --workspace "$(mktemp -d)/workspace.sqlite" --headless
+```
+
+Open the one-time loopback URL printed by the launcher. Omit `--headless` to open the system browser automatically. Parley can start without a model.
+
+For frontend development against the mock:
+
+```sh
+scripts/dev-install web
+pnpm --dir web run dev:mock
+```
 
 ## Usage examples
 
 Start the full app with a chosen Workspace path:
 
 ```sh
-cargo build --locked --release --bin parley
-./target/release/parley --workspace /tmp/parley-demo --headless
+./target/debug/parley --workspace /tmp/parley-demo --headless
 ```
 
 Start the frontend against the development mock, with no Rust service:
 
 ```sh
-pnpm install --frozen-lockfile
 pnpm --dir web run dev:mock
 ```
 
@@ -110,6 +113,10 @@ Run the offline Extractor evaluation:
 cargo run --locked -p parley-cli -- eval --role extractor
 ```
 
+## Software versions
+
+After the full development setup, run `scripts/release` to build and qualify the internal Linux x86_64 launcher archive. Pushing a matching `v<version>` tag stages a draft prerelease. See [Build and qualify a Parley software version](docs/RELEASING.md) for checksums, upgrades, recovery, and the public Tauri release requirements.
+
 ## Documentation
 
 Start at the [documentation index](docs/README.md).
@@ -123,7 +130,7 @@ It owns the glossary and the topic map.
 | [CONTRIBUTING](docs/CONTRIBUTING.md) | Branching, commits, PRs, CI gates |
 | [TESTING](docs/TESTING.md) | Test layers and commands |
 | [OPERATIONS](docs/OPERATIONS.md) | Backup, restore, erasure, migrations, disk hygiene |
-| [CHANGELOG](CHANGELOG.md) | Version history |
+| [RELEASING](docs/RELEASING.md) | Launcher archives, tagged drafts, upgrade and desktop qualification |
 | [CODE_OF_CONDUCT](CODE_OF_CONDUCT.md) | Community expectations |
 
 ## Screenshots

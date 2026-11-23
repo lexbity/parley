@@ -22,7 +22,7 @@ When a term is unavailable, add it here first.
 | [CONTRIBUTING](CONTRIBUTING.md) | Branching, commits, PR checklist, CI gates, issue reports | Contributors opening PRs |
 | [TESTING](TESTING.md) | Test layers, commands, layout, coverage ratchet, examples | Anyone adding or changing tests |
 | [OPERATIONS](OPERATIONS.md) | Backup, restore, erasure, migrations, disk hygiene, logs | Contributors changing persistence |
-| [CHANGELOG](../CHANGELOG.md) | Version history and Unreleased section | Everyone |
+| [RELEASING](RELEASING.md) | Launcher archives, tagged drafts, and desktop qualification | Release maintainers |
 | [CODE_OF_CONDUCT](../CODE_OF_CONDUCT.md) | Expected behavior and enforcement contact | Everyone |
 
 ## Glossary

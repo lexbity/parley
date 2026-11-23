@@ -642,7 +642,10 @@ async fn s09_interests_read_includes_linked_claim_revision() {
     assert_eq!(status, 200, "{read}");
     let items = read["items"].as_array().unwrap();
     assert_eq!(items.len(), 2);
-    let backed_item = items.iter().find(|item| item["id"] == backed["id"]).unwrap();
+    let backed_item = items
+        .iter()
+        .find(|item| item["id"] == backed["id"])
+        .unwrap();
     assert_eq!(backed_item["claim"]["claim_id"].as_str().unwrap(), claim_id);
     assert_eq!(backed_item["claim"]["revision"].as_i64().unwrap(), 1);
     assert_eq!(
@@ -650,8 +653,16 @@ async fn s09_interests_read_includes_linked_claim_revision() {
         "Dana Lee will work with Northline."
     );
     assert_eq!(backed_item["claim"]["tier"].as_i64().unwrap(), 1);
-    assert!(!backed_item["claim"]["speaker_kind"].as_str().unwrap().is_empty());
-    let owner_item = items.iter().find(|item| item["id"] == owner_only["id"]).unwrap();
+    assert!(
+        !backed_item["claim"]["speaker_kind"]
+            .as_str()
+            .unwrap()
+            .is_empty()
+    );
+    let owner_item = items
+        .iter()
+        .find(|item| item["id"] == owner_only["id"])
+        .unwrap();
     assert!(owner_item["claim"].is_null(), "{owner_item}");
 
     service.shutdown().await;
