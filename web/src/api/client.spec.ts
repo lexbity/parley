@@ -9,7 +9,7 @@ const resource: Resource = {
   id: 'resource 1', kind: 'gift', title: 'Offer', body: { description: 'A useful offer', delivery: 'on_request' },
   readiness: 'draft', revision: 1, etag: '"resource-1"',
 };
-const party = { id: 'party 1', kind: 'person' as const, name: 'Dana Lee', revision: 1 };
+const party = { id: 'party 1', kind: 'person' as const, name: 'Dana Lee', focus: '', revision: 1 };
 const source: SavedSource = {
   content_id: 'content-1', variant_id: 'variant-1', occurrence_id: 'occurrence-1',
   normalized_sha256: 'a'.repeat(64), raw_sha256: 'b'.repeat(64),
@@ -115,7 +115,7 @@ describe('ParleyClient S03 opportunity and release commands', () => {
   });
 
   it('decodes and rejects graph snapshots with revision checks', async () => {
-    const node = { id: 'e1', kind: 'person', name: 'Dana Lee', revision: 1, x: 0, y: 0, position_revision: 0 };
+    const node = { id: 'e1', kind: 'person', name: 'Dana Lee', focus: '', revision: 1, x: 0, y: 0, position_revision: 0 };
     const edge = { id: 'ed1', from_id: 'e2', to_id: 'e1', verb: 'member_of', revision: 1, occurrence_id: 'occ-1', quote: 'works with Dana', tier: 1, speaker_kind: 'unknown', captured_at: '2026-11-21T08:00:00Z', source_title: null, source_url: null };
     const snapshot = { nodes: [node], edges: [edge], omitted_nodes: 0, omitted_edges: 0 };
     const fetchMock = vi.spyOn(globalThis, 'fetch')
@@ -554,5 +554,59 @@ describe('ParleyClient', () => {
     const unknown = new ParleyClient();
     vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce('offline');
     await expect(unknown.connect()).rejects.toThrow('Connection failed');
+  });
+});
+
+describe('ParleyClient P01 party notes and dossier commands', () => {
+  it('round-trips entity notes under revision and ETag preconditions', async () => {
+    const notes = { entity_id: 'p1', markdown: 'Welcome\n', revision: 2, etag: '"p1.e1.notes.p1.2"' };
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(sessionResponse())
+      .mockResolvedValueOnce(response({ data: notes }))
+      .mockResolvedValueOnce(response({ data: notes }));
+    const client = new ParleyClient();
+    await client.connect();
+    expect(await client.getEntityNotes('p1')).toEqual(notes);
+    expect(await client.updateEntityNotes('p1', 'Welcome\n', 1, '"p1.e1.notes.p1.1"', 'notes-key')).toEqual(notes);
+    expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual([
+      '/api/v1/entities/p1/notes', '/api/v1/entities/p1/notes',
+    ]);
+    const put = fetchMock.mock.calls[2]![1]?.headers;
+    expect(new Headers(put).get('If-Match')).toBe('"p1.e1.notes.p1.1"');
+    expect(new Headers(put).get('Idempotency-Key')).toBe('notes-key');
+    expect(JSON.parse(String(fetchMock.mock.calls[2]![1]?.body))).toEqual({ markdown: 'Welcome\n', expected_notes_rev: 1 });
+  });
+
+  it('rejects malformed notes responses', async () => {
+    const client = new ParleyClient();
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(sessionResponse())
+      .mockResolvedValueOnce(response({ data: { entity_id: 'p1', markdown: 'x', revision: 0, etag: '"e"' } }))
+      .mockResolvedValueOnce(response({ data: { entity_id: 'p1', markdown: 'x', revision: 0, etag: '"e"' } }));
+    await client.connect();
+    await expect(client.getEntityNotes('p1')).rejects.toThrow('entity notes are malformed');
+    await expect(client.updateEntityNotes('p1', 'x', 1, '"e"', 'k')).rejects.toThrow('updated entity notes are malformed');
+  });
+
+  it('decodes the dossier and rejects malformed association hops', async () => {
+    const entity = { id: 'p1', kind: 'org', name: 'Fieldwork', focus: 'CSV tools', revision: 2, etag: '"p1.e1.entity.p1.2"' };
+    const dossier = {
+      entity,
+      direct_links: [{ id: 'e1', from_id: 'p2', to_id: 'p1', verb: 'member_of', revision: 1, tier: 1, wording: 'Mira maintains the CSV tools.' }],
+      files: [{ id: 'a1', filename: 'guide.pdf', content_type: 'application/pdf', size: 1024, sha256: 'a'.repeat(64), share_permission: false, reviewed_by_owner: true, created_at: '2026-11-22T00:00:00Z' }],
+      opportunities: [{ id: 'o1', title: 'Onboarding exchange', role: 'primary' }],
+      associated_resources: [{ id: 'r1', title: 'Checklist', kind: 'proof', opportunity_id: 'o1', opportunity_title: 'Onboarding exchange' }],
+    };
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(sessionResponse())
+      .mockResolvedValueOnce(response({ data: dossier }))
+      .mockResolvedValueOnce(response({ data: { ...dossier, direct_links: [{}] } }));
+    const client = new ParleyClient();
+    await client.connect();
+    expect(await client.getDossier('p1')).toEqual(dossier);
+    await expect(client.getDossier('p1')).rejects.toThrow('dossier link is malformed');
+    expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual([
+      '/api/v1/entities/p1/dossier', '/api/v1/entities/p1/dossier',
+    ]);
   });
 });

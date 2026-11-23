@@ -4,6 +4,8 @@ export type Resource = components['schemas']['Resource'];
 export type GraphEntity = components['schemas']['GraphEntity'];
 export type GraphSnapshot = components['schemas']['GraphSnapshot'];
 export type Entity = components['schemas']['Entity'];
+export type EntityNotes = components['schemas']['EntityNotes'];
+export type Dossier = components['schemas']['Dossier'];
 export type SavedSource = components['schemas']['SavedSource'];
 export type EntityInput = components['schemas']['EntityInput'];
 export type CaptureInput = components['schemas']['CaptureInput'];
@@ -140,7 +142,9 @@ function decodeGraphEntity(value: unknown): GraphEntity {
     id: requiredString(entity.id, 'entity.id'),
     kind: entity.kind as GraphEntity['kind'],
     name: requiredString(entity.name, 'entity.name'),
+    focus: typeof entity.focus === 'string' ? entity.focus : '',
     revision: Number(entity.revision),
+    etag: typeof entity.etag === 'string' ? entity.etag : undefined,
   };
 }
 
@@ -678,6 +682,80 @@ export class ParleyClient {
 
   async createRelatedEntity(input: components['schemas']['RelatedEntityInput'], key = newOperationKey()): Promise<GraphEntity> {
     return decodeGraphEntity(await this.mutate('/graph/related', 'POST', input, { 'Idempotency-Key': key }));
+  }
+
+  /**
+   * Typed party edit (name/focus). Requires the strong entity ETag from the
+   * directory row, node or detail read; a stale tag yields 412.
+   */
+  async updateParty(id: string, input: { name?: string; focus?: string }, etag: string, key = newOperationKey()): Promise<GraphEntity> {
+    const { data } = decodeEnvelopeData(
+      await this.mutate(`/entities/${encodeURIComponent(id)}`, 'PATCH', input, {
+        'If-Match': etag,
+        'Idempotency-Key': key,
+      }),
+      decodeGraphEntity,
+    );
+    return data as GraphEntity;
+  }
+
+  async getEntityNotes(id: string): Promise<EntityNotes> {
+    const envelope = object(await this.request(`/entities/${encodeURIComponent(id)}/notes`));
+    const data = envelope ? object(envelope.data) : null;
+    if (!data || !Number.isSafeInteger(data.revision) || Number(data.revision) < 1) {
+      throw new Error('Invalid response: entity notes are malformed');
+    }
+    return {
+      entity_id: requiredString(data.entity_id, 'notes.entity_id'),
+      markdown: requiredString(data.markdown, 'notes.markdown'),
+      revision: Number(data.revision),
+      etag: requiredString(data.etag, 'notes.etag'),
+    };
+  }
+
+  async updateEntityNotes(id: string, markdown: string, expected_notes_rev: number, etag: string, key = newOperationKey()): Promise<EntityNotes> {
+    const envelope = object(await this.mutate(`/entities/${encodeURIComponent(id)}/notes`, 'PUT', { markdown, expected_notes_rev }, { 'If-Match': etag, 'Idempotency-Key': key }));
+    const data = envelope ? object(envelope.data) : null;
+    if (!data || !Number.isSafeInteger(data.revision) || Number(data.revision) < 1) {
+      throw new Error('Invalid response: updated entity notes are malformed');
+    }
+    return {
+      entity_id: requiredString(data.entity_id, 'notes.entity_id'),
+      markdown: requiredString(data.markdown, 'notes.markdown'),
+      revision: Number(data.revision),
+      etag: requiredString(data.etag, 'notes.etag'),
+    };
+  }
+
+  async getDossier(id: string): Promise<Dossier> {
+    const envelope = object(await this.request(`/entities/${encodeURIComponent(id)}/dossier`));
+    const data = envelope ? object(envelope.data) : null;
+    if (!data || !Array.isArray(data.direct_links) || !Array.isArray(data.files)
+      || !Array.isArray(data.opportunities) || !Array.isArray(data.associated_resources)) {
+      throw new Error('Invalid response: entity dossier is malformed');
+    }
+    const links = data.direct_links.map((raw) => {
+      const item = object(raw);
+      if (!item || !Number.isSafeInteger(item.revision) || ![1, 2, 3].includes(Number(item.tier ?? 1))) throw new Error('Invalid response: dossier link is malformed');
+      return { id: requiredString(item.id, 'link.id'), from_id: requiredString(item.from_id, 'link.from_id'), to_id: requiredString(item.to_id, 'link.to_id'), verb: requiredString(item.verb, 'link.verb'), revision: Number(item.revision), tier: Number(item.tier) as 1 | 2 | 3 | null, wording: typeof item.wording === 'string' ? item.wording : null };
+    });
+    const files = data.files.map((raw) => {
+      const item = object(raw);
+      if (!item || !Number.isSafeInteger(item.size) || Number(item.size) < 1
+        || !/^[a-f0-9]{64}$/.test(String(item.sha256)) || typeof item.share_permission !== 'boolean' || typeof item.reviewed_by_owner !== 'boolean') throw new Error('Invalid response: dossier file is malformed');
+      return { id: requiredString(item.id, 'file.id'), filename: requiredString(item.filename, 'file.filename'), content_type: requiredString(item.content_type, 'file.content_type'), size: Number(item.size), sha256: String(item.sha256), share_permission: item.share_permission, reviewed_by_owner: item.reviewed_by_owner, created_at: requiredString(item.created_at, 'file.created_at') };
+    });
+    const opportunities = data.opportunities.map((raw) => {
+      const item = object(raw);
+      if (!item || !['primary', 'participant'].includes(String(item.role))) throw new Error('Invalid response: dossier opportunity is malformed');
+      return { id: requiredString(item.id, 'opportunity.id'), title: requiredString(item.title, 'opportunity.title'), role: item.role as 'primary' | 'participant' };
+    });
+    const resources = data.associated_resources.map((raw) => {
+      const item = object(raw);
+      if (!item) throw new Error('Invalid response: dossier resource is malformed');
+      return { id: requiredString(item.id, 'resource.id'), title: requiredString(item.title, 'resource.title'), kind: requiredString(item.kind, 'resource.kind'), opportunity_id: requiredString(item.opportunity_id, 'resource.opportunity_id'), opportunity_title: requiredString(item.opportunity_title, 'resource.opportunity_title') };
+    });
+    return { entity: decodeGraphEntity(data.entity), direct_links: links, files, opportunities, associated_resources: resources };
   }
 
   async updateResource(resource: Resource, input: UpdateResource, key: string): Promise<Resource> {

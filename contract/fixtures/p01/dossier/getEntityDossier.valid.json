@@ -1,0 +1,1 @@
+{"data":{"entity":{"id":"p1","kind":"org","name":"Fieldwork","focus":"CSV tools","revision":2,"etag":"\"p1.e1.entity.p1.2\""},"direct_links":[{"id":"e1","from_id":"p2","to_id":"p1","verb":"member_of","revision":1,"tier":1,"wording":"Mira maintains the CSV tools."}],"files":[],"opportunities":[{"id":"o1","title":"Onboarding exchange","role":"primary"}],"associated_resources":[]}}

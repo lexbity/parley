@@ -144,7 +144,7 @@ async fn s10_owner_identity_tag_is_revisioned_and_idempotent() {
 async fn s10_hook_metadata_requires_current_reviewed_claim_revision() {
     let (path, workspace, port, service) = setup().await;
     let party = workspace
-        .create_entity("s10-hook-party", "person", "Dana Lee")
+        .create_entity("s10-hook-party", "person", "Dana Lee", "")
         .await
         .unwrap();
     sqlx::query("INSERT INTO claim(id,subject_id,predicate,current_revision,created_at) VALUES('s10-hook-claim',?,'hook:authored_content',1,'2026-11-20T00:00:00Z')").bind(&party.id).execute(workspace.pool()).await.unwrap();
@@ -320,7 +320,7 @@ async fn s10_coach_gap_candidates_use_per_segment_calibrated_coverage() {
             let party = format!("{sid}-party-{i}");
             let op = format!("{sid}-op-{i}");
             let party_result = workspace
-                .create_entity(&party, "person", &format!("Person {sid} {i}"))
+                .create_entity(&party, "person", &format!("Person {sid} {i}"), "")
                 .await
                 .unwrap();
             sqlx::query("INSERT INTO segment_party(segment_id,party_id,created_at) VALUES(?,?,?)")

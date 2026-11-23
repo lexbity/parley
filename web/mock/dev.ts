@@ -1,6 +1,6 @@
 import { createServer } from 'vite';
-import { createMockApi } from '../e2e/mock-api';
-import { webRoot } from '../e2e/paths';
+import { createMockApi } from '../e2e/mock-api.ts';
+import { webRoot } from '../e2e/paths.ts';
 
 /**
  * Development mock (RFC-0003 FE-13.2): serves the UI from Vite with the same

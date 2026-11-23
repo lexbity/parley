@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { expect, type Page } from '@playwright/test';
 import { test } from './fixtures';
+import { addParty, openParties } from './parties';
 
 /**
  * S07 deadline equality and party-wide suppression (RFC-0002 BE-08). The
@@ -33,12 +34,11 @@ function authHeaders(apiState: Api, extra: Record<string, string> = {}) {
 test('s07_browser_explicit_mark_sent_deadline_outcome_and_resolution', async ({ page }) => {
   await page.goto('/');
   const name = `Dana Lee ${randomUUID()}`;
-  await page.getByRole('link', { name: 'Leads' }).click();
-  const addLead = page.getByRole('heading', { name: 'Add a lead' }).locator('..');
-  await addLead.getByLabel('Name').fill(name);
-  await addLead.getByRole('button', { name: 'Add lead' }).click();
+  await openParties(page);
+  await addParty(page, name, 'person');
 
   await page.getByRole('link', { name: 'Queue' }).click();
+  await page.getByRole('button', { name: 'New opportunity' }).click();
   await page.getByLabel('Opportunity title').fill('Onboarding follow-up');
   await page.getByLabel('Participant').selectOption({ label: `${name} · person` });
   await page.getByRole('button', { name: 'Create opportunity' }).click();
@@ -225,12 +225,11 @@ test('s07_browser_explicit_mark_sent_deadline_outcome_and_resolution', async ({ 
 test('s07_browser_dnc_clearance_is_reason_bearing_and_restores_release', async ({ page }) => {
   await page.goto('/');
   const name = `Declining Dana ${randomUUID()}`;
-  await page.getByRole('link', { name: 'Leads' }).click();
-  const addLead = page.getByRole('heading', { name: 'Add a lead' }).locator('..');
-  await addLead.getByLabel('Name').fill(name);
-  await addLead.getByRole('button', { name: 'Add lead' }).click();
+  await openParties(page);
+  await addParty(page, name, 'person');
 
   await page.getByRole('link', { name: 'Queue' }).click();
+  await page.getByRole('button', { name: 'New opportunity' }).click();
   await page.getByLabel('Opportunity title').fill('Follow-up after decline');
   await page.getByLabel('Participant').selectOption({ label: `${name} · person` });
   await page.getByRole('button', { name: 'Create opportunity' }).click();

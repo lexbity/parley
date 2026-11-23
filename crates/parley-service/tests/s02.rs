@@ -126,11 +126,11 @@ async fn s02_same_name_entities_are_distinct() {
     let db = path();
     let workspace = Workspace::open(&db).await.unwrap();
     let dana_a = workspace
-        .create_entity("dana-first", "person", "Dana Lee")
+        .create_entity("dana-first", "person", "Dana Lee", "")
         .await
         .unwrap();
     let dana_b = workspace
-        .create_entity("dana-second", "person", "Dana Lee")
+        .create_entity("dana-second", "person", "Dana Lee", "")
         .await
         .unwrap();
     assert_ne!(dana_a.id, dana_b.id);
@@ -150,7 +150,7 @@ async fn s02_related_node_edge_and_quote_commit_together() {
     let raw = "Northline announced that Dana Lee will work with the onboarding team.";
     let source = workspace.save_source(raw, None, None).await.unwrap();
     let organization = workspace
-        .create_entity("northline", "org", "Northline")
+        .create_entity("northline", "org", "Northline", "")
         .await
         .unwrap();
     let rejected = workspace
@@ -214,11 +214,11 @@ async fn s02_two_speakers_and_raw_variants_survive_normalized_deduplication() {
     let db = path();
     let workspace = Workspace::open(&db).await.unwrap();
     let alice = workspace
-        .create_entity("alice-lee", "person", "Alice Lee")
+        .create_entity("alice-lee", "person", "Alice Lee", "")
         .await
         .unwrap();
     let dana = workspace
-        .create_entity("dana-lee", "person", "Dana Lee")
+        .create_entity("dana-lee", "person", "Dana Lee", "")
         .await
         .unwrap();
     let first = workspace

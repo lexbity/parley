@@ -4,7 +4,7 @@ import { test } from './fixtures';
 
 const routes = [
   ['/resources', 'Resources'],
-  ['/leads', 'Leads'],
+  ['/leads', 'Parties'],
   ['/queue', 'Queue'],
   ['/output', 'Output'],
   ['/settings', 'Settings'],

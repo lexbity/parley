@@ -304,7 +304,7 @@ async fn s11_erasure_removes_subject_canaries_before_operation_is_complete() {
     let identity = root.join("workspace.sqlite");
     let w = Workspace::open(&identity).await.unwrap();
     let subject = w
-        .create_entity("create-subject", "person", "Unique Erasure Canary")
+        .create_entity("create-subject", "person", "Unique Erasure Canary", "")
         .await
         .unwrap();
     let old_db = w.database_path().to_path_buf();
@@ -364,11 +364,11 @@ async fn s11_erasure_does_not_scrub_unrelated_events() {
     let identity = root.join("workspace.sqlite");
     let w = Workspace::open(&identity).await.unwrap();
     let subject = w
-        .create_entity("erase-scope-subject", "person", "Unique Erasure Canary")
+        .create_entity("erase-scope-subject", "person", "Unique Erasure Canary", "")
         .await
         .unwrap();
     let other = w
-        .create_entity("erase-scope-other", "person", "Some Other Party")
+        .create_entity("erase-scope-other", "person", "Some Other Party", "")
         .await
         .unwrap();
     let unrelated_payload =
@@ -466,7 +466,7 @@ async fn s11_full_export_import_api_roundtrip_preserves_canonical_workspace_stat
     let target = base.join("target.sqlite");
     let w = Workspace::open(&source).await.unwrap();
     let entity = w
-        .create_entity("exported-entity", "person", "Round Trip Contact")
+        .create_entity("exported-entity", "person", "Round Trip Contact", "")
         .await
         .unwrap();
     let source_workspace_id = w.workspace_id().to_owned();
@@ -528,14 +528,14 @@ async fn s11_restore_publishes_generation_and_revokes_old_epoch() {
     let identity = root.join("workspace.sqlite");
     let w = Workspace::open(&identity).await.unwrap();
     let first = w
-        .create_entity("first", "person", "Before Backup")
+        .create_entity("first", "person", "Before Backup", "")
         .await
         .unwrap();
     let backup_id = parley_service::create_backup_for_test(&w).await.unwrap();
     let old_db = w.database_path().to_path_buf();
     let old_epoch = w.epoch().to_owned();
     let _second = w
-        .create_entity("second", "person", "After Backup")
+        .create_entity("second", "person", "After Backup", "")
         .await
         .unwrap();
     drop(w);

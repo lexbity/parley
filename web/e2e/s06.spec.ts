@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { expect, type Page } from '@playwright/test';
 import { test } from './fixtures';
+import { addParty, openParties } from './parties';
 
 /**
  * S06 verified file issuance (RFC-0002 BQ4/BE-11). The browser session drives
@@ -34,11 +35,10 @@ function authHeaders(apiState: Api, extra: Record<string, string> = {}) {
 test('s06_browser_verified_file_handoff_downloads_exact_bytes_once', async ({ page }) => {
   await page.goto('/');
   const name = `Dana Lee ${randomUUID()}`;
-  await page.getByRole('button', { name: 'Leads' }).click();
-  await page.locator('section[aria-labelledby="leads-heading"] input').fill(name);
-  await page.getByRole('button', { name: 'Add lead' }).click();
+  await openParties(page);
+  await addParty(page, name, 'person');
 
-  await page.getByRole('button', { name: 'Queue' }).click();
+  await page.getByRole('link', { name: 'Queue' }).click();
   await page.getByLabel('Opportunity title').fill('Handoff exchange');
   await page.getByLabel('Participant').selectOption({ label: `${name} · person` });
   await page.getByRole('button', { name: 'Create opportunity' }).click();
@@ -158,6 +158,6 @@ test('s06_browser_verified_file_handoff_downloads_exact_bytes_once', async ({ pa
   expect([409, 422]).toContain(second.status());
 
   // The shell still renders the Output workspace with the released material.
-  await page.getByRole('button', { name: 'Output' }).click();
+  await page.getByRole('link', { name: 'Output' }).click();
   await expect(page.getByRole('region', { name: 'Composer, evidence and templates' })).toBeVisible();
 });

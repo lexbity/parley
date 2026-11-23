@@ -17,10 +17,10 @@ test('desktop workspaces retain their pane layout with an empty inventory', asyn
   await expect(page.getByRole('textbox', { name: 'Your answer' })).toBeVisible();
   await expect(page.getByLabel('What is it?')).toBeHidden();
 
-  await page.getByRole('link', { name: 'Leads' }).click();
-  const network = page.getByRole('region', { name: 'Lead network' });
-  await beside(page.getByRole('complementary'), network);
-  await beside(network, page.locator('.lead-chat-column'));
+  await page.getByRole('link', { name: 'Parties' }).click();
+  const network = page.getByRole('region', { name: 'Party network' });
+  await beside(page.getByRole('complementary', { name: 'Party sheet' }), network);
+  await beside(network, page.locator('.inspector-column'));
   await expect(page.getByRole('textbox', { name: 'Question', exact: true })).toBeDisabled();
 
   await page.getByRole('link', { name: 'Queue' }).click();

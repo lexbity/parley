@@ -298,7 +298,63 @@ pub struct EntityRecord {
     pub id: String,
     pub kind: String,
     pub name: String,
+    pub focus: String,
     pub revision: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct EntityNotes {
+    pub entity_id: String,
+    pub markdown: String,
+    pub revision: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct DossierLink {
+    pub id: String,
+    pub from_id: String,
+    pub to_id: String,
+    pub verb: String,
+    pub revision: i64,
+    pub tier: Option<i64>,
+    pub wording: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct DossierFile {
+    pub id: String,
+    pub filename: String,
+    pub content_type: String,
+    pub size: i64,
+    pub sha256: String,
+    pub share_permission: bool,
+    pub reviewed_by_owner: bool,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct DossierOpportunity {
+    pub id: String,
+    pub title: String,
+    pub role: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct DossierResource {
+    pub id: String,
+    pub title: String,
+    pub kind: String,
+    pub opportunity_id: String,
+    pub opportunity_title: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct EntityDossier {
+    pub entity: EntityRecord,
+    pub direct_links: Vec<DossierLink>,
+    pub files: Vec<DossierFile>,
+    pub opportunities: Vec<DossierOpportunity>,
+    pub associated_resources: Vec<DossierResource>,
 }
 
 #[derive(Debug, Serialize)]
@@ -815,7 +871,7 @@ impl Workspace {
         &self,
         kinds: &[&str],
     ) -> Result<Vec<EntityRecord>, WorkspaceError> {
-        let mut builder = sqlx::QueryBuilder::new("SELECT id,kind,name,revision FROM entity");
+        let mut builder = sqlx::QueryBuilder::new("SELECT id,kind,name,focus,revision FROM entity");
         if !kinds.is_empty() {
             builder.push(" WHERE kind IN (");
             let mut separated = builder.separated(", ");
@@ -826,18 +882,373 @@ impl Workspace {
         }
         builder.push(" ORDER BY name COLLATE NOCASE,id");
         let rows = builder
-            .build_query_as::<(String, String, String, i64)>()
+            .build_query_as::<(String, String, String, String, i64)>()
             .fetch_all(&self.pool)
             .await?;
         Ok(rows
             .into_iter()
-            .map(|(id, kind, name, revision)| EntityRecord {
+            .map(|(id, kind, name, focus, revision)| EntityRecord {
                 id,
                 kind,
                 name,
+                focus,
                 revision,
             })
             .collect())
+    }
+
+    /// One directory entity by ID (person, organization, project or resource
+    /// kind entity). None when the ID is unknown or belongs to a resource.
+    pub async fn get_entity(&self, id: &str) -> Result<Option<EntityRecord>, WorkspaceError> {
+        let row = sqlx::query_as::<_, (String, String, String, String, i64)>(
+            "SELECT id,kind,name,focus,revision FROM entity WHERE id=?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(id, kind, name, focus, revision)| EntityRecord {
+            id,
+            kind,
+            name,
+            focus,
+            revision,
+        }))
+    }
+
+    /// Conditional typed party edit. `name` and `focus` are the editable sheet
+    /// fields; the strong entity ETag is the write scope. Blank names and
+    /// missing update fields are rejected; subtype transitions stay out of
+    /// ordinary label editing.
+    pub async fn update_entity(
+        &self,
+        idempotency_key: &str,
+        id: &str,
+        if_match: &str,
+        name: Option<String>,
+        focus: Option<String>,
+    ) -> Result<EntityRecord, WorkspaceError> {
+        if idempotency_key.trim().is_empty() || idempotency_key.len() > 200 {
+            return Err(WorkspaceError::Invalid(
+                "idempotency key must contain 1–200 bytes".into(),
+            ));
+        }
+        if !is_strong_etag(if_match) {
+            return Err(WorkspaceError::Invalid(
+                "If-Match must be a strong entity ETag".into(),
+            ));
+        }
+        let name = match name {
+            Some(name) => {
+                let trimmed = name.trim();
+                if trimmed.is_empty() || trimmed.len() > 500 {
+                    return Err(WorkspaceError::Invalid(
+                        "entity name must contain 1–500 bytes".into(),
+                    ));
+                }
+                Some(trimmed.to_owned())
+            }
+            None => None,
+        };
+        let focus = match focus {
+            Some(focus) => {
+                if focus.chars().count() > 250 {
+                    return Err(WorkspaceError::Invalid(
+                        "focus exceeds 250 characters".into(),
+                    ));
+                }
+                Some(focus)
+            }
+            None => None,
+        };
+        if name.is_none() && focus.is_none() {
+            return Err(WorkspaceError::Invalid(
+                "no entity fields to update".into(),
+            ));
+        }
+        let canonical = digest(
+            format!("{id}\0{if_match}\0{name:?}\0{focus:?}").as_bytes(),
+        );
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some((old_digest, result)) = sqlx::query_as::<_, (String, String)>(
+            "SELECT canonical_digest,result_json FROM idempotency_receipt WHERE owner_id=1 AND epoch=? AND key=?",
+        )
+        .bind(&self.epoch)
+        .bind(idempotency_key)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            if old_digest != canonical {
+                return Err(WorkspaceError::IdempotencyConflict);
+            }
+            let record =
+                serde_json::from_str(&result).map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
+            tx.commit().await?;
+            return Ok(record);
+        }
+        let row = sqlx::query_as::<_, (String, String, String, i64)>(
+            "SELECT kind,name,focus,revision FROM entity WHERE id=?",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((kind, current_name, current_focus, revision)) = row else {
+            return Err(WorkspaceError::NotFound);
+        };
+        if if_match != entity_etag(&self.epoch, id, revision) {
+            return Err(WorkspaceError::StaleRevision);
+        }
+        let next_name = name.unwrap_or(current_name);
+        let next_focus = focus.unwrap_or(current_focus);
+        let next_revision = revision + 1;
+        let now = now_utc();
+        sqlx::query("UPDATE entity SET name=?,focus=?,revision=?,updated_at=? WHERE id=?")
+            .bind(&next_name)
+            .bind(&next_focus)
+            .bind(next_revision)
+            .bind(&now)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE workspace_meta SET revision=revision+1 WHERE singleton=1")
+            .execute(&mut *tx)
+            .await?;
+        let updated = EntityRecord {
+            id: id.to_owned(),
+            kind,
+            name: next_name,
+            focus: next_focus,
+            revision: next_revision,
+        };
+        let result_json =
+            serde_json::to_string(&updated).map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
+        sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?,'entity',?,?,'entity.updated','{}')")
+            .bind(new_id(id)).bind(&now).bind(id).bind(next_revision).execute(&mut *tx).await?;
+        let cursor: i64 = sqlx::query_scalar("SELECT last_insert_rowid()")
+            .fetch_one(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO idempotency_receipt(owner_id,epoch,key,canonical_digest,status_code,result_json,last_event_cursor,created_at) VALUES(1,?,?,?,200,?,?,?)")
+            .bind(&self.epoch).bind(idempotency_key).bind(canonical).bind(&result_json).bind(cursor).bind(now).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(updated)
+    }
+
+    /// Canonical entity notes (UTF-8, LF line endings) with their independent
+    /// revision. Returns `{entity_id, markdown, revision}` when the entity
+    /// exists (notes default to empty at revision 1).
+    pub async fn get_entity_notes(
+        &self,
+        id: &str,
+    ) -> Result<Option<EntityNotes>, WorkspaceError> {
+        let row = sqlx::query_as::<_, (String, i64)>(
+            "SELECT notes_md,notes_rev FROM entity WHERE id=?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(markdown, revision)| EntityNotes {
+            entity_id: id.to_owned(),
+            markdown,
+            revision,
+        }))
+    }
+
+    /// Replace canonical entity notes under the notes-scoped strong ETag and
+    /// the body's expected revision. A stale notes revision fails without
+    /// consuming the idempotency key.
+    pub async fn update_entity_notes(
+        &self,
+        idempotency_key: &str,
+        id: &str,
+        if_match: &str,
+        expected_notes_rev: i64,
+        markdown: &str,
+    ) -> Result<EntityNotes, WorkspaceError> {
+        if idempotency_key.trim().is_empty() || idempotency_key.len() > 200 {
+            return Err(WorkspaceError::Invalid(
+                "idempotency key must contain 1–200 bytes".into(),
+            ));
+        }
+        if !is_strong_etag(if_match) {
+            return Err(WorkspaceError::Invalid(
+                "If-Match must be a strong notes ETag".into(),
+            ));
+        }
+        if markdown.len() > 512 * 1024 {
+            return Err(WorkspaceError::Invalid(
+                "notes exceed 512 KiB".into(),
+            ));
+        }
+        let canonical_markdown = canonical_markdown(markdown);
+        let canonical = digest(
+            format!("{id}\0{if_match}\0{expected_notes_rev}\0{canonical_markdown}").as_bytes(),
+        );
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some((old_digest, result)) = sqlx::query_as::<_, (String, String)>(
+            "SELECT canonical_digest,result_json FROM idempotency_receipt WHERE owner_id=1 AND epoch=? AND key=?",
+        )
+        .bind(&self.epoch)
+        .bind(idempotency_key)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            if old_digest != canonical {
+                return Err(WorkspaceError::IdempotencyConflict);
+            }
+            let notes =
+                serde_json::from_str(&result).map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
+            tx.commit().await?;
+            return Ok(notes);
+        }
+        let row = sqlx::query_as::<_, (i64,)>("SELECT notes_rev FROM entity WHERE id=?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let Some((current_rev,)) = row else {
+            return Err(WorkspaceError::NotFound);
+        };
+        if expected_notes_rev != current_rev || if_match != notes_etag(&self.epoch, id, current_rev)
+        {
+            return Err(WorkspaceError::StaleRevision);
+        }
+        let next_rev = current_rev + 1;
+        let now = now_utc();
+        sqlx::query("UPDATE entity SET notes_md=?,notes_rev=?,updated_at=? WHERE id=?")
+            .bind(&canonical_markdown)
+            .bind(next_rev)
+            .bind(&now)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE workspace_meta SET revision=revision+1 WHERE singleton=1")
+            .execute(&mut *tx)
+            .await?;
+        let notes = EntityNotes {
+            entity_id: id.to_owned(),
+            markdown: canonical_markdown,
+            revision: next_rev,
+        };
+        let result_json =
+            serde_json::to_string(&notes).map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
+        sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?,'entity',?,?,'entity.notes_updated','{}')")
+            .bind(new_id(id)).bind(&now).bind(id).bind(next_rev).execute(&mut *tx).await?;
+        let cursor: i64 = sqlx::query_scalar("SELECT last_insert_rowid()")
+            .fetch_one(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO idempotency_receipt(owner_id,epoch,key,canonical_digest,status_code,result_json,last_event_cursor,created_at) VALUES(1,?,?,?,200,?,?,?)")
+            .bind(&self.epoch).bind(idempotency_key).bind(canonical).bind(&result_json).bind(cursor).bind(now).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(notes)
+    }
+
+    /// Inspector dossier for one party: direct attributed links, files bound
+    /// to the card, open opportunities involving the party, and resources used
+    /// by visible opportunities, each bounded and deduplicated by ID.
+    pub async fn entity_dossier(
+        &self,
+        id: &str,
+    ) -> Result<Option<EntityDossier>, WorkspaceError> {
+        let entity = match self.get_entity(id).await? {
+            Some(entity) => entity,
+            None => return Ok(None),
+        };
+        let links = sqlx::query_as::<_, (String, String, String, String, i64, Option<i64>, Option<String>)>(
+            "SELECT eg.id,eg.from_id,eg.to_id,eg.verb,eg.revision,cr.tier,cr.wording \
+             FROM edge eg \
+             LEFT JOIN edge_evidence ee ON ee.edge_id=eg.id \
+             LEFT JOIN claim c ON c.id=ee.claim_id \
+             LEFT JOIN claim_revision cr ON cr.claim_id=c.id AND cr.revision=c.current_revision \
+             WHERE eg.state='active' AND (eg.from_id=? OR eg.to_id=?) \
+             ORDER BY eg.created_at DESC LIMIT 60",
+        )
+        .bind(id)
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut seen = std::collections::HashSet::new();
+        let direct_links = links
+            .into_iter()
+            .filter(|link| seen.insert(link.0.clone()))
+            .map(|(link_id, from_id, to_id, verb, revision, tier, wording)| DossierLink {
+                id: link_id,
+                from_id,
+                to_id,
+                verb,
+                revision,
+                tier,
+                wording,
+            })
+            .collect();
+        let files = sqlx::query_as::<_, (String, String, String, i64, String, i64, i64, String)>(
+            "SELECT a.id,a.filename,a.content_type,a.size,a.sha256,u.share_permission,u.reviewed_by_owner,a.created_at \
+             FROM entity_attachment a JOIN blob_upload u ON u.id=a.upload_id \
+             WHERE a.entity_id=? ORDER BY a.created_at DESC LIMIT 60",
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await?;
+        let files = files
+            .into_iter()
+            .map(|(file_id, filename, content_type, size, sha256, share_permission, reviewed_by_owner, created_at)| {
+                DossierFile {
+                    id: file_id,
+                    filename,
+                    content_type,
+                    size,
+                    sha256,
+                    share_permission: share_permission != 0,
+                    reviewed_by_owner: reviewed_by_owner != 0,
+                    created_at,
+                }
+            })
+            .collect();
+        let opportunities = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT o.id,o.title,op.role FROM opportunity o \
+             JOIN opportunity_party op ON op.opportunity_id=o.id \
+             WHERE op.party_id=? AND o.state='open' \
+             ORDER BY o.updated_at DESC LIMIT 60",
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await?;
+        let opportunities = opportunities
+            .into_iter()
+            .map(|(opportunity_id, title, role)| DossierOpportunity {
+                id: opportunity_id,
+                title,
+                role,
+            })
+            .collect();
+        let resources = sqlx::query_as::<_, (String, String, String, String, String)>(
+            "SELECT r.id,r.title,r.kind,m.opportunity_id,o.title \
+             FROM resource r \
+             JOIN resource_use ru ON ru.resource_id=r.id \
+             JOIN material_version mv ON mv.material_id=ru.material_id AND mv.version_no=ru.version_no \
+             JOIN material m ON m.id=mv.material_id \
+             JOIN opportunity o ON o.id=m.opportunity_id \
+             JOIN opportunity_party op ON op.opportunity_id=o.id AND op.party_id=? \
+             WHERE o.state='open' \
+             GROUP BY r.id ORDER BY r.title COLLATE NOCASE LIMIT 60",
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await?;
+        let associated_resources = resources
+            .into_iter()
+            .map(|(resource_id, title, kind, opportunity_id, opportunity_title)| DossierResource {
+                id: resource_id,
+                title,
+                kind,
+                opportunity_id,
+                opportunity_title,
+            })
+            .collect();
+        Ok(Some(EntityDossier {
+            entity,
+            direct_links,
+            files,
+            opportunities,
+            associated_resources,
+        }))
     }
 
     async fn graph_snapshot(
@@ -1320,6 +1731,7 @@ impl Workspace {
         idempotency_key: &str,
         kind: &str,
         name: &str,
+        focus: &str,
     ) -> Result<EntityRecord, WorkspaceError> {
         if idempotency_key.trim().is_empty() || idempotency_key.len() > 200 {
             return Err(WorkspaceError::Invalid(
@@ -1332,6 +1744,11 @@ impl Workspace {
         if name.trim().is_empty() || name.len() > 500 {
             return Err(WorkspaceError::Invalid(
                 "entity name must contain 1–500 bytes".into(),
+            ));
+        }
+        if focus.chars().count() > 250 {
+            return Err(WorkspaceError::Invalid(
+                "focus exceeds 250 characters".into(),
             ));
         }
         let canonical = digest(format!("entity\0{kind}\0{name}").as_bytes());
@@ -1355,11 +1772,12 @@ impl Workspace {
         let id = new_id(name);
         let now = now_utc();
         sqlx::query(
-            "INSERT INTO entity(id,kind,name,revision,created_at,updated_at) VALUES(?,?,?,1,?,?)",
+            "INSERT INTO entity(id,kind,name,focus,revision,created_at,updated_at) VALUES(?,?,?,?,1,?,?)",
         )
         .bind(&id)
         .bind(kind)
         .bind(name)
+        .bind(focus)
         .bind(&now)
         .bind(&now)
         .execute(&mut *tx)
@@ -1370,6 +1788,7 @@ impl Workspace {
             id: id.clone(),
             kind: kind.to_owned(),
             name: name.to_owned(),
+            focus: focus.to_owned(),
             revision: 1,
         };
         let result_json =
@@ -1475,6 +1894,7 @@ impl Workspace {
             id,
             kind: kind.into(),
             name: name.into(),
+            focus: String::new(),
             revision: 1,
         })
     }
@@ -1530,6 +1950,30 @@ fn now_utc() -> String {
 
 fn resource_etag(epoch: &str, id: &str, revision: i64) -> String {
     format!("\"p1.{epoch}.resource.{id}.{revision}\"")
+}
+
+fn entity_etag(epoch: &str, id: &str, revision: i64) -> String {
+    format!("\"p1.{epoch}.entity.{id}.{revision}\"")
+}
+
+fn notes_etag(epoch: &str, id: &str, revision: i64) -> String {
+    format!("\"p1.{epoch}.notes.{id}.{revision}\"")
+}
+
+/// A strong quoted ETag: `"..."`, not weak, not wildcard. Used for the write
+/// scopes that require `If-Match` (entities, notes, resources).
+fn is_strong_etag(value: &str) -> bool {
+    value.len() >= 2
+        && value.starts_with('"')
+        && value.ends_with('"')
+        && !value.starts_with("W/")
+        && value != "*"
+}
+
+/// Canonical Markdown: UTF-8 with LF line endings. CRLF input is normalized;
+/// trailing bytes are preserved so literal punctuation round-trips.
+fn canonical_markdown(value: &str) -> String {
+    value.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 fn random_hex(size: usize) -> String {
@@ -1610,6 +2054,11 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
             "/api/v1/entities/{id}",
             get(get_entity).patch(update_entity),
         )
+        .route(
+            "/api/v1/entities/{id}/notes",
+            get(get_entity_notes).put(update_entity_notes),
+        )
+        .route("/api/v1/entities/{id}/dossier", get(get_entity_dossier))
         .route("/api/v1/events", get(get_events))
         .route("/api/v1/captures", get(list_captures).post(save_capture))
         .route("/api/v1/graph", get(get_graph))
@@ -2051,7 +2500,7 @@ async fn session(State(state): State<AppState>, headers: HeaderMap) -> Response 
         "epoch": state.workspace.epoch(),
         "wire_major": 1,
         "wire_minor": 0,
-        "capabilities": ["resources.read", "resources.write"],
+        "capabilities": ["resources.read", "resources.write", "party.sheet", "party.notes", "party.dossier"],
         "mutation_token": record.token,
         "cursor": cursor.to_string(),
     }))
@@ -2141,7 +2590,7 @@ async fn list_entities(
     if !graph_kinds.is_empty() || kinds.is_empty() {
         match state.workspace.list_entities_filtered(&graph_kinds).await {
             Ok(entities) => items.extend(entities.into_iter().map(|entity| {
-                json!({"id": entity.id, "kind": entity.kind, "name": entity.name, "revision": entity.revision})
+                json!({"id": entity.id, "kind": entity.kind, "name": entity.name, "focus": entity.focus, "revision": entity.revision, "etag": entity_etag(state.workspace.epoch(), &entity.id, entity.revision)})
             })),
             Err(_) => {
                 return error(
@@ -2170,6 +2619,7 @@ struct ResourceCreateInput {
 struct GraphEntityCreateInput {
     kind: String,
     name: String,
+    focus: Option<String>,
 }
 
 async fn create_entity(
@@ -2255,13 +2705,13 @@ async fn create_entity(
         };
         match state
             .workspace
-            .create_entity(&key, &input.kind, &input.name)
+            .create_entity(&key, &input.kind, &input.name, input.focus.as_deref().unwrap_or(""))
             .await
         {
             Ok(entity) => {
                 let mut response = (
                     StatusCode::CREATED,
-                    Json(json!({"data": {"id": entity.id, "kind": entity.kind, "name": entity.name, "revision": entity.revision}})),
+                    Json(json!({"data": {"id": entity.id, "kind": entity.kind, "name": entity.name, "focus": entity.focus, "revision": entity.revision, "etag": entity_etag(state.workspace.epoch(), &entity.id, entity.revision)}})),
                 )
                     .into_response();
                 private_headers(&mut response, state.workspace.epoch());
@@ -2298,11 +2748,35 @@ async fn get_entity(
             private_headers(&mut response, state.workspace.epoch());
             response
         }
-        Ok(None) => error(
-            StatusCode::NOT_FOUND,
-            "NOT_FOUND",
-            "Resource does not exist",
-        ),
+        Ok(None) => match state.workspace.get_entity(&id).await {
+            Ok(Some(entity)) => {
+                let etag = entity_etag(state.workspace.epoch(), &entity.id, entity.revision);
+                let mut response = Json(json!({"data": {
+                    "id": entity.id,
+                    "kind": entity.kind,
+                    "name": entity.name,
+                    "focus": entity.focus,
+                    "revision": entity.revision,
+                    "etag": etag,
+                }}))
+                .into_response();
+                if let Ok(tag) = HeaderValue::from_str(&etag) {
+                    response.headers_mut().insert(header::ETAG, tag);
+                }
+                private_headers(&mut response, state.workspace.epoch());
+                response
+            }
+            Ok(None) => error(
+                StatusCode::NOT_FOUND,
+                "NOT_FOUND",
+                "Resource does not exist",
+            ),
+            Err(_) => error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "READ_FAILED",
+                "Could not read resource",
+            ),
+        },
         Err(_) => error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "READ_FAILED",
@@ -2315,6 +2789,12 @@ async fn get_entity(
 struct UpdateInput {
     title: String,
     body: Value,
+}
+
+#[derive(Deserialize)]
+struct GraphEntityUpdateInput {
+    name: Option<String>,
+    focus: Option<String>,
 }
 
 async fn update_entity(
@@ -2340,12 +2820,7 @@ async fn update_entity(
             "If-Match is required",
         );
     };
-    if if_match.len() < 2
-        || !if_match.starts_with('"')
-        || !if_match.ends_with('"')
-        || if_match.starts_with("W/")
-        || if_match == "*"
-    {
+    if !is_strong_etag(if_match) {
         return error(
             StatusCode::BAD_REQUEST,
             "ETAG_INVALID",
@@ -2359,7 +2834,191 @@ async fn update_entity(
             "Request exceeds 2 MiB",
         );
     }
-    let input: UpdateInput = match decode_unique(&body) {
+    let value: Value = match decode_unique(&body) {
+        Ok(value) => value,
+        Err(_) => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "INVALID_JSON",
+                "Request body is invalid",
+            );
+        }
+    };
+    // Owner-resource edit (existing route semantics).
+    if let Ok(input) = serde_json::from_value::<UpdateInput>(value.clone()) {
+        if input.title.chars().count() > 240 || !input.body.is_object() {
+            return error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "RESOURCE_INVALID",
+                "Resource name or fields are invalid",
+            );
+        }
+        match state
+            .workspace
+            .update_resource(&key, &id, if_match, &input.title, &input.body)
+            .await
+        {
+            Ok(record) => {
+                let etag = resource_etag(state.workspace.epoch(), &record.id, record.revision);
+                let mut response =
+                    Json(json!({"data": resource_json(state.workspace.epoch(), &record)}))
+                        .into_response();
+                if let Ok(tag) = HeaderValue::from_str(&etag) {
+                    response.headers_mut().insert(header::ETAG, tag);
+                }
+                private_headers(&mut response, state.workspace.epoch());
+                response
+            }
+            Err(WorkspaceError::NotFound) => {
+                entity_update_response(
+                    &state,
+                    &key,
+                    &id,
+                    if_match,
+                    serde_json::from_value::<GraphEntityUpdateInput>(value),
+                )
+                .await
+            }
+            Err(err) => command_error(err),
+        }
+    } else {
+        entity_update_response(
+            &state,
+            &key,
+            &id,
+            if_match,
+            serde_json::from_value::<GraphEntityUpdateInput>(value),
+        )
+        .await
+    }
+}
+
+async fn entity_update_response(
+    state: &AppState,
+    key: &str,
+    id: &str,
+    if_match: &str,
+    input: Result<GraphEntityUpdateInput, serde_json::Error>,
+) -> Response {
+    let Ok(input) = input else {
+        return error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "ENTITY_INVALID",
+            "Entity fields are invalid",
+        );
+    };
+    match state
+        .workspace
+        .update_entity(key, id, if_match, input.name, input.focus)
+        .await
+    {
+        Ok(entity) => {
+            let etag = entity_etag(state.workspace.epoch(), &entity.id, entity.revision);
+            let mut response = Json(json!({"data": {
+                "id": entity.id,
+                "kind": entity.kind,
+                "name": entity.name,
+                "focus": entity.focus,
+                "revision": entity.revision,
+                "etag": etag,
+            }}))
+            .into_response();
+            if let Ok(tag) = HeaderValue::from_str(&etag) {
+                response.headers_mut().insert(header::ETAG, tag);
+            }
+            private_headers(&mut response, state.workspace.epoch());
+            response
+        }
+        Err(WorkspaceError::NotFound) => error(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            "Resource does not exist",
+        ),
+        Err(err) => command_error(err),
+    }
+}
+
+#[derive(Deserialize)]
+struct EntityNotesUpdateInput {
+    markdown: String,
+    expected_notes_rev: i64,
+}
+
+async fn get_entity_notes(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Err(response) = authenticate(&headers, &state).await {
+        return response.into_response();
+    }
+    match state.workspace.get_entity_notes(&id).await {
+        Ok(Some(notes)) => {
+            let etag = notes_etag(state.workspace.epoch(), &id, notes.revision);
+            let mut response = Json(json!({"data": {
+                "entity_id": notes.entity_id,
+                "markdown": notes.markdown,
+                "revision": notes.revision,
+                "etag": etag,
+            }}))
+            .into_response();
+            if let Ok(tag) = HeaderValue::from_str(&etag) {
+                response.headers_mut().insert(header::ETAG, tag);
+            }
+            private_headers(&mut response, state.workspace.epoch());
+            response
+        }
+        Ok(None) => error(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            "Resource does not exist",
+        ),
+        Err(_) => error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "READ_FAILED",
+            "Could not read entity notes",
+        ),
+    }
+}
+
+async fn update_entity_notes(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    if let Err(response) = authenticate(&headers, &state).await {
+        return response.into_response();
+    }
+    let key = match idempotency_key(&headers) {
+        Ok(key) => key,
+        Err((status, code, message)) => return error(status, code, message),
+    };
+    let Some(if_match) = headers
+        .get(header::IF_MATCH)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return error(
+            StatusCode::PRECONDITION_REQUIRED,
+            "ETAG_REQUIRED",
+            "If-Match is required",
+        );
+    };
+    if !is_strong_etag(if_match) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "ETAG_INVALID",
+            "If-Match must be a strong notes ETag",
+        );
+    }
+    if body.len() > 512 * 1024 + 64 {
+        return error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "BODY_TOO_LARGE",
+            "Notes exceed the size limit",
+        );
+    }
+    let input: EntityNotesUpdateInput = match decode_unique(&body) {
         Ok(input) => input,
         Err(_) => {
             return error(
@@ -2369,30 +3028,59 @@ async fn update_entity(
             );
         }
     };
-    if input.title.chars().count() > 240 || !input.body.is_object() {
-        return error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "RESOURCE_INVALID",
-            "Resource name or fields are invalid",
-        );
-    }
     match state
         .workspace
-        .update_resource(&key, &id, if_match, &input.title, &input.body)
+        .update_entity_notes(&key, &id, if_match, input.expected_notes_rev, &input.markdown)
         .await
     {
-        Ok(record) => {
-            let etag = resource_etag(state.workspace.epoch(), &record.id, record.revision);
-            let mut response =
-                Json(json!({"data": resource_json(state.workspace.epoch(), &record)}))
-                    .into_response();
+        Ok(notes) => {
+            let etag = notes_etag(state.workspace.epoch(), &id, notes.revision);
+            let mut response = Json(json!({"data": {
+                "entity_id": notes.entity_id,
+                "markdown": notes.markdown,
+                "revision": notes.revision,
+                "etag": etag,
+            }}))
+            .into_response();
             if let Ok(tag) = HeaderValue::from_str(&etag) {
                 response.headers_mut().insert(header::ETAG, tag);
             }
             private_headers(&mut response, state.workspace.epoch());
             response
         }
+        Err(WorkspaceError::NotFound) => error(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            "Resource does not exist",
+        ),
         Err(err) => command_error(err),
+    }
+}
+
+async fn get_entity_dossier(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Err(response) = authenticate(&headers, &state).await {
+        return response.into_response();
+    }
+    match state.workspace.entity_dossier(&id).await {
+        Ok(Some(dossier)) => {
+            let mut response = Json(json!({"data": dossier})).into_response();
+            private_headers(&mut response, state.workspace.epoch());
+            response
+        }
+        Ok(None) => error(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            "Resource does not exist",
+        ),
+        Err(_) => error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "READ_FAILED",
+            "Could not read the entity dossier",
+        ),
     }
 }
 
@@ -2797,11 +3485,11 @@ mod tests {
         let path = temp_db();
         let workspace = Workspace::open(&path).await.unwrap();
         let first = workspace
-            .create_entity("dana-first", "person", "Dana Lee")
+            .create_entity("dana-first", "person", "Dana Lee", "")
             .await
             .unwrap();
         let second = workspace
-            .create_entity("dana-second", "person", "Dana Lee")
+            .create_entity("dana-second", "person", "Dana Lee", "")
             .await
             .unwrap();
         assert_ne!(first.id, second.id);

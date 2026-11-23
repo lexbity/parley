@@ -84,6 +84,44 @@ export interface paths {
         patch: operations["updateEntity"];
         trace?: never;
     };
+    "/entities/{id}/notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read canonical party notes with their independent revision */
+        get: operations["getEntityNotes"];
+        /** Replace party notes under notes revision and strong ETag preconditions */
+        put: operations["updateEntityNotes"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/entities/{id}/dossier": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Inspector dossier for one party
+         * @description Direct links, files, open opportunities and resources used by visible opportunities for one party, bounded and deduplicated by ID. Every hop carries object IDs so the inspector can explain and navigate each association.
+         */
+        get: operations["getEntityDossier"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/entities/{id}/clear-dnc": {
         parameters: {
             query?: never;
@@ -1637,6 +1675,10 @@ export interface components {
             /** @enum {unknown} */
             kind: "person" | "org" | "project" | "resource";
             name: string;
+            /** @description Owner-editable short descriptor shown on the party sheet. */
+            focus?: string;
+            /** @description Strong entity ETag for typed party edits. */
+            etag?: string;
             revision: number;
         };
         GraphNode: components["schemas"]["GraphEntity"] & {
@@ -1727,6 +1769,73 @@ export interface components {
             /** @enum {unknown} */
             kind: "person" | "org" | "project" | "resource";
             name: string;
+            focus?: string;
+        };
+        UpdateEntityInput: {
+            name?: string;
+            focus?: string;
+        };
+        EntityNotes: {
+            entity_id: string;
+            /** @description Canonical UTF-8/LF Markdown. */
+            markdown: string;
+            revision: number;
+            /** @description Strong notes-scoped ETag. */
+            etag: string;
+        };
+        EntityNotesInput: {
+            markdown: string;
+            expected_notes_rev: number;
+        };
+        EntityNotesEnvelope: {
+            data: components["schemas"]["EntityNotes"];
+        };
+        DossierLink: {
+            id: string;
+            from_id: string;
+            to_id: string;
+            verb: string;
+            revision: number;
+            /** @enum {integer|null} */
+            tier: 1 | 2 | 3 | null;
+            wording: string | null;
+        };
+        DossierFile: {
+            id: string;
+            filename: string;
+            content_type: string;
+            size: number;
+            sha256: string;
+            share_permission: boolean;
+            reviewed_by_owner: boolean;
+            /** Format: date-time */
+            created_at: string;
+        };
+        DossierOpportunity: {
+            id: string;
+            title: string;
+            /** @enum {string} */
+            role: "primary" | "participant";
+        };
+        DossierResource: {
+            id: string;
+            title: string;
+            kind: string;
+            opportunity_id: string;
+            opportunity_title: string;
+        };
+        Dossier: {
+            entity: components["schemas"]["GraphEntity"];
+            direct_links: components["schemas"]["DossierLink"][];
+            files: components["schemas"]["DossierFile"][];
+            opportunities: components["schemas"]["DossierOpportunity"][];
+            associated_resources: components["schemas"]["DossierResource"][];
+        };
+        DossierEnvelope: {
+            data: components["schemas"]["Dossier"];
+        };
+        EntityEnvelope: {
+            data: components["schemas"]["Entity"];
         };
         CaptureInput: {
             text: string;
@@ -2636,14 +2745,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description One saved resource with its current strong ETag. */
+            /** @description One saved resource or directory entity with its current strong ETag. */
             200: {
                 headers: {
                     ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResourceEnvelope"];
+                    "application/json": components["schemas"]["EntityEnvelope"];
                 };
             };
             401: components["responses"]["Error"];
@@ -2666,20 +2775,18 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UpdateResource"];
+                "application/json": components["schemas"]["UpdateResource"] | components["schemas"]["UpdateEntityInput"];
             };
         };
         responses: {
-            /** @description Updated draft and receipt committed atomically. */
+            /** @description Updated draft or party and receipt committed atomically. */
             200: {
                 headers: {
                     ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        data: components["schemas"]["Resource"];
-                    };
+                    "application/json": components["schemas"]["EntityEnvelope"];
                 };
             };
             401: components["responses"]["Error"];
@@ -2687,6 +2794,96 @@ export interface operations {
             409: components["responses"]["Error"];
             412: components["responses"]["Error"];
             428: components["responses"]["Error"];
+        };
+    };
+    getEntityNotes: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Canonical Markdown notes and the notes-scoped strong ETag. */
+            200: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityNotesEnvelope"];
+                };
+            };
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+        };
+    };
+    updateEntityNotes: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                "If-Match": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EntityNotesInput"];
+            };
+        };
+        responses: {
+            /** @description Committed canonical notes with the new notes revision and ETag. */
+            200: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityNotesEnvelope"];
+                };
+            };
+            401: components["responses"]["Error"];
+            412: components["responses"]["Error"];
+            428: components["responses"]["Error"];
+        };
+    };
+    getEntityDossier: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Party dossier for the inspector. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DossierEnvelope"];
+                };
+            };
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
         };
     };
     clearPartyDnc: {

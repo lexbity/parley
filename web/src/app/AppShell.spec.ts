@@ -24,6 +24,9 @@ function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [],
   vi.spyOn(parley, 'getAdminOverview').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', workspace_epoch: 'epoch-test', event_cursor: '0', last_verified_backup: null, backups: [], parties: parties.map((party) => ({ id: party.id, kind: party.kind as 'person' | 'org', name: party.name, descriptor: null })) });
   vi.spyOn(parley, 'getQuestionBank').mockResolvedValue({ version_id: 'question-bank-v1', content: { questions: { proof: [], gift: [], artifact: [] } } });
   vi.spyOn(parley, 'listAgentChats').mockResolvedValue([]);
+  vi.spyOn(parley, 'getGraph').mockResolvedValue({ nodes: [], edges: [], omitted_nodes: 0, omitted_edges: 0 });
+  vi.spyOn(parley, 'getDossier').mockRejectedValue(new Error('no selection'));
+  vi.spyOn(parley, 'getEntityNotes').mockRejectedValue(new Error('no selection'));
   vi.spyOn(parley, 'listSegments').mockResolvedValue([]);
   vi.spyOn(parley, 'listFluency').mockResolvedValue([]);
   vi.spyOn(parley, 'getAgentPrompt').mockResolvedValue({ role: 'interviewer', version_id: 'interviewer-v1', version: 1, content: 'Default', sha256: 'a'.repeat(64) });
@@ -31,17 +34,17 @@ function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [],
   vi.spyOn(parley, 'updateQuestionBank').mockResolvedValue();
 }
 
-function leadsSection(wrapper: ReturnType<typeof mount>) {
-  return wrapper.get('section[aria-labelledby="leads-heading"]');
+function partiesSection(wrapper: ReturnType<typeof mount>) {
+  return wrapper.get('section[aria-labelledby="parties-heading"]');
 }
 
 describe('AppShell', () => {
   it('renders the mandated five-tab destination set', () => {
-    expect([...tabs]).toEqual(['Resources', 'Leads', 'Queue', 'Output', 'Settings']);
+    expect([...tabs]).toEqual(['Resources', 'Parties', 'Queue', 'Output', 'Settings']);
     stubWorkspace();
     const wrapper = mount(AppShell);
     const labels = wrapper.findAll('nav[aria-label="Main navigation"] a').map((link) => link.text());
-    expect(labels).toEqual(['Resources', 'Leads', 'Queue', 'Output', 'Settings']);
+    expect(labels).toEqual(['Resources', 'Parties', 'Queue', 'Output', 'Settings']);
     expect(wrapper.get('h1').text()).toBe('Resources');
     wrapper.unmount();
   });
@@ -53,33 +56,33 @@ describe('AppShell', () => {
     const editorInput = wrapper.get('section[aria-label="Resources workspace"] input');
     await editorInput.setValue('unsent resource title');
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
-    expect(wrapper.get('h1').text()).toBe('Leads');
+    expect(wrapper.get('h1').text()).toBe('Parties');
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(1)').trigger('click');
     expect((wrapper.get('section[aria-label="Resources workspace"] input').element as HTMLInputElement).value)
       .toBe('unsent resource title');
     wrapper.unmount();
   });
 
-  it('creates a lead without an opportunity and saves source-only captures', async () => {
+  it('creates a party without an opportunity and saves source-only captures', async () => {
     stubWorkspace([], []);
     const createEntity = vi.spyOn(parley, 'createEntity')
-      .mockResolvedValue({ id: 'p1', kind: 'person', name: 'Dana Lee', revision: 1 });
+      .mockResolvedValue({ id: 'p1', kind: 'person', name: 'Dana Lee', focus: '', revision: 1 });
     const saveSource = vi.spyOn(parley, 'saveSource').mockResolvedValue({
       content_id: 'c1', variant_id: 'v1', occurrence_id: 'o1', normalized_sha256: 'a', raw_sha256: 'b',
     });
     const wrapper = mount(AppShell);
     await flushPromises();
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
-    const leads = leadsSection(wrapper);
-    await leads.get('select').setValue('org');
-    await leads.get('select').setValue('person');
-    await leads.get('input[required]').setValue('Dana Lee');
-    await leads.findAll('form')[0]!.trigger('submit');
+    const parties = partiesSection(wrapper);
+    await parties.findAll('button').find((button) => button.text() === 'Add party')!.trigger('click');
+    await parties.get('form.add-party select').setValue('person');
+    await parties.get('form.add-party input[required]').setValue('Dana Lee');
+    await parties.get('form.add-party').trigger('submit');
     await flushPromises();
-    expect(createEntity).toHaveBeenCalledWith({ kind: 'person', name: 'Dana Lee' }, expect.any(String));
-    expect(wrapper.text()).toContain('No opportunity or outreach was created');
-    await leads.get('#leads-inbox textarea').setValue('Hiring update with an unresolved Dana mention.');
-    await leads.get('#leads-inbox').trigger('submit');
+    expect(createEntity).toHaveBeenCalledWith({ kind: 'person', name: 'Dana Lee', focus: '' }, expect.any(String));
+    expect(wrapper.text()).toContain('Party created. No opportunity, edge or outreach task was created');
+    await parties.get('#leads-inbox textarea').setValue('Hiring update with an unresolved Dana mention.');
+    await parties.get('#leads-inbox').trigger('submit');
     await flushPromises();
     expect(saveSource).toHaveBeenCalledWith({ text: 'Hiring update with an unresolved Dana mention.', title: null, url: null });
     expect(wrapper.text()).toContain('No person was inferred or linked');
@@ -93,8 +96,8 @@ describe('AppShell', () => {
     const wrapper = mount(AppShell);
     await flushPromises();
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(5)').trigger('click');
-    await wrapper.get('input[required][autocomplete="off"]').setValue('http://127.0.0.1:11434');
-    await wrapper.findAll('input[required][autocomplete="off"]')[1]!.setValue('local:latest');
+    await wrapper.get('section[aria-labelledby="settings-heading"] input[required][autocomplete="off"]').setValue('http://127.0.0.1:11434');
+    await wrapper.get('section[aria-labelledby="settings-heading"]').findAll('input[required][autocomplete="off"]')[1]!.setValue('local:latest');
     const numericInputs = wrapper.findAll('input[type="number"]');
     await numericInputs[0]!.setValue('16384');
     await numericInputs[1]!.setValue('2048');
@@ -162,6 +165,7 @@ describe('AppShell', () => {
     const save = vi.spyOn(parley, 'saveSource').mockResolvedValueOnce(saved).mockRejectedValueOnce(new Error('capture denied'));
     const getReview = vi.spyOn(parley, 'getCaptureProposals').mockRejectedValue(new Error('review not ready'));
     const wrapper = mount(AppShell); await flushPromises();
+    vi.spyOn(parley, 'listSources').mockResolvedValue([saved]);
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
     const captureForm = wrapper.get('form.capture');
     await captureForm.get('textarea').setValue('A source without queue capacity.');
@@ -188,6 +192,7 @@ describe('AppShell', () => {
     const cancelled: ExtractorJob = { ...queued, status: 'cancelled', last_error: 'Cancelled by owner' };
     const source: SavedSource = { content_id: 'c2', variant_id: 'v2', occurrence_id: 'o2', normalized_sha256: 'a', raw_sha256: 'b', job_id: 'job2' };
     stubWorkspace();
+    vi.spyOn(parley, 'listSources').mockResolvedValue([source]);
     vi.spyOn(parley, 'saveSource').mockResolvedValue(source);
     const getJob = vi.spyOn(parley, 'getExtractorJob').mockResolvedValueOnce(queued).mockResolvedValueOnce(completed).mockResolvedValueOnce(cancelled);
     vi.spyOn(parley, 'getCaptureProposals').mockResolvedValue(queued);
@@ -224,6 +229,7 @@ describe('AppShell', () => {
     };
     const source: SavedSource = { content_id: 'c3', variant_id: 'v3', occurrence_id: 'o3', normalized_sha256: 'a', raw_sha256: 'b', job_id: 'job3' };
     stubWorkspace();
+    vi.spyOn(parley, 'listSources').mockResolvedValue([source]);
     vi.spyOn(parley, 'saveSource').mockResolvedValue(source);
     vi.spyOn(parley, 'getExtractorJob').mockResolvedValueOnce(queued).mockRejectedValueOnce('poll unavailable');
     vi.spyOn(parley, 'getCaptureProposals').mockRejectedValueOnce('review unavailable').mockResolvedValue(queued);
@@ -373,17 +379,18 @@ describe('AppShell', () => {
     const wrapper = mount(AppShell);
     await flushPromises();
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
-    const leads = leadsSection(wrapper);
-    await leads.get('input[required]').setValue('Noah');
-    await leads.findAll('form')[0]!.trigger('submit');
+    const parties = partiesSection(wrapper);
+    await parties.findAll('button').find((button) => button.text() === 'Add party')!.trigger('click');
+    await parties.get('form.add-party input[required]').setValue('Noah');
+    await parties.get('form.add-party').trigger('submit');
     await flushPromises();
     expect(wrapper.text()).toContain('write denied');
-    await leads.get('#leads-inbox textarea').setValue('A source');
-    await leads.get('#leads-inbox').trigger('submit');
+    await parties.get('#leads-inbox textarea').setValue('A source');
+    await parties.get('#leads-inbox').trigger('submit');
     await flushPromises();
     expect(wrapper.text()).toContain('capture denied');
     const labels = wrapper.findAll('nav[aria-label="Main navigation"] a').map((link) => link.text());
-    expect(labels).toEqual(['Resources', 'Leads', 'Queue', 'Output', 'Settings']);
+    expect(labels).toEqual(['Resources', 'Parties', 'Queue', 'Output', 'Settings']);
     wrapper.unmount();
   });
 });

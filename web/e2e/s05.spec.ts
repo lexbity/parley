@@ -1,25 +1,23 @@
 import { randomUUID } from 'node:crypto';
 import { expect } from '@playwright/test';
 import { test } from './fixtures';
+import { addParty, openParties, partiesRegion } from './parties';
 
 test('s05_keyboard_board_list_card_order_and_archive', async ({ page }) => {
   await page.goto('/');
   const suffix = randomUUID();
   const partyName = `Dana Lee ${suffix}`;
-  await page.getByRole('link', { name: 'Leads' }).click();
-  const leads = page.getByRole('region', { name: 'Lead directory and sources' });
-  await leads.getByRole('button', { name: 'New lead' }).click();
-  await leads.getByRole('complementary').getByLabel('Name').fill(partyName);
-  await leads.getByRole('button', { name: 'Add lead' }).click();
+  await openParties(page);
+  const parties = partiesRegion(page);
+  await addParty(page, partyName, 'person');
 
-  await expect(leads.getByRole('button', { name: partyName + ' person' })).toBeVisible();
-  await leads.getByLabel('Find a lead').fill(suffix);
-  await leads.getByRole('button', { name: partyName + ' person' }).click();
-  const leadUrl = page.url();
+  await expect(parties.getByRole('button', { name: partyName })).toBeVisible();
+  await parties.getByLabel('Find a party').fill(suffix);
+  await parties.getByRole('button', { name: partyName }).click();
   await page.getByRole('link', { name: 'Resources' }).click();
-  await page.getByRole('link', { name: 'Leads' }).click();
-  await expect(page).toHaveURL(leadUrl);
-  await expect(leads.getByLabel('Find a lead')).toHaveValue(suffix);
+  await page.getByRole('link', { name: 'Parties' }).click();
+  await expect(parties.getByLabel('Find a party')).toHaveValue(suffix);
+  await expect(parties.getByRole('button', { name: partyName })).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('link', { name: 'Queue' }).click();
   const queue = page.getByRole('region', { name: 'Opportunities' });
   await queue.getByRole('button', { name: 'New opportunity' }).click();

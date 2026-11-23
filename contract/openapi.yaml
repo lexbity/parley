@@ -154,7 +154,7 @@ paths:
       - $ref: '#/components/parameters/Epoch'
       responses:
         '200':
-          description: One saved resource with its current strong ETag.
+          description: One saved resource or directory entity with its current strong ETag.
           headers:
             ETag:
               schema:
@@ -162,7 +162,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ResourceEnvelope'
+                $ref: '#/components/schemas/EntityEnvelope'
         '401':
           $ref: '#/components/responses/Error'
         '404':
@@ -190,10 +190,12 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateResource'
+              oneOf:
+              - $ref: '#/components/schemas/UpdateResource'
+              - $ref: '#/components/schemas/UpdateEntityInput'
       responses:
         '200':
-          description: Updated draft and receipt committed atomically.
+          description: Updated draft or party and receipt committed atomically.
           headers:
             ETag:
               schema:
@@ -201,12 +203,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required:
-                - data
-                properties:
-                  data:
-                    $ref: '#/components/schemas/Resource'
+                $ref: '#/components/schemas/EntityEnvelope'
         '401':
           $ref: '#/components/responses/Error'
         '403':
@@ -216,6 +213,107 @@ paths:
         '412':
           $ref: '#/components/responses/Error'
         '428':
+          $ref: '#/components/responses/Error'
+  /entities/{id}/notes:
+    get:
+      operationId: getEntityNotes
+      summary: Read canonical party notes with their independent revision
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Canonical Markdown notes and the notes-scoped strong ETag.
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityNotesEnvelope'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+    put:
+      operationId: updateEntityNotes
+      summary: Replace party notes under notes revision and strong ETag preconditions
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - in: header
+        name: If-Match
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EntityNotesInput'
+      responses:
+        '200':
+          description: Committed canonical notes with the new notes revision and ETag.
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityNotesEnvelope'
+        '401':
+          $ref: '#/components/responses/Error'
+        '412':
+          $ref: '#/components/responses/Error'
+        '428':
+          $ref: '#/components/responses/Error'
+  /entities/{id}/dossier:
+    get:
+      operationId: getEntityDossier
+      summary: Inspector dossier for one party
+      description: >
+        Direct links, files, open opportunities and resources used by visible
+        opportunities for one party, bounded and deduplicated by ID. Every hop
+        carries object IDs so the inspector can explain and navigate each
+        association.
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Party dossier for the inspector.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DossierEnvelope'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
           $ref: '#/components/responses/Error'
   /entities/{id}/clear-dnc:
     post:
@@ -2274,6 +2372,12 @@ components:
           - resource
         name:
           type: string
+        focus:
+          type: string
+          description: Owner-editable short descriptor shown on the party sheet.
+        etag:
+          type: string
+          description: Strong entity ETag for typed party edits.
         revision:
           type: integer
           minimum: 1
@@ -2465,6 +2569,143 @@ components:
           type: string
           minLength: 1
           maxLength: 500
+        focus:
+          type: string
+          maxLength: 250
+      additionalProperties: false
+    UpdateEntityInput:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 500
+        focus:
+          type: string
+          maxLength: 250
+      additionalProperties: false
+    EntityNotes:
+      type: object
+      required:
+      - entity_id
+      - markdown
+      - revision
+      - etag
+      properties:
+        entity_id:
+          type: string
+        markdown:
+          type: string
+          description: Canonical UTF-8/LF Markdown.
+        revision:
+          type: integer
+          minimum: 1
+        etag:
+          type: string
+          description: Strong notes-scoped ETag.
+      additionalProperties: false
+    EntityNotesInput:
+      type: object
+      required:
+      - markdown
+      - expected_notes_rev
+      properties:
+        markdown:
+          type: string
+          maxLength: 524288
+        expected_notes_rev:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    EntityNotesEnvelope:
+      type: object
+      required:
+      - data
+      properties:
+        data:
+          $ref: '#/components/schemas/EntityNotes'
+      additionalProperties: false
+    DossierLink:
+      type: object
+      required: [id, from_id, to_id, verb, revision, tier, wording]
+      properties:
+        id: {type: string}
+        from_id: {type: string}
+        to_id: {type: string}
+        verb: {type: string}
+        revision: {type: integer, minimum: 1}
+        tier: {type: integer, enum: [1, 2, 3], nullable: true}
+        wording: {type: string, nullable: true}
+      additionalProperties: false
+    DossierFile:
+      type: object
+      required: [id, filename, content_type, size, sha256, share_permission, reviewed_by_owner, created_at]
+      properties:
+        id: {type: string}
+        filename: {type: string}
+        content_type: {type: string}
+        size: {type: integer, minimum: 1}
+        sha256: {type: string, pattern: '^[a-f0-9]{64}$'}
+        share_permission: {type: boolean}
+        reviewed_by_owner: {type: boolean}
+        created_at: {type: string, format: date-time}
+      additionalProperties: false
+    DossierOpportunity:
+      type: object
+      required: [id, title, role]
+      properties:
+        id: {type: string}
+        title: {type: string}
+        role: {type: string, enum: [primary, participant]}
+      additionalProperties: false
+    DossierResource:
+      type: object
+      required: [id, title, kind, opportunity_id, opportunity_title]
+      properties:
+        id: {type: string}
+        title: {type: string}
+        kind: {type: string}
+        opportunity_id: {type: string}
+        opportunity_title: {type: string}
+      additionalProperties: false
+    Dossier:
+      type: object
+      required: [entity, direct_links, files, opportunities, associated_resources]
+      properties:
+        entity:
+          $ref: '#/components/schemas/GraphEntity'
+        direct_links:
+          type: array
+          items:
+            $ref: '#/components/schemas/DossierLink'
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/DossierFile'
+        opportunities:
+          type: array
+          items:
+            $ref: '#/components/schemas/DossierOpportunity'
+        associated_resources:
+          type: array
+          items:
+            $ref: '#/components/schemas/DossierResource'
+      additionalProperties: false
+    DossierEnvelope:
+      type: object
+      required:
+      - data
+      properties:
+        data:
+          $ref: '#/components/schemas/Dossier'
+      additionalProperties: false
+    EntityEnvelope:
+      type: object
+      required:
+      - data
+      properties:
+        data:
+          $ref: '#/components/schemas/Entity'
       additionalProperties: false
     CaptureInput:
       type: object

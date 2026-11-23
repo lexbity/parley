@@ -827,3 +827,53 @@ slices:
       owner_role: owner
       package_target: rust
       evidence_path: contract/fixtures/s11/migration/evidence.md
+  p01:
+    - requirement: P01-SHEET-READ
+      operationId: listEntities
+      test_id: p01_party_sheet_focus_edit_discards_stale_and_blank_writes
+      fixture_id: sheet
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/p01.md
+    - requirement: P01-CREATE
+      operationId: createEntity
+      test_id: p01_party_sheet_focus_edit_discards_stale_and_blank_writes
+      fixture_id: create
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/p01.md
+    - requirement: P01-UPDATE
+      operationId: updateEntity
+      test_id: p01_party_sheet_focus_edit_discards_stale_and_blank_writes
+      fixture_id: update
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/p01.md
+    - requirement: P01-NOTES-READ
+      operationId: getEntityNotes
+      test_id: p01_entity_notes_canonical_roundtrip_conflict_and_replay
+      fixture_id: notes
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/p01.md
+    - requirement: P01-NOTES-WRITE
+      operationId: updateEntityNotes
+      test_id: p01_entity_notes_canonical_roundtrip_conflict_and_replay
+      fixture_id: notes
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/p01.md
+    - requirement: P01-DOSSIER
+      operationId: getEntityDossier
+      test_id: p01_dossier_lists_direct_links_and_open_opportunities
+      fixture_id: dossier
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/p01.md
+    - requirement: P01-CAP
+      operationId: getSession
+      test_id: p01_session_advertises_party_capabilities
+      fixture_id: sheet
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/p01.md

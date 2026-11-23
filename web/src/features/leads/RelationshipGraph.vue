@@ -3,7 +3,8 @@ import { computed, onMounted, ref, shallowRef, watch } from 'vue';
 import { Background, Controls, MiniMap, VueFlow, type Edge, type Node, type VueFlowInstance } from '@xyflow/vue';
 import { newOperationKey, parley, type GraphSnapshot, type SavedSource } from '../../api/client';
 
-const props = defineProps<{ focusEntityId?: string }>();
+const props = defineProps<{ focusEntityId?: string; viewRootId?: string }>();
+const emit = defineEmits<{ 'select-node': [id: string]; 'select-edge': [id: string]; 'related-saved': [] }>();
 const snapshot = ref<GraphSnapshot>({ nodes: [], edges: [], omitted_nodes: 0, omitted_edges: 0 });
 const flow = shallowRef<VueFlowInstance | null>(null);
 const selectedEdgeId = ref('');
@@ -37,8 +38,9 @@ async function load() {
   const centerId = props.focusEntityId;
   loading.value = true; error.value = '';
   try {
+    const viewRoot = props.viewRootId ?? props.focusEntityId ?? 'directory';
     const [result, savedSources] = await Promise.all([
-      parley.getGraph({ center_id: centerId, view_scope: 'leads', view_id: centerId ?? 'directory' }),
+      parley.getGraph({ center_id: centerId, view_scope: 'leads', view_id: viewRoot }),
       parley.listSources(),
     ]);
     if (ownGeneration !== generation.value || centerId !== props.focusEntityId) return;
@@ -65,10 +67,11 @@ async function addRelatedEntity() {
     await parley.createRelatedEntity({
       kind: relatedKind.value, name: relatedName.value.trim(), related_entity_id: parent.id, verb,
       occurrence_id: source.occurrence_id, quote: quote.value,
-      view_scope: 'leads', view_id: props.focusEntityId ?? 'directory', x: parent.x + 260, y: parent.y,
+      view_scope: 'leads', view_id: props.viewRootId ?? props.focusEntityId ?? 'directory', x: parent.x + 260, y: parent.y,
     }, newOperationKey());
     relatedName.value = ''; quote.value = '';
     await load();
+    emit('related-saved');
     relationStatus.value = 'The entity and source-attributed directed relationship were saved together.';
   } catch (reason) { relationError.value = reason instanceof Error ? reason.message : 'Could not save the related entity and edge.'; }
   finally { mutationBusy.value = false; }
@@ -80,7 +83,7 @@ async function savePosition(event: { node: { id: string; position: { x: number; 
   layoutBusy.value = true; error.value = '';
   try {
     await parley.saveGraphLayout({
-      view_scope: 'leads', view_id: props.focusEntityId ?? 'directory',
+      view_scope: 'leads', view_id: props.viewRootId ?? props.focusEntityId ?? 'directory',
       positions: [{ entity_id: current.id, x: event.node.position.x, y: event.node.position.y, expected_revision: current.position_revision }],
     }, newOperationKey());
     await load();
@@ -91,12 +94,13 @@ async function savePosition(event: { node: { id: string; position: { x: number; 
 }
 
 function focusNode(id: string) {
-  relatedEntityId.value = id;
+  emit('select-node', id);
   const duration = globalThis.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 160;
   void flow.value?.fitView({ nodes: [{ id }], maxZoom: 1, duration });
 }
 
-watch(() => props.focusEntityId, () => { void load(); });
+watch(() => props.focusEntityId, (id) => { if (id) relatedEntityId.value = id; void load(); });
+watch(() => props.viewRootId, () => { void load(); });
 onMounted(() => { void load(); });
 </script>
 
@@ -107,7 +111,7 @@ onMounted(() => { void load(); });
   >
     <header class="pane-bar">
       <h2 id="relationship-graph-heading">
-        Lead network
+        Party network
       </h2>
     </header>
     <p
@@ -145,8 +149,8 @@ onMounted(() => { void load(); });
           aria-label="Relationship graph"
           @node-drag-stop="savePosition"
           @init="instance => flow = instance"
-          @node-click="({ node }) => relatedEntityId = node.id"
-          @edge-click="({ edge }) => selectedEdgeId = edge.id"
+          @node-click="({ node }) => emit('select-node', node.id)"
+          @edge-click="({ edge }) => { selectedEdgeId = edge.id; emit('select-edge', edge.id); }"
         >
           <Background />
           <Controls />
@@ -213,7 +217,10 @@ onMounted(() => { void load(); });
             </button>
           </li>
         </ul>
-        <form @submit.prevent="addRelatedEntity">
+        <form
+          aria-label="Add a source-backed related entity"
+          @submit.prevent="addRelatedEntity"
+        >
           <h4>Add a source-backed related entity</h4>
           <label>Related to<select
             v-model="relatedEntityId"

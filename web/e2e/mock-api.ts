@@ -24,7 +24,7 @@ type ResourceRecord = {
   updated_at: string;
 };
 
-type EntityRecord = { id: string; kind: string; name: string; revision: number };
+type EntityRecord = { id: string; kind: string; name: string; focus: string; revision: number };
 
 type SavedSource = {
   content_id: string;
@@ -86,6 +86,8 @@ export function createMockApi(): MockApi {
   const sessions = new Map<string, string>();
   const resources = new Map<string, ResourceRecord>();
   const directory = new Map<string, EntityRecord>();
+  const notesByEntity = new Map<string, { markdown: string; revision: number }>();
+  const entityAttachments = new Map<string, RecordData[]>();
   const sourceTextByOccurrence = new Map<string, { text: string; title: string | null; url: string | null }>();
   const graphEdges: RecordData[] = [];
   const graphPositions = new Map<string, { x: number; y: number; revision: number }>();
@@ -139,6 +141,8 @@ export function createMockApi(): MockApi {
   const now = () => new Date(testClock += 1000).toISOString();
   capacityLedger.set('quarter:project slots', { period: 'quarter', unit: 'project slots', total: 15, committed: 0, updated_at: now() });
   const tag = (resource: ResourceRecord) => `"p1.${epoch}.resource.${resource.id}.${resource.revision}"`;
+  const entityTag = (entity: EntityRecord) => `"p1.${epoch}.entity.${entity.id}.${entity.revision}"`;
+  const notesTag = (entityId: string, revision: number) => `"p1.${epoch}.notes.${entityId}.${revision}"`;
   const pushEvent = (event: Omit<EventRecord, 'cursor'>) => {
     events.push({ ...event, cursor: String(events.length + 1) });
   };
@@ -153,7 +157,7 @@ export function createMockApi(): MockApi {
   }
 
   function workspaceCollections(): Record<string, unknown> {
-    return { resources, directory, sourceTextByOccurrence, graphEdges, graphPositions, sourceGroups, captures, extractorJobs, roleJobs, agentChats, briefItems, segments, segmentMembers, fluency, writingInterests, writingExchanges, templateFamilies, writingTemplates, voiceSamples, opportunities, outputs, uploads, materialRecords, releaseRecords, threads, sends, outcomes, resolutions, capacityLedger, coachQuestions, validatedPacks, boardLists, placements, notesByOpportunity, events };
+    return { resources, directory, notesByEntity, entityAttachments, sourceTextByOccurrence, graphEdges, graphPositions, sourceGroups, captures, extractorJobs, roleJobs, agentChats, briefItems, segments, segmentMembers, fluency, writingInterests, writingExchanges, templateFamilies, writingTemplates, voiceSamples, opportunities, outputs, uploads, materialRecords, releaseRecords, threads, sends, outcomes, resolutions, capacityLedger, coachQuestions, validatedPacks, boardLists, placements, notesByOpportunity, events };
   }
 
   function takeWorkspaceSnapshot(): Record<string, unknown> {
@@ -322,7 +326,7 @@ export function createMockApi(): MockApi {
         epoch,
         wire_major: 1,
         wire_minor: 0,
-        capabilities: ['resources.read', 'resources.write'],
+        capabilities: ['resources.read', 'resources.write', 'party.sheet', 'party.notes', 'party.dossier'],
         mutation_token: sessions.get(cookie),
         cursor: String(events.length),
       });
@@ -637,7 +641,7 @@ export function createMockApi(): MockApi {
         || (input.kind === 'project' && parent?.kind === 'org' && input.verb === 'works_with')
         || (input.kind === 'resource' && parent?.kind === 'person' && input.verb === 'offers_to');
       if (!parent || !source || !allowed || typeof input.name !== 'string' || !input.name.trim() || typeof input.quote !== 'string' || !source.text.includes(input.quote)) return fail(response, 422, 'RELATIONSHIP_REJECTED', 'Entity, direction, source and exact quote must be valid');
-      const entity: EntityRecord = { id: randomHex(), kind: String(input.kind), name: input.name.trim(), revision: 1 };
+      const entity: EntityRecord = { id: randomHex(), kind: String(input.kind), name: input.name.trim(), focus: '', revision: 1 };
       directory.set(entity.id, entity);
       const targetIsParent = input.kind === 'person';
       graphEdges.push({ id: randomHex(), from_id: targetIsParent ? entity.id : parent.id, to_id: targetIsParent ? parent.id : entity.id, verb: String(input.verb), revision: 1, occurrence_id: String(input.occurrence_id), quote: input.quote, tier: 1, speaker_kind: 'unknown', captured_at: now(), source_title: source.title, source_url: source.url });
@@ -660,7 +664,7 @@ export function createMockApi(): MockApi {
         items.push(...[...resources.values()].sort((a, b) => b.updated_at.localeCompare(a.updated_at) || a.id.localeCompare(b.id)));
       }
       if (graphKinds.length || kinds.length === 0) {
-        items.push(...[...directory.values()].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)));
+        items.push(...[...directory.values()].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)).map((entity) => ({ ...entity, etag: entityTag(entity) })));
       }
       return json(response, 200, { data: items, cursor: String(events.length) });
     }
@@ -687,11 +691,15 @@ export function createMockApi(): MockApi {
         if (!name || name.length > 500) {
           return fail(response, 422, 'ENTITY_INVALID', 'Entity type or name is invalid');
         }
-        const entity: EntityRecord = { id: randomHex(), kind: String(input.kind), name, revision: 1 };
+        const focus = typeof input.focus === 'string' ? input.focus : '';
+        if (focus.length > 250) {
+          return fail(response, 422, 'ENTITY_INVALID', 'Entity focus is invalid');
+        }
+        const entity: EntityRecord = { id: randomHex(), kind: String(input.kind), name, focus, revision: 1 };
         directory.set(entity.id, entity);
         pushEvent({ event_id: randomHex(), entity_type: 'entity', entity_id: entity.id, revision: 1, event_type: 'entity.created', payload: {} });
-        receipts.set(key, { digest, result: entity });
-        return json(response, 201, { data: entity });
+        receipts.set(key, { digest, result: { ...entity, etag: entityTag(entity) } });
+        return json(response, 201, { data: { ...entity, etag: entityTag(entity) } });
       }
       const validBody = Boolean(input.body) && !Array.isArray(input.body) && typeof input.body === 'object';
       if (!['gift', 'proof', 'artifact'].includes(String(input.kind))
@@ -719,8 +727,10 @@ export function createMockApi(): MockApi {
     const entityMatch = /^\/api\/v1\/entities\/([a-f0-9]+)$/.exec(url.pathname);
     if (entityMatch && request.method === 'GET') {
       const resource = resources.get(entityMatch[1]!);
-      if (!resource) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
-      return json(response, 200, { data: resource });
+      if (resource) return json(response, 200, { data: resource });
+      const entity = directory.get(entityMatch[1]!);
+      if (!entity) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
+      return json(response, 200, { data: { ...entity, etag: entityTag(entity) } });
     }
     if (entityMatch && request.method === 'PATCH') {
       let input: RecordData;
@@ -743,20 +753,87 @@ export function createMockApi(): MockApi {
           : fail(response, 409, 'KEY_REUSED', 'Idempotency key was used for a different command');
       }
       const resource = resources.get(entityMatch[1]!);
-      if (!resource) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
-      if (ifMatch !== resource.etag) return fail(response, 412, 'STALE_REVISION', 'Resource changed in another session');
-      const updated: ResourceRecord = {
-        ...resource,
-        title: String(input.title),
-        body: input.body as RecordData,
-        revision: resource.revision + 1,
-        updated_at: now(),
-      };
-      updated.etag = tag(updated);
-      resources.set(updated.id, updated);
-      pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: updated.id, revision: updated.revision, event_type: 'resource.updated', payload: {} });
-      receipts.set(key, { digest, result: updated });
-      return json(response, 200, { data: updated });
+      if (resource) {
+        if (ifMatch !== resource.etag) return fail(response, 412, 'STALE_REVISION', 'Resource changed in another session');
+        const updated: ResourceRecord = {
+          ...resource,
+          title: String(input.title),
+          body: input.body as RecordData,
+          revision: resource.revision + 1,
+          updated_at: now(),
+        };
+        updated.etag = tag(updated);
+        resources.set(updated.id, updated);
+        pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: updated.id, revision: updated.revision, event_type: 'resource.updated', payload: {} });
+        receipts.set(key, { digest, result: updated });
+        return json(response, 200, { data: updated });
+      }
+      const entity = directory.get(entityMatch[1]!);
+      if (!entity) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
+      if (ifMatch !== entityTag(entity)) return fail(response, 412, 'STALE_REVISION', 'Resource changed in another session');
+      const name = typeof input.name === 'string' ? input.name.trim() : entity.name;
+      const focus = typeof input.focus === 'string' ? input.focus : entity.focus;
+      if (input.name !== undefined && (!name || name.length > 500)) return fail(response, 422, 'ENTITY_INVALID', 'Entity name is invalid');
+      if (input.focus !== undefined && focus.length > 250) return fail(response, 422, 'ENTITY_INVALID', 'Entity focus is invalid');
+      const updated: EntityRecord = { ...entity, name, focus, revision: entity.revision + 1 };
+      directory.set(updated.id, updated);
+      pushEvent({ event_id: randomHex(), entity_type: 'entity', entity_id: updated.id, revision: updated.revision, event_type: 'entity.updated', payload: {} });
+      receipts.set(key, { digest, result: { ...updated, etag: entityTag(updated) } });
+      return json(response, 200, { data: { ...updated, etag: entityTag(updated) } });
+    }
+    const entityNotesMatch = /^\/api\/v1\/entities\/([a-f0-9]+)\/notes$/.exec(url.pathname);
+    if (entityNotesMatch && request.method === 'GET') {
+      const entity = directory.get(entityNotesMatch[1]!);
+      if (!entity) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
+      const notes = notesByEntity.get(entity.id) ?? { markdown: '', revision: 1 };
+      return json(response, 200, { data: { entity_id: entity.id, markdown: notes.markdown, revision: notes.revision, etag: notesTag(entity.id, notes.revision) } });
+    }
+    if (entityNotesMatch && request.method === 'PUT') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const ifMatch = request.headers['if-match'];
+      if (typeof ifMatch !== 'string') return fail(response, 428, 'ETAG_REQUIRED', 'If-Match is required');
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || key.length === 0 || key.length > 100) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+      const entity = directory.get(entityNotesMatch[1]!);
+      if (!entity) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
+      const current = notesByEntity.get(entity.id) ?? { markdown: '', revision: 1 };
+      if (ifMatch !== notesTag(entity.id, current.revision) || Number(input.expected_notes_rev) !== current.revision) return fail(response, 412, 'STALE_REVISION', 'Notes changed in another session');
+      const markdown = typeof input.markdown === 'string' ? input.markdown.replace(/\r\n/g, '\n').replace(/\r/g, '\n') : '';
+      const next = { markdown, revision: current.revision + 1 };
+      notesByEntity.set(entity.id, next);
+      pushEvent({ event_id: randomHex(), entity_type: 'entity', entity_id: entity.id, revision: next.revision, event_type: 'entity.notes_updated', payload: {} });
+      const result = { entity_id: entity.id, markdown, revision: next.revision, etag: notesTag(entity.id, next.revision) };
+      const digest = createHash('sha256').update(JSON.stringify([entity.id, ifMatch, input])).digest('hex');
+      receipts.set(key, { digest, result });
+      return json(response, 200, { data: result });
+    }
+    const dossierMatch = /^\/api\/v1\/entities\/([a-f0-9]+)\/dossier$/.exec(url.pathname);
+    if (dossierMatch && request.method === 'GET') {
+      const entity = directory.get(dossierMatch[1]!);
+      if (!entity) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
+      const visible = new Set<string>([entity.id]);
+      for (const edge of graphEdges) {
+        if (edge.from_id === entity.id) visible.add(String(edge.to_id));
+        if (edge.to_id === entity.id) visible.add(String(edge.from_id));
+      }
+      const direct_links = graphEdges
+        .filter((edge) => edge.from_id === entity.id || edge.to_id === entity.id)
+        .slice(0, 60)
+        .map((edge) => ({ id: String(edge.id), from_id: String(edge.from_id), to_id: String(edge.to_id), verb: String(edge.verb), revision: Number(edge.revision), tier: Number(edge.tier), wording: String(edge.quote) }));
+      const files = (entityAttachments.get(entity.id) ?? []).slice(0, 60);
+      const openOpportunities = [...opportunities.values()]
+        .filter((item) => item.state === 'open' && Array.isArray(item.participant_ids) && item.participant_ids.includes(entity.id))
+        .slice(0, 60)
+        .map((item) => ({ id: String(item.id), title: String(item.title), role: 'participant' }));
+      const associated_resources: RecordData[] = [];
+      for (const opportunity of openOpportunities) {
+        const source = Array.from(outputs.values()).find((material) => material.opportunity_id === opportunity.id) ?? null;
+        if (source && typeof source === 'object' && !associated_resources.some((item) => item.id === source.id)) {
+          associated_resources.push({ id: String(source.id), title: String(source.title ?? source.kind ?? source.id), kind: String(source.kind ?? 'material'), opportunity_id: opportunity.id, opportunity_title: opportunity.title });
+        }
+      }
+      return json(response, 200, { data: { entity: { ...entity, etag: entityTag(entity) }, direct_links, files, opportunities: openOpportunities, associated_resources } });
     }
     if (url.pathname === '/api/v1/events' && request.method === 'GET') {
       const after = Number(url.searchParams.get('after') ?? '0');

@@ -1,52 +1,52 @@
 import { randomUUID } from 'node:crypto';
 import { expect } from '@playwright/test';
 import { test } from './fixtures';
+import { addParty, openParties, partiesRegion } from './parties';
 
 test('s02_independent_source_same_name_parties_graph_evidence_and_correction', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Leads' }).click();
-  const suffix=randomUUID(); const orgName=`Northline ${suffix}`; const dana=`Dana Lee ${suffix}`;
-  await page.getByRole('heading',{name:'Add lead'}).locator('..').getByLabel('Type').selectOption('org');
-  await page.getByRole('heading',{name:'Add lead'}).locator('..').getByLabel('Name').fill(orgName);
-  await page.getByRole('heading',{name:'Add lead'}).locator('..').getByRole('button',{name:'Add lead'}).click();
-  await expect(page.locator('section[aria-labelledby="leads-heading"] div[role="status"]')).toContainText('No opportunity or outreach');
-  const addLead=page.getByRole('heading',{name:'Add lead'}).locator('..');
-  await addLead.getByLabel('Type').selectOption('person');await addLead.getByLabel('Name').fill(dana);await addLead.getByRole('button',{name:'Add lead'}).click();
-  const sourceText=`The next engineer ${suffix} will work with Dana on onboarding.`;
-  const speakerSelect=page.getByLabel('Speaker attribution');const speakerValue=await speakerSelect.locator('option').filter({hasText:dana}).getAttribute('value');
-  await speakerSelect.selectOption(speakerValue!);
-  await page.getByLabel('Captured text').fill(sourceText);
-  await page.getByRole('button',{name:'Save source'}).click();
-  await expect(page.getByRole('article',{name:'Original source'})).toContainText(sourceText);
-  await page.getByRole('button',{name:new RegExp(orgName)}).click();
-  const linkExistingForm=page.getByRole('heading',{name:'Link an existing person'}).locator('..');
-  const existingPerson=linkExistingForm.getByRole('combobox').first();
-  const personOptions=existingPerson.locator('option');
-  await expect(personOptions).toHaveCount(2);
-  const personValue=await personOptions.nth(1).getAttribute('value');
-  expect(personValue).toBeTruthy();
-  await existingPerson.selectOption(personValue!);
-  await linkExistingForm.getByLabel('Source occurrence').selectOption({index:1});
-  await linkExistingForm.getByLabel('Exact cited passage').fill(`will work with Dana on onboarding`);
-  await page.getByRole('button',{name:'Link existing person to organization'}).click();
-  await expect(page.locator('section[aria-labelledby="leads-heading"] div[role="status"]')).toContainText('no identity merge occurred');
-  await expect(page.getByRole('heading',{name:'Graph and relationships'})).toBeVisible();
-  const relationship=page.getByRole('button',{name:new RegExp(`${dana}.*member_of.*${orgName}`)});
-  await expect(relationship).toBeVisible(); await relationship.click();
-  await expect(page.getByRole('region', { name: 'Relationship evidence' }).getByRole('blockquote')).toHaveText('will work with Dana on onboarding');
-  await page.getByLabel('Owner-approved wording').fill('The next engineer collaborates with Dana on onboarding.');
-  await page.getByRole('button',{name:'Save correction'}).click();
-  await expect(page.getByText('Current wording was corrected by the owner')).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Relationship evidence' }).getByRole('blockquote')).toHaveText('will work with Dana on onboarding');
-  await page.reload(); await page.getByRole('button',{name:'Leads'}).click();
-  await expect(page.getByRole('button',{name:new RegExp(orgName)})).toBeVisible();
-  await page.getByRole('button',{name:new RegExp(dana)}).click();
-  const restoredRelationship=page.getByRole('button',{name:new RegExp('Dana.*member_of.*Northline')});
-  await expect(restoredRelationship).toBeVisible(); await restoredRelationship.click();
-  await page.getByRole('button',{name:'Open original source'}).click();
-  await expect(page.getByLabel('Owner-approved wording')).toHaveValue('The next engineer collaborates with Dana on onboarding.');
-  await expect(page.getByRole('article',{name:'Original source'})).toContainText(sourceText);
-  await addLead.getByLabel('Type').selectOption('person'); await addLead.getByLabel('Name').fill(dana);
-  await addLead.getByRole('button',{name:'Add lead'}).click();
-  await expect(page.getByRole('button',{name:new RegExp(dana)})).toHaveCount(2);
+  await openParties(page);
+  const suffix = randomUUID();
+  const orgName = `Northline ${suffix}`;
+  const dana = `Dana Lee ${suffix}`;
+
+  // Same-name parties stay distinct; no identity merge is inferred from a label.
+  await addParty(page, orgName, 'org');
+  await addParty(page, dana, 'person');
+  await addParty(page, dana, 'person');
+  const region = partiesRegion(page);
+  await expect(region.getByRole('button', { name: dana })).toHaveCount(2);
+
+  // A saved source is independent: no person is inferred or linked.
+  await region.getByRole('navigation', { name: 'Lead workspaces' }).getByRole('button', { name: 'Sources inbox' }).click();
+  const sourceText = `The next engineer ${suffix} will work with Dana on onboarding.`;
+  await region.getByLabel('Captured text').fill(sourceText);
+  await region.getByRole('button', { name: 'Save source' }).click();
+  await expect(region.getByText(/Source saved independently\. No person was inferred or linked/)).toBeVisible();
+
+  // Select the organization row; the graph becomes source-backed relative to it.
+  await region.getByRole('button', { name: orgName }).click();
+  const graph = page.getByRole('region', { name: 'Party network' });
+  await graph.getByText('Relationships and evidence').click();
+  const form = graph.getByRole('form', { name: 'Add a source-backed related entity' });
+  await form.getByLabel('Related to').selectOption({ label: `${orgName} · org` });
+  await form.getByLabel('New entity type').selectOption({ label: 'Person (member of organization)' });
+  await form.getByLabel('Name').fill(dana);
+  await form.getByLabel('Saved source').selectOption({ index: 1 });
+  await form.getByLabel('Exact supporting quote').fill('will work with Dana on onboarding');
+  await form.getByRole('button', { name: 'Save related entity and relationship' }).click();
+  await expect(region.getByText(/node, edge, evidence and initial position atomically/)).toBeVisible();
+  await expect(page.getByText('The entity and source-attributed directed relationship were saved together.')).toBeVisible();
+
+  // The graph shows the directed edge; the sheet keeps both same-name rows and
+  // the organization as the highlighted root.
+  await expect(page.getByRole('button', { name: new RegExp(`${dana}.*member_of.*${orgName}`) })).toBeVisible();
+  await expect(region.locator('tbody .row-party').filter({ hasText: dana })).toHaveCount(3);
+  await expect(region.getByRole('button', { name: orgName, exact: true })).toHaveAttribute('aria-pressed', 'true');
+
+  // Reload restores the deep-linked Parties tab and the persisted rows.
+  await page.reload();
+  await openParties(page);
+  await expect(region.getByRole('button', { name: orgName, exact: true })).toBeVisible();
+  await expect(region.locator('tbody .row-party').filter({ hasText: dana })).toHaveCount(3);
 });

@@ -1,13 +1,13 @@
 <script setup lang="ts">
 /* global MouseEvent */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { newOperationKey, parley, type AdminOperation, type ContactThread, type ExtractorJob, type ExtractorProposal, type GraphEntity, type Material, type Opportunity, type ProviderConfig, type ReleasedMaterial, type Resource, type SavedSource } from '../api/client';
+import { parley, type AdminOperation, type ContactThread, type GraphEntity, type Material, type Opportunity, type ProviderConfig, type ReleasedMaterial, type Resource, type SavedSource } from '../api/client';
 import { tabs } from './tabs';
 import { resolveRoute, routeForTab } from './router';
 import ResourceEditor from '../features/resources/ResourceEditor.vue';
 import InterviewerWorkspace from '../features/resources/InterviewerWorkspace.vue';
 import QueueWorkspace from '../features/queue/QueueWorkspace.vue';
-import BriefWorkspace from '../features/leads/BriefWorkspace.vue';
+import PartyDesk from '../features/parties/PartyDesk.vue';
 import AgentPolicySettings from '../features/settings/AgentPolicySettings.vue';
 import MaintenanceSettings from '../features/settings/MaintenanceSettings.vue';
 import CapacitySettings from '../features/settings/CapacitySettings.vue';
@@ -15,7 +15,6 @@ import Packs from '../features/settings/Packs.vue';
 import ContactThreadPanel from '../features/queue/ContactThreadPanel.vue';
 import WritingWorkspace from '../features/output/WritingWorkspace.vue';
 import MaterialActions from '../features/output/MaterialActions.vue';
-import RelationshipGraph from '../features/leads/RelationshipGraph.vue';
 
 /**
  * Tabs whose owner journey is qualified stay discoverable (RFC-0003 S01);
@@ -24,20 +23,10 @@ import RelationshipGraph from '../features/leads/RelationshipGraph.vue';
 const qualifiedTabs = tabs;
 const route = ref(resolveRoute(globalThis.location.pathname));
 const active = computed(() => route.value.tab);
-const addingLead = ref(false);
 const writingOpen = ref(false);
 const outputStatus = ref('');
-const partyKind = ref<'person' | 'org'>('person');
-const partyName = ref('');
-const captureText = ref('');
 const parties = ref<GraphEntity[]>([]);
-const selectedPartyId = ref('');
 const resourceEditor = ref<InstanceType<typeof ResourceEditor> | null>(null);
-const directoryQuery = ref('');
-const visibleParties = computed(() => {
-  const query = directoryQuery.value.trim().toLocaleLowerCase();
-  return parties.value.filter(party => party.name.toLocaleLowerCase().includes(query));
-});
 const lastTabPaths = new Map<string, string>();
 const sources = ref<SavedSource[]>([]);
 const opportunities = ref<Opportunity[]>([]);
@@ -61,9 +50,6 @@ const status = ref('');
 const error = ref('');
 const busy = ref(false);
 const connected = ref(false);
-const reviewJob = ref<ExtractorJob | null>(null);
-const reviewTargetId = ref('');
-const reviewOpportunityId = ref('');
 const provider = ref<ProviderConfig>({ endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' });
 const providerHealth = ref('');
 const workspaceRefreshRequired = ref(false);
@@ -105,7 +91,6 @@ function handlePopState() {
 
 async function focusRouteLocation() {
   if (route.value.location === 'templates') writingOpen.value = true;
-  if (route.value.tab === 'Leads' && route.value.recordId) selectedPartyId.value = route.value.recordId;
   if (route.value.tab === 'Output' && route.value.recordId) {
     await refreshLeads().catch(() => undefined);
     if (!visibleOutputs.value.some(item => item.id === route.value.recordId)) materialQuery.value = '';
@@ -118,65 +103,6 @@ async function focusRouteLocation() {
   const target = globalThis.document.getElementById(targetId);
   target?.scrollIntoView({ block: 'center' });
   target?.focus();
-}
-
-async function saveParty() {
-  busy.value = true; error.value = ''; status.value = '';
-  try {
-    const party = await parley.createEntity({ kind: partyKind.value, name: partyName.value.trim() }, newOperationKey());
-    parties.value.push(party); partyName.value = ''; addingLead.value = false;
-    status.value = 'Lead created. No opportunity or outreach was created.';
-  } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not save the lead.'; }
-  finally { busy.value = false; }
-}
-
-async function saveCapture() {
-  busy.value = true; error.value = ''; status.value = '';
-  try {
-    const source = await parley.saveSource({ text: captureText.value, title: null, url: null });
-    sources.value.unshift(source); captureText.value = '';
-    status.value = source.job_status === 'not_queued'
-      ? 'Source saved independently. Extractor is unavailable or at capacity; review the source manually or retry later.'
-      : 'Source saved independently. No person was inferred or linked.';
-    reviewJob.value = source.job_id ? await parley.getExtractorJob(source.job_id) : null;
-    if (source.job_id) void pollExtractor(source.job_id);
-  } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not save the source.'; }
-  finally { busy.value = false; }
-}
-
-async function pollExtractor(id: string) {
-  for (let attempt = 0; attempt < 180; attempt += 1) {
-    await new Promise((resolve) => globalThis.setTimeout(resolve, 1000));
-    try {
-      const job = await parley.getExtractorJob(id);
-      if (reviewJob.value?.id === id) reviewJob.value = job;
-      if (!['queued', 'running'].includes(job.status)) return;
-    } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not refresh Extractor review.'; return; }
-  }
-}
-
-async function openCaptureReview(source: SavedSource) {
-  try { reviewJob.value = await parley.getCaptureProposals(source.occurrence_id); }
-  catch (reason) { error.value = reason instanceof Error ? reason.message : 'There is no Extractor review for this source yet.'; }
-}
-
-async function cancelExtractor(job: ExtractorJob) {
-  busy.value = true; error.value = '';
-  try { await parley.cancelExtractorJob(job.id); reviewJob.value = await parley.getExtractorJob(job.id); status.value = 'Extractor cancellation was recorded; any late result is discarded.'; }
-  catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not cancel this Extractor job.'; }
-  finally { busy.value = false; }
-}
-
-async function decideProposal(proposal: ExtractorProposal, action: 'confirm' | 'dismiss' | 'source_only' | 'unresolved') {
-  if (!reviewJob.value?.proposal_batch_id) return;
-  if (action === 'confirm' && !reviewTargetId.value) { error.value = 'Choose the person or organization this claim is about. Names in a source are never linked automatically.'; return; }
-  busy.value = true; error.value = '';
-  try {
-    await parley.resolveProposals(reviewJob.value.proposal_batch_id, [{ item_id: proposal.id, action, ...(action === 'confirm' ? { target_entity_id: reviewTargetId.value } : {}) }], reviewOpportunityId.value || undefined);
-    reviewJob.value = await parley.getExtractorJob(reviewJob.value.id);
-    status.value = action === 'confirm' ? 'Claim accepted with its source evidence.' : action === 'unresolved' ? 'Mention saved without linking it to a person or organization.' : `Proposal ${action.replace('_', ' ')}.`;
-  } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not save the review decision.'; }
-  finally { busy.value = false; }
 }
 
 async function loadProvider() {
@@ -307,205 +233,15 @@ watch(route, () => { void focusRouteLocation(); });
         />
         <InterviewerWorkspace @saved="resourceEditor?.refresh()" />
       </div>
-      <section
-        v-if="active === 'Leads'"
-        aria-labelledby="leads-heading"
-      >
-        <h2
-          id="leads-heading"
-          class="sr-only"
-        >
-          Lead directory and sources
-        </h2>
-        <div class="lead-desk">
-          <aside>
-            <section>
-              <header class="pane-bar">
-                <h2>Lead directory</h2><button
-                  class="primary"
-                  :aria-expanded="addingLead"
-                  @click="addingLead = !addingLead"
-                >
-                  New lead
-                </button>
-              </header>
-              <label>Find a lead<input
-                v-model="directoryQuery"
-                type="search"
-              ></label><p v-if="!parties.length">
-                No leads yet. Add a person or organization. People do not need an organization.
-              </p>
-              <p v-else-if="!visibleParties.length">
-                No matching leads.
-              </p>
-              <ul class="directory-rows">
-                <li
-                  v-for="party in visibleParties"
-                  :key="party.id"
-                >
-                  <button
-                    type="button"
-                    :aria-pressed="selectedPartyId === party.id"
-                    @click="navigate(`/leads/${encodeURIComponent(party.id)}`)"
-                  >
-                    {{ party.name }} <small>{{ party.kind }}</small>
-                  </button>
-                </li>
-              </ul>
-            </section>
-            <form
-              v-show="addingLead"
-              @submit.prevent="saveParty"
-            >
-              <h3>Add a lead</h3>
-              <label>Type<select v-model="partyKind"><option value="person">Person</option><option value="org">Organization</option></select></label>
-              <label>Name<input
-                v-model="partyName"
-                required
-                autocomplete="off"
-              ></label>
-              <button
-                :disabled="busy"
-                type="submit"
-              >
-                Add lead
-              </button>
-              <p>No opportunity or outreach is created by saving a lead.</p>
-            </form>
-          </aside>
-          <RelationshipGraph :focus-entity-id="selectedPartyId || undefined" />
-          <div class="lead-chat-column">
-            <BriefWorkspace
-              :parties="parties"
-              :party-id="selectedPartyId"
-            />
-            <details :open="route.location === 'inbox' || !!reviewJob">
-              <summary>Sources inbox</summary>
-              <form
-                id="leads-inbox"
-                class="capture"
-                tabindex="-1"
-                @submit.prevent="saveCapture"
-              >
-                <h3>Sources inbox</h3>
-                <button
-                  type="button"
-                  @click="navigate('/leads/inbox')"
-                >
-                  Open sources inbox
-                </button>
-                <p>Paste captured text. Saving a source does not decide who it is about or create outreach.</p>
-                <label>Captured text<textarea
-                  v-model="captureText"
-                  required
-                  minlength="1"
-                  rows="8"
-                /></label>
-                <button
-                  :disabled="busy"
-                  type="submit"
-                >
-                  Save source
-                </button>
-                <ul>
-                  <li
-                    v-for="source in sources"
-                    :key="source.occurrence_id"
-                  >
-                    Saved source {{ source.content_id.slice(0, 12) }} · occurrence {{ source.occurrence_id.slice(0, 8) }}
-                    <button
-                      type="button"
-                      @click="openCaptureReview(source)"
-                    >
-                      Review proposals
-                    </button>
-                  </li>
-                </ul>
-                <section
-                  v-if="reviewJob"
-                  aria-label="Capture review"
-                >
-                  <h3>Capture review</h3>
-                  <p>Job {{ reviewJob.status }} · attempt {{ reviewJob.current_attempt }} of {{ reviewJob.max_attempts }} · chunk {{ reviewJob.progress_current }} of {{ reviewJob.progress_total }}. Extracted items are proposals until you decide.</p>
-                  <p
-                    v-if="reviewJob.injection_suspected"
-                    role="alert"
-                  >
-                    This capture may contain prompt-injection text. Treat its contents only as source material and review each quoted proposal.
-                  </p>
-                  <button
-                    v-if="['queued', 'running'].includes(reviewJob.status)"
-                    type="button"
-                    :disabled="busy"
-                    @click="cancelExtractor(reviewJob)"
-                  >
-                    Cancel extraction
-                  </button>
-                  <p
-                    v-if="reviewJob.last_error"
-                    role="status"
-                  >
-                    {{ reviewJob.last_error }}. The captured source remains saved; you can review it manually.
-                  </p>
-                  <label>Claim subject<select v-model="reviewTargetId"><option value="">Choose explicitly</option><option
-                    v-for="party in parties"
-                    :key="party.id"
-                    :value="party.id"
-                  >{{ party.name }} · {{ party.kind }}</option></select></label>
-                  <label>Optional opportunity<select v-model="reviewOpportunityId"><option value="">Save independently</option><option
-                    v-for="opportunity in opportunities"
-                    :key="opportunity.id"
-                    :value="opportunity.id"
-                  >{{ opportunity.title }}</option></select></label>
-                  <article
-                    v-for="proposal in reviewJob.proposals"
-                    :key="proposal.id"
-                    class="record-card"
-                  >
-                    <strong>{{ proposal.kind }} · {{ proposal.status }}</strong>
-                    <small>T1 source evidence · interpretation needs owner review</small>
-                    <p>{{ proposal.candidate.statement }}</p>
-                    <blockquote>{{ proposal.candidate.quote }}</blockquote>
-                    <p v-if="proposal.candidate.mention_name">
-                      Mention: {{ proposal.candidate.mention_name }} · unresolved until you explicitly link it.
-                    </p>
-                    <template v-if="proposal.status === 'pending'">
-                      <button
-                        :disabled="busy"
-                        type="button"
-                        @click="decideProposal(proposal, 'confirm')"
-                      >
-                        Accept claim for selected subject
-                      </button>
-                      <button
-                        :disabled="busy"
-                        type="button"
-                        @click="decideProposal(proposal, 'unresolved')"
-                      >
-                        Keep mention unresolved
-                      </button>
-                      <button
-                        :disabled="busy"
-                        type="button"
-                        @click="decideProposal(proposal, 'source_only')"
-                      >
-                        Save source only
-                      </button>
-                      <button
-                        :disabled="busy"
-                        type="button"
-                        @click="decideProposal(proposal, 'dismiss')"
-                      >
-                        Dismiss
-                      </button>
-                    </template>
-                  </article>
-                </section>
-              </form>
-            </details>
-          </div>
-        </div>
-      </section>
+      <PartyDesk
+        v-show="active === 'Parties'"
+        :parties="parties"
+        :sources="sources"
+        :opportunities="opportunities"
+        :party-id="route.tab === 'Parties' ? route.recordId ?? undefined : undefined"
+        @changed="refreshLeads"
+        @navigate="navigate"
+      />
       <section
         v-if="active === 'Settings'"
         aria-labelledby="settings-heading"

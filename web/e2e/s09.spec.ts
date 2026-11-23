@@ -1,22 +1,22 @@
 import { randomUUID } from 'node:crypto';
 import { expect } from '@playwright/test';
 import { test } from './fixtures';
+import { addParty, openParties } from './parties';
 
 test('s09_recipient_exchange_template_lifecycle_and_uncalibrated_manual_path', async ({ page }) => {
   await page.goto('/');
   const name = `Dana Lee ${randomUUID()}`;
-  await page.getByRole('button', { name: 'Leads' }).click();
-  const leads = page.getByRole('region', { name: 'Lead directory and sources' });
-  await leads.getByLabel('Name').fill(name);
-  await leads.getByRole('button', { name: 'Add lead' }).click();
+  await openParties(page);
+  await addParty(page, name, 'person');
 
-  await page.getByRole('button', { name: 'Queue' }).click();
+  await page.getByRole('link', { name: 'Queue' }).click();
   const queue = page.getByRole('region', { name: 'Opportunities' });
+  await queue.getByRole('button', { name: 'New opportunity' }).click();
   await queue.getByLabel('Opportunity title').fill('S09 writing opportunity');
   await queue.getByLabel('Participant').selectOption({ label: `${name} · person` });
   await queue.getByRole('button', { name: 'Create opportunity' }).click();
 
-  await page.getByRole('button', { name: 'Output' }).click();
+  await page.getByRole('link', { name: 'Output' }).click();
   const output = page.getByRole('region', { name: 'Composer, evidence and templates' });
   await output.getByLabel('Opportunity').selectOption({ label: 'S09 writing opportunity' });
   await output.getByLabel('Named participant').selectOption({ label: name });

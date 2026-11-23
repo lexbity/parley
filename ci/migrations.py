@@ -43,6 +43,10 @@ SLICE_MIGRATIONS: dict[str, list[str]] = {
     "s10": ["0010_coach.sql"],
     "s11": ["0011_legacy.sql"],
     "s12": [],
+    "p01": ["0012_party_sheet.sql"],
+    "p02": [],
+    "p03": [],
+    "p04": [],
 }
 
 
@@ -126,7 +130,9 @@ def verify_through(last: str) -> None:
 
     errors: list[str] = []
     required: list[tuple[str, str]] = []
-    for slice_id in [f"s{n:02d}" for n in range(1, 12)]:
+    for slice_id in [f"s{n:02d}" for n in range(1, 12)] + [
+        f"p{n:02d}" for n in range(1, 5)
+    ]:
         for name in SLICE_MIGRATIONS[slice_id]:
             required.append((slice_id, name))
 

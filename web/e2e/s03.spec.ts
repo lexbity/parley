@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { expect } from '@playwright/test';
 import { test } from './fixtures';
+import { addParty, openParties } from './parties';
 
 test('s03_reviewed_manual_message_copy_is_recipient_and_version_bound', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
@@ -8,15 +9,13 @@ test('s03_reviewed_manual_message_copy_is_recipient_and_version_bound', async ({
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { (window as Window & { parleyClipboardText?: string }).parleyClipboardText = text; } } });
   });
   await page.goto('/');
-  await page.getByRole('button', { name: 'Leads' }).click();
+  await openParties(page);
   const suffix = randomUUID();
   // Letters-only suffix: generic sentences are grounded-checked, and digits
   // inside them are hard gate failures (RFC-0001 GR-2).
   const leadName = `Dana ${suffix.replace(/[^a-z]/gi, '')}`;
-  const addLead = page.getByRole('heading', { name: 'Add lead' }).locator('..');
-  await addLead.getByLabel('Name').fill(leadName);
-  await addLead.getByRole('button', { name: 'Add lead' }).click();
-  await page.getByRole('button', { name: 'Output' }).click();
+  await addParty(page, leadName, 'person');
+  await page.getByRole('link', { name: 'Output' }).click();
   const workspace = page.getByLabel('Output registry workspace');
   await workspace.getByRole('textbox', { name: 'Title', exact: true }).fill(`Onboarding ${suffix}`);
   await workspace.getByLabel(new RegExp(`${leadName}.*person`)).check();
@@ -57,12 +56,12 @@ test('s03_reviewed_manual_message_copy_is_recipient_and_version_bound', async ({
   await editor.getByRole('button', { name: 'Prepare approved copy' }).click();
   await editor.getByRole('button', { name: 'Copy approved text' }).click();
   await expect(page.getByText(/Clipboard promise succeeded and its receipt was recorded/)).toBeVisible();
-  await page.getByRole('button', { name: 'Output' }).click();
+  await page.getByRole('link', { name: 'Output' }).click();
   await expect(page.getByRole('button', { name: /Checklist note/ })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Material editor', exact: true })).toContainText(leadName);
   expect(await page.evaluate(() => (window as Window & { parleyClipboardText?: string }).parleyClipboardText)).toBe(`Hello ${leadName}.`);
   await expect(page.getByText(/Copying text does not mark it sent or start a reply timer/)).toBeVisible();
-  await page.getByRole('button', { name: 'Queue' }).click();
+  await page.getByRole('link', { name: 'Queue' }).click();
   const queue = page.getByRole('region', { name: 'Opportunity queue' });
   await queue.getByRole('button', { name: new RegExp(`Onboarding ${suffix}`) }).first().click();
   await expect(queue.getByRole('button', { name: /Checklist note/ })).toBeVisible();

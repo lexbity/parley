@@ -323,7 +323,7 @@ async fn s08_owner_chat_scope_and_segment_scope_are_distinct_and_revisioned() {
 async fn s08_owner_interviewer_and_party_briefer_histories_stay_separate() {
     let (path, workspace, port, service) = setup().await;
     let party = workspace
-        .create_entity("s08-dana", "person", "Dana Lee")
+        .create_entity("s08-dana", "person", "Dana Lee", "")
         .await
         .unwrap();
     let (endpoint, fake) = briefer_ollama().await;
@@ -413,7 +413,7 @@ async fn s08_owner_interviewer_and_party_briefer_histories_stay_separate() {
 async fn s08_job_events_carry_no_model_prose() {
     let (path, workspace, port, service) = setup().await;
     let party = workspace
-        .create_entity("s08-prose-party", "person", "Dana Lee")
+        .create_entity("s08-prose-party", "person", "Dana Lee", "")
         .await
         .unwrap();
     let (endpoint, fake) = briefer_ollama().await;

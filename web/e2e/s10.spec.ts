@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { expect } from '@playwright/test';
 import { test } from './fixtures';
+import { addParty, openParties } from './parties';
 
 test('s10_daily_queue_renders_ranked_items_blocked_reason_and_insight_counts_without_dispatch', async ({ page }) => {
   await page.goto('/');
@@ -29,10 +30,8 @@ test('s10_coach_questions_are_impact_ordered_and_answer_pending_requires_intervi
 test('s10_opportunity_table_filters_and_sort_share_board_records', async ({ page }) => {
   await page.goto('/');
   const name = `S10 lead ${randomUUID()}`;
-  await page.getByRole('link', { name: 'Leads' }).click();
-  const leads = page.getByRole('region', { name: 'Lead directory and sources' });
-  await leads.locator('form').filter({ hasText: 'Add a lead' }).getByLabel('Name').fill(name);
-  await leads.getByRole('button', { name: 'Add lead' }).click();
+  await openParties(page);
+  await addParty(page, name, 'person');
   await page.getByRole('link', { name: 'Queue' }).click();
   const queue = page.getByRole('region', { name: 'Opportunities' });
   await queue.getByLabel('Opportunity title').fill('S10 filtered table row');
@@ -52,10 +51,8 @@ test('s10_opportunity_table_filters_and_sort_share_board_records', async ({ page
 test('s10_outcome_correction_updates_insight_counts_with_history_preserved', async ({ page }) => {
   await page.goto('/');
   const name = `S10 outcome lead ${randomUUID()}`;
-  await page.getByRole('link', { name: 'Leads' }).click();
-  const leads = page.getByRole('region', { name: 'Lead directory and sources' });
-  await leads.locator('form').filter({ hasText: 'Add a lead' }).getByLabel('Name').fill(name);
-  await leads.getByRole('button', { name: 'Add lead' }).click();
+  await openParties(page);
+  await addParty(page, name, 'person');
   await page.getByRole('link', { name: 'Queue' }).click();
   const queue = page.getByRole('region', { name: 'Opportunities' });
   await queue.getByLabel('Opportunity title').fill('S10 correction history');

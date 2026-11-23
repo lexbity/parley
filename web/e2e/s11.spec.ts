@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { expect } from '@playwright/test';
 import { test } from './fixtures';
+import { addParty, openParties } from './parties';
 
 test('s11_backup_destination_schedule_and_verified_snapshot_are_saved', async ({ page }) => {
   await page.goto('/');
@@ -51,10 +52,8 @@ test('s11_restore_preview_commit_rotates_session_and_reports_erasure_effects', a
 test('s11_party_erasure_is_preview_bound_and_reports_external_copies', async ({ page }) => {
   await page.goto('/');
   const name = `S11 erase ${randomUUID()}`;
-  await page.getByRole('link', { name: 'Leads' }).click();
-  const leads = page.getByRole('region', { name: 'Lead directory and sources' });
-  await leads.locator('form').filter({ hasText: 'Add a lead' }).getByLabel('Name').fill(name);
-  await leads.getByRole('button', { name: 'Add lead' }).click();
+  await openParties(page);
+  await addParty(page, name, 'person');
   await page.getByRole('link', { name: 'Settings' }).click();
   const settings = page.getByRole('region', { name: 'Backup, export, restore, and erasure' });
   await settings.getByRole('region', { name: 'Erase a party', exact: true }).getByLabel('Party').selectOption({ label: `${name} · person` });
