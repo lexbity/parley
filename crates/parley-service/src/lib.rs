@@ -240,6 +240,7 @@ mod generation;
 mod jobs;
 mod maintenance;
 mod parties;
+pub mod relations;
 pub use maintenance::{MaintenanceSettings, MaintenanceSettingsInput};
 #[doc(hidden)]
 pub use maintenance::{create_backup_for_test, prune_backups_for_test};
@@ -1281,9 +1282,9 @@ impl Workspace {
         };
         let mut rows = if let Some(center) = center_id {
             sqlx::query_as::<_, (String, String, String, i64, f64, f64, i64)>(
-                "SELECT e.id,e.kind,e.name,e.revision,COALESCE(v.x,((ROW_NUMBER() OVER(ORDER BY e.name COLLATE NOCASE,e.id)-1)%8)*240.0),COALESCE(v.y,((ROW_NUMBER() OVER(ORDER BY e.name COLLATE NOCASE,e.id)-1)/8)*160.0),COALESCE(v.revision,0) FROM entity e LEFT JOIN view_position v ON v.entity_id=e.id AND v.view_scope=? AND v.view_id=? WHERE e.id=? OR e.id IN (SELECT from_id FROM edge WHERE state='active' AND to_id=?) OR e.id IN (SELECT to_id FROM edge WHERE state='active' AND from_id=?) ORDER BY e.name COLLATE NOCASE,e.id LIMIT 201",
+                "SELECT e.id,e.kind,e.name,e.revision,COALESCE(v.x,((ROW_NUMBER() OVER(ORDER BY e.name COLLATE NOCASE,e.id)-1)%8)*240.0),COALESCE(v.y,((ROW_NUMBER() OVER(ORDER BY e.name COLLATE NOCASE,e.id)-1)/8)*160.0),COALESCE(v.revision,0) FROM entity e LEFT JOIN view_position v ON v.entity_id=e.id AND v.view_scope=? AND v.view_id=? WHERE e.id=? OR e.id IN (SELECT from_id FROM edge WHERE state='active' AND to_id=?) OR e.id IN (SELECT to_id FROM edge WHERE state='active' AND from_id=?) ORDER BY (e.id=?) DESC,e.name COLLATE NOCASE,e.id LIMIT 201",
             )
-            .bind(view_scope).bind(view_id).bind(center).bind(center).bind(center).fetch_all(&self.pool).await?
+            .bind(view_scope).bind(view_id).bind(center).bind(center).bind(center).bind(center).fetch_all(&self.pool).await?
         } else {
             sqlx::query_as::<_, (String, String, String, i64, f64, f64, i64)>(
                 "SELECT e.id,e.kind,e.name,e.revision,COALESCE(v.x,((ROW_NUMBER() OVER(ORDER BY e.name COLLATE NOCASE,e.id)-1)%8)*240.0),COALESCE(v.y,((ROW_NUMBER() OVER(ORDER BY e.name COLLATE NOCASE,e.id)-1)/8)*160.0),COALESCE(v.revision,0) FROM entity e LEFT JOIN view_position v ON v.entity_id=e.id AND v.view_scope=? AND v.view_id=? ORDER BY e.name COLLATE NOCASE,e.id LIMIT 201",
@@ -1337,7 +1338,7 @@ impl Workspace {
             Vec::new()
         } else {
             let mut query = sqlx::QueryBuilder::new(
-                "SELECT e.id,e.from_id,e.to_id,e.verb,e.revision,cr.occurrence_id,cr.wording,cr.tier,cr.speaker_kind,so.captured_at,sv.title,sv.url FROM edge e JOIN edge_evidence ee ON ee.edge_id=e.id JOIN claim_revision cr ON cr.claim_id=ee.claim_id AND cr.revision=ee.claim_revision JOIN source_occurrence so ON so.id=cr.occurrence_id JOIN source_variant sv ON sv.id=cr.source_variant_id WHERE e.state='active' AND e.from_id IN (",
+                "SELECT e.id,e.from_id,e.to_id,e.verb,e.revision,cr.occurrence_id,cr.wording,cr.tier,cr.speaker_kind,so.captured_at,sv.title,sv.url FROM edge e JOIN edge_evidence ee ON ee.rowid=(SELECT newest.rowid FROM edge_evidence newest WHERE newest.edge_id=e.id ORDER BY newest.rowid DESC LIMIT 1) JOIN claim_revision cr ON cr.claim_id=ee.claim_id AND cr.revision=ee.claim_revision JOIN source_occurrence so ON so.id=cr.occurrence_id JOIN source_variant sv ON sv.id=cr.source_variant_id WHERE e.state='active' AND e.from_id IN (",
             );
             {
                 let mut separated = query.separated(",");
@@ -1813,106 +1814,6 @@ impl Workspace {
         Ok(record)
     }
 
-    /// Atomically add a node, one source-backed edge and its initial layout.
-    /// The quoted span is checked against the selected raw source occurrence;
-    /// no name lookup or identity merge is performed.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the command has one revision-bound set of graph, evidence and layout inputs"
-    )]
-    pub async fn create_related_entity(
-        &self,
-        kind: &str,
-        name: &str,
-        from_id: &str,
-        verb: &str,
-        occurrence_id: &str,
-        quote: &str,
-        view_scope: &str,
-        view_id: &str,
-        x: f64,
-        y: f64,
-    ) -> Result<EntityRecord, WorkspaceError> {
-        if !x.is_finite() || !y.is_finite() {
-            return Err(WorkspaceError::Invalid(
-                "layout coordinates must be finite".into(),
-            ));
-        }
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let source=sqlx::query_as::<_,(String,String,String,Option<String>)>("SELECT v.raw_text,o.source_variant_id,o.actor_kind,o.actor_entity_id FROM source_occurrence o JOIN source_variant v ON v.id=o.source_variant_id WHERE o.id=?")
-            .bind(occurrence_id).fetch_optional(&mut *tx).await?.ok_or_else(|| WorkspaceError::Invalid("source occurrence does not exist".into()))?;
-        let matched =
-            parley_domain::evidence::verify_quote(&source.0, quote, None).map_err(|_| {
-                WorkspaceError::Invalid("quote is absent or ambiguous in the cited source".into())
-            })?;
-        let parent_kind: Option<String> = sqlx::query_scalar("SELECT kind FROM entity WHERE id=?")
-            .bind(from_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-        let Some(parent_kind) = parent_kind else {
-            return Err(WorkspaceError::Invalid(
-                "relationship source entity does not exist".into(),
-            ));
-        };
-        let target_is_source = matches!(
-            (kind, parent_kind.as_str(), verb),
-            ("person", "org", "member_of")
-        );
-        let legal = target_is_source
-            || matches!(
-                (kind, parent_kind.as_str(), verb),
-                ("project", "org", "works_with") | ("resource", "person", "offers_to")
-            );
-        if !legal {
-            return Err(WorkspaceError::Invalid(
-                "relationship endpoint types and direction are not allowed".into(),
-            ));
-        }
-        let id = new_id(name);
-        let now = now_utc();
-        sqlx::query(
-            "INSERT INTO entity(id,kind,name,revision,created_at,updated_at) VALUES(?,?,?,1,?,?)",
-        )
-        .bind(&id)
-        .bind(kind)
-        .bind(name)
-        .bind(&now)
-        .bind(&now)
-        .execute(&mut *tx)
-        .await?;
-        let claim_id = new_id(&id);
-        sqlx::query("INSERT INTO claim(id,subject_id,predicate,current_revision,created_at) VALUES(?,?,?,1,?)").bind(&claim_id).bind(&id).bind(verb).bind(&now).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO claim_revision(claim_id,revision,wording,knowledge_kind,tier,speaker_kind,speaker_entity_id,occurrence_id,source_variant_id,source_start,source_end,normalized_start,normalized_end,normalization_version,created_at) VALUES(?,1,?,'observation',1,?,?,?,?,?,?,?,?,?,?)")
-            .bind(&claim_id).bind(quote).bind(&source.2).bind(source.3.as_deref()).bind(occurrence_id).bind(&source.1).bind(matched.source_start as i64).bind(matched.source_end as i64).bind(matched.normalized_start as i64).bind(matched.normalized_end as i64).bind(parley_domain::evidence::NORMALIZATION_VERSION as i64).bind(&now).execute(&mut *tx).await?;
-        let edge_id = new_id(&claim_id);
-        let (edge_from, edge_to) = if target_is_source {
-            (id.as_str(), from_id)
-        } else {
-            (from_id, id.as_str())
-        };
-        sqlx::query("INSERT INTO edge(id,from_id,verb,to_id,state,revision,created_at) VALUES(?,?,?,?,'active',1,?)").bind(&edge_id).bind(edge_from).bind(verb).bind(edge_to).bind(&now).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO edge_evidence(edge_id,claim_id,claim_revision) VALUES(?,?,1)")
-            .bind(&edge_id)
-            .bind(&claim_id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("INSERT INTO view_position(view_scope,view_id,entity_id,x,y,pinned,revision) VALUES(?,?,?,?,?,0,1)").bind(view_scope).bind(view_id).bind(&id).bind(x).bind(y).execute(&mut *tx).await?;
-        for (event_type, entity_type, entity_id) in [
-            ("entity.created", "entity", id.as_str()),
-            ("edge.created", "edge", edge_id.as_str()),
-        ] {
-            sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?,?, ?,1,?,'{}')").bind(new_id(entity_id)).bind(&now).bind(entity_type).bind(entity_id).bind(event_type).execute(&mut *tx).await?;
-        }
-        tx.commit().await?;
-        Ok(EntityRecord {
-            id,
-            kind: kind.into(),
-            name: name.into(),
-            focus: String::new(),
-            revision: 1,
-        })
-    }
-
     /// Last committed workspace event sequence, used as the read cursor.
     pub async fn current_cursor(&self) -> Result<i64, WorkspaceError> {
         let cursor: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(cursor),0) FROM event")
@@ -2077,7 +1978,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         .route("/api/v1/captures", get(list_captures).post(save_capture))
         .route("/api/v1/graph", get(get_graph))
         .route("/api/v1/graph/layout", put(update_graph_layout))
-        .route("/api/v1/graph/related", post(create_related_entity))
+        .merge(relations::routes())
         .merge(board::routes())
         .merge(materials::routes())
         .merge(release::routes())
@@ -2515,7 +2416,7 @@ async fn session(State(state): State<AppState>, headers: HeaderMap) -> Response 
         "epoch": state.workspace.epoch(),
         "wire_major": 1,
         "wire_minor": 0,
-        "capabilities": ["resources.read", "resources.write", "party.sheet", "party.notes", "party.dossier", "party.imports", "party.attachments"],
+        "capabilities": ["resources.read", "resources.write", "party.sheet", "party.notes", "party.dossier", "party.imports", "party.attachments", "party.relations"],
         "mutation_token": record.token,
         "cursor": cursor.to_string(),
     }))
@@ -3352,62 +3253,6 @@ async fn update_graph_layout(
             response
         }
         Err(error_value) => command_error(error_value),
-    }
-}
-
-#[derive(Deserialize)]
-struct RelatedEntityRequest {
-    kind: String,
-    name: String,
-    related_entity_id: String,
-    verb: String,
-    occurrence_id: String,
-    quote: String,
-    view_scope: String,
-    view_id: String,
-    x: f64,
-    y: f64,
-}
-
-async fn create_related_entity(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(input): Json<RelatedEntityRequest>,
-) -> Response {
-    if let Err(response) = authenticate(&headers, &state).await {
-        return response.into_response();
-    }
-    match state
-        .workspace
-        .create_related_entity(
-            &input.kind,
-            &input.name,
-            &input.related_entity_id,
-            &input.verb,
-            &input.occurrence_id,
-            &input.quote,
-            &input.view_scope,
-            &input.view_id,
-            input.x,
-            input.y,
-        )
-        .await
-    {
-        Ok(entity) => {
-            let mut response = (
-                StatusCode::CREATED,
-                Json(json!({"id": entity.id, "kind": entity.kind, "name": entity.name, "revision": entity.revision})),
-            )
-                .into_response();
-            private_headers(&mut response, state.workspace.epoch());
-            response
-        }
-        Err(WorkspaceError::Invalid(message)) => error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "RELATIONSHIP_REJECTED",
-            message,
-        ),
-        Err(err) => command_error(err),
     }
 }
 

@@ -25,6 +25,7 @@ fn invalid(reason: impl Into<String>) -> WorkspaceError {
 
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
+        .route("/api/v1/directory", get(directory))
         .route("/api/v1/party-imports", post(stage))
         .route("/api/v1/party-imports/{id}/preview", post(preview))
         .route("/api/v1/party-imports/{id}/commit", post(commit))
@@ -554,4 +555,87 @@ async fn content(
         .into_response();
     private_headers(&mut response, s.workspace.epoch());
     response
+}
+
+#[derive(Deserialize)]
+struct DirectoryQuery {
+    kind: Option<String>,
+    q: Option<String>,
+    batch_id: Option<String>,
+    sort: Option<String>,
+    cursor: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn directory(
+    State(s): State<AppState>,
+    h: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<DirectoryQuery>,
+) -> Response {
+    if let Err(e) = authenticate(&h, &s).await {
+        return e.into_response();
+    }
+    let limit = q.limit.unwrap_or(50);
+    let sort = match q.sort.as_deref() {
+        None | Some("name") => "name",
+        Some("type") => "kind",
+        Some("focus") => "focus",
+        _ => return command_error(invalid("Unsupported directory sort.")),
+    };
+    if !(1..=200).contains(&limit)
+        || q.q.as_ref().is_some_and(|t| t.len() > 500)
+        || q.kind.as_deref().is_some_and(|k| {
+            !matches!(
+                k,
+                "person" | "org" | "resource" | "project" | "source" | "interest" | "artifact"
+            )
+        })
+    {
+        return command_error(invalid("Select a supported kind and a page size of 1–200."));
+    }
+    let scope = digest(
+        json!([q.kind, q.q, q.batch_id, sort])
+            .to_string()
+            .as_bytes(),
+    );
+    let after = match q.cursor {
+        Some(token) => match hex::decode(token)
+            .ok()
+            .and_then(|v| serde_json::from_slice::<(String, String, String)>(&v).ok())
+        {
+            Some((binding, val, id)) if binding == scope => Some((val, id)),
+            _ => {
+                return command_error(invalid(
+                    "The directory cursor does not belong to this query.",
+                ));
+            }
+        },
+        None => None,
+    };
+    let run=async {
+        let mut tx=s.workspace.pool().begin().await?;
+        let cursor:i64=sqlx::query_scalar("SELECT COALESCE(MAX(cursor),0) FROM event").fetch_one(&mut *tx).await?;
+        // sort is a closed enum above; all user-provided predicates are bound.
+        let mut query=sqlx::QueryBuilder::new("SELECT e.id,e.kind,e.name,e.focus,e.revision FROM entity e WHERE ");
+        if let Some(k)=q.kind {query.push("e.kind=").push_bind(k);}else{query.push("e.kind IN ('person','org')");}
+        if let Some(t)=q.q.filter(|v|!v.is_empty()){query.push(" AND (instr(lower(e.name),lower(").push_bind(t.clone()).push("))>0 OR instr(lower(e.focus),lower(").push_bind(t).push("))>0)");}
+        if let Some(b)=q.batch_id{query.push(" AND EXISTS(SELECT 1 FROM party_import_origin o WHERE o.party_id=e.id AND o.batch_id=").push_bind(b).push(")");}
+        if let Some((val,id))=after {query.push(format!(" AND (e.{sort} COLLATE NOCASE,e.id) > (")).push_bind(val).push(",").push_bind(id).push(")");}
+        query.push(format!(" ORDER BY e.{sort} COLLATE NOCASE,e.id LIMIT ")).push_bind((limit+1) as i64);
+        let mut rows:Vec<(String,String,String,String,i64)>=query.build_query_as().fetch_all(&mut *tx).await?;
+        let more=rows.len()>limit;
+        rows.truncate(limit);
+        let next_cursor=if more {rows.last().map(|r|hex::encode(json!([scope,match sort{"kind"=>&r.1,"focus"=>&r.3,_=>&r.2},r.0]).to_string().as_bytes()))}else{None};
+        let data:Vec<_>=rows.into_iter().map(|(id,kind,name,focus,revision)|json!({"id":id,"kind":kind,"name":name,"focus":focus,"revision":revision,"etag":super::entity_etag(s.workspace.epoch(),&id,revision)})).collect();
+        tx.commit().await?;
+        Ok::<_,WorkspaceError>(json!({"data":data,"next_cursor":next_cursor,"cursor":cursor.to_string()}))
+    }.await;
+    match run {
+        Ok(v) => {
+            let mut r = Json(v).into_response();
+            private_headers(&mut r, s.workspace.epoch());
+            r
+        }
+        Err(e) => command_error(e),
+    }
 }
