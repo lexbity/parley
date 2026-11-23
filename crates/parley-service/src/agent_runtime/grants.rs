@@ -141,7 +141,10 @@ mod tests {
     use crate::commands::policy::Permission;
 
     fn target(kind: &str, id: &str) -> GrantTarget {
-        GrantTarget { kind: kind.to_owned(), id: id.to_owned() }
+        GrantTarget {
+            kind: kind.to_owned(),
+            id: id.to_owned(),
+        }
     }
 
     fn valid_targets() -> Vec<GrantTarget> {
@@ -166,26 +169,36 @@ mod tests {
     fn build_grant_rejects_out_of_bounds_input() {
         let permission = Permission::all()[0].as_str().to_owned();
         assert!(build_grant(vec![], valid_targets(), false).is_err());
-        assert!(
-            build_grant(vec!["not-a-permission".into()], valid_targets(), false).is_err()
-        );
+        assert!(build_grant(vec!["not-a-permission".into()], valid_targets(), false).is_err());
         assert!(build_grant(vec![permission], vec![], false).is_err());
         let too_many: Vec<GrantTarget> = (0..=MAX_TARGETS)
             .map(|index| target("party", &format!("p-{index}")))
             .collect();
         assert!(build_grant(vec![Permission::all()[0].as_str().into()], too_many, false).is_err());
         assert!(
-            build_grant(vec![Permission::all()[0].as_str().into()], vec![target("party", "")], false)
-                .is_err()
+            build_grant(
+                vec![Permission::all()[0].as_str().into()],
+                vec![target("party", "")],
+                false
+            )
+            .is_err()
         );
         let long_id = "p".repeat(201);
         assert!(
-            build_grant(vec![Permission::all()[0].as_str().into()], vec![target("party", &long_id)], false)
-                .is_err()
+            build_grant(
+                vec![Permission::all()[0].as_str().into()],
+                vec![target("party", &long_id)],
+                false
+            )
+            .is_err()
         );
         assert!(
-            build_grant(vec![Permission::all()[0].as_str().into()], vec![target("vehicle", "p-1")], false)
-                .is_err()
+            build_grant(
+                vec![Permission::all()[0].as_str().into()],
+                vec![target("vehicle", "p-1")],
+                false
+            )
+            .is_err()
         );
         assert!(
             build_grant(

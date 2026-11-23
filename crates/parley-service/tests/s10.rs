@@ -233,10 +233,7 @@ async fn s10_queue_5000_parties_meets_render_budget() {
     // llvm-cov (LLVM_PROFILE_FILE set) allow the instrumentation multiple.
     let instrumented = std::env::var_os("LLVM_PROFILE_FILE").is_some();
     let budget = std::time::Duration::from_millis(if instrumented { 300 } else { 200 });
-    assert!(
-        p95 < budget,
-        "Queue p95 {p95:?}, samples={samples:?}"
-    );
+    assert!(p95 < budget, "Queue p95 {p95:?}, samples={samples:?}");
     service.shutdown().await;
     drop(workspace);
     let _ = fs::remove_file(path);

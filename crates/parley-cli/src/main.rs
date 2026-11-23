@@ -30,10 +30,19 @@ fn usage_failure(message: String) -> CliFailure {
 enum Prepared {
     Version,
     Help,
-    Eval { report: serde_json::Value },
+    Eval {
+        report: serde_json::Value,
+    },
     /// Another process owns the workspace; hand back its bootstrap URL.
-    RelaunchActive { url: String, headless: bool },
-    Launch { workspace: PathBuf, headless: bool, lock: Option<File> },
+    RelaunchActive {
+        url: String,
+        headless: bool,
+    },
+    Launch {
+        workspace: PathBuf,
+        headless: bool,
+        lock: Option<File>,
+    },
 }
 
 const HELP: &str = "Parley local workspace\n\nUSAGE:\n  parley [--workspace PATH] [--headless]\n  parley eval --role extractor\n\nThe default workspace is $XDG_DATA_HOME/parley/workspace.sqlite. Headless mode prints the one-time local bootstrap URL. Evaluations emit one machine-readable JSON document to stdout.";
@@ -164,7 +173,10 @@ async fn serve_launcher_control(
 fn open_browser(url: &str) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open").arg(url).spawn().map(|_| ())
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
     }
     #[cfg(target_os = "windows")]
     {
@@ -175,7 +187,10 @@ fn open_browser(url: &str) -> io::Result<()> {
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        std::process::Command::new("xdg-open").arg(url).spawn().map(|_| ())
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
     }
 }
 
@@ -193,17 +208,25 @@ async fn prepare(args: &[String]) -> Result<Prepared, CliFailure> {
             || args.get(2).is_none_or(|arg| arg != "extractor")
             || args.len() != 3
         {
-            return Err(usage_failure("parley eval: expected `--role extractor`".into()));
+            return Err(usage_failure(
+                "parley eval: expected `--role extractor`".into(),
+            ));
         }
-        return evaluate_extractor().map(|report| Prepared::Eval { report }).map_err(|error| {
-            CliFailure { code: 1, message: format!("parley eval: {error}") }
-        });
+        return evaluate_extractor()
+            .map(|report| Prepared::Eval { report })
+            .map_err(|error| CliFailure {
+                code: 1,
+                message: format!("parley eval: {error}"),
+            });
     }
     let headless = args.iter().any(|arg| arg == "--headless");
-    let workspace =
-        workspace_path(args).map_err(usage_failure)?;
+    let workspace = workspace_path(args).map_err(usage_failure)?;
     match acquire_workspace_lock(&workspace).map_err(usage_failure)? {
-        Some(lock) => Ok(Prepared::Launch { workspace, headless, lock: Some(lock) }),
+        Some(lock) => Ok(Prepared::Launch {
+            workspace,
+            headless,
+            lock: Some(lock),
+        }),
         None => {
             let control = parley_service::Workspace::control_directory(&workspace)
                 .map_err(|error| usage_failure(error.to_string()))?;
@@ -229,14 +252,14 @@ async fn launch(workspace: PathBuf, headless: bool, lock: Option<File>) -> i32 {
     let control_path = parley_service::Workspace::control_directory(&workspace)
         .expect("workspace control root")
         .join("launcher.sock");
-    let control = match serve_launcher_control(control_path.clone(), running.bootstrap_issuer()).await
-    {
-        Ok(task) => task,
-        Err(error) => {
-            eprintln!("parley: launcher control failed: {error}");
-            return 2;
-        }
-    };
+    let control =
+        match serve_launcher_control(control_path.clone(), running.bootstrap_issuer()).await {
+            Ok(task) => task,
+            Err(error) => {
+                eprintln!("parley: launcher control failed: {error}");
+                return 2;
+            }
+        };
     let url = format!(
         "http://{}/#bootstrap={}",
         running.address, running.bootstrap_secret
@@ -289,9 +312,11 @@ async fn main() {
                 println!("Opened the active Parley workspace");
                 0
             }
-            Ok(Prepared::Launch { workspace, headless, lock }) => {
-                launch(workspace, headless, lock).await
-            }
+            Ok(Prepared::Launch {
+                workspace,
+                headless,
+                lock,
+            }) => launch(workspace, headless, lock).await,
             Err(failure) => {
                 eprintln!("parley: {}", failure.message);
                 failure.code
@@ -307,8 +332,9 @@ async fn main() {
 }
 
 fn evaluate_extractor() -> Result<serde_json::Value, String> {
-    let fixture: serde_json::Value = serde_json::from_str(include_str!("../eval/extractor-v1.json"))
-        .map_err(|error| format!("bundled Extractor fixture is invalid: {error}"))?;
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../eval/extractor-v1.json"))
+            .map_err(|error| format!("bundled Extractor fixture is invalid: {error}"))?;
     evaluate_extractor_fixture(&fixture)
 }
 
@@ -320,10 +346,18 @@ fn evaluate_extractor_fixture(fixture: &serde_json::Value) -> Result<serde_json:
     let mut valid_quote = 0usize;
     let mut results = Vec::with_capacity(cases.len());
     for case in cases {
-        let id = case["id"].as_str().ok_or("Extractor fixture case has no id")?;
-        let source = case["source"].as_str().ok_or("Extractor fixture case has no source")?;
-        let quote = case["quote"].as_str().ok_or("Extractor fixture case has no quote")?;
-        let expected = case["valid"].as_bool().ok_or("Extractor fixture case has no expected result")?;
+        let id = case["id"]
+            .as_str()
+            .ok_or("Extractor fixture case has no id")?;
+        let source = case["source"]
+            .as_str()
+            .ok_or("Extractor fixture case has no source")?;
+        let quote = case["quote"]
+            .as_str()
+            .ok_or("Extractor fixture case has no quote")?;
+        let expected = case["valid"]
+            .as_bool()
+            .ok_or("Extractor fixture case has no expected result")?;
         let actual = parley_domain::evidence::verify_quote(source, quote, None).is_ok();
         valid_quote += usize::from(actual);
         correct += usize::from(actual == expected);
@@ -355,7 +389,10 @@ mod tests {
         std::env::temp_dir().join(format!(
             "parley-cli-{tag}-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
         ))
     }
 
@@ -376,8 +413,8 @@ mod tests {
         assert_eq!(err, "Extractor fixture has no cases");
         let err = evaluate_extractor_fixture(&serde_json::json!({"cases": [{}]})).unwrap_err();
         assert_eq!(err, "Extractor fixture case has no id");
-        let err = evaluate_extractor_fixture(&serde_json::json!({"cases": [{"id": "c"}]}))
-            .unwrap_err();
+        let err =
+            evaluate_extractor_fixture(&serde_json::json!({"cases": [{"id": "c"}]})).unwrap_err();
         assert_eq!(err, "Extractor fixture case has no source");
         let err =
             evaluate_extractor_fixture(&serde_json::json!({"cases": [{"id": "c", "source": "s"}]}))
@@ -438,7 +475,10 @@ mod tests {
             workspace_path(&[]).unwrap(),
             PathBuf::from("/env/workspace.sqlite")
         );
-        assert_eq!(workspace_path(&["--workspace".to_owned()]).unwrap_err(), "--workspace requires a path");
+        assert_eq!(
+            workspace_path(&["--workspace".to_owned()]).unwrap_err(),
+            "--workspace requires a path"
+        );
         unsafe {
             match previous.0 {
                 Some(value) => std::env::set_var("PARLEY_WORKSPACE", value),
@@ -479,8 +519,14 @@ mod tests {
 
     #[tokio::test]
     async fn prepare_resolves_version_help_and_eval_usage() {
-        assert!(matches!(prepare(&["--version".to_owned()]).await.unwrap(), Prepared::Version));
-        assert!(matches!(prepare(&["-h".to_owned()]).await.unwrap(), Prepared::Help));
+        assert!(matches!(
+            prepare(&["--version".to_owned()]).await.unwrap(),
+            Prepared::Version
+        ));
+        assert!(matches!(
+            prepare(&["-h".to_owned()]).await.unwrap(),
+            Prepared::Help
+        ));
         let failure = prepare(&["eval".to_owned()]).await.unwrap_err();
         assert_eq!(failure.code, 2);
         assert!(failure.message.contains("--role extractor"));
@@ -488,9 +534,13 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(failure.code, 2);
-        let report = match prepare(&["eval".to_owned(), "--role".to_owned(), "extractor".to_owned()])
-            .await
-            .unwrap()
+        let report = match prepare(&[
+            "eval".to_owned(),
+            "--role".to_owned(),
+            "extractor".to_owned(),
+        ])
+        .await
+        .unwrap()
         {
             Prepared::Eval { report } => report,
             other => panic!("expected an evaluation report, got {other:?}"),
@@ -503,29 +553,31 @@ mod tests {
         let workspace = temp_dir("active").join("workspace.sqlite");
         std::fs::create_dir_all(workspace.parent().unwrap()).unwrap();
         // Simulate the other launcher process holding the workspace lock.
-        let held = acquire_workspace_lock(&workspace).unwrap().expect("lock acquired");
+        let held = acquire_workspace_lock(&workspace)
+            .unwrap()
+            .expect("lock acquired");
         let service = parley_service::start_workspace(&workspace).await.unwrap();
         let control = parley_service::Workspace::control_directory(&workspace).unwrap();
         let control_path = control.join("launcher.sock");
-        serve_launcher_control(control_path, service.bootstrap_issuer()).await.unwrap();
+        serve_launcher_control(control_path, service.bootstrap_issuer())
+            .await
+            .unwrap();
 
-        let guard = ENV_LOCK.lock().unwrap();
-        let previous = std::env::var_os("PARLEY_WORKSPACE");
-        unsafe { std::env::set_var("PARLEY_WORKSPACE", &workspace) };
-        let prepared = prepare(&["--headless".to_owned()]).await.unwrap();
+        // Address the workspace through the flag so no environment mutation
+        // spans an await point.
+        let prepared = prepare(&[
+            "--workspace".to_owned(),
+            workspace.display().to_string(),
+            "--headless".to_owned(),
+        ])
+        .await
+        .unwrap();
         let Prepared::RelaunchActive { url, headless } = prepared else {
             panic!("expected the active-workspace handoff");
         };
         assert!(headless);
         assert!(url.contains(service.address.to_string().as_str()), "{url}");
         assert!(url.contains("#bootstrap="));
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("PARLEY_WORKSPACE", value),
-                None => std::env::remove_var("PARLEY_WORKSPACE"),
-            }
-        }
-        drop(guard);
         drop(held);
         service.shutdown().await;
         let _ = std::fs::remove_file(&workspace);
@@ -549,7 +601,10 @@ mod tests {
             drop(stream);
         });
         let error = active_workspace_url(&silent).await.unwrap_err();
-        assert!(error.contains("reset") || error.contains("invalid response"), "{error}");
+        assert!(
+            error.contains("reset") || error.contains("invalid response"),
+            "{error}"
+        );
         drop_connection.await.unwrap();
 
         // A control socket that closes cleanly without ever answering.

@@ -68,11 +68,22 @@ mod tests {
         let path = std::env::temp_dir().join(format!(
             "parley-opp-summary-{}-{}.sqlite",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
         ));
         let workspace = Workspace::open(&path).await.expect("seeded workspace");
-        let mut tx = workspace.pool().begin_with("BEGIN IMMEDIATE").await.unwrap();
-        for (id, name) in [("p-1", "Mira Chen"), ("p-2", "Alex Boatwright"), ("p-3", "Dana Lee")] {
+        let mut tx = workspace
+            .pool()
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .unwrap();
+        for (id, name) in [
+            ("p-1", "Mira Chen"),
+            ("p-2", "Alex Boatwright"),
+            ("p-3", "Dana Lee"),
+        ] {
             sqlx::query("INSERT INTO entity(id,kind,name,revision,created_at,updated_at) VALUES(?,'person',?,1,?,?)")
                 .bind(id).bind(name).bind(NOW).bind(NOW)
                 .execute(&mut *tx).await.unwrap();
@@ -83,9 +94,12 @@ mod tests {
         sqlx::query("INSERT INTO opportunity(id,title,state,revision,created_at,updated_at) VALUES('o-2','Closed thread','closed',1,?,?)")
             .bind(NOW).bind(NOW)
             .execute(&mut *tx).await.unwrap();
-        for (opportunity, party, role) in
-            [("o-1", "p-1", "primary"), ("o-1", "p-2", "participant"), ("o-1", "p-3", "participant"), ("o-2", "p-1", "primary")]
-        {
+        for (opportunity, party, role) in [
+            ("o-1", "p-1", "primary"),
+            ("o-1", "p-2", "participant"),
+            ("o-1", "p-3", "participant"),
+            ("o-2", "p-1", "primary"),
+        ] {
             sqlx::query("INSERT INTO opportunity_party(opportunity_id,party_id,role,added_at) VALUES(?,?,?,?)")
                 .bind(opportunity).bind(party).bind(role).bind(NOW)
                 .execute(&mut *tx).await.unwrap();
@@ -122,10 +136,11 @@ mod tests {
         assert_eq!(summary.lifecycle, "open");
         assert_eq!(summary.stage_id.as_deref(), Some("developing"));
         // Queue-sheet triggers own this column; the projection echoes it verbatim.
-        let stored: i64 = sqlx::query_scalar("SELECT phase_revision FROM opportunity WHERE id='o-1'")
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap();
+        let stored: i64 =
+            sqlx::query_scalar("SELECT phase_revision FROM opportunity WHERE id='o-1'")
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
         assert_eq!(summary.phase_revision, stored);
         // p-3 participates but was never granted; p-absent was granted but is
         // not on the opportunity; the duplicate grant collapses.
@@ -139,7 +154,10 @@ mod tests {
     async fn null_stage_projects_without_a_phase() {
         let (path, workspace) = seeded_workspace().await;
         let mut tx = workspace.pool().begin().await.unwrap();
-        let summary = summary(&mut tx, "o-2", &["p-1".into()]).await.unwrap().expect("seeded opportunity");
+        let summary = summary(&mut tx, "o-2", &["p-1".into()])
+            .await
+            .unwrap()
+            .expect("seeded opportunity");
         assert_eq!(summary.stage_id, None);
         assert_eq!(summary.participants, vec!["Mira Chen"]);
         tx.commit().await.unwrap();
