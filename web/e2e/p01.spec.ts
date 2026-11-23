@@ -33,5 +33,5 @@ test('p01_party_sheet_rename_alias_focus_edit_and_card_notes', async ({ page }) 
   // Tab switcher and the graph heading use the renamed surface.
   await page.getByRole('link', { name: 'Resources' }).click();
   await openParties(page);
-  await expect(region.getByRole('heading', { name: 'Party network' })).toBeVisible();
+  await expect(region.getByRole('region', { name: 'Party network' }).getByRole('heading', { name: /Fieldwork.*neighborhood/ })).toBeVisible();
 });

@@ -187,8 +187,11 @@ async fn r03_retire_removes_from_ordinary_use_and_guards_endpoints() {
         &service,
         &session,
         "POST",
-        "/api/v1/edges",
-        Some(json!({"from_id": other, "verb": "refers to", "to_id": card_id, "basis": "basis"})),
+        "/api/v1/resource-card-commits",
+        Some(json!({
+            "edit": {"resource_id": other, "expected_revision": 1, "expected_notes_rev": 1},
+            "relation_add": {"verb": "refers to", "target_id": card_id, "basis": "basis"}
+        })),
         &[("Idempotency-Key", next_key().as_str())],
     )
     .await;

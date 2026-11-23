@@ -214,6 +214,245 @@ paths:
           $ref: '#/components/responses/Error'
         '428':
           $ref: '#/components/responses/Error'
+  /party-imports:
+    post:
+      operationId: stagePartyImport
+      security:
+      - sessionCookie: []
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          text/csv:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '201':
+          description: Parsed private CSV stage and bounded input limits.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/PartyImportStage'
+                additionalProperties: false
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+        '413':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+  /party-imports/{id}/preview:
+    post:
+      operationId: previewPartyImport
+      security:
+      - sessionCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PartyImportMapping'
+      responses:
+        '200':
+          description: Mapped records and duplicate decisions for this preview.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/PartyImportPreview'
+                additionalProperties: false
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+  /party-imports/{id}/commit:
+    post:
+      operationId: commitPartyImport
+      security:
+      - sessionCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PartyImportCommit'
+      responses:
+        '201':
+          description: Atomic import receipt with canonical party IDs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/PartyImportReceipt'
+                additionalProperties: false
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+  /entities/{id}/attachments:
+    post:
+      operationId: bindEntityAttachment
+      security:
+      - sessionCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BindEntityAttachment'
+      responses:
+        '201':
+          description: Private card file binding for a staged upload.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/DossierFile'
+                additionalProperties: false
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+  /entities/{id}/attachments/{ref}:
+    delete:
+      operationId: unlinkEntityAttachment
+      security:
+      - sessionCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - name: ref
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Removed one entity attachment binding.
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+  /entities/{id}/attachments/{ref}/content:
+    get:
+      operationId: getEntityAttachmentContent
+      security:
+      - sessionCookie: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - name: ref
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Owner-authorized verified file bytes.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
   /entities/{id}/notes:
     get:
       operationId: getEntityNotes
@@ -561,6 +800,284 @@ paths:
                 additionalProperties: true
         '422':
           $ref: '#/components/responses/Error'
+  /claims/{id}/revisions:
+    post:
+      operationId: reviseClaim
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaimRevisionInput'
+      responses:
+        '201':
+          description: Attributed claim revision recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/ClaimRevisionReceipt'
+                additionalProperties: false
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+        '412':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+  /entities/{id}/usage:
+    get:
+      operationId: getEntityUsage
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: References affected by retirement.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/EntityUsage'
+                additionalProperties: false
+        '404':
+          $ref: '#/components/responses/Error'
+  /entities/{id}/retire:
+    post:
+      operationId: retireEntity
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - in: header
+        name: If-Match
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetireEntityInput'
+      responses:
+        '200':
+          description: Retirement recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/RetiredEntity'
+                additionalProperties: false
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+        '412':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+  /edges:
+    post:
+      operationId: linkExistingCards
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EdgeWrite'
+      responses:
+        '201':
+          description: Relationship command acknowledged.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/EdgeReceipt'
+                additionalProperties: false
+        '412':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+  /edges/{id}:
+    patch:
+      operationId: correctEdge
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EdgeCorrection'
+      responses:
+        '200':
+          description: Relationship command acknowledged.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/EdgeReceipt'
+                additionalProperties: false
+        '412':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: removeEdge
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EdgeRemoval'
+      responses:
+        '204':
+          description: Relationship command acknowledged.
+        '412':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+  /directory:
+    get:
+      operationId: queryDirectory
+      parameters:
+      - name: q
+        in: query
+        schema:
+          type: string
+      - name: kind
+        in: query
+        schema:
+          type: string
+      - name: sort
+        in: query
+        schema:
+          type: string
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+      - name: cursor
+        in: query
+        schema:
+          type: string
+      - name: batch_id
+        in: query
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Bounded entity page with projection fence.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                - next_cursor
+                - cursor
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GraphEntity'
+                  next_cursor:
+                    type: string
+                    nullable: true
+                  cursor:
+                    type: string
+                    minLength: 1
+                additionalProperties: false
   /graph/related:
     post:
       operationId: createRelatedEntity
@@ -2360,89 +2877,6 @@ paths:
               schema: {$ref: '#/components/schemas/MoveResourceCardResult'}
         '412': {$ref: '#/components/responses/Error'}
         '422': {$ref: '#/components/responses/Error'}
-  /edges:
-    post:
-      operationId: createEdge
-      security: [{sessionCookie: []}]
-      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
-      requestBody:
-        required: true
-        content: {application/json: {schema: {$ref: '#/components/schemas/EdgeInput'}}}
-      responses:
-        '201':
-          description: Owner-authored edge with its basis.
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/CreatedEdge'}
-        '422': {$ref: '#/components/responses/Error'}
-  /edges/{id}:
-    patch:
-      operationId: updateEdge
-      security: [{sessionCookie: []}]
-      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
-      requestBody:
-        required: true
-        content: {application/json: {schema: {$ref: '#/components/schemas/UpdateEdgeInput'}}}
-      responses:
-        '200':
-          description: Corrected edge.
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/UpdatedEdge'}
-        '412': {$ref: '#/components/responses/Error'}
-    delete:
-      operationId: deleteEdge
-      security: [{sessionCookie: []}]
-      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
-      responses:
-        '204': {description: Edge detached; both endpoints remain.}
-        '404': {$ref: '#/components/responses/Error'}
-  /entities/{id}/attachments:
-    get:
-      operationId: listAttachments
-      security: [{sessionCookie: []}]
-      parameters: [{in: path, name: id, required: true, schema: {type: string}}]
-      responses:
-        '200':
-          description: File bindings on the entity.
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/AttachmentList'}
-        '404': {$ref: '#/components/responses/Error'}
-    post:
-      operationId: bindAttachment
-      security: [{sessionCookie: []}]
-      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
-      requestBody:
-        required: true
-        content: {application/json: {schema: {$ref: '#/components/schemas/BindAttachmentInput'}}}
-      responses:
-        '201':
-          description: Staged upload bound to the card.
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/BoundAttachment'}
-        '422': {$ref: '#/components/responses/Error'}
-  /entities/{id}/attachments/{reference}:
-    delete:
-      operationId: unbindAttachment
-      security: [{sessionCookie: []}]
-      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {in: path, name: reference, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
-      responses:
-        '204': {description: Card binding removed; the file itself is untouched.}
-        '404': {$ref: '#/components/responses/Error'}
-  /entities/{id}/attachments/{reference}/content:
-    get:
-      operationId: getAttachmentContent
-      security: [{sessionCookie: []}]
-      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {in: path, name: reference, required: true, schema: {type: string}}]
-      responses:
-        '200':
-          description: Verified owner-content bytes of the bound file.
-          content:
-            application/octet-stream:
-              schema: {type: string, format: binary}
-        '404': {$ref: '#/components/responses/Error'}
 components:
   securitySchemes:
     sessionCookie:
@@ -2563,6 +2997,110 @@ components:
         etag:
           type: string
       additionalProperties: false
+    EdgeWrite:
+      type: object
+      required:
+      - from_id
+      - to_id
+      - verb
+      - occurrence_id
+      - quote
+      - expected_from_revision
+      - expected_to_revision
+      properties:
+        from_id:
+          type: string
+          minLength: 1
+        to_id:
+          type: string
+          minLength: 1
+        verb:
+          type: string
+          minLength: 1
+        occurrence_id:
+          type: string
+          minLength: 1
+        quote:
+          type: string
+          minLength: 1
+        expected_from_revision:
+          type: integer
+          minimum: 1
+        expected_to_revision:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    EdgeCorrection:
+      type: object
+      required:
+      - from_id
+      - to_id
+      - verb
+      - occurrence_id
+      - quote
+      - expected_from_revision
+      - expected_to_revision
+      - expected_revision
+      properties:
+        from_id:
+          type: string
+          minLength: 1
+        to_id:
+          type: string
+          minLength: 1
+        verb:
+          type: string
+          minLength: 1
+        occurrence_id:
+          type: string
+          minLength: 1
+        quote:
+          type: string
+          minLength: 1
+        expected_from_revision:
+          type: integer
+          minimum: 1
+        expected_to_revision:
+          type: integer
+          minimum: 1
+        expected_revision:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    EdgeRemoval:
+      type: object
+      required:
+      - expected_revision
+      properties:
+        expected_revision:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    EdgeReceipt:
+      type: object
+      required:
+      - id
+      - from_id
+      - to_id
+      - verb
+      - revision
+      properties:
+        id:
+          type: string
+          minLength: 1
+        from_id:
+          type: string
+          minLength: 1
+        to_id:
+          type: string
+          minLength: 1
+        verb:
+          type: string
+          minLength: 1
+        revision:
+          type: integer
+          minimum: 1
+      additionalProperties: false
     GraphEntity:
       type: object
       required:
@@ -2579,6 +3117,9 @@ components:
           - org
           - project
           - resource
+          - source
+          - interest
+          - artifact
         name:
           type: string
         focus:
@@ -2600,6 +3141,174 @@ components:
           x: {type: number}
           y: {type: number}
           position_revision: {type: integer, minimum: 0}
+    ClaimRevisionInput:
+      type: object
+      required:
+      - expected_revision
+      - occurrence_id
+      - wording
+      - speaker_kind
+      properties:
+        expected_revision:
+          type: integer
+          minimum: 1
+        occurrence_id:
+          type: string
+          minLength: 1
+        wording:
+          type: string
+          minLength: 1
+        speaker_kind:
+          type: string
+          enum:
+          - owner
+          - party
+          - unknown
+        speaker_entity_id:
+          type: string
+          nullable: true
+      additionalProperties: false
+    ClaimRevisionReceipt:
+      type: object
+      required:
+      - id
+      - revision
+      - occurrence_id
+      - wording
+      - speaker_kind
+      - speaker_entity_id
+      properties:
+        id:
+          type: string
+          minLength: 1
+        revision:
+          type: integer
+          minimum: 1
+        occurrence_id:
+          type: string
+          minLength: 1
+        wording:
+          type: string
+          minLength: 1
+        speaker_kind:
+          type: string
+          enum:
+          - owner
+          - party
+          - unknown
+        speaker_entity_id:
+          type: string
+          nullable: true
+      additionalProperties: false
+    RetireEntityInput:
+      type: object
+      required:
+      - expected_revision
+      properties:
+        expected_revision:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    RetiredEntity:
+      type: object
+      required:
+      - id
+      - revision
+      - retired_at
+      properties:
+        id:
+          type: string
+          minLength: 1
+        revision:
+          type: integer
+          minimum: 1
+        retired_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    EntityUsage:
+      type: object
+      required:
+      - links
+      - opportunities
+      - materials
+      - counts
+      properties:
+        links:
+          type: array
+          items:
+            type: object
+            required:
+            - id
+            - verb
+            - from_id
+            - to_id
+            properties:
+              id:
+                type: string
+                minLength: 1
+              verb:
+                type: string
+                minLength: 1
+              from_id:
+                type: string
+                minLength: 1
+              to_id:
+                type: string
+                minLength: 1
+            additionalProperties: false
+        opportunities:
+          type: array
+          items:
+            type: object
+            required:
+            - id
+            - title
+            properties:
+              id:
+                type: string
+                minLength: 1
+              title:
+                type: string
+                minLength: 1
+            additionalProperties: false
+        materials:
+          type: array
+          items:
+            type: object
+            required:
+            - id
+            - kind
+            properties:
+              id:
+                type: string
+                minLength: 1
+              kind:
+                type: string
+                minLength: 1
+            additionalProperties: false
+        counts:
+          type: object
+          required:
+          - links
+          - opportunities
+          - materials
+          - recommendations
+          properties:
+            links:
+              type: integer
+              minimum: 0
+            opportunities:
+              type: integer
+              minimum: 0
+            materials:
+              type: integer
+              minimum: 0
+            recommendations:
+              type: integer
+              minimum: 0
+          additionalProperties: false
+      additionalProperties: false
     GraphEdge:
       type: object
       required: [id, from_id, to_id, verb, revision, occurrence_id, quote, tier, speaker_kind, captured_at, source_title, source_url]
@@ -2615,6 +3324,9 @@ components:
         speaker_kind: {type: string, enum: [owner, party, unknown]}
         captured_at: {type: string, format: date-time}
         source_title: {type: string, nullable: true}
+        claim_id: {type: string}
+        claim_revision: {type: integer, minimum: 1}
+        speaker_entity_id: {type: string, nullable: true}
         source_url: {type: string, nullable: true}
       additionalProperties: false
     GraphSnapshot:
@@ -2781,6 +3493,8 @@ components:
         focus:
           type: string
           maxLength: 250
+        notes: {type: string}
+        staged_upload_ids: {type: array, items: {type: string}, uniqueItems: true}
       additionalProperties: false
     UpdateEntityInput:
       type: object
@@ -2845,6 +3559,186 @@ components:
         revision: {type: integer, minimum: 1}
         tier: {type: integer, enum: [1, 2, 3], nullable: true}
         wording: {type: string, nullable: true}
+        claim_id: {type: string, nullable: true}
+        claim_revision: {type: integer, minimum: 1, nullable: true}
+        occurrence_id: {type: string, nullable: true}
+        speaker_kind: {type: string, nullable: true}
+        speaker_entity_id: {type: string, nullable: true}
+      additionalProperties: false
+    PartyImportStage:
+      type: object
+      required:
+      - stage_id
+      - headers
+      - row_count
+      - max_rows
+      - max_bytes
+      properties:
+        stage_id:
+          type: string
+          minLength: 1
+        headers:
+          type: array
+          items:
+            type: string
+        row_count:
+          type: integer
+          minimum: 0
+        max_rows:
+          type: integer
+          minimum: 1
+        max_bytes:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    PartyImportMapping:
+      type: object
+      required:
+      - party_type
+      - name_column
+      - excluded_records
+      - distinct_records
+      properties:
+        party_type:
+          type: string
+          enum:
+          - person
+          - org
+        name_column:
+          type: integer
+          minimum: 0
+        focus_column:
+          type: integer
+          minimum: 0
+          nullable: true
+        notes_column:
+          type: integer
+          minimum: 0
+          nullable: true
+        excluded_records:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+          uniqueItems: true
+        distinct_records:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+          uniqueItems: true
+      additionalProperties: false
+    PartyImportRow:
+      type: object
+      required:
+      - source_record
+      - name
+      - focus
+      - notes
+      - duplicates
+      - decision
+      properties:
+        source_record:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+        focus:
+          type: string
+        notes:
+          type: string
+        duplicates:
+          type: array
+          items:
+            type: string
+        decision:
+          type: string
+          enum:
+          - create
+          - skip
+          - review
+          - error
+      additionalProperties: false
+    PartyImportPreview:
+      type: object
+      required:
+      - preview_id
+      - digest
+      - rows
+      - create_count
+      - skip_count
+      - error_count
+      properties:
+        preview_id:
+          type: string
+          minLength: 1
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/PartyImportRow'
+        create_count:
+          type: integer
+          minimum: 0
+        skip_count:
+          type: integer
+          minimum: 0
+        error_count:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    PartyImportCommit:
+      type: object
+      required:
+      - preview_id
+      - digest
+      properties:
+        preview_id:
+          type: string
+          minLength: 1
+        digest:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+      additionalProperties: false
+    PartyImportReceipt:
+      type: object
+      required:
+      - batch_id
+      - created
+      - skipped_count
+      properties:
+        batch_id:
+          type: string
+          minLength: 1
+        created:
+          type: array
+          items:
+            type: object
+            required:
+            - source_record
+            - party_id
+            properties:
+              source_record:
+                type: integer
+                minimum: 1
+              party_id:
+                type: string
+                minLength: 1
+            additionalProperties: false
+        skipped_count:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    BindEntityAttachment:
+      type: object
+      required:
+      - upload_id
+      properties:
+        upload_id:
+          type: string
+          minLength: 1
       additionalProperties: false
     DossierFile:
       type: object
@@ -2874,13 +3768,26 @@ components:
         id: {type: string}
         title: {type: string}
         kind: {type: string}
-        opportunity_id: {type: string}
-        opportunity_title: {type: string}
+        opportunity_id: {type: string, nullable: true}
+        opportunity_title: {type: string, nullable: true}
+        paths:
+          type: array
+          items:
+            type: object
+            required: [via, participant_id]
+            properties:
+              via: {type: string, enum: [edge, opportunity]}
+              participant_id: {type: string}
+              edge_id: {type: string}
+              verb: {type: string}
+              opportunity_id: {type: string}
+              opportunity_title: {type: string}
       additionalProperties: false
     Dossier:
       type: object
       required: [entity, direct_links, files, opportunities, associated_resources]
       properties:
+        retired_at: {type: string, nullable: true, format: date-time}
         entity:
           $ref: '#/components/schemas/GraphEntity'
         direct_links:
@@ -2895,6 +3802,13 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DossierOpportunity'
+        import_origin:
+          type: object
+          nullable: true
+          required: [batch_id, source_record]
+          properties:
+            batch_id: {type: string}
+            source_record: {type: integer}
         associated_resources:
           type: array
           items:
@@ -3051,8 +3965,15 @@ components:
           - org
           - project
           - resource
+          - source
+          - interest
+          - artifact
         name:
           type: string
+        expected_parent_revision: {type: integer, minimum: 1}
+        direction: {type: string, enum: [incoming, outgoing]}
+        notes: {type: string}
+        staged_upload_ids: {type: array, uniqueItems: true, items: {type: string}}
         related_entity_id:
           type: string
         verb:

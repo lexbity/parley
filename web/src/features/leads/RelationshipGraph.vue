@@ -1,51 +1,68 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, shallowRef, watch } from 'vue';
-import { Background, Controls, MiniMap, VueFlow, type Edge, type Node, type VueFlowInstance } from '@xyflow/vue';
+/* global HTMLElement, HTMLDetailsElement, HTMLSelectElement */
+import { computed, nextTick, ref, shallowRef, watch } from 'vue';
+import { Background, Controls, Handle, Position, MiniMap, VueFlow, type Edge, type Node, type VueFlowInstance } from '@xyflow/vue';
 import { newOperationKey, parley, type GraphSnapshot, type SavedSource } from '../../api/client';
 
-const props = defineProps<{ focusEntityId?: string; viewRootId?: string }>();
-const emit = defineEmits<{ 'select-node': [id: string]; 'select-edge': [id: string]; 'related-saved': [] }>();
+import RelationshipEditor from '../parties/RelationshipEditor.vue';
+import { kindLabel } from '../parties/relations';
+
+const props = defineProps<{ focusEntityId?: string; viewRootId?: string; rootName?: string; sources?: SavedSource[]; refresh?: number; editorOpen?: boolean; canOpen?: boolean }>();
+const emit = defineEmits<{ 'select-node': [id: string]; 'select-edge': [id: string]; 'related-saved': []; 'nodes-loaded': [nodes: GraphSnapshot['nodes']]; 'open-card': []; 'inspect-edge': [edge: GraphSnapshot['edges'][number]] }>();
 const snapshot = ref<GraphSnapshot>({ nodes: [], edges: [], omitted_nodes: 0, omitted_edges: 0 });
 const flow = shallowRef<VueFlowInstance | null>(null);
 const selectedEdgeId = ref('');
 const loading = ref(false);
 const error = ref('');
 const generation = ref(0);
-const sources = ref<SavedSource[]>([]);
+const savedSourcesForGraph = ref<SavedSource[]>([]);
 const relatedEntityId = ref('');
-const relatedKind = ref<'person' | 'project' | 'resource'>('person');
-const relatedName = ref('');
-const occurrenceId = ref('');
-const quote = ref('');
-const mutationBusy = ref(false);
 const relationStatus = ref('');
-const relationError = ref('');
+const relationForm = ref(true);
+const correction = ref<GraphSnapshot['edges'][number] | null>(null);
 const layoutBusy = ref(false);
-const nodes = computed<Node[]>(() => snapshot.value.nodes.map((node) => ({
-  id: node.id, type: 'default', position: { x: node.x, y: node.y }, data: { label: `${node.name}\n${node.kind}` },
-  selectable: true, draggable: !layoutBusy.value,
-})));
-const edges = computed<Edge[]>(() => snapshot.value.edges.map((edge) => ({
-  id: edge.id, source: edge.from_id, target: edge.to_id, label: edge.verb, animated: false,
-  data: { evidenceId: edge.occurrence_id, quote: edge.quote, speaker: edge.speaker_kind, tier: edge.tier },
-  labelStyle: { fill: '#18221f', fontWeight: 600 },
-  style: { stroke: edge.tier === 2 ? '#8b6725' : '#326c53', strokeWidth: 2 },
+const frame = ref<HTMLElement | null>(null);
+const relations = ref<HTMLDetailsElement | null>(null);
+const anchor = ref({ left: '0.6rem', top: '0.6rem' });
+const nodes = computed<Node[]>(() => {
+  const neighbors = snapshot.value.nodes.filter(node => node.id !== props.viewRootId);
+  return snapshot.value.nodes.map(node => {
+    const root = node.id === props.viewRootId;
+    const defaultPosition = root ? { x: 0, y: Math.max(0, neighbors.length - 1) * 54 } : { x: 405, y: neighbors.indexOf(node) * 108 };
+    return {
+      id: node.id, type: 'card', position: node.position_revision ? { x: node.x, y: node.y } : defaultPosition,
+      data: { label: node.name, kind: kindLabel(node.kind), root, selected: node.id === props.focusEntityId },
+      ariaLabel: node.name + ', ' + kindLabel(node.kind), selectable: true, draggable: !layoutBusy.value,
+    };
+  });
+});
+const edges = computed<Edge[]>(() => snapshot.value.edges.map(edge => ({
+  id: edge.id, type: 'straight', source: edge.from_id, target: edge.to_id,
+  label: edge.from_id === props.viewRootId ? edge.verb.replaceAll('_', ' ') + ' →' : '← ' + edge.verb.replaceAll('_', ' '),
+  labelStyle: { fill: '#365341', fontFamily: 'monospace', fontSize: 13 },
+  labelBgStyle: { fill: '#eff3eb' }, style: { stroke: edge.tier === 2 ? '#8b6725' : '#71957f', strokeWidth: 1.6 },
 })));
 const selectedEdge = computed(() => snapshot.value.edges.find((edge) => edge.id === selectedEdgeId.value) ?? null);
 
 async function load() {
   const ownGeneration = ++generation.value;
-  const centerId = props.focusEntityId;
+  const centerId = props.viewRootId;
+  if (!centerId) {
+    snapshot.value = { nodes: [], edges: [], omitted_nodes: 0, omitted_edges: 0 };
+    loading.value = false;
+    return;
+  }
   loading.value = true; error.value = '';
   try {
     const viewRoot = props.viewRootId ?? props.focusEntityId ?? 'directory';
     const [result, savedSources] = await Promise.all([
       parley.getGraph({ center_id: centerId, view_scope: 'leads', view_id: viewRoot }),
-      parley.listSources(),
+      props.sources ?? parley.listSources(),
     ]);
-    if (ownGeneration !== generation.value || centerId !== props.focusEntityId) return;
+    if (ownGeneration !== generation.value || centerId !== props.viewRootId) return;
     snapshot.value = result;
-    sources.value = savedSources;
+    savedSourcesForGraph.value = savedSources;
+    emit('nodes-loaded', result.nodes);
     if (!relatedEntityId.value || !result.nodes.some((node) => node.id === relatedEntityId.value)) relatedEntityId.value = centerId ?? result.nodes[0]?.id ?? '';
     if (!result.edges.some((edge) => edge.id === selectedEdgeId.value)) selectedEdgeId.value = '';
   } catch (reason) {
@@ -53,30 +70,14 @@ async function load() {
   } finally { if (ownGeneration === generation.value) loading.value = false; }
 }
 
-async function addRelatedEntity() {
-  const parent = snapshot.value.nodes.find((node) => node.id === relatedEntityId.value);
-  const source = sources.value.find((item) => item.occurrence_id === occurrenceId.value);
-  if (!parent || !source) { relationError.value = 'Choose an existing related entity and a saved source.'; return; }
-  const allowed = (relatedKind.value === 'person' && parent.kind === 'org')
-    || (relatedKind.value === 'project' && parent.kind === 'org')
-    || (relatedKind.value === 'resource' && parent.kind === 'person');
-  if (!allowed) { relationError.value = 'The selected entity type cannot form this directed relationship. Choose an organization for a person/project or a person for a resource.'; return; }
-  mutationBusy.value = true; relationError.value = ''; relationStatus.value = '';
-  try {
-    const verb = relatedKind.value === 'person' ? 'member_of' : relatedKind.value === 'project' ? 'works_with' : 'offers_to';
-    await parley.createRelatedEntity({
-      kind: relatedKind.value, name: relatedName.value.trim(), related_entity_id: parent.id, verb,
-      occurrence_id: source.occurrence_id, quote: quote.value,
-      view_scope: 'leads', view_id: props.viewRootId ?? props.focusEntityId ?? 'directory', x: parent.x + 260, y: parent.y,
-    }, newOperationKey());
-    relatedName.value = ''; quote.value = '';
-    await load();
-    emit('related-saved');
-    relationStatus.value = 'The entity and source-attributed directed relationship were saved together.';
-  } catch (reason) { relationError.value = reason instanceof Error ? reason.message : 'Could not save the related entity and edge.'; }
-  finally { mutationBusy.value = false; }
+async function relatedSaved(id: string) {
+  await load();
+  relationStatus.value = correction.value ? 'Relationship corrected.' : 'The entity and source-attributed directed relationship were saved together.';
+  correction.value = null;
+  relationForm.value = false;
+  emit('related-saved');
+  focusNode(id);
 }
-
 async function savePosition(event: { node: { id: string; position: { x: number; y: number } } }) {
   const current = snapshot.value.nodes.find((node) => node.id === event.node.id);
   if (!current || layoutBusy.value) return;
@@ -94,25 +95,57 @@ async function savePosition(event: { node: { id: string; position: { x: number; 
 }
 
 function focusNode(id: string) {
+  selectedEdgeId.value = '';
+  setAnchor(id);
   emit('select-node', id);
-  const duration = globalThis.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 160;
-  void flow.value?.fitView({ nodes: [{ id }], maxZoom: 1, duration });
 }
-
-watch(() => props.focusEntityId, (id) => { if (id) relatedEntityId.value = id; void load(); });
-watch(() => props.viewRootId, () => { void load(); });
-onMounted(() => { void load(); });
+function setAnchor(id: string) {
+  const node = Array.from(frame.value?.querySelectorAll('[data-id]') ?? []).find(el => el.getAttribute('data-id') === id);
+  if (!node || !frame.value) return;
+  const bounds = frame.value.getBoundingClientRect();
+  const rect = node.getBoundingClientRect();
+  anchor.value = {
+    left: Math.max(6, Math.min(rect.left - bounds.left, bounds.width - 410)) + 'px',
+    top: Math.max(6, Math.min(rect.top - bounds.top, bounds.height - 360)) + 'px',
+  };
+}
+function inspectEdge(id: string) {
+  const edge = snapshot.value.edges.find(item => item.id === id);
+  if (edge) { selectedEdgeId.value = id; emit('inspect-edge', edge); }
+}
+function openRelated(edge?: GraphSnapshot['edges'][number]) {
+  correction.value = edge ?? null;
+  relationForm.value = true;
+  if (!relations.value) return;
+  relations.value.open = true;
+  void nextTick(() => relations.value?.querySelector<HTMLSelectElement>('form select')?.focus());
+}
+defineExpose({ openRelated, inspectEdge, reload: load });
+watch(() => props.focusEntityId, id => { if (id) relatedEntityId.value = id; });
+watch(() => props.viewRootId, () => {
+  snapshot.value = { nodes: [], edges: [], omitted_nodes: 0, omitted_edges: 0 };
+  selectedEdgeId.value = '';
+});
+watch(() => [props.viewRootId, props.refresh], () => { void load(); }, { immediate: true });
+watch(() => props.sources, current => { if (current) savedSourcesForGraph.value = current; });
 </script>
 
 <template>
   <section
     class="network-pane"
-    aria-labelledby="relationship-graph-heading"
+    aria-label="Party network"
   >
     <header class="pane-bar">
       <h2 id="relationship-graph-heading">
-        Party network
+        {{ rootName ? rootName + ' · neighborhood' : 'Party network' }}
       </h2>
+      <button
+        v-if="focusEntityId && canOpen !== false"
+        type="button"
+        @click="setAnchor(focusEntityId); emit('open-card')"
+      >
+        Open selected card
+      </button>
     </header>
     <p
       v-if="loading"
@@ -134,25 +167,48 @@ onMounted(() => { void load(); });
     </p>
     <div class="graph-layout">
       <div
+        ref="frame"
         class="canvas-frame"
         tabindex="0"
         aria-label="Relationship graph canvas"
         data-testid="relationship-canvas"
       >
         <VueFlow
+          v-if="viewRootId && nodes.length"
+          :key="viewRootId"
           :nodes="nodes"
           :edges="edges"
-          fit-view-on-init
+          :fit-view="true"
+          :fit-view-options="{ padding: 0.12, maxZoom: 1.35 }"
           :nodes-draggable="!layoutBusy"
           :nodes-connectable="false"
           elements-selectable
           aria-label="Relationship graph"
           @node-drag-stop="savePosition"
           @init="instance => flow = instance"
-          @node-click="({ node }) => emit('select-node', node.id)"
-          @edge-click="({ edge }) => { selectedEdgeId = edge.id; emit('select-edge', edge.id); }"
+          @node-click="({ node }) => focusNode(node.id)"
+          @edge-click="({ edge }) => inspectEdge(edge.id)"
         >
-          <Background />
+          <template #node-card="{ id, data }">
+            <div
+              :class="['graph-card', { home: data.root, inspecting: data.selected }]"
+              @keydown.enter.stop="focusNode(id)"
+            >
+              <Handle
+                type="target"
+                :position="data.root ? Position.Right : Position.Left"
+              />
+              <small>{{ data.kind }}</small><strong>{{ data.label }}</strong>
+              <Handle
+                type="source"
+                :position="data.root ? Position.Right : Position.Left"
+              />
+            </div>
+          </template>
+          <Background
+            color="#bbcbbb"
+            :gap="16"
+          />
           <Controls />
           <MiniMap
             v-if="nodes.length > 12"
@@ -160,7 +216,21 @@ onMounted(() => { void load(); });
             zoomable
           />
         </VueFlow>
+        <div
+          v-if="editorOpen"
+          class="anchored-editor"
+          :style="anchor"
+        >
+          <slot name="editor" />
+        </div>
+        <p
+          v-if="!viewRootId"
+          class="empty-network"
+        >
+          Select a party to see its neighborhood.
+        </p>
       </div>
+      <slot name="summary" />
       <div class="pane-bar">
         <span>{{ nodes.length }} visible · {{ edges.length }} relationships</span>
       </div>
@@ -170,7 +240,10 @@ onMounted(() => { void load(); });
       >
         <strong>{{ selectedEdge.verb }}</strong><blockquote>{{ selectedEdge.quote }}</blockquote>
       </article>
-      <details class="graph-inspector">
+      <details
+        ref="relations"
+        class="graph-inspector"
+      >
         <summary>Relationships and evidence</summary><h4>Relationship list</h4>
         <p v-if="!snapshot.edges.length">
           No accepted relationships in this neighborhood yet. A name or search result does not create a relationship.
@@ -183,7 +256,7 @@ onMounted(() => { void load(); });
             <button
               type="button"
               :aria-pressed="selectedEdgeId === edge.id"
-              @click="selectedEdgeId = edge.id"
+              @click="inspectEdge(edge.id)"
             >
               {{ snapshot.nodes.find((node) => node.id === edge.from_id)?.name }} {{ edge.verb }} {{ snapshot.nodes.find((node) => node.id === edge.to_id)?.name }}
             </button>
@@ -217,66 +290,48 @@ onMounted(() => { void load(); });
             </button>
           </li>
         </ul>
-        <form
-          aria-label="Add a source-backed related entity"
-          @submit.prevent="addRelatedEntity"
-        >
-          <h4>Add a source-backed related entity</h4>
-          <label>Related to<select
-            v-model="relatedEntityId"
-            required
-          ><option
-            v-for="node in snapshot.nodes"
-            :key="node.id"
-            :value="node.id"
-          >{{ node.name }} · {{ node.kind }}</option></select></label>
-          <label>New entity type<select v-model="relatedKind"><option value="person">Person (member of organization)</option><option value="project">Project (works with organization)</option><option value="resource">Resource (offered to person)</option></select></label>
-          <label>Name<input
-            v-model="relatedName"
-            required
-            maxlength="240"
-            autocomplete="off"
-          ></label>
-          <label>Saved source<select
-            v-model="occurrenceId"
-            required
-          ><option value="">Choose a source</option><option
-            v-for="source in sources"
-            :key="source.occurrence_id"
-            :value="source.occurrence_id"
-          >Source {{ source.content_id.slice(0, 12) }} · occurrence {{ source.occurrence_id.slice(0, 8) }}</option></select></label>
-          <label>Exact supporting quote<textarea
-            v-model="quote"
-            required
-            minlength="1"
-            rows="3"
-          /></label>
+        <template v-if="parley.supports('party.relations') && viewRootId">
+          <RelationshipEditor
+            v-if="relationForm"
+            :key="correction?.id ?? viewRootId"
+            :root="viewRootId"
+            :selected="focusEntityId"
+            :nodes="snapshot.nodes"
+            :sources="savedSourcesForGraph"
+            :correction="correction"
+            @saved="relatedSaved"
+            @cancel="relationForm = false; correction = null"
+          />
           <button
-            type="submit"
-            :disabled="mutationBusy || !snapshot.nodes.length || !sources.length"
+            v-else
+            @click="openRelated()"
           >
-            Save related entity and relationship
+            Add or link a card
           </button>
-          <p>The service verifies the quote and commits the node, edge, evidence and initial position atomically.</p>
           <p
             v-if="relationStatus"
             role="status"
           >
             {{ relationStatus }}
           </p>
-          <p
-            v-if="relationError"
-            role="alert"
-          >
-            {{ relationError }}
-          </p>
-        </form>
+        </template>
       </details>
     </div>
   </section>
 </template>
 
 <style scoped>
+ .network-pane { min-width:0; overflow:hidden; }
+.graph-inspector, .evidence-strip { padding:.7rem 1rem; }
+.canvas-frame { position:relative; }
+.anchored-editor { position:absolute; z-index:5; width:min(400px,calc(100% - 12px)); max-height:calc(100% - 3rem); overflow:auto; border:2px solid #436b55; border-radius:8px; background:#fffdf7; box-shadow:0 5px 24px #223c3026; }
+.empty-network { position:absolute; inset:42% 0 auto; text-align:center; pointer-events:none; }
+.graph-card { display:grid; align-content:center; gap:2px; width:225px; min-height:60px; padding:8px; border:1px solid #acbeab; background:#e4ecdf; border-radius:5px; text-align:center; color:#233d30; }
+.graph-card small { font:12px monospace; }
+.graph-card strong { font:19px Georgia,serif; overflow-wrap:anywhere; }
+.graph-card.home { border:2px solid #426b51; background:#d8e8db; }
+.graph-card.inspecting { outline:2px solid #37694f; outline-offset:-2px; }
+.graph-card :deep(.vue-flow__handle) { opacity:0; }
 .graph-layout { display:block; }
 .canvas-frame { height:clamp(23rem,51vh,41rem); min-width:0; border-block:1px solid #d4dcd4; background:#eff3ed; }
 .canvas-frame:focus-visible { outline:3px solid #32735b; outline-offset:2px; }

@@ -22,7 +22,7 @@ export async function addParty(page: Page, name: string, kind: 'person' | 'org' 
   const form = addPartyForm(page);
   await form.getByLabel('Type').selectOption(kind);
   await form.getByLabel('Name').fill(name);
-  await form.getByRole('button', { name: 'Add party' }).click();
+  await form.getByRole('button', { name: /^(Add party|Create distinct party)$/ }).click();
 }
 
 export function deskStatus(page: Page): Locator {

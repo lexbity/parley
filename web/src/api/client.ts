@@ -5,6 +5,11 @@ export type GraphEntity = components['schemas']['GraphEntity'];
 export type GraphSnapshot = components['schemas']['GraphSnapshot'];
 export type Entity = components['schemas']['Entity'];
 export type EntityNotes = components['schemas']['EntityNotes'];
+export type PartyImportStage = components['schemas']['PartyImportStage'];
+export type PartyImportMapping = components['schemas']['PartyImportMapping'];
+export type PartyImportPreview = components['schemas']['PartyImportPreview'];
+export type PartyImportReceipt = components['schemas']['PartyImportReceipt'];
+export type DossierFile = components['schemas']['DossierFile'];
 export type Dossier = components['schemas']['Dossier'];
 export type SavedSource = components['schemas']['SavedSource'];
 export type EntityInput = components['schemas']['EntityInput'];
@@ -148,7 +153,7 @@ function decodeResource(value: unknown): Resource {
 function decodeGraphEntity(value: unknown): GraphEntity {
   const entity = object(value);
   if (!entity
-    || !['person', 'org', 'project', 'resource'].includes(String(entity.kind))
+    || !['person', 'org', 'project', 'resource', 'source', 'interest', 'artifact'].includes(String(entity.kind))
     || !Number.isSafeInteger(entity.revision) || Number(entity.revision) < 1) {
     throw new Error('Invalid response: directory entity is malformed');
   }
@@ -159,6 +164,20 @@ function decodeGraphEntity(value: unknown): GraphEntity {
     focus: typeof entity.focus === 'string' ? entity.focus : '',
     revision: Number(entity.revision),
     etag: typeof entity.etag === 'string' ? entity.etag : undefined,
+  };
+}
+
+function decodeGraphEdge(raw: unknown): GraphSnapshot['edges'][number] {
+  const edge = object(raw);
+  if (!edge || !Number.isSafeInteger(edge.revision) || ![1, 2, 3].includes(Number(edge.tier))
+    || !['owner', 'party', 'unknown'].includes(String(edge.speaker_kind))) throw new Error('Invalid response: graph edge is malformed');
+  return {
+    id: requiredString(edge.id, 'edge.id'), from_id: requiredString(edge.from_id, 'edge.from_id'),
+    to_id: requiredString(edge.to_id, 'edge.to_id'), verb: requiredString(edge.verb, 'edge.verb'), revision: Number(edge.revision),
+    occurrence_id: requiredString(edge.occurrence_id, 'edge.occurrence_id'), quote: requiredString(edge.quote, 'edge.quote'), tier: Number(edge.tier) as 1 | 2 | 3,
+    speaker_kind: requiredString(edge.speaker_kind, 'edge.speaker_kind') as 'owner' | 'party' | 'unknown', captured_at: requiredString(edge.captured_at, 'edge.captured_at'),
+    source_title: typeof edge.source_title === 'string' ? edge.source_title : null,
+    source_url: typeof edge.source_url === 'string' ? edge.source_url : null,
   };
 }
 
@@ -176,19 +195,7 @@ function decodeGraphSnapshot(value: unknown): GraphSnapshot {
       || !Number.isSafeInteger(node.position_revision) || Number(node.position_revision) < 0) throw new Error('Invalid response: graph node is malformed');
     return { ...decodeGraphEntity(node), x: Number(node.x), y: Number(node.y), position_revision: Number(node.position_revision) };
   });
-  const edges = snapshot.edges.map((raw) => {
-    const edge = object(raw);
-    if (!edge || !Number.isSafeInteger(edge.revision) || ![1, 2, 3].includes(Number(edge.tier))
-      || !['owner', 'party', 'unknown'].includes(String(edge.speaker_kind))) throw new Error('Invalid response: graph edge is malformed');
-    return {
-      id: requiredString(edge.id, 'edge.id'), from_id: requiredString(edge.from_id, 'edge.from_id'),
-      to_id: requiredString(edge.to_id, 'edge.to_id'), verb: requiredString(edge.verb, 'edge.verb'), revision: Number(edge.revision),
-      occurrence_id: requiredString(edge.occurrence_id, 'edge.occurrence_id'), quote: requiredString(edge.quote, 'edge.quote'), tier: Number(edge.tier) as 1 | 2 | 3,
-      speaker_kind: requiredString(edge.speaker_kind, 'edge.speaker_kind') as 'owner' | 'party' | 'unknown', captured_at: requiredString(edge.captured_at, 'edge.captured_at'),
-      source_title: typeof edge.source_title === 'string' ? edge.source_title : null,
-      source_url: typeof edge.source_url === 'string' ? edge.source_url : null,
-    };
-  });
+  const edges = snapshot.edges.map(decodeGraphEdge);
   return { nodes, edges, omitted_nodes: Number(snapshot.omitted_nodes), omitted_edges: Number(snapshot.omitted_edges) };
 }
 
@@ -668,16 +675,6 @@ function decodeMoveResourceCardResult(value: unknown): MoveResourceCardResult {
   };
 }
 
-function decodeEdgeView(value: unknown): EdgeView {
-  const edge = object(value);
-  if (!edge || !Number.isSafeInteger(edge.revision)) throw new Error('Invalid response: edge is malformed');
-  return {
-    id: requiredString(edge.id, 'edge.id'), from_id: requiredString(edge.from_id, 'edge.from_id'), verb: requiredString(edge.verb, 'edge.verb'),
-    to_id: requiredString(edge.to_id, 'edge.to_id'), state: requiredString(edge.state, 'edge.state'), revision: Number(edge.revision),
-    basis: requiredString(edge.basis, 'edge.basis'), author_kind: requiredString(edge.author_kind, 'edge.author_kind'), created_at: requiredString(edge.created_at, 'edge.created_at'),
-  };
-}
-
 function decodeEntityAttachment(value: unknown): EntityAttachment {
   const item = object(value);
   if (!item || !Number.isSafeInteger(item.size) || typeof item.share_permission !== 'boolean' || typeof item.reviewed_by_owner !== 'boolean' || !/^[a-f0-9]{64}$/.test(String(item.sha256))) throw new Error('Invalid response: entity attachment is malformed');
@@ -720,6 +717,81 @@ function decodeApiError(value: unknown, status: number): ApiError {
 export class ParleyClient {
   private session: Session | null = null;
   private connection: Promise<void> | null = null;
+
+  supports(capability: string): boolean {
+    return this.session?.capabilities.includes(capability) ?? false;
+  }
+
+  get eventCursor(): string { return this.session?.cursor ?? '0'; }
+  get workspaceEpoch(): string | undefined { return this.session?.epoch; }
+  get workspaceId(): string | undefined { return this.session?.workspace_id; }
+
+  async stagePartyImport(csv: Blob, key: string): Promise<PartyImportStage> {
+    const result = object(await this.request('/party-imports', {
+      method: 'POST', body: csv, headers: { 'Content-Type': 'text/csv', 'Idempotency-Key': key },
+    }));
+    const stage = object(result?.data);
+    if (!stage || !Array.isArray(stage.headers) || !stage.headers.every(h => typeof h === 'string') ||
+        !Number.isSafeInteger(stage.row_count) || typeof stage.stage_id !== 'string') throw new Error('Invalid CSV stage response.');
+    return stage as PartyImportStage;
+  }
+
+  async previewPartyImport(stageId: string, mapping: PartyImportMapping, key: string): Promise<PartyImportPreview> {
+    const result = object(await this.mutate(`/party-imports/${encodeURIComponent(stageId)}/preview`, 'POST', mapping, { 'Idempotency-Key': key }));
+    const preview = object(result?.data);
+    if (!preview || !Array.isArray(preview.rows) || typeof preview.digest !== 'string' || typeof preview.preview_id !== 'string') throw new Error('Invalid CSV preview response.');
+    return preview as PartyImportPreview;
+  }
+
+  async commitPartyImport(stageId: string, preview: Pick<PartyImportPreview, 'preview_id' | 'digest'>, key: string): Promise<PartyImportReceipt> {
+    const result = object(await this.mutate(`/party-imports/${encodeURIComponent(stageId)}/commit`, 'POST',
+      { preview_id: preview.preview_id, digest: preview.digest }, { 'Idempotency-Key': key }));
+    const receipt = object(result?.data);
+    if (!receipt || typeof receipt.batch_id !== 'string' || !Array.isArray(receipt.created)) throw new Error('Invalid CSV commit receipt.');
+    return receipt as PartyImportReceipt;
+  }
+
+  stagePartyFile(file: File, onProgress: (percent: number) => void): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const upload = new XMLHttpRequest();
+      upload.open('POST', '/api/v1/uploads');
+      upload.responseType = 'json';
+      upload.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+      upload.setRequestHeader('X-Parley-Purpose', 'card-attachment');
+      upload.setRequestHeader('X-Parley-Filename', new URLSearchParams({ name: file.name }).toString());
+      if (this.session) {
+        upload.setRequestHeader('X-Parley-Token', this.session.mutation_token);
+        upload.setRequestHeader('X-Parley-Epoch', this.session.epoch);
+      }
+      upload.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress(Math.round(100 * event.loaded / event.total));
+      };
+      upload.onload = () => {
+        if (upload.status < 200 || upload.status >= 300) reject(decodeApiError(upload.response, upload.status));
+        else if (typeof upload.response?.id === 'string') resolve(upload.response.id);
+        else reject(new Error('Invalid file upload receipt.'));
+      };
+      upload.onerror = () => reject(new Error('File upload interrupted. Retry to stage this file.'));
+      upload.send(file);
+    });
+  }
+
+  async bindPartyFile(id: string, uploadId: string, key: string): Promise<DossierFile> {
+    const result = object(await this.mutate(`/entities/${encodeURIComponent(id)}/attachments`, 'POST',
+      { upload_id: uploadId }, { 'Idempotency-Key': key }));
+    if (!object(result?.data)) throw new Error('Invalid attachment receipt.');
+    return result!.data as DossierFile;
+  }
+
+  async unlinkPartyFile(id: string, ref: string, key: string): Promise<void> {
+    await this.request(`/entities/${encodeURIComponent(id)}/attachments/${encodeURIComponent(ref)}`,
+      { method: 'DELETE', headers: { 'Idempotency-Key': key } });
+  }
+
+  async getPartyFile(id: string, ref: string): Promise<Blob> {
+    return this.requestBlob(`/entities/${encodeURIComponent(id)}/attachments/${encodeURIComponent(ref)}/content`,
+      { headers: { Accept: 'application/octet-stream' } });
+  }
 
   async refreshSession(expectedEpoch?: string): Promise<void> {
     this.session = null;
@@ -768,6 +840,41 @@ export class ParleyClient {
       decodeGraphEntity,
     );
     return data as GraphEntity[];
+  }
+
+  async queryDirectory(options: { kind?: GraphEntity['kind']; q?: string; sort?: string; batch_id?: string; cursor?: string; limit?: number } = {}) {
+    const params = new URLSearchParams();
+    for (const [name, value] of Object.entries(options)) if (value !== undefined) params.set(name, String(value));
+    const result = object(await this.request('/directory?' + params));
+    if (!result || !Array.isArray(result.data) || typeof result.cursor !== 'string'
+      || (result.next_cursor !== null && typeof result.next_cursor !== 'string')) {
+      throw new Error('Invalid response: directory page is malformed');
+    }
+    return { rows: result.data.map(decodeGraphEntity), nextCursor: result.next_cursor, fence: result.cursor };
+  }
+
+  async reviseClaim(id: string, input: components['schemas']['ClaimRevisionInput'], key: string): Promise<void> {
+    await this.mutate('/claims/' + encodeURIComponent(id) + '/revisions', 'POST', input, { 'Idempotency-Key': key });
+  }
+
+  async getEntityUsage(id: string): Promise<components['schemas']['EntityUsage']> {
+    const response = object(await this.request('/entities/' + encodeURIComponent(id) + '/usage'));
+    if (!response?.data) throw new Error('Invalid response: usage is unavailable');
+    return response.data as components['schemas']['EntityUsage'];
+  }
+
+  async retireEntity(entity: GraphEntity, key: string): Promise<void> {
+    if (!entity.etag) throw new Error('Reload the card before retiring it.');
+    await this.mutate('/entities/' + encodeURIComponent(entity.id) + '/retire', 'POST',
+      { expected_revision: entity.revision }, { 'If-Match': entity.etag, 'Idempotency-Key': key });
+  }
+
+  async saveEdge(id: string | null, input: components['schemas']['EdgeWrite'] & { expected_revision?: number }, key: string): Promise<void> {
+    await this.mutate(id ? '/edges/' + encodeURIComponent(id) : '/edges', id ? 'PATCH' : 'POST', input, { 'Idempotency-Key': key });
+  }
+
+  async removeEdge(id: string, revision: number, key: string): Promise<void> {
+    await this.mutate('/edges/' + encodeURIComponent(id), 'DELETE', { expected_revision: revision }, { 'Idempotency-Key': key });
   }
 
   async getGraph(options: { center_id?: string; view_scope?: string; view_id?: string } = {}): Promise<GraphSnapshot> {
@@ -881,12 +988,27 @@ export class ParleyClient {
       if (!item || !['primary', 'participant'].includes(String(item.role))) throw new Error('Invalid response: dossier opportunity is malformed');
       return { id: requiredString(item.id, 'opportunity.id'), title: requiredString(item.title, 'opportunity.title'), role: item.role as 'primary' | 'participant' };
     });
-    const resources = data.associated_resources.map((raw) => {
+    const resources = data.associated_resources.map((raw): Dossier['associated_resources'][number] => {
       const item = object(raw);
       if (!item) throw new Error('Invalid response: dossier resource is malformed');
-      return { id: requiredString(item.id, 'resource.id'), title: requiredString(item.title, 'resource.title'), kind: requiredString(item.kind, 'resource.kind'), opportunity_id: requiredString(item.opportunity_id, 'resource.opportunity_id'), opportunity_title: requiredString(item.opportunity_title, 'resource.opportunity_title') };
+      const paths = Array.isArray(item.paths) ? item.paths.map((rawPath) => {
+        const path = object(rawPath);
+        if (!path || (path.via !== 'edge' && path.via !== 'opportunity')) throw new Error('Invalid response: association path is malformed');
+        const participant_id = requiredString(path.participant_id, 'path.participant_id');
+        return path.via === 'edge'
+          ? { via: 'edge' as const, participant_id, edge_id: requiredString(path.edge_id, 'path.edge_id'), verb: requiredString(path.verb, 'path.verb') }
+          : { via: 'opportunity' as const, participant_id, opportunity_id: requiredString(path.opportunity_id, 'path.opportunity_id'), opportunity_title: requiredString(path.opportunity_title, 'path.opportunity_title') };
+      }) : undefined;
+      return {
+        id: requiredString(item.id, 'resource.id'), title: requiredString(item.title, 'resource.title'), kind: requiredString(item.kind, 'resource.kind'),
+        opportunity_id: typeof item.opportunity_id === 'string' ? item.opportunity_id : null,
+        opportunity_title: typeof item.opportunity_title === 'string' ? item.opportunity_title : null,
+        ...(paths ? { paths } : {}),
+      };
     });
-    return { entity: decodeGraphEntity(data.entity), direct_links: links, files, opportunities, associated_resources: resources };
+    const origin = object(data.import_origin);
+    const import_origin = origin ? { batch_id: requiredString(origin.batch_id, 'origin.batch_id'), source_record: Number(origin.source_record) } : null;
+    return { entity: decodeGraphEntity(data.entity), direct_links: links, files, opportunities, associated_resources: resources, ...(data.import_origin !== undefined ? { import_origin } : {}), ...(data.retired_at !== undefined ? { retired_at: typeof data.retired_at === 'string' ? data.retired_at : null } : {}) };
   }
 
   async updateResource(resource: Resource, input: UpdateResource, key: string): Promise<Resource> {
@@ -1423,20 +1545,8 @@ export class ParleyClient {
     return decodeMoveResourceCardResult(await this.mutate('/resource-board/moves', 'POST', input, { 'Idempotency-Key': key }));
   }
 
-  async createEdge(input: components['schemas']['EdgeInput'], key = newOperationKey()): Promise<{ edge: EdgeView }> {
-    const result = object(await this.mutate('/edges', 'POST', input, { 'Idempotency-Key': key }));
-    if (!result || !object(result.edge)) throw new Error('Invalid response: created edge is malformed');
-    return { edge: decodeEdgeView(result.edge) };
-  }
-
-  async updateEdge(id: string, input: components['schemas']['UpdateEdgeInput'], key = newOperationKey()): Promise<{ edge: EdgeView; author_kind: string }> {
-    const result = object(await this.mutate(`/edges/${encodeURIComponent(id)}`, 'PATCH', input, { 'Idempotency-Key': key }));
-    if (!result || !object(result.edge) || typeof result.author_kind !== 'string') throw new Error('Invalid response: updated edge is malformed');
-    return { edge: decodeEdgeView(result.edge), author_kind: result.author_kind };
-  }
-
-  async deleteEdge(id: string, key = newOperationKey()): Promise<void> {
-    await this.mutate(`/edges/${encodeURIComponent(id)}`, 'DELETE', {}, { 'Idempotency-Key': key });
+  async deleteEdge(id: string, expectedRevision: number, key = newOperationKey()): Promise<void> {
+    await this.mutate(`/edges/${encodeURIComponent(id)}`, 'DELETE', { expected_revision: expectedRevision }, { 'Idempotency-Key': key });
   }
 
   async listAttachments(entityId: string): Promise<EntityAttachment[]> {
@@ -1511,7 +1621,7 @@ export class ParleyClient {
   private async request(path: string, init: RequestInit = {}, authenticated = true): Promise<unknown> {
     const headers = new Headers(init.headers);
     headers.set('Accept', 'application/json');
-    headers.set('Content-Type', 'application/json');
+    if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
     if (authenticated && this.session) {
       headers.set('X-Parley-Token', this.session.mutation_token);
       headers.set('X-Parley-Epoch', this.session.epoch);
@@ -1566,13 +1676,13 @@ export class ParleyClient {
 
   private async requestBlob(path: string, init: RequestInit = {}): Promise<Blob> {
     const headers = new Headers(init.headers);
-    headers.set('Accept', 'application/zip');
+    if (!headers.has('Accept')) headers.set('Accept', 'application/zip');
     if (this.session) {
       headers.set('X-Parley-Token', this.session.mutation_token);
       headers.set('X-Parley-Epoch', this.session.epoch);
     }
     const response = await fetch(`/api/v1${path}`, { ...init, headers, credentials: 'same-origin', cache: 'no-store' });
-    if (!response.ok) throw new Error(`Export failed (${response.status}).`);
+    if (!response.ok) throw decodeApiError(await response.json().catch(() => null), response.status);
     return response.blob();
   }
 }

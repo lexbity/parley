@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, watch } from 'vue';
 import type { GraphEntity } from '../../api/client';
 
 const props = defineProps<{
@@ -12,6 +12,11 @@ const props = defineProps<{
   focusEdit: string | null;
   focusDraft: string;
   busy: boolean;
+  addOpen?: boolean;
+  serverPaged?: boolean;
+  loading?: boolean;
+  rootKnown?: boolean;
+  more?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -20,7 +25,8 @@ const emit = defineEmits<{
   'update:sort': [value: 'name' | 'type' | 'focus'];
   'update:focus-draft': [value: string];
   'add-party': [];
-  'import-csv': [];
+  more: [];
+  'first-visible': [id: string];
   'select-row': [id: string];
   'edit-focus': [id: string];
   'save-focus': [id: string];
@@ -28,6 +34,7 @@ const emit = defineEmits<{
 }>();
 
 const visibleParties = computed(() => {
+  if (props.serverPaged) return props.parties;
   const needle = props.query.trim().toLocaleLowerCase();
   return props.parties
     .filter((party) => (props.kind === 'all' || party.kind === props.kind)
@@ -39,6 +46,8 @@ const visibleParties = computed(() => {
     });
 });
 
+watch(() => visibleParties.value[0]?.id, id => { if (id) emit('first-visible', id); }, { immediate: true });
+function clearFilters() { emit('update:kind','all'); emit('update:query',''); }
 function typeLabel(kind: string): string {
   return kind === 'org' ? 'Organization' : kind === 'person' ? 'Person' : 'Project';
 }
@@ -57,17 +66,12 @@ function typeLabel(kind: string): string {
         <button
           type="button"
           class="primary"
-          :aria-expanded="false"
+          :aria-expanded="addOpen"
           @click="emit('add-party')"
         >
           Add party
         </button>
-        <button
-          type="button"
-          @click="emit('import-csv')"
-        >
-          Import CSV
-        </button>
+        <slot name="import" />
       </div>
     </header>
     <div class="sheet-toolbar">
@@ -122,7 +126,13 @@ function typeLabel(kind: string): string {
       </select>
     </div>
     <p
-      v-if="!props.parties.length"
+      v-if="loading && !props.parties.length"
+      class="sheet-empty"
+    >
+      Loading parties…
+    </p>
+    <p
+      v-else-if="!props.parties.length && !query && kind === 'all'"
       class="sheet-empty"
     >
       No parties yet. Add a person or organization. People do not need an organization.
@@ -207,8 +217,23 @@ function typeLabel(kind: string): string {
         </tbody>
       </table>
     </div>
+    <p
+      v-if="rootPartyId && (rootKnown || parties.some(p => p.id === rootPartyId)) && (query || kind !== 'all') && !more && !visibleParties.some(p => p.id === rootPartyId)"
+      class="sheet-empty"
+    >
+      Outside current filter <button @click="clearFilters">
+        Clear filters
+      </button>
+    </p>
     <footer class="sheet-foot">
-      {{ visibleParties.length }} party rows · name, type and focus
+      {{ visibleParties.length }} {{ more ? 'loaded rows' : 'party rows' }}
+      <button
+        v-if="more"
+        :disabled="loading"
+        @click="emit('more')"
+      >
+        Load more
+      </button>
     </footer>
   </section>
 </template>
@@ -221,10 +246,10 @@ function typeLabel(kind: string): string {
 .sheet-toolbar select { width: auto; }
 .sheet-scroll { overflow: auto; max-height: 52vh; }
 table { border-collapse: collapse; width: 100%; text-align: left; }
-th, td { padding: .45rem .6rem; border-bottom: 1px solid #e3e9e2; vertical-align: middle; }
-th { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: #58665f; }
-tr.root { background: #eef4ee; }
-.row-party { width: 100%; text-align: left; border: 0; background: transparent; padding: .2rem .3rem; }
+th, td { padding: .45rem .6rem; border-bottom: 1px solid #e3e9e2; vertical-align: middle; overflow-wrap:anywhere; }
+th { font-size:.92rem; font-weight:550; color:#2e4739; background:#f2f5ed; }
+tr.root { background: #e2ecdf; }
+.row-party { width: 100%; text-align: left; font-weight:600; border: 0; background: transparent; padding: .2rem .3rem; }
 .row-party[aria-pressed="true"] { background: #deebe2; }
 .focus-cell { border: 0; background: transparent; color: #58665f; padding: .2rem .3rem; }
 .focus-input { width: 10rem; padding: .25rem .4rem; }

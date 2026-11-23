@@ -30,7 +30,7 @@ fn materials_canonical(route: &str, input: &impl Serialize) -> String {
     digest(&bytes)
 }
 
-async fn material_receipt_replay(
+pub(super) async fn material_receipt_replay(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     epoch: &str,
     key: &str,
@@ -54,7 +54,7 @@ async fn material_receipt_replay(
     })?))
 }
 
-async fn material_receipt_store(
+pub(super) async fn material_receipt_store(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     epoch: &str,
     key: &str,
@@ -1012,11 +1012,12 @@ impl Workspace {
         let id = new_id(&input.primary_party_id);
         let now = now_utc();
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let party_kind: Option<String> =
-            sqlx::query_scalar("SELECT kind FROM entity WHERE id=? AND kind IN ('person','org')")
-                .bind(&input.primary_party_id)
-                .fetch_optional(&mut *tx)
-                .await?;
+        let party_kind: Option<String> = sqlx::query_scalar(
+            "SELECT kind FROM graph_card WHERE id=? AND kind IN ('person','org')",
+        )
+        .bind(&input.primary_party_id)
+        .fetch_optional(&mut *tx)
+        .await?;
         if party_kind.is_none() {
             return Err(WorkspaceError::Invalid(
                 "primary participant must be an existing person or organization".into(),
@@ -1234,11 +1235,12 @@ impl Workspace {
                 "participants can only be added to an open opportunity".into(),
             ));
         }
-        let kind: Option<String> =
-            sqlx::query_scalar("SELECT kind FROM entity WHERE id=? AND kind IN ('person','org')")
-                .bind(&input.party_id)
-                .fetch_optional(&mut *tx)
-                .await?;
+        let kind: Option<String> = sqlx::query_scalar(
+            "SELECT kind FROM graph_card WHERE id=? AND kind IN ('person','org')",
+        )
+        .bind(&input.party_id)
+        .fetch_optional(&mut *tx)
+        .await?;
         if kind.is_none() {
             return Err(WorkspaceError::Invalid(
                 "participant must be an existing person or organization".into(),

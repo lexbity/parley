@@ -17,7 +17,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{delete, get, patch, post},
+    routing::{get, post},
 };
 use parley_domain::notes;
 use serde::{Deserialize, Serialize};
@@ -101,20 +101,7 @@ pub(super) fn routes() -> Router<AppState> {
         )
         .route("/api/v1/resource-card-commits", post(commit_resource_card))
         .route("/api/v1/resource-board/moves", post(move_resource_card))
-        .route("/api/v1/edges", post(create_edge))
-        .route("/api/v1/edges/{id}", patch(update_edge).delete(delete_edge))
-        .route(
-            "/api/v1/entities/{id}/attachments",
-            get(list_attachments).post(bind_attachment),
-        )
-        .route(
-            "/api/v1/entities/{id}/attachments/{reference}",
-            delete(unbind_attachment),
-        )
-        .route(
-            "/api/v1/entities/{id}/attachments/{reference}/content",
-            get(attachment_content),
-        )
+        .route("/api/v1/entities/{id}/attachments", get(list_attachments))
 }
 
 const SUBTYPES: &[&str] = &["gift", "proof", "artifact", "skill", "interest", "note"];
@@ -367,12 +354,6 @@ pub struct UpdateEdgeInput {
     pub verb: Option<String>,
     #[serde(default)]
     pub basis: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct BindAttachmentInput {
-    pub upload_id: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -735,12 +716,19 @@ impl Workspace {
             )
             .collect::<Vec<_>>();
         // Legacy `resource` rows are always off board and stay recoverable.
+        // Since 0015 mirrors them into entity rows, skip any id already listed
+        // as an entity-kind off-board resource.
+        let already: std::collections::HashSet<String> =
+            off.iter().map(|item| item.resource_id.clone()).collect();
         let legacy: Vec<LegacyRow> = sqlx::query_as(
             "SELECT id,kind,title,readiness,revision FROM resource WHERE readiness <> 'retired' ORDER BY title COLLATE NOCASE,id",
         )
         .fetch_all(self.pool())
         .await?;
         for (id, subtype, title, readiness, revision) in legacy {
+            if already.contains(&id) {
+                continue;
+            }
             off.push(OffBoardResource {
                 resource_id: id.clone(),
                 subtype,
@@ -2135,46 +2123,6 @@ async fn move_resource_card(
     command_handler(state.workspace.move_resource_card(&input, &key)).await
 }
 
-async fn create_edge(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(input): Json<EdgeInput>,
-) -> Response {
-    let key = match command_key(&state, &headers).await {
-        Ok(key) => key,
-        Err(response) => return *response,
-    };
-    command_handler(state.workspace.create_owner_edge(&input, &key)).await
-}
-
-async fn update_edge(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    Json(input): Json<UpdateEdgeInput>,
-) -> Response {
-    let key = match command_key(&state, &headers).await {
-        Ok(key) => key,
-        Err(response) => return *response,
-    };
-    command_handler(state.workspace.update_owner_edge(&id, &input, &key)).await
-}
-
-async fn delete_edge(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-) -> Response {
-    let key = match command_key(&state, &headers).await {
-        Ok(key) => key,
-        Err(response) => return *response,
-    };
-    if let Err(error) = state.workspace.detach_edge(&id, &key).await {
-        return rb_error(error);
-    }
-    StatusCode::NO_CONTENT.into_response()
-}
-
 async fn list_attachments(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -2185,63 +2133,6 @@ async fn list_attachments(
     }
     match state.workspace.list_attachments(&id).await {
         Ok(items) => (StatusCode::OK, Json(json!({"data": items}))).into_response(),
-        Err(error) => rb_error(error),
-    }
-}
-
-async fn bind_attachment(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    Json(input): Json<BindAttachmentInput>,
-) -> Response {
-    let key = match command_key(&state, &headers).await {
-        Ok(key) => key,
-        Err(response) => return *response,
-    };
-    command_handler(state.workspace.bind_attachment(&id, &input.upload_id, &key)).await
-}
-
-async fn unbind_attachment(
-    State(state): State<AppState>,
-    Path((id, reference)): Path<(String, String)>,
-    headers: HeaderMap,
-) -> Response {
-    let key = match command_key(&state, &headers).await {
-        Ok(key) => key,
-        Err(response) => return *response,
-    };
-    if let Err(error) = state
-        .workspace
-        .unbind_attachment(&id, &reference, &key)
-        .await
-    {
-        return rb_error(error);
-    }
-    StatusCode::NO_CONTENT.into_response()
-}
-
-async fn attachment_content(
-    State(state): State<AppState>,
-    Path((id, reference)): Path<(String, String)>,
-    headers: HeaderMap,
-) -> Response {
-    if let Err(error) = authenticate(&headers, &state).await {
-        return error.into_response();
-    }
-    match state.workspace.attachment_bytes(&id, &reference).await {
-        Ok((bytes, filename)) => (
-            StatusCode::OK,
-            [
-                (axum::http::header::CONTENT_TYPE, "application/octet-stream"),
-                (
-                    axum::http::header::CONTENT_DISPOSITION,
-                    &format!("attachment; filename=\"{filename}\""),
-                ),
-            ],
-            bytes,
-        )
-            .into_response(),
         Err(error) => rb_error(error),
     }
 }

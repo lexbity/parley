@@ -1,0 +1,12 @@
+{
+  "party_type": "person",
+  "name_column": 0,
+  "notes_column": 1,
+  "excluded_records": [
+    4
+  ],
+  "distinct_records": [
+    2,
+    3
+  ]
+}

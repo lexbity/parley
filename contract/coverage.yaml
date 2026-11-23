@@ -877,6 +877,93 @@ slices:
       owner_role: owner
       package_target: rust+mock
       evidence_path: evidence/p01.md
+  p02:
+  - requirement: P02-RELATIONSHIPS
+    operationId: linkExistingCards
+    test_id: p02_related_and_existing_edges
+    fixture_id: relationships
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p02.md
+  - requirement: P02-RELATIONSHIPS
+    operationId: correctEdge
+    test_id: p02_related_and_existing_edges
+    fixture_id: relationships
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p02.md
+  - requirement: P02-RELATIONSHIPS
+    operationId: removeEdge
+    test_id: p02_related_and_existing_edges
+    fixture_id: relationships
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p02.md
+  - requirement: P02-RELATIONSHIPS
+    operationId: reviseClaim
+    test_id: p02_related_and_existing_edges
+    fixture_id: relationships
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p02.md
+  - requirement: P02-RELATIONSHIPS
+    operationId: retireEntity
+    test_id: p02_retirement_preserves_historical_links
+    fixture_id: relationships
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p02.md
+  - requirement: P02-RELATIONSHIPS
+    operationId: getEntityUsage
+    test_id: p02_retirement_preserves_historical_links
+    fixture_id: relationships
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p02.md
+  p03:
+  - requirement: P03-ATTACHMENTS
+    operationId: bindEntityAttachment
+    test_id: p03_private_attachments
+    fixture_id: attachments
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p03.md
+  - requirement: P03-ATTACHMENTS
+    operationId: unlinkEntityAttachment
+    test_id: p03_private_attachments
+    fixture_id: attachments
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p03.md
+  - requirement: P03-ATTACHMENTS
+    operationId: getEntityAttachmentContent
+    test_id: p03_private_attachments
+    fixture_id: attachments
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p03.md
+  p04:
+  - requirement: P04-CSV
+    operationId: stagePartyImport
+    test_id: p04_csv_preview_commit
+    fixture_id: csv
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p04.md
+  - requirement: P04-CSV
+    operationId: previewPartyImport
+    test_id: p04_csv_preview_commit
+    fixture_id: csv
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p04.md
+  - requirement: P04-CSV
+    operationId: commitPartyImport
+    test_id: p04_csv_preview_commit
+    fixture_id: csv
+    owner_role: owner
+    package_target: rust+mock
+    evidence_path: evidence/p04.md
   r01:
     - requirement: R01-BOARD-READ
       operationId: getResourceBoard
@@ -914,21 +1001,14 @@ slices:
       package_target: rust+mock
       evidence_path: evidence/r01.md
     - requirement: R01-EDGE-CREATE
-      operationId: createEdge
-      test_id: r01_related_card_offboard_duplicate_and_detach
-      fixture_id: board
-      owner_role: owner
-      package_target: rust+mock
-      evidence_path: evidence/r01.md
-    - requirement: R01-EDGE-UPDATE
-      operationId: updateEdge
+      operationId: commitResourceCard
       test_id: r01_related_card_offboard_duplicate_and_detach
       fixture_id: board
       owner_role: owner
       package_target: rust+mock
       evidence_path: evidence/r01.md
     - requirement: R01-EDGE-DELETE
-      operationId: deleteEdge
+      operationId: removeEdge
       test_id: r01_related_card_offboard_duplicate_and_detach
       fixture_id: board
       owner_role: owner
@@ -942,21 +1022,21 @@ slices:
       package_target: rust+mock
       evidence_path: evidence/r01.md
     - requirement: R01-ATTACH-BIND
-      operationId: bindAttachment
+      operationId: bindEntityAttachment
       test_id: r01_attachment_bind_unbind_content_roundtrip
       fixture_id: board
       owner_role: owner
       package_target: rust+mock
       evidence_path: evidence/r01.md
     - requirement: R01-ATTACH-UNBIND
-      operationId: unbindAttachment
+      operationId: unlinkEntityAttachment
       test_id: r01_attachment_bind_unbind_content_roundtrip
       fixture_id: board
       owner_role: owner
       package_target: rust+mock
       evidence_path: evidence/r01.md
     - requirement: R01-ATTACH-CONTENT
-      operationId: getAttachmentContent
+      operationId: getEntityAttachmentContent
       test_id: r01_attachment_bind_unbind_content_roundtrip
       fixture_id: board
       owner_role: owner

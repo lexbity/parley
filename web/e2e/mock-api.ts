@@ -1,3 +1,6 @@
+import { allowedAssertion } from '../src/features/parties/relations';
+import { parsePartyCsv, previewCsv, importDigest, maxImportRows, maxImportBytes } from '../mock/party-import';
+import type { PartyImportMapping, PartyImportPreview } from '../src/api/client';
 import { createHash, randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
@@ -87,6 +90,8 @@ export function createMockApi(): MockApi {
   const resources = new Map<string, ResourceRecord>();
   const directory = new Map<string, EntityRecord>();
   const notesByEntity = new Map<string, { markdown: string; revision: number }>();
+  const partyImportOrigins = new Map<string, { batch_id: string; source_record: number }>();
+  const importStages = new Map<string, { csv: ReturnType<typeof parsePartyCsv>; epoch: string; expires: number; review?: { mapping: PartyImportMapping; result: PartyImportPreview } }>();
   const entityAttachments = new Map<string, RecordData[]>();
   interface BoardColumn { id: string; title: string; position: number; revision: number }
   interface ResourcePlacementView { column_id: string; position: number; revision: number }
@@ -167,7 +172,7 @@ export function createMockApi(): MockApi {
   }
 
   function workspaceCollections(): Record<string, unknown> {
-    return { resources, directory, notesByEntity, entityAttachments, sourceTextByOccurrence, graphEdges, graphPositions, sourceGroups, captures, extractorJobs, roleJobs, agentChats, briefItems, segments, segmentMembers, fluency, writingInterests, writingExchanges, templateFamilies, writingTemplates, voiceSamples, opportunities, outputs, uploads, materialRecords, releaseRecords, threads, sends, outcomes, resolutions, capacityLedger, coachQuestions, validatedPacks, boardLists, placements, notesByOpportunity, events };
+    return { resources, directory, notesByEntity, partyImportOrigins, entityAttachments, sourceTextByOccurrence, graphEdges, graphPositions, sourceGroups, captures, extractorJobs, roleJobs, agentChats, briefItems, segments, segmentMembers, fluency, writingInterests, writingExchanges, templateFamilies, writingTemplates, voiceSamples, opportunities, outputs, uploads, materialRecords, releaseRecords, threads, sends, outcomes, resolutions, capacityLedger, coachQuestions, validatedPacks, boardLists, placements, notesByOpportunity, events };
   }
 
   function takeWorkspaceSnapshot(): Record<string, unknown> {
@@ -480,7 +485,7 @@ export function createMockApi(): MockApi {
         epoch,
         wire_major: 1,
         wire_minor: 0,
-        capabilities: ['resources.read', 'resources.write', 'party.sheet', 'party.notes', 'party.dossier'],
+        capabilities: ['resources.read', 'resources.write', 'party.sheet', 'party.notes', 'party.dossier', 'party.imports', 'party.attachments', 'party.relations'],
         mutation_token: sessions.get(cookie),
         cursor: String(events.length),
       });
@@ -489,6 +494,95 @@ export function createMockApi(): MockApi {
       return fail(response, cookie ? 403 : 401, cookie ? 'TOKEN_INVALID' : 'SESSION_REQUIRED', 'Sign in to the local workspace');
     }
 
+    const importRoute = /^\/api\/v1\/party-imports(?:\/([^/]+)\/(preview|commit))?$/.exec(url.pathname);
+    if (importRoute && request.method === 'POST') {
+      const stageId = importRoute[1];
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Operation key required.');
+      try {
+        if (!stageId) {
+          const chunks: Buffer[] = [];
+          let size = 0;
+          for await (const chunk of request) {
+            size += (chunk as Buffer).length;
+            if (size > maxImportBytes) return fail(response, 413, 'CSV_TOO_LARGE', 'Split this CSV into files of at most ' + maxImportBytes + ' bytes.');
+            chunks.push(chunk as Buffer);
+          }
+          const bytes = Buffer.concat(chunks);
+          const csv = parsePartyCsv(bytes);
+          const id = randomHex();
+          importStages.set(id, { csv, epoch, expires: Date.now() + 30 * 60_000 });
+          return json(response, 201, { data: { stage_id: id, headers: csv.headers, row_count: csv.records.length, max_rows: maxImportRows, max_bytes: maxImportBytes } });
+        }
+        const input = await readBody(request);
+        const digest = importDigest([epoch,url.pathname,input]);
+        const oldReceipt = receipts.get(key);
+        if (oldReceipt) return oldReceipt.digest === digest ? json(response, 200, { data: oldReceipt.result }) : fail(response, 409, 'KEY_REUSED', 'Operation key refers to a different request.');
+        const staged = importStages.get(stageId);
+        if (!staged || staged.epoch !== epoch || Date.now() > staged.expires) return fail(response, 410, 'IMPORT_EXPIRED', 'Stage the CSV again.');
+        if (importRoute[2] === 'preview') {
+          const mapping = input as PartyImportMapping;
+          const preview = previewCsv(staged.csv, mapping, directory.values());
+          const result = { ...preview, preview_id: randomHex(), digest: importDigest([stageId,epoch,mapping,preview]) };
+          staged.review = { mapping, result };
+          return json(response, 200, { data: result });
+        }
+        const saved = staged.review;
+        if (!saved || input.preview_id !== saved.result.preview_id || input.digest !== saved.result.digest) return fail(response, 409, 'STALE_PREVIEW', 'Review the CSV again.');
+        const current = previewCsv(staged.csv, saved.mapping, directory.values());
+        if (importDigest([stageId,epoch,saved.mapping,current]) !== saved.result.digest) return fail(response, 409, 'STALE_PREVIEW', 'Party matches changed. Review the CSV again.');
+        if (!current.create_count || current.error_count) return fail(response, 422, 'IMPORT_INVALID', 'Review or skip all flagged rows before importing.');
+        const batch_id = randomHex();
+        const created = current.rows.filter(r => r.decision === 'create').map(row => {
+          const party = { id: randomHex(), name: row.name, focus: row.focus, kind: saved.mapping.party_type, revision: 1 };
+          directory.set(party.id, party); notesByEntity.set(party.id, { markdown: row.notes, revision: 1 });
+          partyImportOrigins.set(party.id, { batch_id, source_record: row.source_record });
+          pushEvent({ event_id: randomHex(), entity_type: 'entity', entity_id: party.id, revision: 1, event_type: 'entity.created', payload: { batch_id, source_record: row.source_record } });
+          return { source_record: row.source_record, party_id: party.id };
+        });
+        const result = { batch_id, created, skipped_count: current.skip_count };
+        receipts.set(key, { digest, result }); importStages.delete(stageId);
+        return json(response, 201, { data: result });
+      } catch (reason) { return fail(response, 422, 'IMPORT_INVALID', reason instanceof Error ? reason.message : 'Invalid CSV.'); }
+    }
+
+    const fileRoute = /^\/api\/v1\/entities\/([^/]+)\/attachments(?:\/([^/]+)(\/content)?)?$/.exec(url.pathname);
+    if (fileRoute) {
+      const [,ownerId,ref,content] = fileRoute;
+      if (!directory.has(ownerId!) && !resources.has(ownerId!)) return fail(response, 404, 'NOT_FOUND', 'Card unavailable.');
+      const files = entityAttachments.get(ownerId!) ?? [];
+      const file = files.find(f => f.id === ref);
+      if (content && request.method === 'GET') {
+        const upload = file && uploads.get(String(file.upload_id));
+        if (!upload) return fail(response, 404, 'NOT_FOUND', 'File unavailable.');
+        response.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+        response.end(upload.bytes); return;
+      }
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Operation key required.');
+      const body = request.method === 'POST' ? await readBody(request) : null;
+      const digest = importDigest([epoch,url.pathname,request.method,body]);
+      const previous = receipts.get(key);
+      if (previous) {
+        if (digest !== previous.digest) return fail(response, 409, 'KEY_REUSED', 'Operation key belongs to another request.');
+        return json(response, body ? 200 : 204, body ? { data: previous.result } : null);
+      }
+      if (body && !ref) {
+        const upload = uploads.get(String(body.upload_id));
+        if (!upload) return fail(response, 404, 'UPLOAD_UNAVAILABLE', 'Reupload the file.');
+        const existing = files.find(f => f.upload_id === upload.id);
+        const result = existing ?? { id: randomHex(), upload_id: upload.id, filename: upload.filename, size: upload.bytes.length, sha256: upload.sha256, content_type: upload.mime, reviewed_by_owner: false, share_permission: false, created_at: now() };
+        if (!existing) entityAttachments.set(ownerId!, [...files,result]);
+        receipts.set(key, { digest, result });
+        return json(response, 201, { data: result });
+      }
+      if (request.method === 'DELETE' && file && !content) {
+        entityAttachments.set(ownerId!, files.filter(f => f.id !== ref));
+        receipts.set(key, { digest, result: {} });
+        return json(response, 204, null);
+      }
+      return fail(response, 404, 'NOT_FOUND', 'Attachment unavailable.');
+    }
     if (url.pathname === '/api/v1/admin/overview' && request.method === 'GET') {
       return json(response, 200, adminOverview({ asOf: now(), epoch, cursor: String(events.length), backups: adminBackups, parties: [...directory.values()] }));
     }
@@ -770,8 +864,9 @@ export function createMockApi(): MockApi {
         return { ...entity, id, x: position.x, y: position.y, position_revision: position.revision };
       });
       const visible = new Set(nodes.map((node) => String(node.id)));
-      const edges = graphEdges.filter((edge) => visible.has(String(edge.from_id)) && visible.has(String(edge.to_id))).slice(0, 400);
-      return json(response, 200, { nodes, edges, omitted_nodes: Math.max(0, relatedIds.size - nodes.length), omitted_edges: Math.max(0, graphEdges.length - edges.length) });
+      const scopedEdges = graphEdges.filter(edge => visible.has(String(edge.from_id)) && visible.has(String(edge.to_id)));
+      const edges = scopedEdges.slice(0, 400);
+      return json(response, 200, { nodes, edges, omitted_nodes: Math.max(0, relatedIds.size - nodes.length), omitted_edges: Math.max(0, scopedEdges.length - edges.length) });
     }
     if (url.pathname === '/api/v1/graph/layout' && request.method === 'PUT') {
       let input: RecordData;
@@ -797,13 +892,21 @@ export function createMockApi(): MockApi {
       if (prior) return prior.digest === commandDigest ? json(response, 201, prior.result) : fail(response, 409, 'KEY_REUSED', 'Idempotency key was used for a different command');
       const parent = directory.get(String(input.related_entity_id));
       const source = sourceTextByOccurrence.get(String(input.occurrence_id));
-      const allowed = (input.kind === 'person' && parent?.kind === 'org' && input.verb === 'member_of')
-        || (input.kind === 'project' && parent?.kind === 'org' && input.verb === 'works_with')
-        || (input.kind === 'resource' && parent?.kind === 'person' && input.verb === 'offers_to');
-      if (!parent || !source || !allowed || typeof input.name !== 'string' || !input.name.trim() || typeof input.quote !== 'string' || !source.text.includes(input.quote)) return fail(response, 422, 'RELATIONSHIP_REJECTED', 'Entity, direction, source and exact quote must be valid');
-      const entity: EntityRecord = { id: randomHex(), kind: String(input.kind), name: input.name.trim(), focus: '', revision: 1 };
+      if (parent && input.expected_parent_revision !== undefined && Number(input.expected_parent_revision) !== parent.revision) {
+        return fail(response, 412, 'STALE_REVISION', 'The parent changed.');
+      }
+      const targetIsParent = input.direction === 'incoming' || (input.direction === undefined && input.kind === 'person');
+      const childKind = String(input.kind);
+      const parentKind = parent?.kind ?? '';
+      const allowed = allowedAssertion(targetIsParent ? childKind : parentKind, String(input.verb), targetIsParent ? parentKind : childKind);
+      const staged = Array.isArray(input.staged_upload_ids) ? input.staged_upload_ids.map(id => uploads.get(String(id))) : [];
+      if (!parent || !source || !allowed || typeof input.name !== 'string' || !input.name.trim() || typeof input.quote !== 'string' || !input.quote.trim() || !source.text.includes(input.quote) || staged.some(upload => !upload)) {
+        return fail(response, 422, 'RELATIONSHIP_REJECTED', 'Entity, direction, source, quote and files must be valid');
+      }
+      const entity: EntityRecord = { id: randomHex(), kind: childKind, name: input.name.trim(), focus: '', revision: 1 };
       directory.set(entity.id, entity);
-      const targetIsParent = input.kind === 'person';
+      if (typeof input.notes === 'string') notesByEntity.set(entity.id, { markdown: input.notes.replace(/\r\n?/g, '\n'), revision: 1 });
+      entityAttachments.set(entity.id, staged.flatMap(upload => upload ? [{ id: randomHex(), upload_id: upload.id, filename: upload.filename, size: upload.bytes.length, sha256: upload.sha256, content_type: upload.mime, reviewed_by_owner: false, share_permission: false, created_at: now() }] : []));
       graphEdges.push({ id: randomHex(), from_id: targetIsParent ? entity.id : parent.id, to_id: targetIsParent ? parent.id : entity.id, verb: String(input.verb), revision: 1, occurrence_id: String(input.occurrence_id), quote: input.quote, tier: 1, speaker_kind: 'unknown', captured_at: now(), source_title: source.title, source_url: source.url });
       const key = `${String(input.view_scope)}:${String(input.view_id)}:${entity.id}`;
       graphPositions.set(key, { x: Number(input.x), y: Number(input.y), revision: 1 });
@@ -812,6 +915,61 @@ export function createMockApi(): MockApi {
       return json(response, 201, entity);
     }
 
+    const edgeRoute = /^\/api\/v1\/edges(?:\/([^/]+))?$/.exec(url.pathname);
+    if (edgeRoute && ['POST', 'PATCH', 'DELETE'].includes(request.method ?? '')) {
+      const input = await readBody(request);
+      const id = edgeRoute[1];
+      const key = request.headers['idempotency-key'];
+      const digest = importDigest([epoch, request.method, url.pathname, input]);
+      if (typeof key !== 'string' || !key) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Operation key required.');
+      const code = request.method === 'POST' ? 201 : request.method === 'PATCH' ? 200 : 204;
+      const prior = receipts.get(key);
+      if (prior) return prior.digest === digest ? json(response, code, prior.result) : fail(response, 409, 'KEY_REUSED', 'Operation key already used.');
+      const target = graphEdges.find(edge => edge.id === id);
+      if (id && (!target || target.revision !== input.expected_revision)) return fail(response, 412, 'STALE_REVISION', 'The relationship changed.');
+      if (target && code === 204) {
+        graphEdges.splice(graphEdges.indexOf(target), 1);
+        receipts.set(key, { digest, result: {} });
+        return json(response, 204, null);
+      }
+      const from = directory.get(String(input.from_id));
+      const to = directory.get(String(input.to_id));
+      const source = sourceTextByOccurrence.get(String(input.occurrence_id));
+      if (!from || !to || from.revision !== input.expected_from_revision || to.revision !== input.expected_to_revision) return fail(response, 412, 'STALE_REVISION', 'An endpoint changed.');
+      if (from.id === to.id || !allowedAssertion(from.kind, String(input.verb), to.kind) || !source || typeof input.quote !== 'string' || !input.quote.trim() || !source.text.includes(input.quote)) {
+        return fail(response, 422, 'RELATIONSHIP_REJECTED', 'Choose a valid relationship and exact source quote.');
+      }
+      const duplicate = graphEdges.find(edge => edge.from_id === from.id && edge.to_id === to.id && edge.verb === input.verb);
+      if (target && duplicate && target !== duplicate) return fail(response, 422, 'RELATIONSHIP_REJECTED', 'Relationship already exists.');
+      const current = target ?? duplicate;
+      const changed = !!target || !current || current.quote !== input.quote || current.occurrence_id !== input.occurrence_id;
+      const edge = { id: current?.id ?? randomHex(), from_id: from.id, to_id: to.id, verb: input.verb,
+        revision: current ? Number(current.revision) + Number(changed) : 1,
+        occurrence_id: input.occurrence_id, quote: input.quote, tier: 1, speaker_kind: 'unknown', captured_at: now(), source_title: source.title, source_url: source.url };
+      if (current && changed) Object.assign(current, edge);
+      if (!current) graphEdges.push(edge);
+      const result = { data: { id: edge.id, from_id: edge.from_id, to_id: edge.to_id, verb: edge.verb, revision: edge.revision } };
+      receipts.set(key, { digest, result });
+      return json(response, code, result);
+    }
+
+    if (url.pathname === '/api/v1/directory' && request.method === 'GET') {
+      const params = url.searchParams;
+      const kind = params.get('kind');
+      const query = params.get('q')?.toLowerCase() ?? '';
+      const sort = params.get('sort') ?? 'name';
+      const limit = Number(params.get('limit') ?? 50);
+      const offset = Number(params.get('cursor') ?? 0);
+      const batchId = params.get('batch_id');
+      if (!Number.isInteger(limit) || limit < 1 || limit > 200 || !Number.isInteger(offset) || offset < 0) return fail(response, 422, 'DIRECTORY_INVALID', 'Invalid directory page.');
+      const value = (row: EntityRecord) => sort === 'type' ? row.kind : sort === 'focus' ? row.focus : row.name;
+      const entries = [...directory.values()].filter(row => (kind ? row.kind === kind : ['org', 'person'].includes(row.kind))
+        && (row.name.toLowerCase().includes(query) || row.focus.toLowerCase().includes(query))
+        && (!batchId || partyImportOrigins.get(row.id)?.batch_id === batchId));
+      entries.sort((left, right) => value(left).toLowerCase().localeCompare(value(right).toLowerCase()) || left.id.localeCompare(right.id));
+      const next = offset + limit;
+      return json(response, 200, { data: entries.slice(offset, next).map(row => ({ ...row, etag: entityTag(row) })), next_cursor: next < entries.length ? String(next) : null, cursor: String(events.length) });
+    }
     if (url.pathname === '/api/v1/entities' && request.method === 'GET') {
       const kinds = url.searchParams.getAll('kind');
       const resourceKinds = kinds.filter((value) => ['gift', 'proof', 'artifact', 'resource'].includes(value));
@@ -855,8 +1013,12 @@ export function createMockApi(): MockApi {
         if (focus.length > 250) {
           return fail(response, 422, 'ENTITY_INVALID', 'Entity focus is invalid');
         }
+        const staged = Array.isArray(input.staged_upload_ids) ? input.staged_upload_ids.map(id => uploads.get(String(id))) : [];
+        if (staged.some(upload => !upload)) return fail(response, 422, 'UPLOAD_UNAVAILABLE', 'Reupload the file.');
         const entity: EntityRecord = { id: randomHex(), kind: String(input.kind), name, focus, revision: 1 };
         directory.set(entity.id, entity);
+        if (typeof input.notes === 'string') notesByEntity.set(entity.id, { markdown: input.notes.replace(/\r\n?/g, '\n'), revision: 1 });
+        entityAttachments.set(entity.id, staged.flatMap(upload => upload ? [{ id: randomHex(), upload_id: upload.id, filename: upload.filename, size: upload.bytes.length, sha256: upload.sha256, content_type: upload.mime, reviewed_by_owner: false, share_permission: false, created_at: now() }] : []));
         pushEvent({ event_id: randomHex(), entity_type: 'entity', entity_id: entity.id, revision: 1, event_type: 'entity.created', payload: {} });
         receipts.set(key, { digest, result: { ...entity, etag: entityTag(entity) } });
         return json(response, 201, { data: { ...entity, etag: entityTag(entity) } });
@@ -959,6 +1121,9 @@ export function createMockApi(): MockApi {
       if (typeof key !== 'string' || key.length === 0 || key.length > 100) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
       const entity = directory.get(entityNotesMatch[1]!);
       if (!entity) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
+      const digest = createHash('sha256').update(JSON.stringify([entity.id, ifMatch, input])).digest('hex');
+      const previous = receipts.get(key);
+      if (previous) return previous.digest === digest ? json(response, 200, { data: previous.result }) : fail(response, 409, 'KEY_REUSED', 'Operation key belongs to another command.');
       const current = notesByEntity.get(entity.id) ?? { markdown: '', revision: 1 };
       if (ifMatch !== notesTag(entity.id, current.revision) || Number(input.expected_notes_rev) !== current.revision) return fail(response, 412, 'STALE_REVISION', 'Notes changed in another session');
       const markdown = typeof input.markdown === 'string' ? input.markdown.replace(/\r\n/g, '\n').replace(/\r/g, '\n') : '';
@@ -966,7 +1131,6 @@ export function createMockApi(): MockApi {
       notesByEntity.set(entity.id, next);
       pushEvent({ event_id: randomHex(), entity_type: 'entity', entity_id: entity.id, revision: next.revision, event_type: 'entity.notes_updated', payload: {} });
       const result = { entity_id: entity.id, markdown, revision: next.revision, etag: notesTag(entity.id, next.revision) };
-      const digest = createHash('sha256').update(JSON.stringify([entity.id, ifMatch, input])).digest('hex');
       receipts.set(key, { digest, result });
       return json(response, 200, { data: result });
     }
@@ -995,7 +1159,7 @@ export function createMockApi(): MockApi {
           associated_resources.push({ id: String(source.id), title: String(source.title ?? source.kind ?? source.id), kind: String(source.kind ?? 'material'), opportunity_id: opportunity.id, opportunity_title: opportunity.title });
         }
       }
-      return json(response, 200, { data: { entity: { ...entity, etag: entityTag(entity) }, direct_links, files, opportunities: openOpportunities, associated_resources } });
+      return json(response, 200, { data: { entity: { ...entity, etag: entityTag(entity) }, direct_links, files, import_origin: partyImportOrigins.get(entity.id) ?? null, opportunities: openOpportunities, associated_resources } });
     }
     if (url.pathname === '/api/v1/events' && request.method === 'GET') {
       const after = Number(url.searchParams.get('after') ?? '0');
@@ -1479,7 +1643,7 @@ export function createMockApi(): MockApi {
       if (bytes.length === 0) return fail(response, 422, 'EMPTY_UPLOAD', 'Attachment is empty');
       const sha256 = createHash('sha256').update(bytes).digest('hex');
       const header = request.headers['x-parley-filename'];
-      const filename = header ? decodeURIComponent(String(header)) : 'attachment.bin';
+      const filename = header ? new URLSearchParams(String(header)).get('name') ?? decodeURIComponent(String(header)) : 'attachment.bin';
       const mime = String(request.headers['content-type'] ?? 'application/octet-stream');
       const id = randomHex();
       const created_at = now();

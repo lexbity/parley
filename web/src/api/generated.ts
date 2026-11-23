@@ -84,6 +84,102 @@ export interface paths {
         patch: operations["updateEntity"];
         trace?: never;
     };
+    "/party-imports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["stagePartyImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/party-imports/{id}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["previewPartyImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/party-imports/{id}/commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["commitPartyImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/entities/{id}/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["bindEntityAttachment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/entities/{id}/attachments/{ref}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["unlinkEntityAttachment"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/entities/{id}/attachments/{ref}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getEntityAttachmentContent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/entities/{id}/notes": {
         parameters: {
             query?: never;
@@ -250,6 +346,102 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["resolveProposals"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/claims/{id}/revisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reviseClaim"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/entities/{id}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getEntityUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/entities/{id}/retire": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["retireEntity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/edges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["linkExistingCards"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/edges/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["removeEdge"];
+        options?: never;
+        head?: never;
+        patch: operations["correctEdge"];
+        trace?: never;
+    };
+    "/directory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["queryDirectory"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1731,86 +1923,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/edges": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["createEdge"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/edges/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete: operations["deleteEdge"];
-        options?: never;
-        head?: never;
-        patch: operations["updateEdge"];
-        trace?: never;
-    };
-    "/entities/{id}/attachments": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listAttachments"];
-        put?: never;
-        post: operations["bindAttachment"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/entities/{id}/attachments/{reference}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete: operations["unbindAttachment"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/entities/{id}/attachments/{reference}/content": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getAttachmentContent"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1846,10 +1958,39 @@ export interface components {
             revision: number;
             etag: string;
         };
+        EdgeWrite: {
+            from_id: string;
+            to_id: string;
+            verb: string;
+            occurrence_id: string;
+            quote: string;
+            expected_from_revision: number;
+            expected_to_revision: number;
+        };
+        EdgeCorrection: {
+            from_id: string;
+            to_id: string;
+            verb: string;
+            occurrence_id: string;
+            quote: string;
+            expected_from_revision: number;
+            expected_to_revision: number;
+            expected_revision: number;
+        };
+        EdgeRemoval: {
+            expected_revision: number;
+        };
+        EdgeReceipt: {
+            id: string;
+            from_id: string;
+            to_id: string;
+            verb: string;
+            revision: number;
+        };
         GraphEntity: {
             id: string;
             /** @enum {unknown} */
-            kind: "person" | "org" | "project" | "resource";
+            kind: "person" | "org" | "project" | "resource" | "source" | "interest" | "artifact";
             name: string;
             /** @description Owner-editable short descriptor shown on the party sheet. */
             focus?: string;
@@ -1861,6 +2002,54 @@ export interface components {
             x: number;
             y: number;
             position_revision: number;
+        };
+        ClaimRevisionInput: {
+            expected_revision: number;
+            occurrence_id: string;
+            wording: string;
+            /** @enum {string} */
+            speaker_kind: "owner" | "party" | "unknown";
+            speaker_entity_id?: string | null;
+        };
+        ClaimRevisionReceipt: {
+            id: string;
+            revision: number;
+            occurrence_id: string;
+            wording: string;
+            /** @enum {string} */
+            speaker_kind: "owner" | "party" | "unknown";
+            speaker_entity_id: string | null;
+        };
+        RetireEntityInput: {
+            expected_revision: number;
+        };
+        RetiredEntity: {
+            id: string;
+            revision: number;
+            /** Format: date-time */
+            retired_at: string;
+        };
+        EntityUsage: {
+            links: {
+                id: string;
+                verb: string;
+                from_id: string;
+                to_id: string;
+            }[];
+            opportunities: {
+                id: string;
+                title: string;
+            }[];
+            materials: {
+                id: string;
+                kind: string;
+            }[];
+            counts: {
+                links: number;
+                opportunities: number;
+                materials: number;
+                recommendations: number;
+            };
         };
         GraphEdge: {
             id: string;
@@ -1877,6 +2066,9 @@ export interface components {
             /** Format: date-time */
             captured_at: string;
             source_title: string | null;
+            claim_id?: string;
+            claim_revision?: number;
+            speaker_entity_id?: string | null;
             source_url: string | null;
         };
         GraphSnapshot: {
@@ -1946,6 +2138,8 @@ export interface components {
             kind: "person" | "org" | "project" | "resource";
             name: string;
             focus?: string;
+            notes?: string;
+            staged_upload_ids?: string[];
         };
         UpdateEntityInput: {
             name?: string;
@@ -1975,6 +2169,59 @@ export interface components {
             /** @enum {integer|null} */
             tier: 1 | 2 | 3 | null;
             wording: string | null;
+            claim_id?: string | null;
+            claim_revision?: number | null;
+            occurrence_id?: string | null;
+            speaker_kind?: string | null;
+            speaker_entity_id?: string | null;
+        };
+        PartyImportStage: {
+            stage_id: string;
+            headers: string[];
+            row_count: number;
+            max_rows: number;
+            max_bytes: number;
+        };
+        PartyImportMapping: {
+            /** @enum {string} */
+            party_type: "person" | "org";
+            name_column: number;
+            focus_column?: number | null;
+            notes_column?: number | null;
+            excluded_records: number[];
+            distinct_records: number[];
+        };
+        PartyImportRow: {
+            source_record: number;
+            name: string;
+            focus: string;
+            notes: string;
+            duplicates: string[];
+            /** @enum {string} */
+            decision: "create" | "skip" | "review" | "error";
+        };
+        PartyImportPreview: {
+            preview_id: string;
+            digest: string;
+            rows: components["schemas"]["PartyImportRow"][];
+            create_count: number;
+            skip_count: number;
+            error_count: number;
+        };
+        PartyImportCommit: {
+            preview_id: string;
+            digest: string;
+        };
+        PartyImportReceipt: {
+            batch_id: string;
+            created: {
+                source_record: number;
+                party_id: string;
+            }[];
+            skipped_count: number;
+        };
+        BindEntityAttachment: {
+            upload_id: string;
         };
         DossierFile: {
             id: string;
@@ -1997,14 +2244,29 @@ export interface components {
             id: string;
             title: string;
             kind: string;
-            opportunity_id: string;
-            opportunity_title: string;
+            opportunity_id: string | null;
+            opportunity_title: string | null;
+            paths?: {
+                /** @enum {string} */
+                via: "edge" | "opportunity";
+                participant_id: string;
+                edge_id?: string;
+                verb?: string;
+                opportunity_id?: string;
+                opportunity_title?: string;
+            }[];
         };
         Dossier: {
+            /** Format: date-time */
+            retired_at?: string | null;
             entity: components["schemas"]["GraphEntity"];
             direct_links: components["schemas"]["DossierLink"][];
             files: components["schemas"]["DossierFile"][];
             opportunities: components["schemas"]["DossierOpportunity"][];
+            import_origin?: {
+                batch_id: string;
+                source_record: number;
+            } | null;
             associated_resources: components["schemas"]["DossierResource"][];
         };
         DossierEnvelope: {
@@ -2075,8 +2337,13 @@ export interface components {
         };
         RelatedEntityInput: {
             /** @enum {unknown} */
-            kind: "person" | "org" | "project" | "resource";
+            kind: "person" | "org" | "project" | "resource" | "source" | "interest" | "artifact";
             name: string;
+            expected_parent_revision?: number;
+            /** @enum {string} */
+            direction?: "incoming" | "outgoing";
+            notes?: string;
+            staged_upload_ids?: string[];
             related_entity_id: string;
             verb: string;
             occurrence_id: string;
@@ -3170,6 +3437,211 @@ export interface operations {
             428: components["responses"]["Error"];
         };
     };
+    stagePartyImport: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "text/csv": string;
+            };
+        };
+        responses: {
+            /** @description Parsed private CSV stage and bounded input limits. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["PartyImportStage"];
+                    };
+                };
+            };
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            413: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    previewPartyImport: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PartyImportMapping"];
+            };
+        };
+        responses: {
+            /** @description Mapped records and duplicate decisions for this preview. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["PartyImportPreview"];
+                    };
+                };
+            };
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    commitPartyImport: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PartyImportCommit"];
+            };
+        };
+        responses: {
+            /** @description Atomic import receipt with canonical party IDs. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["PartyImportReceipt"];
+                    };
+                };
+            };
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    bindEntityAttachment: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BindEntityAttachment"];
+            };
+        };
+        responses: {
+            /** @description Private card file binding for a staged upload. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["DossierFile"];
+                    };
+                };
+            };
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    unlinkEntityAttachment: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+                ref: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed one entity attachment binding. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    getEntityAttachmentContent: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+                ref: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Owner-authorized verified file bytes. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
     getEntityNotes: {
         parameters: {
             query?: never;
@@ -3554,6 +4026,234 @@ export interface operations {
                 };
             };
             422: components["responses"]["Error"];
+        };
+    };
+    reviseClaim: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClaimRevisionInput"];
+            };
+        };
+        responses: {
+            /** @description Attributed claim revision recorded. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ClaimRevisionReceipt"];
+                    };
+                };
+            };
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            412: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    getEntityUsage: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description References affected by retirement. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["EntityUsage"];
+                    };
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    retireEntity: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                "If-Match": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RetireEntityInput"];
+            };
+        };
+        responses: {
+            /** @description Retirement recorded. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["RetiredEntity"];
+                    };
+                };
+            };
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            412: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    linkExistingCards: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EdgeWrite"];
+            };
+        };
+        responses: {
+            /** @description Relationship command acknowledged. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["EdgeReceipt"];
+                    };
+                };
+            };
+            412: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    removeEdge: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EdgeRemoval"];
+            };
+        };
+        responses: {
+            /** @description Relationship command acknowledged. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    correctEdge: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EdgeCorrection"];
+            };
+        };
+        responses: {
+            /** @description Relationship command acknowledged. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["EdgeReceipt"];
+                    };
+                };
+            };
+            412: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    queryDirectory: {
+        parameters: {
+            query?: {
+                q?: string;
+                kind?: string;
+                sort?: string;
+                limit?: number;
+                cursor?: string;
+                batch_id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded entity page with projection fence. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["GraphEntity"][];
+                        next_cursor: string | null;
+                        cursor: string;
+                    };
+                };
+            };
         };
     };
     createRelatedEntity: {
@@ -6747,195 +7447,6 @@ export interface operations {
             };
             412: components["responses"]["Error"];
             422: components["responses"]["Error"];
-        };
-    };
-    createEdge: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["EdgeInput"];
-            };
-        };
-        responses: {
-            /** @description Owner-authored edge with its basis. */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CreatedEdge"];
-                };
-            };
-            422: components["responses"]["Error"];
-        };
-    };
-    deleteEdge: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Edge detached; both endpoints remain. */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            404: components["responses"]["Error"];
-        };
-    };
-    updateEdge: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpdateEdgeInput"];
-            };
-        };
-        responses: {
-            /** @description Corrected edge. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["UpdatedEdge"];
-                };
-            };
-            412: components["responses"]["Error"];
-        };
-    };
-    listAttachments: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description File bindings on the entity. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AttachmentList"];
-                };
-            };
-            404: components["responses"]["Error"];
-        };
-    };
-    bindAttachment: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["BindAttachmentInput"];
-            };
-        };
-        responses: {
-            /** @description Staged upload bound to the card. */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BoundAttachment"];
-                };
-            };
-            422: components["responses"]["Error"];
-        };
-    };
-    unbindAttachment: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Parley-Token": components["parameters"]["MutationToken"];
-                "X-Parley-Epoch": components["parameters"]["Epoch"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path: {
-                id: string;
-                reference: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Card binding removed; the file itself is untouched. */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            404: components["responses"]["Error"];
-        };
-    };
-    getAttachmentContent: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-                reference: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Verified owner-content bytes of the bound file. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/octet-stream": string;
-                };
-            };
-            404: components["responses"]["Error"];
         };
     };
 }

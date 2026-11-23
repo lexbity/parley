@@ -154,34 +154,48 @@ async fn s02_related_node_edge_and_quote_commit_together() {
         .await
         .unwrap();
     let rejected = workspace
-        .create_related_entity(
-            "person",
+        .create_related_card(
             "Invented Dana",
-            &organization.id,
-            "member_of",
-            &source.occurrence_id,
-            "This sentence is not in the source",
-            "party",
-            &organization.id,
-            160.0,
-            80.0,
+            parley_service::relations::RelatedCard {
+                kind: "person".into(),
+                name: "Invented Dana".into(),
+                related_entity_id: organization.id.clone(),
+                verb: "member_of".into(),
+                occurrence_id: source.occurrence_id.clone(),
+                quote: "This sentence is not in the source".into(),
+                view_scope: "party".into(),
+                view_id: organization.id.clone(),
+                x: 160.0,
+                y: 80.0,
+                expected_parent_revision: Some(1),
+                direction: None,
+                notes: String::new(),
+                staged_upload_ids: vec![],
+            },
         )
         .await;
     assert!(rejected.is_err());
     let untouched:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM entity),(SELECT count(*) FROM edge),(SELECT count(*) FROM view_position)").fetch_one(workspace.pool()).await.unwrap();
     assert_eq!(untouched, (1, 0, 0));
     let created = workspace
-        .create_related_entity(
-            "person",
+        .create_related_card(
             "Dana Lee",
-            &organization.id,
-            "member_of",
-            &source.occurrence_id,
-            "Dana Lee will work with the onboarding team",
-            "party",
-            &organization.id,
-            160.0,
-            80.0,
+            parley_service::relations::RelatedCard {
+                kind: "person".into(),
+                name: "Dana Lee".into(),
+                related_entity_id: organization.id.clone(),
+                verb: "member_of".into(),
+                occurrence_id: source.occurrence_id.clone(),
+                quote: "Dana Lee will work with the onboarding team".into(),
+                view_scope: "party".into(),
+                view_id: organization.id.clone(),
+                x: 160.0,
+                y: 80.0,
+                expected_parent_revision: Some(1),
+                direction: None,
+                notes: String::new(),
+                staged_upload_ids: vec![],
+            },
         )
         .await
         .unwrap();

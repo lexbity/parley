@@ -248,24 +248,12 @@ function placeOffBoard(card: { resource_id: string; title: string; legacy?: bool
   void moveCard(summary ?? { resource_id: card.resource_id, title: card.title, subtype: '', readiness: 'draft', placement: null, counts: { files: 0, connections: 0, proposed: 0, deliveries: 0 }, gaps: [], etag: '' }, value);
 }
 
-async function correctEdge(edgeId: string) {
-  const edge = graph.value.edges.find((item) => item.id === edgeId);
-  if (!edge) return;
-  const basis = globalThis.prompt('Correct the basis for this relationship:', edge.quote || '');
-  if (basis === null) return;
-  try {
-    await parley.updateEdge(edgeId, { expected_revision: edge.revision, basis });
-    status.value = 'Relationship corrected.';
-    void loadGraph();
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : 'Could not correct the relationship.';
-  }
-}
-
 async function detachEdge(edgeId: string) {
   if (!globalThis.confirm('Detach this relationship? Both cards remain.')) return;
+  const edge = graph.value.edges.find((item) => item.id === edgeId);
+  if (!edge) return;
   try {
-    await parley.deleteEdge(edgeId);
+    await parley.deleteEdge(edgeId, edge.revision);
     status.value = 'Relationship detached; both cards remain.';
     inspectedEdgeId.value = null;
     void loadGraph();
@@ -609,12 +597,6 @@ defineExpose({ refresh: refreshBoard });
         <strong>{{ graph.nodes.find((node) => node.id === selectedEdge?.from_id)?.name }} → {{ selectedEdge?.verb }} → {{ graph.nodes.find((node) => node.id === selectedEdge?.to_id)?.name }}</strong>
         <p>Basis: {{ selectedEdge?.quote || 'owner-authored' }} · {{ selectedEdge?.speaker_kind }} · T{{ selectedEdge?.tier }}</p>
         <div class="edge-actions">
-          <button
-            type="button"
-            @click="selectedEdge && correctEdge(selectedEdge.id)"
-          >
-            Correct basis
-          </button>
           <button
             type="button"
             @click="selectedEdge && detachEdge(selectedEdge.id)"
