@@ -19,6 +19,10 @@ function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [],
   vi.spyOn(parley, 'listThreads').mockResolvedValue([]);
   vi.spyOn(parley, 'listCapacity').mockResolvedValue([]);
   vi.spyOn(parley, 'getBoard').mockResolvedValue(board);
+  vi.spyOn(parley, 'getQueueSheet').mockResolvedValue({ generation: '1', total: 0, rows: [], phases: [], cursor: null, next_cursor: null });
+  vi.spyOn(parley, 'setOpportunityPhase').mockResolvedValue({ row: { opportunity_id: '', title: '', lifecycle: 'open', close_reason: null, phase: null, participants: [], next_action: { kind: 'choose', label: 'Choose a next action', reason: '', date: null, thread_id: null, recipient_id: null, recipient_name: null }, other_action_count: 0 }, event_id: 'ev', phase_revision: 1, reverted: false });
+  vi.spyOn(parley, 'getDailyQueue').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', pack_id: 'job_search', pack_version: '1.0.0', daily_cap: 12, actionable_count: 0, deferred_count: 0, items: [] });
+  vi.spyOn(parley, 'getInsights').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', period_start: '2026-11-14', period_end: '2026-11-21', pack_id: 'job_search', pack_version: '1.0.0', sample_size: 0, metrics: [], comparisons: [], gaps: [], questions: [] });
   vi.spyOn(parley, 'getOpportunityNotes').mockResolvedValue({ opportunity_id: '', markdown: '', revision: 1, next_task: null, tasks: [] });
   vi.spyOn(parley, 'getProvider').mockResolvedValue({ endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' });
   vi.spyOn(parley, 'getAdminOverview').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', workspace_epoch: 'epoch-test', event_cursor: '0', last_verified_backup: null, backups: [], parties: parties.map((party) => ({ id: party.id, kind: party.kind as 'person' | 'org', name: party.name, descriptor: null })) });
@@ -285,24 +289,35 @@ describe('AppShell', () => {
       lists: [{ id: 'list-default', title: 'Opportunities', position: 0, archived: false, revision: 1 }],
       cards: [{ opportunity: created, opportunity_id: 'o1', list_id: 'list-default', position: 0, placement_revision: 1, next_task: null }],
     });
+    vi.mocked(parley.getQueueSheet).mockResolvedValue({
+      generation: '1', total: 1,
+      rows: [{
+        opportunity_id: 'o1', title: 'Onboarding exchange', lifecycle: 'open', close_reason: null, phase: null,
+        participants: [{ id: 'p1', name: 'Dana Lee', kind: 'person', role: 'primary' }],
+        next_action: { kind: 'choose', label: 'Choose a next action', reason: '', date: null, thread_id: null, recipient_id: null, recipient_name: null },
+        other_action_count: 0,
+      }],
+      phases: [], cursor: null, next_cursor: null,
+    });
     vi.spyOn(parley, 'listOutputs').mockResolvedValue([queued]);
     const createOpportunity = vi.spyOn(parley, 'createOpportunity').mockResolvedValue(created);
     const wrapper = mount(AppShell);
     await flushPromises();
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(3)').trigger('click');
-    await wrapper.get('input[maxlength="500"]').setValue('Onboarding exchange');
-    await wrapper.get('select[required]').setValue('p1');
-    await wrapper.get('section[aria-labelledby="queue-heading"] form').trigger('submit');
+    const queueSection = wrapper.get('section[aria-labelledby="queue-heading"]');
+    await queueSection.get('input[maxlength="500"]').setValue('Onboarding exchange');
+    await queueSection.get('select[required]').setValue('p1');
+    await queueSection.get('form').trigger('submit');
     await flushPromises();
     expect(createOpportunity).toHaveBeenCalledWith('Onboarding exchange', 'p1');
-    expect(wrapper.text()).toContain('initial board placement does not change its stage or outreach state');
-    expect(wrapper.text()).toContain('Onboarding exchange');
-    await wrapper.findAll('button').find((button) => button.text() === 'Open card')!.trigger('click');
+    expect(wrapper.text()).toContain('Opportunity created');
+    await wrapper.get('button[data-open="o1"]').trigger('click');
     await flushPromises();
-    expect(wrapper.text()).toContain('Dana Lee · outreach · v1 · draft');
+    expect(wrapper.text()).toContain('Review outreach v1 in Output');
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(4)').trigger('click');
     expect(wrapper.text()).toContain('Approved materials');
-    expect(wrapper.text()).toContain('Dana Lee · outreach · v1 · draft');
+    expect(wrapper.text()).toContain('outreach · v1');
+    expect(wrapper.text()).toContain('Dana Lee');
     wrapper.unmount();
   });
 
@@ -318,9 +333,10 @@ describe('AppShell', () => {
     const wrapper = mount(AppShell);
     await flushPromises();
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(3)').trigger('click');
-    await wrapper.get('input[maxlength="500"]').setValue('Onboarding');
-    await wrapper.get('select[required]').setValue('p1');
-    await wrapper.get('section[aria-labelledby="queue-heading"] form').trigger('submit');
+    const queueSection = wrapper.get('section[aria-labelledby="queue-heading"]');
+    await queueSection.get('input[maxlength="500"]').setValue('Onboarding');
+    await queueSection.get('select[required]').setValue('p1');
+    await queueSection.get('form').trigger('submit');
     await flushPromises();
     expect(wrapper.text()).toContain('opportunity denied');
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(4)').trigger('click');

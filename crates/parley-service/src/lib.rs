@@ -244,6 +244,7 @@ pub use maintenance::{MaintenanceSettings, MaintenanceSettingsInput};
 pub use maintenance::{create_backup_for_test, prune_backups_for_test};
 mod materials;
 mod queueing;
+mod queue_sheet;
 mod release;
 mod thread;
 mod writing;
@@ -1908,11 +1909,11 @@ impl Workspace {
     }
 }
 
-fn digest(bytes: &[u8]) -> String {
+pub(crate) fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-fn new_id(seed: &str) -> String {
+pub(crate) fn new_id(seed: &str) -> String {
     let nonce = IDS.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2073,6 +2074,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         .merge(assistant::routes())
         .merge(writing::routes())
         .merge(queueing::routes())
+        .merge(queue_sheet::routes())
         .merge(maintenance::routes())
         .with_state(state)
         .layer(axum::extract::DefaultBodyLimit::max(2_100_000));
@@ -2346,7 +2348,7 @@ fn idempotency_key(headers: &HeaderMap) -> Result<String, KeyRejection> {
     Ok(key.to_owned())
 }
 
-fn command_error(err: WorkspaceError) -> Response {
+pub(crate) fn command_error(err: WorkspaceError) -> Response {
     match err {
         WorkspaceError::IdempotencyConflict => error(
             StatusCode::CONFLICT,

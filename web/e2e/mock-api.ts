@@ -157,7 +157,7 @@ export function createMockApi(): MockApi {
   }
 
   function workspaceCollections(): Record<string, unknown> {
-    return { resources, directory, notesByEntity, entityAttachments, sourceTextByOccurrence, graphEdges, graphPositions, sourceGroups, captures, extractorJobs, roleJobs, agentChats, briefItems, segments, segmentMembers, fluency, writingInterests, writingExchanges, templateFamilies, writingTemplates, voiceSamples, opportunities, outputs, uploads, materialRecords, releaseRecords, threads, sends, outcomes, resolutions, capacityLedger, coachQuestions, validatedPacks, boardLists, placements, notesByOpportunity, events };
+    return { resources, directory, notesByEntity, entityAttachments, sourceTextByOccurrence, graphEdges, graphPositions, sourceGroups, captures, extractorJobs, roleJobs, agentChats, briefItems, segments, segmentMembers, fluency, writingInterests, writingExchanges, templateFamilies, writingTemplates, voiceSamples, opportunities, outputs, uploads, materialRecords, releaseRecords, threads, sends, outcomes, resolutions, capacityLedger, coachQuestions, validatedPacks, boardLists, placements, notesByOpportunity, opportunityPhases, events };
   }
 
   function takeWorkspaceSnapshot(): Record<string, unknown> {
@@ -251,6 +251,66 @@ export function createMockApi(): MockApi {
   function notesRecord(id: string) {
     const notes = notesByOpportunity.get(id) ?? { markdown: '', revision: 1 };
     return { opportunity_id: id, markdown: notes.markdown, revision: notes.revision, next_task: tasks(notes.markdown).find((task) => !task.checked)?.text ?? null, tasks: tasks(notes.markdown) };
+  }
+
+  // Parley-Queue sheet: phases are canonical pack stages; next actions are
+  // derived server-side, never guessed from a label.
+  const PACK_STAGES: Array<{ stage_id: string; label: string; class: string; kind: string; ordinal: number }> = [
+    { stage_id: 'exploring', label: 'Exploring', class: 'identified', kind: 'planning', ordinal: 10 },
+    { stage_id: 'preparing', label: 'Preparing', class: 'prepared', kind: 'planning', ordinal: 20 },
+    { stage_id: 'in_conversation', label: 'In conversation', class: 'responded', kind: 'planning', ordinal: 30 },
+    { stage_id: 'closed', label: 'Closed', class: 'closed', kind: 'terminal', ordinal: 40 },
+  ];
+  const opportunityPhases = new Map<string, { stage_id: string | null; pack_id: string; pack_version: string; revision: number; event_id: string }>();
+
+  function sheetRow(opportunity: RecordData) {
+    const id = String(opportunity.id);
+    const phaseState = opportunityPhases.get(id);
+    const stage = phaseState?.stage_id ? PACK_STAGES.find((item) => item.stage_id === phaseState.stage_id) : null;
+    const participants = (opportunity.participant_ids as string[]).map((partyId: string, index: number) => {
+      const entity = directory.get(partyId);
+      return { id: partyId, name: entity?.name ?? partyId, kind: entity?.kind ?? 'person', role: index === 0 ? 'primary' : 'participant' };
+    });
+    const lifecycle = String(opportunity.state);
+    const waiting = [...threads.values()].filter((thread) => thread.opportunity_id === id && thread.state === 'waiting').sort((a, b) => String(a.expires_at ?? '').localeCompare(String(b.expires_at ?? '')) || String(a.id).localeCompare(String(b.id)));
+    let nextAction;
+    if (lifecycle !== 'open') {
+      nextAction = { kind: 'terminal', label: 'No open action', reason: `Opportunity is ${lifecycle}.`, date: null, thread_id: null, recipient_id: null, recipient_name: null };
+    } else if (waiting.length) {
+      const first = waiting[0]!;
+      const entity = directory.get(String(first.recipient_id));
+      nextAction = {
+        kind: 'wait', label: first.expires_at ? `Waiting until ${String(first.expires_at).slice(0, 10)}` : `Waiting on ${entity?.name ?? 'contact'}`,
+        reason: `${entity?.name ?? 'Contact'}'s reply window is still open.`,
+        date: first.expires_at ?? null, thread_id: first.id, recipient_id: first.recipient_id, recipient_name: entity?.name ?? null,
+      };
+    } else {
+      nextAction = { kind: 'choose', label: 'Choose a next action', reason: 'No work or wait is known for this opportunity.', date: null, thread_id: null, recipient_id: null, recipient_name: null };
+    }
+    return {
+      opportunity_id: id, title: opportunity.title, lifecycle, close_reason: opportunity.close_reason ?? null,
+      phase: stage && phaseState ? { stage_id: stage.stage_id, label: stage.label, class: stage.class, kind: stage.kind, pack_id: phaseState.pack_id, pack_version: phaseState.pack_version, revision: phaseState.revision } : null,
+      participants, next_action: nextAction, other_action_count: 0,
+    };
+  }
+
+  function sheetResponse(search: string, phase: string | null, sort: string, cursor: number, limit: number) {
+    const needle = search.trim().toLocaleLowerCase();
+    const rows = [...opportunities.values()].filter((opportunity) => {
+      if (phase === '__unmapped__') return !opportunityPhases.get(String(opportunity.id))?.stage_id;
+      if (phase) return opportunityPhases.get(String(opportunity.id))?.stage_id === phase;
+      return true;
+    }).filter((opportunity) => {
+      if (!needle) return true;
+      const partyNames = (opportunity.participant_ids as string[]).map((partyId: string) => directory.get(partyId)?.name ?? partyId).join(' ').toLocaleLowerCase();
+      return String(opportunity.title).toLocaleLowerCase().includes(needle) || partyNames.includes(needle);
+    }).map(sheetRow);
+    rows.sort((a, b) => sort === 'name' ? String(a.title).localeCompare(String(b.title)) || String(a.opportunity_id).localeCompare(String(b.opportunity_id)) : (a.next_action.date === null ? 1 : (b.next_action.date === null ? -1 : String(a.next_action.date).localeCompare(String(b.next_action.date)))) || String(a.title).localeCompare(String(b.title)));
+    const total = rows.length;
+    const page = rows.slice(cursor, cursor + limit);
+    const phases = PACK_STAGES.map((stage) => ({ stage_id: stage.stage_id, label: stage.label, class: stage.class, kind: stage.kind, pack_id: activePackId, pack_version: activePackVersion, count: [...opportunities.values()].filter((opportunity) => opportunityPhases.get(String(opportunity.id))?.stage_id === stage.stage_id).length }));
+    phases.push({ stage_id: '__unmapped__', label: 'Unmapped', class: 'unmapped', kind: 'planning', pack_id: activePackId, pack_version: activePackVersion, count: [...opportunities.values()].filter((opportunity) => !opportunityPhases.get(String(opportunity.id))?.stage_id).length });
+    return { generation: String(events.length), total, rows: page, phases, cursor: cursor ? String(cursor) : null, next_cursor: cursor + page.length < total ? String(cursor + page.length) : null };
   }
 
   function json(response: ServerResponse, status: number, body: unknown) {
@@ -849,7 +909,18 @@ export function createMockApi(): MockApi {
       });
     }
     if (url.pathname === '/api/v1/queue' && request.method === 'GET') {
-      if (url.searchParams.get('view') !== 'daily') return fail(response, 422, 'QUEUE_VIEW_UNSUPPORTED', 'The S10 queue endpoint requires view=daily');
+      const view = url.searchParams.get('view') ?? 'sheet';
+      if (view !== 'daily') {
+        const cursor = Number(url.searchParams.get('cursor') ?? '0');
+        const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit') ?? '50')));
+        return json(response, 200, sheetResponse(
+          url.searchParams.get('search') ?? '',
+          url.searchParams.get('phase'),
+          url.searchParams.get('sort') ?? 'due',
+          Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : 0,
+          limit,
+        ));
+      }
       const cap = activePackId === 'lead_gen' ? 15 : 12;
       const result = buildDailyQueue([...opportunities.values()], [...threads.values()], [...materialRecords.values()], cap, now(), activePackId, activePackVersion);
       const query = (url.searchParams.get('q') ?? '').trim().toLocaleLowerCase();
@@ -1000,6 +1071,45 @@ export function createMockApi(): MockApi {
         id: opportunity.id, title: opportunity.title, state: opportunity.state, revision: opportunity.revision,
         participants, tags, next_task: opportunity.next_task ?? null, next_deadline: null, missing_material: false,
       });
+    }
+    const opportunityPhase = /^\/api\/v1\/opportunities\/([^/]+)\/phase$/.exec(url.pathname);
+    if (opportunityPhase && request.method === 'PATCH') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const opportunity = opportunities.get(opportunityPhase[1]!);
+      if (!opportunity) return fail(response, 404, 'NOT_FOUND', 'Opportunity does not exist');
+      const stage = PACK_STAGES.find((item) => item.stage_id === String(input.target_stage_id));
+      if (!stage || String(input.pack_version) !== activePackVersion) {
+        return fail(response, 422, 'INVALID_STAGE', `Stage '${String(input.target_stage_id)}' is not valid for pack version ${activePackVersion}`);
+      }
+      const current = opportunityPhases.get(String(opportunity.id)) ?? { stage_id: null, pack_id: activePackId, pack_version: activePackVersion, revision: 1, event_id: '' };
+      const expected = Number(input.expected_phase_revision);
+      const reverted = typeof input.original_event_id === 'string' && input.original_event_id.length > 0;
+      if (reverted && (current.event_id !== input.original_event_id || !current.event_id)) {
+        return fail(response, 412, 'PHASE_CHANGED_ELSEWHERE', 'Undo cannot apply: a newer phase change replaced the referenced transition.');
+      }
+      if (expected !== current.revision) {
+        return fail(response, 412, 'STALE_PHASE_REVISION', `Expected phase revision ${expected} but the opportunity is at revision ${current.revision}.`);
+      }
+      if (stage.kind === 'terminal') {
+        return fail(response, 422, 'REQUIRES_LIFECYCLE_CONFIRM', `Stage '${stage.label}' is terminal; closing requires the explicit lifecycle flow.`);
+      }
+      if (String(opportunity.state) !== 'open') {
+        return fail(response, 409, 'LIFECYCLE_BLOCKS_PHASE', `This opportunity is ${String(opportunity.state)}; reopen it before changing its phase.`);
+      }
+      if (!reverted && current.stage_id === stage.stage_id) {
+        return json(response, 200, { row: sheetRow(opportunity), event_id: current.event_id, phase_revision: current.revision, reverted: false });
+      }
+      const eventId = randomHex();
+      const next = { stage_id: stage.stage_id, pack_id: activePackId, pack_version: activePackVersion, revision: current.revision + 1, event_id: eventId };
+      opportunityPhases.set(String(opportunity.id), next);
+      opportunity.revision = Number(opportunity.revision) + 1;
+      pushEvent({
+        event_id: eventId, entity_type: 'opportunity', entity_id: String(opportunity.id), revision: Number(opportunity.revision),
+        event_type: 'opportunity.phase_changed',
+        payload: { from_stage_id: current.stage_id, to_stage_id: stage.stage_id, from_class: current.stage_id ? PACK_STAGES.find((item) => item.stage_id === current.stage_id)?.class ?? null : null, to_class: stage.class, pack_id: activePackId, pack_version: activePackVersion, operation: reverted ? 'undo' : 'manual', origin: 'queue.sheet', reversal_of: reverted ? input.original_event_id : null },
+      });
+      return json(response, 200, { row: sheetRow(opportunity), event_id: eventId, phase_revision: next.revision, reverted });
     }
     if (url.pathname === '/api/v1/opportunities' && request.method === 'POST') {
       let input: RecordData;

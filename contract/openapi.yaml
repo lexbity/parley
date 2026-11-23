@@ -731,6 +731,23 @@ paths:
                 $ref: '#/components/schemas/Opportunity'
         '404':
           description: Missing opportunity
+  /opportunities/{id}/phase:
+    patch:
+      operationId: setOpportunityPhase
+      security: [{sessionCookie: []}]
+      parameters:
+      - {in: path, name: id, required: true, schema: {type: string}}
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/SetPhaseInput'}}}
+      responses:
+        '200': {description: Phase transition committed (or same-phase no-op); canonical row returned., content: {application/json: {schema: {$ref: '#/components/schemas/SetPhaseResult'}}}}
+        '409': {$ref: '#/components/responses/Error'}
+        '412': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
   /opportunities/{id}/tags:
     put:
       operationId: setOpportunityTags
@@ -1550,9 +1567,29 @@ paths:
     get:
       operationId: getQueue
       security: [{sessionCookie: []}]
-      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}]
+      parameters:
+      - {in: query, name: view, required: false, schema: {type: string, enum: [daily, sheet, list]}}
+      - {in: query, name: search, required: false, schema: {type: string, maxLength: 300}}
+      - {in: query, name: phase, required: false, schema: {type: string, maxLength: 120}}
+      - {in: query, name: sort, required: false, schema: {type: string, enum: [due, name]}}
+      - {in: query, name: cursor, required: false, schema: {type: string, maxLength: 40}}
+      - {in: query, name: limit, required: false, schema: {type: integer, minimum: 1, maximum: 200}}
+      - {in: query, name: status, required: false, schema: {type: string, enum: [open, resolved, dormant, closed]}}
+      - {in: query, name: party_id, required: false, schema: {type: string}}
+      - {in: query, name: tag, required: false, schema: {type: string}}
+      - {in: query, name: missing_material, required: false, schema: {type: boolean}}
+      - {in: query, name: deadline_before, required: false, schema: {type: string, format: date-time}}
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
       responses:
-        '200': {description: Deterministic queue and blocked lane from one snapshot; no agent dispatch., content: {application/json: {schema: {$ref: '#/components/schemas/QueueSnapshot'}}}}
+        '200':
+          description: Deterministic queue view. view=daily (default) returns the legacy actionable/blocked snapshot; view=sheet|list returns the phase-scoped opportunity sheet.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/QueueSnapshot'
+                - $ref: '#/components/schemas/QueueSheetResponse'
   /insights:
     get:
       operationId: getInsights
@@ -4042,6 +4079,107 @@ components:
         actionable: {type: array, items: {$ref: '#/components/schemas/QueueItem'}}
         blocked: {type: array, items: {$ref: '#/components/schemas/QueueItem'}}
         suggested_send_count: {type: integer, minimum: 0}
+      additionalProperties: false
+    PackStage:
+      type: object
+      required: [stage_id, label, class, kind, pack_id, pack_version]
+      properties:
+        stage_id: {type: string}
+        label: {type: string}
+        class: {type: string}
+        kind: {type: string, enum: [planning, terminal]}
+        pack_id: {type: string}
+        pack_version: {type: string}
+      additionalProperties: false
+    SheetPhase:
+      type: object
+      required: [stage_id, label, class, kind, pack_id, pack_version, revision]
+      properties:
+        stage_id: {type: string}
+        label: {type: string}
+        class: {type: string}
+        kind: {type: string, enum: [planning, terminal]}
+        pack_id: {type: string}
+        pack_version: {type: string}
+        revision: {type: integer, minimum: 1}
+      additionalProperties: false
+    SheetParticipant:
+      type: object
+      required: [id, name, kind, role]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        kind: {type: string}
+        role: {type: string, enum: [primary, participant]}
+      additionalProperties: false
+    SheetNextAction:
+      type: object
+      required: [kind, label, reason]
+      properties:
+        kind: {type: string, enum: [terminal, touch, task, blocked, wait, choose]}
+        label: {type: string}
+        reason: {type: string}
+        date: {type: string, nullable: true, format: date-time}
+        thread_id: {type: string, nullable: true}
+        recipient_id: {type: string, nullable: true}
+        recipient_name: {type: string, nullable: true}
+      additionalProperties: false
+    QueueSheetRow:
+      type: object
+      required: [opportunity_id, title, lifecycle, phase, participants, next_action, other_action_count]
+      properties:
+        opportunity_id: {type: string}
+        title: {type: string}
+        lifecycle: {type: string, enum: [open, resolved, dormant, closed]}
+        close_reason: {type: string, nullable: true}
+        phase:
+          oneOf:
+          - $ref: '#/components/schemas/SheetPhase'
+          - {type: 'null'}
+        participants: {type: array, items: {$ref: '#/components/schemas/SheetParticipant'}}
+        next_action: {$ref: '#/components/schemas/SheetNextAction'}
+        other_action_count: {type: integer, minimum: 0}
+      additionalProperties: false
+    PhaseKind:
+      type: object
+      required: [stage_id, label, class, kind, pack_id, pack_version, count]
+      properties:
+        stage_id: {type: string}
+        label: {type: string}
+        class: {type: string}
+        kind: {type: string, enum: [planning, terminal]}
+        pack_id: {type: string}
+        pack_version: {type: string}
+        count: {type: integer, minimum: 0}
+      additionalProperties: false
+    QueueSheetResponse:
+      type: object
+      required: [generation, total, rows, phases]
+      properties:
+        generation: {type: string}
+        total: {type: integer, minimum: 0}
+        rows: {type: array, items: {$ref: '#/components/schemas/QueueSheetRow'}}
+        phases: {type: array, items: {$ref: '#/components/schemas/PhaseKind'}}
+        cursor: {type: string, nullable: true}
+        next_cursor: {type: string, nullable: true}
+      additionalProperties: false
+    SetPhaseInput:
+      type: object
+      required: [target_stage_id, pack_version, expected_phase_revision]
+      properties:
+        target_stage_id: {type: string}
+        pack_version: {type: string}
+        expected_phase_revision: {type: integer, minimum: 1}
+        original_event_id: {type: string, nullable: true}
+      additionalProperties: false
+    SetPhaseResult:
+      type: object
+      required: [row, event_id, phase_revision, reverted]
+      properties:
+        row: {$ref: '#/components/schemas/QueueSheetRow'}
+        event_id: {type: string}
+        phase_revision: {type: integer, minimum: 1}
+        reverted: {type: boolean}
       additionalProperties: false
     QueuedJob:
       type: object

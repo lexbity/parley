@@ -24,7 +24,10 @@ test('desktop workspaces retain their pane layout with an empty inventory', asyn
   await expect(page.getByRole('textbox', { name: 'Question', exact: true })).toBeDisabled();
 
   await page.getByRole('link', { name: 'Queue' }).click();
-  await expect(page.getByRole('region', { name: 'Inbox list' })).toBeVisible();
+  const sheet = page.getByRole('region', { name: 'Scenario sheet' });
+  const inspector = page.getByRole('complementary', { name: 'Scenario details' });
+  await beside(sheet, inspector);
+  await expect(page.getByLabel('Find scenario')).toBeVisible();
   await expect(page.getByLabel('Opportunity title')).toBeHidden();
   await page.getByRole('link', { name: 'Output' }).click();
   await expect(page.getByRole('columnheader')).toHaveText(['Material', 'Opportunity', 'Contact', 'Status', 'Release']);
