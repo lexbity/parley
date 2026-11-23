@@ -12,8 +12,8 @@ if [ "$#" -ne 1 ]; then
   exit 2
 fi
 slice=$1
-if [[ ! "$slice" =~ ^(s(0[1-9]|1[0-2])|p0[1-4])$ ]]; then
-  echo "invalid slice ID: $slice (expected s01..s12 or p01..p04)" >&2
+if [[ ! "$slice" =~ ^(s(0[1-9]|1[0-2])|p0[1-4]|r0[1-4])$ ]]; then
+  echo "invalid slice ID: $slice (expected s01..s12, p01..p04 or r01..r04)" >&2
   exit 2
 fi
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)

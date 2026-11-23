@@ -25,6 +25,20 @@ function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [],
   vi.spyOn(parley, 'getQuestionBank').mockResolvedValue({ version_id: 'question-bank-v1', content: { questions: { proof: [], gift: [], artifact: [] } } });
   vi.spyOn(parley, 'listAgentChats').mockResolvedValue([]);
   vi.spyOn(parley, 'getGraph').mockResolvedValue({ nodes: [], edges: [], omitted_nodes: 0, omitted_edges: 0 });
+  vi.spyOn(parley, 'getResourceBoard').mockResolvedValue({
+    columns: [
+      { id: 'inbox', title: 'Inbox', position: 1024, revision: 1 },
+      { id: 'developing', title: 'Developing', position: 2048, revision: 1 },
+      { id: 'available', title: 'Available', position: 3072, revision: 1 },
+    ],
+    cards: [],
+    off_board: [],
+    next_cursor: null,
+    event_cursor: 0,
+  });
+  vi.spyOn(parley, 'getEntityCard').mockRejectedValue(new Error('no selection'));
+  vi.spyOn(parley, 'commitResourceCard').mockRejectedValue(new Error('not used'));
+  vi.spyOn(parley, 'moveResourceCard').mockRejectedValue(new Error('not used'));
   vi.spyOn(parley, 'getDossier').mockRejectedValue(new Error('no selection'));
   vi.spyOn(parley, 'getEntityNotes').mockRejectedValue(new Error('no selection'));
   vi.spyOn(parley, 'listSegments').mockResolvedValue([]);
@@ -49,16 +63,18 @@ describe('AppShell', () => {
     wrapper.unmount();
   });
 
-  it('keeps the resource editor mounted with its unsent buffer across tab switches', async () => {
+  it('keeps the resource card draft mounted across tab switches', async () => {
     stubWorkspace();
     const wrapper = mount(AppShell);
     await flushPromises();
-    const editorInput = wrapper.get('section[aria-label="Resources workspace"] input');
-    await editorInput.setValue('unsent resource title');
+    await wrapper.get('section[aria-label="Resource board"] button.add-card').trigger('click');
+    const editor = wrapper.get('form[aria-label="Resource card editor"]');
+    const titleInput = editor.get('label:has(input) input');
+    await titleInput.setValue('unsent resource title');
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
     expect(wrapper.get('h1').text()).toBe('Parties');
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(1)').trigger('click');
-    expect((wrapper.get('section[aria-label="Resources workspace"] input').element as HTMLInputElement).value)
+    expect((wrapper.get('form[aria-label="Resource card editor"] input').element as HTMLInputElement).value)
       .toBe('unsent resource title');
     wrapper.unmount();
   });

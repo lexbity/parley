@@ -97,12 +97,7 @@ async fn request(
         .unwrap();
     let mut response = String::new();
     stream.read_to_string(&mut response).await.unwrap();
-    let status: u16 = response
-        .split_whitespace()
-        .nth(1)
-        .unwrap()
-        .parse()
-        .unwrap();
+    let status: u16 = response.split_whitespace().nth(1).unwrap().parse().unwrap();
     let body: Value = if response.contains("\r\n\r\n") {
         serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap_or(Value::Null)
     } else {
@@ -150,7 +145,9 @@ async fn p01_session_advertises_party_capabilities() {
     let capabilities = response.body["capabilities"].as_array().unwrap();
     for expected in ["party.sheet", "party.notes", "party.dossier"] {
         assert!(
-            capabilities.iter().any(|item| item.as_str() == Some(expected)),
+            capabilities
+                .iter()
+                .any(|item| item.as_str() == Some(expected)),
             "missing capability {expected}: {capabilities:?}"
         );
     }
@@ -163,7 +160,8 @@ async fn p01_party_sheet_focus_edit_discards_stale_and_blank_writes() {
     let db = path();
     let service = parley_service::start_workspace(&db).await.unwrap();
     let session = owner_session(&service).await;
-    let (id, first_etag) = create_party(&service, &session, "person", "Dana Lee", "Maintenance").await;
+    let (id, first_etag) =
+        create_party(&service, &session, "person", "Dana Lee", "Maintenance").await;
 
     // Directory rows carry the editable focus and the strong entity ETag.
     let list = request(

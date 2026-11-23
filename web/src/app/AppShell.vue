@@ -4,7 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { parley, type AdminOperation, type ContactThread, type GraphEntity, type Material, type Opportunity, type ProviderConfig, type ReleasedMaterial, type Resource, type SavedSource } from '../api/client';
 import { tabs } from './tabs';
 import { resolveRoute, routeForTab } from './router';
-import ResourceEditor from '../features/resources/ResourceEditor.vue';
+import ResourcesWorkspace from '../features/resources/ResourcesWorkspace.vue';
 import InterviewerWorkspace from '../features/resources/InterviewerWorkspace.vue';
 import QueueWorkspace from '../features/queue/QueueWorkspace.vue';
 import PartyDesk from '../features/parties/PartyDesk.vue';
@@ -26,7 +26,7 @@ const active = computed(() => route.value.tab);
 const writingOpen = ref(false);
 const outputStatus = ref('');
 const parties = ref<GraphEntity[]>([]);
-const resourceEditor = ref<InstanceType<typeof ResourceEditor> | null>(null);
+const resourcesWorkspace = ref<InstanceType<typeof ResourcesWorkspace> | null>(null);
 const lastTabPaths = new Map<string, string>();
 const sources = ref<SavedSource[]>([]);
 const opportunities = ref<Opportunity[]>([]);
@@ -226,12 +226,13 @@ watch(route, () => { void focusRouteLocation(); });
         v-show="active === 'Resources'"
         class="resource-workspace"
       >
-        <ResourceEditor
-          ref="resourceEditor"
+        <ResourcesWorkspace
+          ref="resourcesWorkspace"
           :route-id="route.tab === 'Resources' ? route.recordId : null"
           @navigate="navigate"
+          @changed="refreshLeads"
         />
-        <InterviewerWorkspace @saved="resourceEditor?.refresh()" />
+        <InterviewerWorkspace @saved="resourcesWorkspace?.refresh()" />
       </div>
       <PartyDesk
         v-show="active === 'Parties'"

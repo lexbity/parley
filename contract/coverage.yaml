@@ -877,3 +877,146 @@ slices:
       owner_role: owner
       package_target: rust+mock
       evidence_path: evidence/p01.md
+  r01:
+    - requirement: R01-BOARD-READ
+      operationId: getResourceBoard
+      test_id: r01_board_seeds_columns_and_commits_a_card
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r01.md
+    - requirement: R01-CARD-READ
+      operationId: getResourceCard
+      test_id: r01_board_create_edit_move_remove_and_related_card
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r01.md
+    - requirement: R01-COMMIT
+      operationId: commitResourceCard
+      test_id: r01_board_seeds_columns_and_commits_a_card
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r01.md
+    - requirement: R01-COMMIT-EDIT
+      operationId: commitResourceCard
+      test_id: r01_card_edit_rename_guards_stale_and_rejects_blank
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r01.md
+    - requirement: R01-MOVE
+      operationId: moveResourceCard
+      test_id: r01_move_reorder_and_remove_preserve_resource
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r01.md
+    - requirement: R01-EDGE-CREATE
+      operationId: createEdge
+      test_id: r01_related_card_offboard_duplicate_and_detach
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r01.md
+    - requirement: R01-EDGE-UPDATE
+      operationId: updateEdge
+      test_id: r01_related_card_offboard_duplicate_and_detach
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r01.md
+    - requirement: R01-EDGE-DELETE
+      operationId: deleteEdge
+      test_id: r01_related_card_offboard_duplicate_and_detach
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r01.md
+    - requirement: R01-ATTACH-LIST
+      operationId: listAttachments
+      test_id: r01_attachment_bind_unbind_content_roundtrip
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r01.md
+    - requirement: R01-ATTACH-BIND
+      operationId: bindAttachment
+      test_id: r01_attachment_bind_unbind_content_roundtrip
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r01.md
+    - requirement: R01-ATTACH-UNBIND
+      operationId: unbindAttachment
+      test_id: r01_attachment_bind_unbind_content_roundtrip
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r01.md
+    - requirement: R01-ATTACH-CONTENT
+      operationId: getAttachmentContent
+      test_id: r01_attachment_bind_unbind_content_roundtrip
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r01.md
+    - requirement: R01-DELIVERY
+      operationId: getResourceBoard
+      test_id: r01_delivery_projection_counts_only_sent_versions
+      fixture_id: board
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/r01.md
+    - requirement: R01-LEGACY-PICKER
+      operationId: getResourceBoard
+      test_id: r01_legacy_resources_stay_offboard_and_replay_returns_same_card
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r01.md
+  r02:
+    - requirement: R02-ELIGIBILITY
+      operationId: getResourceBoard
+      test_id: r02_board_summaries_report_typed_gaps_and_eligibility
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r02.md
+    - requirement: R02-DELIVERY-DETAIL
+      operationId: getResourceCardDeliveries
+      test_id: r02_deliveries_detail_lists_only_sent_versions
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r02.md
+    - requirement: R02-RECHECK
+      operationId: commitResourceCard
+      test_id: r02_resource_edit_signals_release_recheck_for_affected_versions
+      fixture_id: board
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/r02.md
+  r03:
+    - requirement: R03-RETIRE
+      operationId: retireResourceCard
+      test_id: r03_retire_removes_from_ordinary_use_and_guards_endpoints
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r03.md
+    - requirement: R03-EDGE-PRESERVE
+      operationId: commitResourceCard
+      test_id: r03_board_save_preserves_relationship_collection
+      fixture_id: board
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/r03.md
+    - requirement: R03-SEGREGATION
+      operationId: moveResourceCard
+      test_id: r03_resource_moves_never_touch_the_opportunity_board
+      fixture_id: board
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/r03.md

@@ -88,6 +88,16 @@ export function createMockApi(): MockApi {
   const directory = new Map<string, EntityRecord>();
   const notesByEntity = new Map<string, { markdown: string; revision: number }>();
   const entityAttachments = new Map<string, RecordData[]>();
+  interface BoardColumn { id: string; title: string; position: number; revision: number }
+  interface ResourcePlacementView { column_id: string; position: number; revision: number }
+  interface ResourceEntityRecord { id: string; kind: string; name: string; focus: string; revision: number; subtype: string; body: RecordData; readiness: string; notes: { markdown: string; revision: number }; etag: string }
+  const resourceColumns: BoardColumn[] = [
+    { id: 'inbox', title: 'Inbox', position: 1024, revision: 1 },
+    { id: 'developing', title: 'Developing', position: 2048, revision: 1 },
+    { id: 'available', title: 'Available', position: 3072, revision: 1 },
+  ];
+  const resourcePlacements = new Map<string, ResourcePlacementView>();
+  const entityResources = new Map<string, ResourceEntityRecord>();
   const sourceTextByOccurrence = new Map<string, { text: string; title: string | null; url: string | null }>();
   const graphEdges: RecordData[] = [];
   const graphPositions = new Map<string, { x: number; y: number; revision: number }>();
@@ -132,7 +142,7 @@ export function createMockApi(): MockApi {
   const placements = new Map<string, { list_id: string; position: number; placement_revision: number }>();
   const notesByOpportunity = new Map<string, { markdown: string; revision: number }>();
   let provider = { endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' };
-  const receipts = new Map<string, { digest: string; result: RecordData }>();
+  const receipts = new Map<string, { digest: string; result: RecordData; status?: number }>();
   const events: EventRecord[] = [];
   const adminBackups: AdminBackupRecord[] = [];
   const adminPreviews = new Map<string, { operation: AdminOperation; digest: string; epoch: string; cursor: string; expires: number; backupId: string | null; partyId: string | null }>();
@@ -141,7 +151,7 @@ export function createMockApi(): MockApi {
   const now = () => new Date(testClock += 1000).toISOString();
   capacityLedger.set('quarter:project slots', { period: 'quarter', unit: 'project slots', total: 15, committed: 0, updated_at: now() });
   const tag = (resource: ResourceRecord) => `"p1.${epoch}.resource.${resource.id}.${resource.revision}"`;
-  const entityTag = (entity: EntityRecord) => `"p1.${epoch}.entity.${entity.id}.${entity.revision}"`;
+  const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.entity.${entity.id}.${entity.revision}"`;
   const notesTag = (entityId: string, revision: number) => `"p1.${epoch}.notes.${entityId}.${revision}"`;
   const pushEvent = (event: Omit<EventRecord, 'cursor'>) => {
     events.push({ ...event, cursor: String(events.length + 1) });
@@ -275,6 +285,150 @@ export function createMockApi(): MockApi {
       chunks.push(chunk as Buffer);
     }
     return JSON.parse(Buffer.concat(chunks).toString('utf8')) as RecordData;
+  }
+
+  function findEntity(id: string): RecordData | undefined {
+    const entity = directory.get(id);
+    if (entity) return entity;
+    const resource = entityResources.get(id);
+    return resource ? { id: resource.id, kind: resource.kind, name: resource.name, focus: resource.focus, revision: resource.revision } : undefined;
+  }
+
+  function resourceCountsFor(resourceId: string): RecordData {
+    const files = (entityAttachments.get(resourceId) ?? []).length;
+    const connections = graphEdges.filter(
+      (edge) => edge.state !== 'retracted' && (String(edge.from_id) === resourceId || String(edge.to_id) === resourceId),
+    ).length;
+    return { files, connections, proposed: 0, deliveries: 0 };
+  }
+
+  function resourceGapsFor(resourceId: string): string[] {
+    const res = entityResources.get(resourceId);
+    if (!res) return [];
+    const body = res.body as RecordData;
+    const text = (key: string) => typeof body[key] === 'string' ? String(body[key]).trim() : '';
+    const gaps: string[] = [];
+    if (res.subtype === 'proof') {
+      if (!text('result')) gaps.push('Result');
+      if (!text('context')) gaps.push('Context');
+      if (!text('time')) gaps.push('Time');
+      if (!text('owner_role')) gaps.push('Owner role');
+    } else if (res.subtype === 'gift') {
+      if (!text('effort')) gaps.push('Effort estimate');
+    } else if (res.subtype === 'artifact') {
+      if (!text('reference')) gaps.push('Available reference');
+      if (body.share_permission !== true) gaps.push('Permission to share');
+    }
+    return gaps;
+  }
+
+  function applyPlacement(resourceId: string, input: RecordData): boolean {
+    const columnId = input.column_id as string | null;
+    if (columnId === null || columnId === undefined) {
+      const prior = resourcePlacements.get(resourceId);
+      resourcePlacements.delete(resourceId);
+      if (prior) {
+        const column = resourceColumns.find((c) => c.id === prior.column_id);
+        if (column) column.revision = Number(column.revision) + 1;
+        pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: resourceId, revision: prior.revision + 1, event_type: 'resource.removed_from_board', payload: { column_id: prior.column_id } });
+      }
+      return true;
+    }
+    const column = resourceColumns.find((c) => c.id === columnId);
+    if (!column) return false;
+    const before = typeof input.before_resource_id === 'string' ? input.before_resource_id : null;
+    if (before === resourceId) return false;
+    const rows = [...resourcePlacements.entries()]
+      .filter(([, p]) => p.column_id === columnId)
+      .sort((a, b) => a[1].position - b[1].position || a[0].localeCompare(b[0]));
+    const list = rows.map(([id]) => id);
+    let index = list.length;
+    if (before !== null) {
+      const at = list.indexOf(before);
+      if (at < 0) return false;
+      index = at;
+    }
+    const existingIndex = list.indexOf(resourceId);
+    if (existingIndex >= 0) list.splice(existingIndex, 1);
+    list.splice(index, 0, resourceId);
+    const prior = resourcePlacements.get(resourceId);
+    list.forEach((id, i) => {
+      const existing = resourcePlacements.get(id);
+      resourcePlacements.set(id, { column_id: columnId, position: (i + 1) * 1024, revision: (existing?.revision ?? 0) + 1 });
+    });
+    column.revision = Number(column.revision) + 1;
+    pushEvent({
+      event_id: randomHex(), entity_type: 'resource', entity_id: resourceId,
+      revision: resourcePlacements.get(resourceId)!.revision,
+      event_type: prior ? 'resource.card_moved' : 'resource.placed',
+      payload: { column_id: columnId },
+    });
+    return true;
+  }
+
+  function bindUploadTo(entityId: string, uploadId: string): boolean {
+    const upload = uploads.get(uploadId);
+    if (!upload) return false;
+    const bound = [...entityAttachments.values()].flat().some((a) => a.upload_id === uploadId);
+    if (bound) return false;
+    const row = {
+      id: randomHex(), entity_id: entityId, upload_id: uploadId,
+      filename: upload.filename, content_type: upload.mime, size: upload.bytes.length,
+      sha256: upload.sha256, share_permission: upload.share_permission,
+      reviewed_by_owner: upload.reviewed, created_at: now(),
+    };
+    const list = entityAttachments.get(entityId) ?? [];
+    list.push(row);
+    entityAttachments.set(entityId, list);
+    return true;
+  }
+
+  function unbindAttachmentFrom(entityId: string, ref: string): void {
+    const list = entityAttachments.get(entityId) ?? [];
+    entityAttachments.set(entityId, list.filter((a) => a.id !== ref));
+  }
+
+  function relateFrom(fromId: string, rel: RecordData, info: { edge_id: string | null; to_id: string | null }): string | null {
+    const verb = String(rel.verb ?? '').trim();
+    const basis = String(rel.basis ?? '').trim();
+    if (!verb || !basis) return 'invalid';
+    let toId: string | null = null;
+    if (typeof rel.target_id === 'string') {
+      toId = rel.target_id;
+      if (!findEntity(toId)) return 'missing';
+    } else if (rel.create && typeof rel.create === 'object') {
+      const create = rel.create as RecordData;
+      const title = String(create.title ?? '').trim();
+      const subtype = String(create.subtype ?? '');
+      if (!title || !['gift', 'proof', 'artifact', 'skill', 'interest', 'note'].includes(subtype)) return 'invalid';
+      const id = randomHex();
+      const child: ResourceEntityRecord = {
+        id, kind: 'resource', name: title, focus: '', revision: 1, subtype,
+        body: (create.body ?? {}) as RecordData, readiness: 'draft',
+        notes: { markdown: String(create.notes_md ?? ''), revision: 1 }, etag: '',
+      };
+      child.etag = entityTag(child);
+      entityResources.set(id, child);
+      toId = id;
+      if (create.placement && typeof create.placement === 'object') applyPlacement(id, create.placement as RecordData);
+    } else {
+      return 'invalid';
+    }
+    if (toId === fromId) return 'self';
+    const duplicate = graphEdges.some(
+      (edge) => edge.state !== 'retracted' && String(edge.from_id) === fromId && edge.verb === verb && String(edge.to_id) === toId,
+    );
+    if (duplicate) return 'duplicate';
+    const edge: RecordData = {
+      id: randomHex(), from_id: fromId, verb, to_id: toId, revision: 1, basis,
+      author_kind: 'owner', state: 'active', occurrence_id: '', quote: '',
+      tier: 1, speaker_kind: 'owner', captured_at: now(), source_title: null, source_url: null,
+    };
+    graphEdges.push(edge);
+    info.edge_id = String(edge.id);
+    info.to_id = toId;
+    pushEvent({ event_id: randomHex(), entity_type: 'edge', entity_id: edge.id as string, revision: 1, event_type: 'edge.created', payload: {} });
+    return null;
   }
 
   function authorize(request: IncomingMessage, needToken = true): string | null {
@@ -591,7 +745,11 @@ export function createMockApi(): MockApi {
       const centerId = url.searchParams.get('center_id');
       const viewScope = url.searchParams.get('view_scope') ?? 'leads';
       const viewId = url.searchParams.get('view_id') ?? 'all';
-      const relatedIds = new Set<string>(centerId ? [centerId] : directory.keys());
+      const allEntities = new Map<string, RecordData>(directory);
+      for (const [id, res] of entityResources) {
+        allEntities.set(id, { id, kind: 'resource', name: String(res.name), focus: '', revision: Number(res.revision) });
+      }
+      const relatedIds = new Set<string>(centerId ? [centerId] : allEntities.keys());
       let changed = true;
       while (changed) {
         changed = false;
@@ -603,13 +761,15 @@ export function createMockApi(): MockApi {
           }
         }
       }
-      const selected = [...directory.values()].filter((entity) => relatedIds.has(entity.id)).slice(0, 200);
-      const nodes = selected.map((entity, index) => {
-        const key = `${viewScope}:${viewId}:${entity.id}`;
+      const records: RecordData[] = [...allEntities.values()];
+      const selected = records.filter((entity) => relatedIds.has(String(entity.id))).slice(0, 200);
+      const nodes: RecordData[] = selected.map((entity, index) => {
+        const id = String(entity.id);
+        const key = `${viewScope}:${viewId}:${id}`;
         const position = graphPositions.get(key) ?? { x: (index % 8) * 240, y: Math.floor(index / 8) * 160, revision: 0 };
-        return { ...entity, x: position.x, y: position.y, position_revision: position.revision };
+        return { ...entity, id, x: position.x, y: position.y, position_revision: position.revision };
       });
-      const visible = new Set(nodes.map((node) => node.id));
+      const visible = new Set(nodes.map((node) => String(node.id)));
       const edges = graphEdges.filter((edge) => visible.has(String(edge.from_id)) && visible.has(String(edge.to_id))).slice(0, 400);
       return json(response, 200, { nodes, edges, omitted_nodes: Math.max(0, relatedIds.size - nodes.length), omitted_edges: Math.max(0, graphEdges.length - edges.length) });
     }
@@ -729,8 +889,10 @@ export function createMockApi(): MockApi {
       const resource = resources.get(entityMatch[1]!);
       if (resource) return json(response, 200, { data: resource });
       const entity = directory.get(entityMatch[1]!);
-      if (!entity) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
-      return json(response, 200, { data: { ...entity, etag: entityTag(entity) } });
+      if (entity) return json(response, 200, { data: { ...entity, etag: entityTag(entity) } });
+      const boardEntity = entityResources.get(entityMatch[1]!);
+      if (boardEntity) return json(response, 200, { data: boardEntity });
+      return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
     }
     if (entityMatch && request.method === 'PATCH') {
       let input: RecordData;
@@ -907,6 +1069,238 @@ export function createMockApi(): MockApi {
       question.state = 'dismissed';
       return json(response, 200, { id: question.id, state: question.state });
     }
+    // --- Resource board (R01) ---
+    if (url.pathname === '/api/v1/resource-board' && request.method === 'GET') {
+      if (!authorize(request, false)) return fail(response, 401, 'UNAUTHENTICATED', 'Sign in first');
+      const includeOff = url.searchParams.get('include_offboard') === 'true';
+      const limit = Math.min(Number(url.searchParams.get('limit') ?? 200) || 200, 500);
+      const cursor = Number(url.searchParams.get('cursor') ?? 0) || 0;
+      const placed: RecordData[] = [];
+      for (const [resourceId, placement] of resourcePlacements) {
+        const res = entityResources.get(resourceId);
+        if (!res || res.readiness === 'retired') continue;
+        placed.push({
+          resource_id: resourceId, subtype: String(res.subtype), title: String(res.name),
+          readiness: String(res.readiness), placement, counts: resourceCountsFor(resourceId),
+          gaps: resourceGapsFor(resourceId), etag: entityTag(res),
+        });
+      }
+      placed.sort((a, b) => Number((a.placement as { position: number }).position) - Number((b.placement as { position: number }).position) || String(a.resource_id).localeCompare(String(b.resource_id)));
+      const page = placed.slice(cursor, cursor + limit);
+      const next_cursor = cursor + limit < placed.length ? String(cursor + limit) : null;
+      const off_board: RecordData[] = [];
+      if (includeOff) {
+        for (const [resourceId, res] of entityResources) {
+          if (resourcePlacements.has(resourceId) || res.readiness === 'retired') continue;
+          off_board.push({ resource_id: resourceId, subtype: String(res.subtype), title: String(res.name), readiness: String(res.readiness), legacy: false, counts: resourceCountsFor(resourceId), gaps: resourceGapsFor(resourceId), etag: entityTag(res) });
+        }
+        for (const legacy of resources.values()) {
+          off_board.push({ resource_id: legacy.id, subtype: legacy.kind, title: legacy.title, readiness: legacy.readiness, legacy: true, counts: { files: 0, connections: 0, proposed: 0, deliveries: 0 }, gaps: [], etag: legacy.etag });
+        }
+      }
+      return json(response, 200, { columns: resourceColumns, cards: page, off_board, next_cursor, event_cursor: events.length });
+    }
+    const resourceCardRead = /^\/api\/v1\/resource-cards\/([^/]+)$/.exec(url.pathname);
+    if (resourceCardRead && request.method === 'GET') {
+      const entity = entityResources.get(resourceCardRead[1]!);
+      if (!entity) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
+      return json(response, 200, { data: { ...entity, title: entity.name } });
+    }
+    const resourceDeliveries = /^\/api\/v1\/resource-cards\/([^/]+)\/deliveries$/.exec(url.pathname);
+    if (resourceDeliveries && request.method === 'GET') {
+      if (!entityResources.has(resourceDeliveries[1]!)) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
+      return json(response, 200, { data: [] });
+    }
+    const resourceRetire = /^\/api\/v1\/resource-cards\/([^/]+)\/retire$/.exec(url.pathname);
+    if (resourceRetire && request.method === 'POST') {
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+      const entity = entityResources.get(resourceRetire[1]!);
+      if (!entity || entity.readiness === 'retired') return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
+      entity.readiness = 'retired';
+      entity.revision = Number(entity.revision) + 1;
+      entity.etag = entityTag(entity);
+      resourcePlacements.delete(entity.id as string);
+      pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: entity.id as string, revision: Number(entity.revision), event_type: 'resource.retired', payload: {} });
+      const result = { entity: { id: entity.id, kind: 'resource', readiness: 'retired', revision: Number(entity.revision) }, affected_versions: [] };
+      receipts.set(key, { digest: createHash('sha256').update(JSON.stringify({})).digest('hex'), result, status: 200 });
+      return json(response, 200, result);
+    }
+    if (url.pathname === '/api/v1/resource-card-commits' && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key || key.length > 100) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+      const digest = createHash('sha256').update(JSON.stringify(input)).digest('hex');
+      const prior = receipts.get(key);
+      if (prior) return prior.digest === digest ? json(response, prior.status ?? 201, prior.result) : fail(response, 409, 'KEY_REUSED', 'Idempotency key was used for a different command');
+      const relatedInfo = { edge_id: null as string | null, to_id: null as string | null };
+      let entity: ResourceEntityRecord;
+      let status = 200;
+      if (input.create && typeof input.create === 'object') {
+        const create = input.create as RecordData;
+        const title = String(create.title ?? '').trim();
+        const subtype = String(create.subtype ?? '');
+        if (!title || title.length > 240 || !['gift', 'proof', 'artifact', 'skill', 'interest', 'note'].includes(subtype)) return fail(response, 422, 'INVALID_REQUEST', 'Card title or subtype is invalid');
+        const id = randomHex();
+        entity = { id, kind: 'resource', name: title, focus: '', revision: 1, subtype, body: (create.body ?? {}) as RecordData, readiness: 'draft', notes: { markdown: String(create.notes_md ?? ''), revision: 1 }, etag: '' };
+        entity.etag = entityTag(entity);
+        entityResources.set(id, entity);
+        pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: id, revision: 1, event_type: 'resource.created', payload: { subtype } });
+        status = 201;
+        if (create.placement && typeof create.placement === 'object' && !applyPlacement(id, create.placement as RecordData)) return fail(response, 422, 'INVALID_REQUEST', 'Placement column or anchor is invalid');
+        if (input.relation_add && typeof input.relation_add === 'object') {
+          const reason = relateFrom(id, input.relation_add as RecordData, relatedInfo);
+          if (reason) return fail(response, 422, 'INVALID_REQUEST', `Relationship rejected: ${reason}`);
+        }
+      } else if (input.edit && typeof input.edit === 'object') {
+        const edit = input.edit as RecordData;
+        const current = entityResources.get(String(edit.resource_id));
+        if (!current) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
+        if (Number(current.revision) !== Number(edit.expected_revision)) return fail(response, 412, 'STALE_REVISION', 'The resource changed in another session');
+        if (Number(current.notes?.revision) !== Number(edit.expected_notes_rev)) return fail(response, 412, 'STALE_REVISION', 'Notes changed in another session');
+        if (typeof edit.title === 'string') {
+          const title = edit.title.trim();
+          if (!title || title.length > 240) return fail(response, 422, 'INVALID_REQUEST', 'Card title is invalid');
+          current.name = title;
+        }
+        if (typeof edit.subtype === 'string') current.subtype = edit.subtype;
+        if (edit.body && typeof edit.body === 'object') current.body = edit.body as RecordData;
+        if (typeof edit.notes_md === 'string') current.notes = { markdown: edit.notes_md, revision: Number(current.notes?.revision ?? 1) + 1 };
+        current.revision = Number(current.revision) + 1;
+        current.etag = entityTag(current);
+        for (const uploadId of (edit.staged_uploads ?? []) as string[]) {
+          if (!bindUploadTo(String(current.id), uploadId)) return fail(response, 422, 'INVALID_REQUEST', 'Staged upload does not exist or is already bound');
+        }
+        for (const ref of (edit.unbind_ids ?? []) as string[]) unbindAttachmentFrom(String(current.id), ref);
+        pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: current.id as string, revision: Number(current.revision), event_type: 'resource.updated', payload: {} });
+        entity = current;
+        if (input.placement && typeof input.placement === 'object' && !applyPlacement(String(current.id), input.placement as RecordData)) return fail(response, 422, 'INVALID_REQUEST', 'Placement column or anchor is invalid');
+        if (input.relation_add && typeof input.relation_add === 'object') {
+          const reason = relateFrom(String(current.id), input.relation_add as RecordData, relatedInfo);
+          if (reason) return fail(response, 422, 'INVALID_REQUEST', `Relationship rejected: ${reason}`);
+        }
+      } else {
+        return fail(response, 422, 'INVALID_REQUEST', 'A commit must create or edit a card');
+      }
+      const result = { entity: { ...entity, title: entity.name }, placement: resourcePlacements.get(String(entity.id)) ?? null, created_related: relatedInfo.edge_id ? { edge_id: relatedInfo.edge_id, to_id: relatedInfo.to_id } : null, affected_versions: [], event_cursor: events.length };
+      receipts.set(key, { digest, result, status });
+      return json(response, status, result);
+    }
+    if (url.pathname === '/api/v1/resource-board/moves' && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+      const digest = createHash('sha256').update(JSON.stringify(input)).digest('hex');
+      const prior = receipts.get(key);
+      if (prior) return prior.digest === digest ? json(response, 200, prior.result) : fail(response, 409, 'KEY_REUSED', 'Idempotency key was used for a different command');
+      const resourceId = String(input.resource_id);
+      if (!entityResources.has(resourceId)) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
+      const current = resourcePlacements.get(resourceId);
+      if (input.expected_placement_revision != null && current && Number(input.expected_placement_revision) !== current.revision) return fail(response, 412, 'STALE_REVISION', 'Placement changed in another session');
+      if (input.expected_source_column_revision != null && current) {
+        const column = resourceColumns.find((c) => c.id === current.column_id);
+        if (column && Number(column.revision) !== Number(input.expected_source_column_revision)) return fail(response, 412, 'STALE_REVISION', 'Source column changed in another session');
+      }
+      const destination = input.destination_column_id;
+      if (typeof destination === 'string') {
+        const column = resourceColumns.find((c) => c.id === destination);
+        if (!column) return fail(response, 422, 'INVALID_REQUEST', 'Destination column does not exist');
+        if (input.expected_destination_column_revision != null && Number(column.revision) !== Number(input.expected_destination_column_revision)) return fail(response, 412, 'STALE_REVISION', 'Destination column changed in another session');
+        applyPlacement(resourceId, { column_id: destination, before_resource_id: input.before_resource_id ?? null });
+      } else if (destination === null) {
+        applyPlacement(resourceId, { column_id: null });
+      } else {
+        return fail(response, 422, 'INVALID_REQUEST', 'A destination column is required');
+      }
+      const placement = resourcePlacements.get(resourceId) ?? null;
+      const result = { placement, source_column_revision: current ? resourceColumns.find((c) => c.id === current.column_id)?.revision ?? null : null, destination_column_revision: typeof destination === 'string' ? resourceColumns.find((c) => c.id === destination)?.revision ?? null : null };
+      receipts.set(key, { digest, result, status: 200 });
+      return json(response, 200, result);
+    }
+    if (url.pathname === '/api/v1/edges' && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+      const fromId = String(input.from_id); const toId = String(input.to_id); const verb = String(input.verb).trim(); const basis = String(input.basis).trim();
+      if (!findEntity(fromId) || !findEntity(toId) || fromId === toId || !verb || !basis) return fail(response, 422, 'INVALID_REQUEST', 'Endpoints, verb and basis are required');
+      if (graphEdges.some((edge) => edge.state !== 'retracted' && String(edge.from_id) === fromId && edge.verb === verb && String(edge.to_id) === toId)) return fail(response, 422, 'INVALID_REQUEST', 'This relationship already exists');
+      const digest = createHash('sha256').update(JSON.stringify(input)).digest('hex');
+      const prior = receipts.get(key);
+      if (prior) return prior.digest === digest ? json(response, prior.status ?? 201, prior.result) : fail(response, 409, 'KEY_REUSED', 'Idempotency key was used for a different command');
+      const edge: RecordData = { id: randomHex(), from_id: fromId, verb, to_id: toId, revision: 1, basis, author_kind: 'owner', state: 'active', occurrence_id: '', quote: '', tier: 1, speaker_kind: 'owner', captured_at: now(), source_title: null, source_url: null };
+      graphEdges.push(edge);
+      pushEvent({ event_id: randomHex(), entity_type: 'edge', entity_id: edge.id as string, revision: 1, event_type: 'edge.created', payload: {} });
+      const result = { edge }; receipts.set(key, { digest, result, status: 201 });
+      return json(response, 201, result);
+    }
+    const edgeMatch = /^\/api\/v1\/edges\/([^/]+)$/.exec(url.pathname);
+    if (edgeMatch && request.method === 'PATCH') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const edge = graphEdges.find((candidate) => candidate.id === edgeMatch[1]);
+      if (!edge || edge.state === 'retracted') return fail(response, 404, 'NOT_FOUND', 'Edge does not exist');
+      if (Number(edge.revision) !== Number(input.expected_revision)) return fail(response, 412, 'STALE_REVISION', 'Edge changed in another session');
+      if (typeof input.verb === 'string' && input.verb.trim()) edge.verb = input.verb.trim();
+      if (typeof input.basis === 'string' && input.basis.trim()) edge.basis = input.basis.trim();
+      edge.revision = Number(edge.revision) + 1;
+      return json(response, 200, { edge, author_kind: edge.author_kind });
+    }
+    if (edgeMatch && request.method === 'DELETE') {
+      const edge = graphEdges.find((candidate) => candidate.id === edgeMatch[1]);
+      if (!edge || edge.state === 'retracted') return fail(response, 404, 'NOT_FOUND', 'Edge does not exist');
+      edge.state = 'retracted';
+      edge.revision = Number(edge.revision) + 1;
+      pushEvent({ event_id: randomHex(), entity_type: 'edge', entity_id: edge.id as string, revision: Number(edge.revision), event_type: 'edge.detached', payload: {} });
+      return json(response, 204, {});
+    }
+    const attachmentListMatch = /^\/api\/v1\/entities\/([^/]+)\/attachments$/.exec(url.pathname);
+    if (attachmentListMatch && request.method === 'GET') {
+      if (!findEntity(attachmentListMatch[1]!)) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
+      return json(response, 200, { data: entityAttachments.get(attachmentListMatch[1]!) ?? [] });
+    }
+    if (attachmentListMatch && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+      const entityId = attachmentListMatch[1]!;
+      if (!findEntity(entityId)) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
+      const uploadId = String(input.upload_id);
+      if (!bindUploadTo(entityId, uploadId)) return fail(response, 422, 'INVALID_REQUEST', 'Staged upload does not exist or is already bound');
+      const attachment = (entityAttachments.get(entityId) ?? []).find((a) => a.upload_id === uploadId)!;
+      const result = { attachment }; receipts.set(key, { digest: createHash('sha256').update(JSON.stringify(input)).digest('hex'), result, status: 201 });
+      return json(response, 201, result);
+    }
+    const attachmentRefMatch = /^\/api\/v1\/entities\/([^/]+)\/attachments\/([^/]+)$/.exec(url.pathname);
+    if (attachmentRefMatch && request.method === 'DELETE') {
+      const [, entityId, ref] = attachmentRefMatch;
+      const list = entityAttachments.get(entityId!) ?? [];
+      const before = list.length;
+      const next = list.filter((a) => a.id !== ref);
+      if (next.length === before) return fail(response, 404, 'NOT_FOUND', 'Attachment binding does not exist');
+      entityAttachments.set(entityId!, next);
+      return json(response, 204, {});
+    }
+    const attachmentContentMatch = /^\/api\/v1\/entities\/([^/]+)\/attachments\/([^/]+)\/content$/.exec(url.pathname);
+    if (attachmentContentMatch && request.method === 'GET') {
+      const [, entityId, ref] = attachmentContentMatch;
+      const attachment = (entityAttachments.get(entityId!) ?? []).find((a) => a.id === ref);
+      if (!attachment) return fail(response, 404, 'NOT_FOUND', 'Attachment binding does not exist');
+      const upload = uploads.get(String(attachment.upload_id));
+      if (!upload) return fail(response, 404, 'NOT_FOUND', 'Attachment bytes are unavailable');
+      response.writeHead(200, {
+        'content-type': upload.mime || 'application/octet-stream',
+        'content-disposition': `attachment; filename="${String(attachment.filename)}"`,
+        'cache-control': 'no-store',
+        'x-parley-epoch': epoch,
+      });
+      response.end(upload.bytes);
+      return;
+    }
+
     if (url.pathname === '/api/v1/board' && request.method === 'GET') return json(response, 200, boardSnapshot());
     if (url.pathname === '/api/v1/board/lists' && request.method === 'POST') {
       let input: RecordData;

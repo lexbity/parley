@@ -1635,6 +1635,182 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/resource-board": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getResourceBoard"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/resource-cards/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getResourceCard"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/resource-cards/{id}/deliveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getResourceCardDeliveries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/resource-cards/{id}/retire": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["retireResourceCard"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/resource-card-commits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["commitResourceCard"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/resource-board/moves": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["moveResourceCard"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/edges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createEdge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/edges/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["deleteEdge"];
+        options?: never;
+        head?: never;
+        patch: operations["updateEdge"];
+        trace?: never;
+    };
+    "/entities/{id}/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listAttachments"];
+        put?: never;
+        post: operations["bindAttachment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/entities/{id}/attachments/{reference}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["unbindAttachment"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/entities/{id}/attachments/{reference}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getAttachmentContent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2578,6 +2754,203 @@ export interface components {
         };
         OpportunityList: components["schemas"]["OpportunitySummary"][];
         MaterialList: components["schemas"]["MaterialRecord"][];
+        ResourceColumn: {
+            id: string;
+            title: string;
+            position: number;
+            revision: number;
+        };
+        PlacementView: {
+            column_id: string;
+            position: number;
+            revision: number;
+        };
+        ResourceCounts: {
+            files: number;
+            connections: number;
+            proposed: number;
+            deliveries: number;
+        };
+        ResourceCardSummary: {
+            resource_id: string;
+            subtype: string;
+            title: string;
+            readiness: string;
+            placement: components["schemas"]["PlacementView"] | null;
+            counts: components["schemas"]["ResourceCounts"];
+            gaps: string[];
+            etag: string;
+        };
+        OffBoardResource: {
+            resource_id: string;
+            subtype: string;
+            title: string;
+            readiness: string;
+            legacy: boolean;
+            counts: components["schemas"]["ResourceCounts"];
+            gaps: string[];
+            etag: string;
+        };
+        ResourceBoardSnapshot: {
+            columns: components["schemas"]["ResourceColumn"][];
+            cards: components["schemas"]["ResourceCardSummary"][];
+            off_board: components["schemas"]["OffBoardResource"][];
+            next_cursor: string | null;
+            event_cursor: number;
+        };
+        ResourcePlacementInput: {
+            column_id: string | null;
+            before_resource_id?: string | null;
+        };
+        CreateResourceCard: {
+            title: string;
+            subtype: string;
+            body?: {
+                [key: string]: unknown;
+            };
+            notes_md?: string;
+            placement?: components["schemas"]["ResourcePlacementInput"] | null;
+        };
+        EditResourceCard: {
+            resource_id: string;
+            expected_revision: number;
+            expected_notes_rev: number;
+            title?: string | null;
+            subtype?: string | null;
+            body?: {
+                [key: string]: unknown;
+            } | null;
+            notes_md?: string | null;
+            staged_uploads?: string[];
+            unbind_ids?: string[];
+        };
+        CreateRelatedCard: {
+            title: string;
+            subtype: string;
+            body?: {
+                [key: string]: unknown;
+            };
+            notes_md?: string;
+            placement?: components["schemas"]["ResourcePlacementInput"] | null;
+        };
+        RelationAdd: {
+            verb: string;
+            target_id?: string | null;
+            create?: components["schemas"]["CreateRelatedCard"] | null;
+            basis: string;
+        };
+        ResourceCardCommitInput: {
+            create?: components["schemas"]["CreateResourceCard"] | null;
+            edit?: components["schemas"]["EditResourceCard"] | null;
+            placement?: components["schemas"]["ResourcePlacementInput"] | null;
+            relation_add?: components["schemas"]["RelationAdd"] | null;
+        };
+        EntityCard: {
+            id: string;
+            kind: string;
+            title: string;
+            subtype: string;
+            body: {
+                [key: string]: unknown;
+            };
+            readiness: string;
+            revision: number;
+            notes: {
+                markdown: string;
+                revision: number;
+            };
+            etag: string;
+        };
+        CreatedRelated: {
+            edge_id: string;
+            to_id: string;
+        };
+        ResourceCardCommitResult: {
+            entity: components["schemas"]["EntityCard"];
+            placement: components["schemas"]["PlacementView"] | null;
+            created_related: components["schemas"]["CreatedRelated"] | null;
+            affected_versions?: {
+                material_id: string;
+                version_no: number;
+            }[];
+            event_cursor: number;
+        };
+        DeliveryRow: {
+            send_id: string;
+            sent_at: string;
+            recipient_id: string;
+            recipient_name: string;
+            opportunity_id: string;
+            opportunity_title: string;
+            material_id: string;
+            material_version: number;
+        };
+        DeliveryList: {
+            data: components["schemas"]["DeliveryRow"][];
+        };
+        MoveResourceCardInput: {
+            resource_id: string;
+            destination_column_id: string | null;
+            before_resource_id?: string | null;
+            expected_source_column_revision?: number | null;
+            expected_destination_column_revision?: number | null;
+            expected_placement_revision?: number | null;
+        };
+        MoveResourceCardResult: {
+            placement: components["schemas"]["PlacementView"] | null;
+            source_column_revision: number | null;
+            destination_column_revision: number | null;
+        };
+        EdgeView: {
+            id: string;
+            from_id: string;
+            verb: string;
+            to_id: string;
+            state: string;
+            revision: number;
+            basis: string;
+            author_kind: string;
+            created_at: string;
+        };
+        EdgeInput: {
+            from_id: string;
+            verb: string;
+            to_id: string;
+            basis: string;
+        };
+        CreatedEdge: {
+            edge: components["schemas"]["EdgeView"];
+        };
+        UpdateEdgeInput: {
+            expected_revision: number;
+            verb?: string | null;
+            basis?: string | null;
+        };
+        UpdatedEdge: {
+            edge: components["schemas"]["EdgeView"];
+            author_kind: string;
+        };
+        EntityAttachment: {
+            id: string;
+            entity_id: string;
+            upload_id: string;
+            filename: string;
+            content_type: string;
+            size: number;
+            sha256: string;
+            share_permission: boolean;
+            reviewed_by_owner: boolean;
+            created_at: string;
+        };
+        AttachmentList: {
+            data: components["schemas"]["EntityAttachment"][];
+        };
+        BindAttachmentInput: {
+            upload_id: string;
+        };
+        BoundAttachment: {
+            attachment: components["schemas"]["EntityAttachment"];
+        };
     };
     responses: {
         /** @description Stable error envelope. */
@@ -6188,6 +6561,377 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MaintenanceOperation"];
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    getResourceBoard: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+                include_offboard?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Ordered columns and paged card summaries with counts, placement revisions and the event fence. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResourceBoardSnapshot"];
+                };
+            };
+            401: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    getResourceCard: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Full card read for the shared editor. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["EntityCard"];
+                    };
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    getResourceCardDeliveries: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Derived delivery rows for the resource. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryList"];
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    retireResourceCard: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Card retired; affected material versions flagged for release recheck. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        entity: {
+                            id: string;
+                            kind: string;
+                            readiness: string;
+                            revision: number;
+                        };
+                        affected_versions: {
+                            material_id: string;
+                            version_no: number;
+                        }[];
+                    };
+                };
+            };
+            404: components["responses"]["Error"];
+            412: components["responses"]["Error"];
+        };
+    };
+    commitResourceCard: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResourceCardCommitInput"];
+            };
+        };
+        responses: {
+            /** @description Edited card committed atomically. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResourceCardCommitResult"];
+                };
+            };
+            /** @description New card, entity, placement and any related edge committed atomically. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResourceCardCommitResult"];
+                };
+            };
+            412: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    moveResourceCard: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MoveResourceCardInput"];
+            };
+        };
+        responses: {
+            /** @description Placement committed; null placement means the card left the board. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MoveResourceCardResult"];
+                };
+            };
+            412: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    createEdge: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EdgeInput"];
+            };
+        };
+        responses: {
+            /** @description Owner-authored edge with its basis. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatedEdge"];
+                };
+            };
+            422: components["responses"]["Error"];
+        };
+    };
+    deleteEdge: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Edge detached; both endpoints remain. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    updateEdge: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateEdgeInput"];
+            };
+        };
+        responses: {
+            /** @description Corrected edge. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpdatedEdge"];
+                };
+            };
+            412: components["responses"]["Error"];
+        };
+    };
+    listAttachments: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description File bindings on the entity. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentList"];
+                };
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    bindAttachment: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BindAttachmentInput"];
+            };
+        };
+        responses: {
+            /** @description Staged upload bound to the card. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BoundAttachment"];
+                };
+            };
+            422: components["responses"]["Error"];
+        };
+    };
+    unbindAttachment: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+                reference: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Card binding removed; the file itself is untouched. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["Error"];
+        };
+    };
+    getAttachmentContent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                reference: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Verified owner-content bytes of the bound file. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
                 };
             };
             404: components["responses"]["Error"];

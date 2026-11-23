@@ -38,6 +38,20 @@ export type AdminOverview = { as_of: string; workspace_epoch: string; event_curs
 export type AdminOperation = 'restore' | 'erase_party' | 'erase_workspace';
 export type AdminPreview = { id: string; operation: AdminOperation; digest: string; workspace_epoch: string; event_cursor: string; expires_at: string; backup: AdminBackup | null; party: { id: string; name: string } | null; impact: Record<string, number>; preserved_shared: Record<string, number> };
 export type AdminJob = { id: string; operation: AdminOperation; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'; summary: string | null; new_epoch: string | null; last_error: string | null };
+export type ResourceColumn = components['schemas']['ResourceColumn'];
+export type PlacementView = components['schemas']['PlacementView'];
+export type ResourceCounts = components['schemas']['ResourceCounts'];
+export type ResourceCardSummary = components['schemas']['ResourceCardSummary'];
+export type OffBoardResource = components['schemas']['OffBoardResource'];
+export type ResourceBoardSnapshot = components['schemas']['ResourceBoardSnapshot'];
+export type EntityCard = components['schemas']['EntityCard'];
+export type CreatedRelated = components['schemas']['CreatedRelated'];
+export type ResourceCardCommitResult = components['schemas']['ResourceCardCommitResult'];
+export type MoveResourceCardResult = components['schemas']['MoveResourceCardResult'];
+export type ResourcePlacementInput = components['schemas']['ResourcePlacementInput'];
+export type EdgeView = components['schemas']['EdgeView'];
+export type EntityAttachment = components['schemas']['EntityAttachment'];
+export type DeliveryRow = components['schemas']['DeliveryRow'];
 export type BoardList = components['schemas']['BoardList'];
 export type BoardOpportunity = Opportunity & { tags: string[] };
 export type BoardPlacement = { opportunity: BoardOpportunity; opportunity_id: string; list_id: string; position: number; placement_revision: number; next_task: string | null };
@@ -554,6 +568,122 @@ function decodeEventPage(value: unknown): EventPage {
     items,
     next_cursor: requiredString(page.next_cursor, 'next_cursor'),
     observed_cursor: requiredString(page.observed_cursor, 'observed_cursor'),
+  };
+}
+
+function decodeResourceColumn(value: unknown): ResourceColumn {
+  const item = object(value);
+  if (!item || !Number.isSafeInteger(item.position) || !Number.isSafeInteger(item.revision)) throw new Error('Invalid response: resource column is malformed');
+  return { id: requiredString(item.id, 'column.id'), title: requiredString(item.title, 'column.title'), position: Number(item.position), revision: Number(item.revision) };
+}
+
+function decodePlacementView(value: unknown): PlacementView | null {
+  if (value === null || value === undefined) return null;
+  const item = object(value);
+  if (!item || !Number.isSafeInteger(item.position) || !Number.isSafeInteger(item.revision)) throw new Error('Invalid response: placement is malformed');
+  return { column_id: requiredString(item.column_id, 'placement.column_id'), position: Number(item.position), revision: Number(item.revision) };
+}
+
+function decodeResourceCounts(value: unknown): ResourceCounts {
+  const item = object(value);
+  if (!item || !Number.isSafeInteger(item.files) || !Number.isSafeInteger(item.connections) || !Number.isSafeInteger(item.proposed) || !Number.isSafeInteger(item.deliveries)) throw new Error('Invalid response: resource counts are malformed');
+  return { files: Number(item.files), connections: Number(item.connections), proposed: Number(item.proposed), deliveries: Number(item.deliveries) };
+}
+
+function decodeResourceCardSummary(value: unknown): ResourceCardSummary {
+  const item = object(value);
+  if (!item || !object(item.counts) || !Array.isArray(item.gaps)) throw new Error('Invalid response: card summary is malformed');
+  return { resource_id: requiredString(item.resource_id, 'card.resource_id'), subtype: requiredString(item.subtype, 'card.subtype'), title: requiredString(item.title, 'card.title'), readiness: requiredString(item.readiness, 'card.readiness'), placement: decodePlacementView(item.placement), counts: decodeResourceCounts(item.counts), gaps: stringArray(item.gaps, 'card.gaps'), etag: requiredString(item.etag, 'card.etag') };
+}
+
+function decodeOffBoardResource(value: unknown): OffBoardResource {
+  const item = object(value);
+  if (!item || typeof item.legacy !== 'boolean' || !object(item.counts) || !Array.isArray(item.gaps)) throw new Error('Invalid response: off-board resource is malformed');
+  return { resource_id: requiredString(item.resource_id, 'off.resource_id'), subtype: requiredString(item.subtype, 'off.subtype'), title: requiredString(item.title, 'off.title'), readiness: requiredString(item.readiness, 'off.readiness'), legacy: item.legacy, counts: decodeResourceCounts(item.counts), gaps: stringArray(item.gaps, 'off.gaps'), etag: requiredString(item.etag, 'off.etag') };
+}
+
+function decodeResourceBoardSnapshot(value: unknown): ResourceBoardSnapshot {
+  const board = object(value);
+  if (!board || !Array.isArray(board.columns) || !Array.isArray(board.cards) || !Array.isArray(board.off_board) || !Number.isSafeInteger(board.event_cursor)) throw new Error('Invalid response: resource board snapshot is malformed');
+  return {
+    columns: board.columns.map(decodeResourceColumn),
+    cards: board.cards.map(decodeResourceCardSummary),
+    off_board: board.off_board.map(decodeOffBoardResource),
+    next_cursor: typeof board.next_cursor === 'string' ? board.next_cursor : null,
+    event_cursor: Number(board.event_cursor),
+  };
+}
+
+function decodeEntityCard(value: unknown): EntityCard {
+  const item = object(value);
+  const notes = object(item?.notes);
+  if (!item || !object(item.body) || !notes || !Number.isSafeInteger(item.revision) || !Number.isSafeInteger(notes.revision)) throw new Error('Invalid response: card entity is malformed');
+  return {
+    id: requiredString(item.id, 'entity.id'), kind: requiredString(item.kind, 'entity.kind'), title: requiredString(item.title, 'entity.title'),
+    subtype: requiredString(item.subtype, 'entity.subtype'), body: item.body as Record<string, unknown>, readiness: requiredString(item.readiness, 'entity.readiness'),
+    revision: Number(item.revision), notes: { markdown: requiredString(notes.markdown, 'notes.markdown'), revision: Number(notes.revision) },
+    etag: requiredString(item.etag, 'entity.etag'),
+  };
+}
+
+function decodeCreatedRelated(value: unknown): CreatedRelated | null {
+  if (value === null || value === undefined) return null;
+  const item = object(value);
+  if (!item) throw new Error('Invalid response: created relationship is malformed');
+  return { edge_id: requiredString(item.edge_id, 'related.edge_id'), to_id: requiredString(item.to_id, 'related.to_id') };
+}
+
+function decodeResourceCardCommitResult(value: unknown): ResourceCardCommitResult {
+  const result = object(value);
+  if (!result || !object(result.entity) || !Number.isSafeInteger(result.event_cursor ?? 0)) throw new Error('Invalid response: card commit result is malformed');
+  const affected = Array.isArray(result.affected_versions)
+    ? result.affected_versions.flatMap((entry) => {
+      const item = object(entry);
+      if (!item || !Number.isSafeInteger(item.version_no)) return [];
+      return [{ material_id: requiredString(item.material_id, 'affected.material_id'), version_no: Number(item.version_no) }];
+    })
+    : [];
+  return { entity: decodeEntityCard(result.entity), placement: decodePlacementView(result.placement), created_related: decodeCreatedRelated(result.created_related), affected_versions: affected, event_cursor: Number(result.event_cursor) };
+}
+
+function decodeDeliveryRow(value: unknown): DeliveryRow {
+  const item = object(value);
+  if (!item || !Number.isSafeInteger(item.material_version)) throw new Error('Invalid response: delivery row is malformed');
+  return {
+    send_id: requiredString(item.send_id, 'delivery.send_id'), sent_at: requiredString(item.sent_at, 'delivery.sent_at'),
+    recipient_id: requiredString(item.recipient_id, 'delivery.recipient_id'), recipient_name: requiredString(item.recipient_name, 'delivery.recipient_name'),
+    opportunity_id: requiredString(item.opportunity_id, 'delivery.opportunity_id'), opportunity_title: requiredString(item.opportunity_title, 'delivery.opportunity_title'),
+    material_id: requiredString(item.material_id, 'delivery.material_id'), material_version: Number(item.material_version),
+  };
+}
+
+function decodeMoveResourceCardResult(value: unknown): MoveResourceCardResult {
+  const result = object(value);
+  if (!result) throw new Error('Invalid response: move result is malformed');
+  return {
+    placement: decodePlacementView(result.placement),
+    source_column_revision: Number.isSafeInteger(result.source_column_revision) ? Number(result.source_column_revision) : null,
+    destination_column_revision: Number.isSafeInteger(result.destination_column_revision) ? Number(result.destination_column_revision) : null,
+  };
+}
+
+function decodeEdgeView(value: unknown): EdgeView {
+  const edge = object(value);
+  if (!edge || !Number.isSafeInteger(edge.revision)) throw new Error('Invalid response: edge is malformed');
+  return {
+    id: requiredString(edge.id, 'edge.id'), from_id: requiredString(edge.from_id, 'edge.from_id'), verb: requiredString(edge.verb, 'edge.verb'),
+    to_id: requiredString(edge.to_id, 'edge.to_id'), state: requiredString(edge.state, 'edge.state'), revision: Number(edge.revision),
+    basis: requiredString(edge.basis, 'edge.basis'), author_kind: requiredString(edge.author_kind, 'edge.author_kind'), created_at: requiredString(edge.created_at, 'edge.created_at'),
+  };
+}
+
+function decodeEntityAttachment(value: unknown): EntityAttachment {
+  const item = object(value);
+  if (!item || !Number.isSafeInteger(item.size) || typeof item.share_permission !== 'boolean' || typeof item.reviewed_by_owner !== 'boolean' || !/^[a-f0-9]{64}$/.test(String(item.sha256))) throw new Error('Invalid response: entity attachment is malformed');
+  return {
+    id: requiredString(item.id, 'attachment.id'), entity_id: requiredString(item.entity_id, 'attachment.entity_id'), upload_id: requiredString(item.upload_id, 'attachment.upload_id'),
+    filename: requiredString(item.filename, 'attachment.filename'), content_type: requiredString(item.content_type, 'attachment.content_type'), size: Number(item.size),
+    sha256: String(item.sha256), share_permission: item.share_permission, reviewed_by_owner: item.reviewed_by_owner, created_at: requiredString(item.created_at, 'attachment.created_at'),
   };
 }
 
@@ -1239,6 +1369,107 @@ export class ParleyClient {
     const value = object(await this.mutate('/capacity', 'POST', input, { 'Idempotency-Key': key }));
     if (!value || typeof value.remaining !== 'number') throw new Error('Invalid response: capacity update receipt is malformed');
     return { period: requiredString(value.period, 'capacity.period'), unit: requiredString(value.unit, 'capacity.unit'), total: Number(value.total), committed: Number(value.committed), remaining: Number(value.remaining), updated_at: requiredString(value.updated_at, 'capacity.updated_at') };
+  }
+
+  async stageUpload(file: Blob, filename?: string): Promise<components['schemas']['Upload']> {
+    const headers = new Headers({ Accept: 'application/json' });
+    headers.set('Content-Type', file.type || 'application/octet-stream');
+    if (filename) headers.set('x-parley-filename', encodeURIComponent(filename));
+    if (this.session) {
+      headers.set('X-Parley-Token', this.session.mutation_token);
+      headers.set('X-Parley-Epoch', this.session.epoch);
+    }
+    const response = await fetch('/api/v1/uploads', { method: 'POST', body: file, headers, credentials: 'same-origin', cache: 'no-store' });
+    const payload: unknown = await response.json().catch(() => null);
+    if (!response.ok) throw decodeApiError(payload, response.status);
+    const upload = object(payload);
+    if (!upload || typeof upload.id !== 'string') throw new Error('Invalid response: upload receipt is malformed');
+    return upload as components['schemas']['Upload'];
+  }
+
+  async getResourceBoard(options: { limit?: number; cursor?: string; includeOffboard?: boolean } = {}): Promise<ResourceBoardSnapshot> {
+    const query = new URLSearchParams();
+    if (options.limit !== undefined) query.set('limit', String(options.limit));
+    if (options.cursor) query.set('cursor', options.cursor);
+    if (options.includeOffboard) query.set('include_offboard', 'true');
+    return decodeResourceBoardSnapshot(await this.request(`/resource-board?${query.toString()}`));
+  }
+
+  async retireResourceCard(id: string, key = newOperationKey()): Promise<{ entity: { id: string; kind: string; readiness: string; revision: number }; affected_versions: Array<{ material_id: string; version_no: number }> }> {
+    const result = object(await this.mutate(`/resource-cards/${encodeURIComponent(id)}/retire`, 'POST', {}, { 'Idempotency-Key': key }));
+    if (!result || !object(result.entity) || !Array.isArray(result.affected_versions)) throw new Error('Invalid response: retirement receipt is malformed');
+    const entity = result.entity as { id: string; kind: string; readiness: string; revision: number };
+    return { entity, affected_versions: result.affected_versions.flatMap((entry) => { const item = object(entry); if (!item || !Number.isSafeInteger(item.version_no)) return []; return [{ material_id: requiredString(item.material_id, 'affected.material_id'), version_no: Number(item.version_no) }]; }) };
+  }
+
+  async getEntityCardDeliveries(id: string): Promise<DeliveryRow[]> {
+    const envelope = object(await this.request(`/resource-cards/${encodeURIComponent(id)}/deliveries`));
+    if (!envelope || !Array.isArray(envelope.data)) throw new Error('Invalid response: delivery list is malformed');
+    return envelope.data.map(decodeDeliveryRow);
+  }
+
+  async getEntityCard(id: string): Promise<EntityCard> {
+    const envelope = object(await this.request(`/resource-cards/${encodeURIComponent(id)}`));
+    if (!envelope || !object(envelope.data)) throw new Error('Invalid response: card read is malformed');
+    return decodeEntityCard(envelope.data);
+  }
+
+  async commitResourceCard(input: components['schemas']['ResourceCardCommitInput'], key: string): Promise<ResourceCardCommitResult> {
+    return decodeResourceCardCommitResult(await this.mutate('/resource-card-commits', 'POST', input, { 'Idempotency-Key': key }));
+  }
+
+  async moveResourceCard(input: components['schemas']['MoveResourceCardInput'], key = newOperationKey()): Promise<MoveResourceCardResult> {
+    return decodeMoveResourceCardResult(await this.mutate('/resource-board/moves', 'POST', input, { 'Idempotency-Key': key }));
+  }
+
+  async createEdge(input: components['schemas']['EdgeInput'], key = newOperationKey()): Promise<{ edge: EdgeView }> {
+    const result = object(await this.mutate('/edges', 'POST', input, { 'Idempotency-Key': key }));
+    if (!result || !object(result.edge)) throw new Error('Invalid response: created edge is malformed');
+    return { edge: decodeEdgeView(result.edge) };
+  }
+
+  async updateEdge(id: string, input: components['schemas']['UpdateEdgeInput'], key = newOperationKey()): Promise<{ edge: EdgeView; author_kind: string }> {
+    const result = object(await this.mutate(`/edges/${encodeURIComponent(id)}`, 'PATCH', input, { 'Idempotency-Key': key }));
+    if (!result || !object(result.edge) || typeof result.author_kind !== 'string') throw new Error('Invalid response: updated edge is malformed');
+    return { edge: decodeEdgeView(result.edge), author_kind: result.author_kind };
+  }
+
+  async deleteEdge(id: string, key = newOperationKey()): Promise<void> {
+    await this.mutate(`/edges/${encodeURIComponent(id)}`, 'DELETE', {}, { 'Idempotency-Key': key });
+  }
+
+  async listAttachments(entityId: string): Promise<EntityAttachment[]> {
+    const value = object(await this.request(`/entities/${encodeURIComponent(entityId)}/attachments`));
+    if (!value || !Array.isArray(value.data)) throw new Error('Invalid response: attachment list is malformed');
+    return value.data.map(decodeEntityAttachment);
+  }
+
+  async bindAttachment(entityId: string, uploadId: string, key = newOperationKey()): Promise<EntityAttachment> {
+    const result = object(await this.mutate(`/entities/${encodeURIComponent(entityId)}/attachments`, 'POST', { upload_id: uploadId }, { 'Idempotency-Key': key }));
+    if (!result || !object(result.attachment)) throw new Error('Invalid response: bound attachment is malformed');
+    return decodeEntityAttachment(result.attachment);
+  }
+
+  async unbindAttachment(entityId: string, reference: string, key = newOperationKey()): Promise<void> {
+    await this.mutate(`/entities/${encodeURIComponent(entityId)}/attachments/${encodeURIComponent(reference)}`, 'DELETE', {}, { 'Idempotency-Key': key });
+  }
+
+  async getAttachmentContent(entityId: string, reference: string): Promise<{ bytes: ArrayBuffer; filename: string; contentType: string; size: number }> {
+    const headers = new Headers({ Accept: 'application/octet-stream' });
+    if (this.session) {
+      headers.set('X-Parley-Token', this.session.mutation_token);
+      headers.set('X-Parley-Epoch', this.session.epoch);
+    }
+    const response = await fetch(`/api/v1/entities/${encodeURIComponent(entityId)}/attachments/${encodeURIComponent(reference)}/content`, { headers, credentials: 'same-origin', cache: 'no-store' });
+    if (!response.ok) {
+      let payload: unknown = null;
+      try { payload = await response.json(); } catch { /* non-JSON error body */ }
+      throw decodeApiError(payload, response.status);
+    }
+    const disposition = response.headers.get('content-disposition') ?? '';
+    const filenameMatch = /filename="([^"]+)"/.exec(disposition);
+    const bytes = await response.arrayBuffer();
+    return { bytes, filename: filenameMatch?.[1] ?? 'attachment.bin', contentType: response.headers.get('content-type') ?? 'application/octet-stream', size: bytes.byteLength };
   }
 
   private decodeSingleThread(raw: Record<string, unknown>): ContactThread {

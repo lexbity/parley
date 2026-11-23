@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 SLICE_ORDER = [f"s{n:02d}" for n in range(1, 12)] + [
     f"p{n:02d}" for n in range(1, 5)
-] + ["s12"]
+] + [f"r{n:02d}" for n in range(1, 5)] + ["s12"]
 
 
 def load_coverage() -> dict[str, Any]:

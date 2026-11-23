@@ -2234,6 +2234,215 @@ paths:
       responses:
         '200': {description: Operation status; complete erasure means retired bytes and canary validation passed., content: {application/json: {schema: {$ref: '#/components/schemas/MaintenanceOperation'}}}}
         '404': {$ref: '#/components/responses/Error'}
+  /resource-board:
+    get:
+      operationId: getResourceBoard
+      security: [{sessionCookie: []}]
+      parameters:
+      - in: query
+        name: limit
+        required: false
+        schema: {type: integer, minimum: 1, maximum: 500}
+      - in: query
+        name: cursor
+        required: false
+        schema: {type: string}
+      - in: query
+        name: include_offboard
+        required: false
+        schema: {type: boolean}
+      responses:
+        '200':
+          description: Ordered columns and paged card summaries with counts, placement revisions and the event fence.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResourceBoardSnapshot'}
+        '401': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /resource-cards/{id}:
+    get:
+      operationId: getResourceCard
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}]
+      responses:
+        '200':
+          description: Full card read for the shared editor.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {$ref: '#/components/schemas/EntityCard'}
+                additionalProperties: false
+        '404': {$ref: '#/components/responses/Error'}
+  /resource-cards/{id}/deliveries:
+    get:
+      operationId: getResourceCardDeliveries
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}]
+      responses:
+        '200':
+          description: Derived delivery rows for the resource.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DeliveryList'}
+        '404': {$ref: '#/components/responses/Error'}
+  /resource-cards/{id}/retire:
+    post:
+      operationId: retireResourceCard
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      responses:
+        '200':
+          description: Card retired; affected material versions flagged for release recheck.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entity, affected_versions]
+                properties:
+                  entity:
+                    type: object
+                    required: [id, kind, readiness, revision]
+                    properties:
+                      id: {type: string}
+                      kind: {type: string}
+                      readiness: {type: string}
+                      revision: {type: integer}
+                    additionalProperties: false
+                  affected_versions:
+                    type: array
+                    items:
+                      type: object
+                      required: [material_id, version_no]
+                      properties:
+                        material_id: {type: string}
+                        version_no: {type: integer}
+                      additionalProperties: false
+                additionalProperties: false
+        '404': {$ref: '#/components/responses/Error'}
+        '412': {$ref: '#/components/responses/Error'}
+  /resource-card-commits:
+    post:
+      operationId: commitResourceCard
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ResourceCardCommitInput'}}}
+      responses:
+        '201':
+          description: New card, entity, placement and any related edge committed atomically.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResourceCardCommitResult'}
+        '200':
+          description: Edited card committed atomically.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResourceCardCommitResult'}
+        '412': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /resource-board/moves:
+    post:
+      operationId: moveResourceCard
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/MoveResourceCardInput'}}}
+      responses:
+        '200':
+          description: Placement committed; null placement means the card left the board.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MoveResourceCardResult'}
+        '412': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /edges:
+    post:
+      operationId: createEdge
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/EdgeInput'}}}
+      responses:
+        '201':
+          description: Owner-authored edge with its basis.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CreatedEdge'}
+        '422': {$ref: '#/components/responses/Error'}
+  /edges/{id}:
+    patch:
+      operationId: updateEdge
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/UpdateEdgeInput'}}}
+      responses:
+        '200':
+          description: Corrected edge.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UpdatedEdge'}
+        '412': {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: deleteEdge
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      responses:
+        '204': {description: Edge detached; both endpoints remain.}
+        '404': {$ref: '#/components/responses/Error'}
+  /entities/{id}/attachments:
+    get:
+      operationId: listAttachments
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}]
+      responses:
+        '200':
+          description: File bindings on the entity.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AttachmentList'}
+        '404': {$ref: '#/components/responses/Error'}
+    post:
+      operationId: bindAttachment
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/BindAttachmentInput'}}}
+      responses:
+        '201':
+          description: Staged upload bound to the card.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BoundAttachment'}
+        '422': {$ref: '#/components/responses/Error'}
+  /entities/{id}/attachments/{reference}:
+    delete:
+      operationId: unbindAttachment
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {in: path, name: reference, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      responses:
+        '204': {description: Card binding removed; the file itself is untouched.}
+        '404': {$ref: '#/components/responses/Error'}
+  /entities/{id}/attachments/{reference}/content:
+    get:
+      operationId: getAttachmentContent
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {in: path, name: reference, required: true, schema: {type: string}}]
+      responses:
+        '200':
+          description: Verified owner-content bytes of the bound file.
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '404': {$ref: '#/components/responses/Error'}
 components:
   securitySchemes:
     sessionCookie:
@@ -4254,3 +4463,392 @@ components:
       type: array
       items:
         $ref: '#/components/schemas/MaterialRecord'
+    ResourceColumn:
+      type: object
+      required: [id, title, position, revision]
+      properties:
+        id: {type: string}
+        title: {type: string}
+        position: {type: integer}
+        revision: {type: integer}
+      additionalProperties: false
+    PlacementView:
+      type: object
+      required: [column_id, position, revision]
+      properties:
+        column_id: {type: string}
+        position: {type: integer}
+        revision: {type: integer}
+      additionalProperties: false
+    ResourceCounts:
+      type: object
+      required: [files, connections, proposed, deliveries]
+      properties:
+        files: {type: integer}
+        connections: {type: integer}
+        proposed: {type: integer}
+        deliveries: {type: integer}
+      additionalProperties: false
+    ResourceCardSummary:
+      type: object
+      required: [resource_id, subtype, title, readiness, placement, counts, gaps, etag]
+      properties:
+        resource_id: {type: string}
+        subtype: {type: string}
+        title: {type: string}
+        readiness: {type: string}
+        placement:
+          anyOf:
+          - $ref: '#/components/schemas/PlacementView'
+          - type: "null"
+        counts: {$ref: '#/components/schemas/ResourceCounts'}
+        gaps:
+          type: array
+          items: {type: string}
+        etag: {type: string}
+      additionalProperties: false
+    OffBoardResource:
+      type: object
+      required: [resource_id, subtype, title, readiness, legacy, counts, gaps, etag]
+      properties:
+        resource_id: {type: string}
+        subtype: {type: string}
+        title: {type: string}
+        readiness: {type: string}
+        legacy: {type: boolean}
+        counts: {$ref: '#/components/schemas/ResourceCounts'}
+        gaps:
+          type: array
+          items: {type: string}
+        etag: {type: string}
+      additionalProperties: false
+    ResourceBoardSnapshot:
+      type: object
+      required: [columns, cards, off_board, next_cursor, event_cursor]
+      properties:
+        columns:
+          type: array
+          items: {$ref: '#/components/schemas/ResourceColumn'}
+        cards:
+          type: array
+          items: {$ref: '#/components/schemas/ResourceCardSummary'}
+        off_board:
+          type: array
+          items: {$ref: '#/components/schemas/OffBoardResource'}
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: "null"
+        event_cursor: {type: integer}
+      additionalProperties: false
+    ResourcePlacementInput:
+      type: object
+      required: [column_id]
+      properties:
+        column_id:
+          anyOf:
+          - type: string
+          - type: "null"
+        before_resource_id:
+          anyOf:
+          - type: string
+          - type: "null"
+      additionalProperties: false
+    CreateResourceCard:
+      type: object
+      required: [title, subtype]
+      properties:
+        title: {type: string}
+        subtype: {type: string}
+        body:
+          type: object
+          additionalProperties: true
+        notes_md: {type: string}
+        placement:
+          anyOf:
+          - $ref: '#/components/schemas/ResourcePlacementInput'
+          - type: "null"
+      additionalProperties: false
+    EditResourceCard:
+      type: object
+      required: [resource_id, expected_revision, expected_notes_rev]
+      properties:
+        resource_id: {type: string}
+        expected_revision: {type: integer}
+        expected_notes_rev: {type: integer}
+        title:
+          anyOf:
+          - type: string
+          - type: "null"
+        subtype:
+          anyOf:
+          - type: string
+          - type: "null"
+        body:
+          anyOf:
+          - type: object
+            additionalProperties: true
+          - type: "null"
+        notes_md:
+          anyOf:
+          - type: string
+          - type: "null"
+        staged_uploads:
+          type: array
+          items: {type: string}
+        unbind_ids:
+          type: array
+          items: {type: string}
+      additionalProperties: false
+    CreateRelatedCard:
+      type: object
+      required: [title, subtype]
+      properties:
+        title: {type: string}
+        subtype: {type: string}
+        body:
+          type: object
+          additionalProperties: true
+        notes_md: {type: string}
+        placement:
+          anyOf:
+          - $ref: '#/components/schemas/ResourcePlacementInput'
+          - type: "null"
+      additionalProperties: false
+    RelationAdd:
+      type: object
+      required: [verb, basis]
+      properties:
+        verb: {type: string}
+        target_id:
+          anyOf:
+          - type: string
+          - type: "null"
+        create:
+          anyOf:
+          - $ref: '#/components/schemas/CreateRelatedCard'
+          - type: "null"
+        basis: {type: string}
+      additionalProperties: false
+    ResourceCardCommitInput:
+      type: object
+      properties:
+        create:
+          anyOf:
+          - $ref: '#/components/schemas/CreateResourceCard'
+          - type: "null"
+        edit:
+          anyOf:
+          - $ref: '#/components/schemas/EditResourceCard'
+          - type: "null"
+        placement:
+          anyOf:
+          - $ref: '#/components/schemas/ResourcePlacementInput'
+          - type: "null"
+        relation_add:
+          anyOf:
+          - $ref: '#/components/schemas/RelationAdd'
+          - type: "null"
+      additionalProperties: false
+    EntityCard:
+      type: object
+      required: [id, kind, title, subtype, body, readiness, revision, notes, etag]
+      properties:
+        id: {type: string}
+        kind: {type: string}
+        title: {type: string}
+        subtype: {type: string}
+        body:
+          type: object
+          additionalProperties: true
+        readiness: {type: string}
+        revision: {type: integer}
+        notes:
+          type: object
+          required: [markdown, revision]
+          properties:
+            markdown: {type: string}
+            revision: {type: integer}
+          additionalProperties: false
+        etag: {type: string}
+      additionalProperties: false
+    CreatedRelated:
+      type: object
+      required: [edge_id, to_id]
+      properties:
+        edge_id: {type: string}
+        to_id: {type: string}
+      additionalProperties: false
+    ResourceCardCommitResult:
+      type: object
+      required: [entity, placement, created_related, event_cursor]
+      properties:
+        entity: {$ref: '#/components/schemas/EntityCard'}
+        placement:
+          anyOf:
+          - $ref: '#/components/schemas/PlacementView'
+          - type: "null"
+        created_related:
+          anyOf:
+          - $ref: '#/components/schemas/CreatedRelated'
+          - type: "null"
+        affected_versions:
+          type: array
+          items:
+            type: object
+            required: [material_id, version_no]
+            properties:
+              material_id: {type: string}
+              version_no: {type: integer}
+            additionalProperties: false
+        event_cursor: {type: integer}
+      additionalProperties: false
+    DeliveryRow:
+      type: object
+      required: [send_id, sent_at, recipient_id, recipient_name, opportunity_id, opportunity_title, material_id, material_version]
+      properties:
+        send_id: {type: string}
+        sent_at: {type: string}
+        recipient_id: {type: string}
+        recipient_name: {type: string}
+        opportunity_id: {type: string}
+        opportunity_title: {type: string}
+        material_id: {type: string}
+        material_version: {type: integer}
+      additionalProperties: false
+    DeliveryList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/DeliveryRow'}
+      additionalProperties: false
+    MoveResourceCardInput:
+      type: object
+      required: [resource_id, destination_column_id]
+      properties:
+        resource_id: {type: string}
+        destination_column_id:
+          anyOf:
+          - type: string
+          - type: "null"
+        before_resource_id:
+          anyOf:
+          - type: string
+          - type: "null"
+        expected_source_column_revision:
+          anyOf:
+          - type: integer
+          - type: "null"
+        expected_destination_column_revision:
+          anyOf:
+          - type: integer
+          - type: "null"
+        expected_placement_revision:
+          anyOf:
+          - type: integer
+          - type: "null"
+      additionalProperties: false
+    MoveResourceCardResult:
+      type: object
+      required: [placement, source_column_revision, destination_column_revision]
+      properties:
+        placement:
+          anyOf:
+          - $ref: '#/components/schemas/PlacementView'
+          - type: "null"
+        source_column_revision:
+          anyOf:
+          - type: integer
+          - type: "null"
+        destination_column_revision:
+          anyOf:
+          - type: integer
+          - type: "null"
+      additionalProperties: false
+    EdgeView:
+      type: object
+      required: [id, from_id, verb, to_id, state, revision, basis, author_kind, created_at]
+      properties:
+        id: {type: string}
+        from_id: {type: string}
+        verb: {type: string}
+        to_id: {type: string}
+        state: {type: string}
+        revision: {type: integer}
+        basis: {type: string}
+        author_kind: {type: string}
+        created_at: {type: string}
+      additionalProperties: false
+    EdgeInput:
+      type: object
+      required: [from_id, verb, to_id, basis]
+      properties:
+        from_id: {type: string}
+        verb: {type: string}
+        to_id: {type: string}
+        basis: {type: string}
+      additionalProperties: false
+    CreatedEdge:
+      type: object
+      required: [edge]
+      properties:
+        edge: {$ref: '#/components/schemas/EdgeView'}
+      additionalProperties: false
+    UpdateEdgeInput:
+      type: object
+      required: [expected_revision]
+      properties:
+        expected_revision: {type: integer}
+        verb:
+          anyOf:
+          - type: string
+          - type: "null"
+        basis:
+          anyOf:
+          - type: string
+          - type: "null"
+      additionalProperties: false
+    UpdatedEdge:
+      type: object
+      required: [edge, author_kind]
+      properties:
+        edge: {$ref: '#/components/schemas/EdgeView'}
+        author_kind: {type: string}
+      additionalProperties: false
+    EntityAttachment:
+      type: object
+      required: [id, entity_id, upload_id, filename, content_type, size, sha256, share_permission, reviewed_by_owner, created_at]
+      properties:
+        id: {type: string}
+        entity_id: {type: string}
+        upload_id: {type: string}
+        filename: {type: string}
+        content_type: {type: string}
+        size: {type: integer}
+        sha256: {type: string}
+        share_permission: {type: boolean}
+        reviewed_by_owner: {type: boolean}
+        created_at: {type: string}
+      additionalProperties: false
+    AttachmentList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/EntityAttachment'}
+      additionalProperties: false
+    BindAttachmentInput:
+      type: object
+      required: [upload_id]
+      properties:
+        upload_id: {type: string}
+      additionalProperties: false
+    BoundAttachment:
+      type: object
+      required: [attachment]
+      properties:
+        attachment: {$ref: '#/components/schemas/EntityAttachment'}
+      additionalProperties: false

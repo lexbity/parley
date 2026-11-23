@@ -1,0 +1,2299 @@
+//! Resource board, shared card commits, moves, owner-authored edges and
+//! entity attachment bindings (amendment 2026-11-22 §2–§6).
+//!
+//! A board card is an `entity` row of kind `resource` with typed subtype
+//! data, canonical Markdown notes and attachment bindings. Placement lives
+//! in `resource_placement`; positions are spaced ranks with per-card and
+//! per-column revisions. All mutations run in one writer transaction with
+//! idempotency receipts so a lost acknowledgement never creates a second
+//! card, child, move or binding.
+
+use super::{
+    AppState, Workspace, WorkspaceError, authenticate, digest, entity_etag, idempotency_key,
+    new_id, now_utc,
+};
+use axum::{
+    Json, Router,
+    extract::{Path, Query, State},
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{delete, get, patch, post},
+};
+use parley_domain::notes;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sqlx::{Sqlite, Transaction};
+use std::collections::BTreeSet;
+
+const RANK_STEP: i64 = 1024;
+const MAX_RESOURCE_TITLE: usize = 240;
+const MAX_NOTES_BYTES: usize = 1_000_000;
+const MAX_BASIS_BYTES: usize = 2_000;
+const MAX_VERB_BYTES: usize = 120;
+const DEFAULT_PAGE: i64 = 200;
+const MAX_PAGE: i64 = 500;
+
+type CardRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+);
+type OffBoardRow = (String, String, String, String, String, i64, i64, i64, i64);
+type LegacyRow = (String, String, String, String, i64);
+type EditCardRow = (String, String, String, String, String, i64, i64, String);
+type DeliveryRowTuple = (String, String, String, String, String, String, String, i64);
+type AttachmentListRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    String,
+    bool,
+    bool,
+    String,
+);
+type EdgeRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    String,
+    String,
+    String,
+);
+type BoundAttachmentRow = (String, String, String, String, i64, String, String, String);
+
+pub(super) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/v1/resource-board", get(get_resource_board))
+        .route("/api/v1/resource-cards/{id}", get(get_resource_card))
+        .route(
+            "/api/v1/resource-cards/{id}/deliveries",
+            get(get_resource_card_deliveries),
+        )
+        .route(
+            "/api/v1/resource-cards/{id}/retire",
+            post(retire_resource_card),
+        )
+        .route("/api/v1/resource-card-commits", post(commit_resource_card))
+        .route("/api/v1/resource-board/moves", post(move_resource_card))
+        .route("/api/v1/edges", post(create_edge))
+        .route("/api/v1/edges/{id}", patch(update_edge).delete(delete_edge))
+        .route(
+            "/api/v1/entities/{id}/attachments",
+            get(list_attachments).post(bind_attachment),
+        )
+        .route(
+            "/api/v1/entities/{id}/attachments/{reference}",
+            delete(unbind_attachment),
+        )
+        .route(
+            "/api/v1/entities/{id}/attachments/{reference}/content",
+            get(attachment_content),
+        )
+}
+
+const SUBTYPES: &[&str] = &["gift", "proof", "artifact", "skill", "interest", "note"];
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResourceColumn {
+    pub id: String,
+    pub title: String,
+    pub position: i64,
+    pub revision: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlacementView {
+    pub column_id: String,
+    pub position: i64,
+    pub revision: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResourceCounts {
+    pub files: i64,
+    pub connections: i64,
+    pub proposed: i64,
+    pub deliveries: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResourceCardSummary {
+    pub resource_id: String,
+    pub subtype: String,
+    pub title: String,
+    pub readiness: String,
+    pub placement: Option<PlacementView>,
+    pub counts: ResourceCounts,
+    /// Missing typed fields for this subtype; an empty list means eligible.
+    pub gaps: Vec<String>,
+    pub etag: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OffBoardResource {
+    pub resource_id: String,
+    pub subtype: String,
+    pub title: String,
+    pub readiness: String,
+    pub legacy: bool,
+    pub counts: ResourceCounts,
+    pub gaps: Vec<String>,
+    pub etag: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeliveryRow {
+    pub send_id: String,
+    pub sent_at: String,
+    pub recipient_id: String,
+    pub recipient_name: String,
+    pub opportunity_id: String,
+    pub opportunity_title: String,
+    pub material_id: String,
+    pub material_version: i64,
+}
+
+/// Deterministic missing-typed-field computation shared by board summaries,
+/// the editor and the inspector. "Available" is an owner label; the backend
+/// computes eligibility separately (an unfinished proof in Available is
+/// still ineligible).
+fn subtype_gaps(subtype: &str, body: &serde_json::Value) -> Vec<String> {
+    let text = |key: &str| {
+        body.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+    };
+    let mut gaps = Vec::new();
+    match subtype {
+        "proof" => {
+            if text("result").is_empty() {
+                gaps.push("Result".into());
+            }
+            if text("context").is_empty() {
+                gaps.push("Context".into());
+            }
+            if text("time").is_empty() {
+                gaps.push("Time".into());
+            }
+            if text("owner_role").is_empty() {
+                gaps.push("Owner role".into());
+            }
+        }
+        "gift" => {
+            if text("effort").is_empty() {
+                gaps.push("Effort estimate".into());
+            }
+        }
+        "artifact" => {
+            if text("reference").is_empty() {
+                gaps.push("Available reference".into());
+            }
+            if body.get("share_permission") != Some(&Value::Bool(true)) {
+                gaps.push("Permission to share".into());
+            }
+        }
+        _ => {}
+    }
+    gaps
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResourceBoardSnapshot {
+    pub columns: Vec<ResourceColumn>,
+    pub cards: Vec<ResourceCardSummary>,
+    pub off_board: Vec<OffBoardResource>,
+    pub next_cursor: Option<String>,
+    pub event_cursor: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct BoardQuery {
+    #[serde(default)]
+    limit: Option<i64>,
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
+    include_offboard: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourcePlacementInput {
+    /// Column ID, or null to place off board.
+    pub column_id: Option<String>,
+    /// Optional anchor: place immediately before this card in the column.
+    #[serde(default)]
+    pub before_resource_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateResourceCard {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub subtype: String,
+    #[serde(default = "serde_json::Map::new")]
+    pub body: serde_json::Map<String, Value>,
+    #[serde(default)]
+    pub notes_md: String,
+    #[serde(default)]
+    pub placement: Option<ResourcePlacementInput>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EditResourceCard {
+    pub resource_id: String,
+    pub expected_revision: i64,
+    pub expected_notes_rev: i64,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub subtype: Option<String>,
+    #[serde(default)]
+    pub body: Option<serde_json::Map<String, Value>>,
+    #[serde(default)]
+    pub notes_md: Option<String>,
+    #[serde(default)]
+    pub staged_uploads: Vec<String>,
+    #[serde(default)]
+    pub unbind_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateRelatedCard {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub subtype: String,
+    #[serde(default = "serde_json::Map::new")]
+    pub body: serde_json::Map<String, Value>,
+    #[serde(default)]
+    pub notes_md: String,
+    #[serde(default)]
+    pub placement: Option<ResourcePlacementInput>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelationAdd {
+    pub verb: String,
+    /// Link to an existing endpoint (resource or party), or create a related
+    /// card with `create`.
+    #[serde(default)]
+    pub target_id: Option<String>,
+    #[serde(default)]
+    pub create: Option<CreateRelatedCard>,
+    #[serde(default)]
+    pub basis: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceCardCommitInput {
+    #[serde(default)]
+    pub create: Option<CreateResourceCard>,
+    #[serde(default)]
+    pub edit: Option<EditResourceCard>,
+    #[serde(default)]
+    pub placement: Option<ResourcePlacementInput>,
+    #[serde(default)]
+    pub relation_add: Option<RelationAdd>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MoveResourceCardInput {
+    pub resource_id: String,
+    /// Destination column, or null to remove the card from the board.
+    pub destination_column_id: Option<String>,
+    #[serde(default)]
+    pub before_resource_id: Option<String>,
+    #[serde(default)]
+    pub expected_source_column_revision: Option<i64>,
+    #[serde(default)]
+    pub expected_destination_column_revision: Option<i64>,
+    #[serde(default)]
+    pub expected_placement_revision: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EdgeInput {
+    pub from_id: String,
+    pub verb: String,
+    pub to_id: String,
+    #[serde(default)]
+    pub basis: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateEdgeInput {
+    pub expected_revision: i64,
+    #[serde(default)]
+    pub verb: Option<String>,
+    #[serde(default)]
+    pub basis: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BindAttachmentInput {
+    pub upload_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EntityAttachmentRow {
+    pub id: String,
+    pub entity_id: String,
+    pub upload_id: String,
+    pub filename: String,
+    pub content_type: String,
+    pub size: i64,
+    pub sha256: String,
+    pub share_permission: bool,
+    pub reviewed_by_owner: bool,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EdgeView {
+    pub id: String,
+    pub from_id: String,
+    pub verb: String,
+    pub to_id: String,
+    pub state: String,
+    pub revision: i64,
+    pub basis: String,
+    pub author_kind: String,
+    pub created_at: String,
+}
+
+#[derive(Debug)]
+struct Replay {
+    status: i64,
+    body: Value,
+}
+
+#[derive(Debug)]
+struct PlacementApply {
+    view: Option<PlacementView>,
+    source_column_revision: Option<i64>,
+    destination_column_revision: Option<i64>,
+}
+
+impl Workspace {
+    /// Derived delivery rows for a resource: sends whose delivered material
+    /// version contains the resource or one of its bound files. Drafting-only
+    /// dependencies never appear here; repeat sends are separate rows.
+    pub async fn resource_card_deliveries(
+        &self,
+        id: &str,
+    ) -> Result<Vec<DeliveryRow>, WorkspaceError> {
+        let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM entity WHERE id=?")
+            .bind(id)
+            .fetch_optional(self.pool())
+            .await?;
+        if exists.is_none() {
+            return Err(WorkspaceError::NotFound);
+        }
+        let rows: Vec<DeliveryRowTuple> = sqlx::query_as(
+            "SELECT s.id,s.sent_at,s.recipient_id,e.name,t.opportunity_id,o.title,sp.material_id,sp.version_no \
+             FROM send s \
+             JOIN entity e ON e.id=s.recipient_id \
+             JOIN contact_thread t ON t.id=s.thread_id \
+             JOIN opportunity o ON o.id=t.opportunity_id \
+             JOIN send_part sp ON sp.send_id=s.id \
+             JOIN version_dependency d ON d.material_id=sp.material_id AND d.version_no=sp.version_no \
+             WHERE (d.kind='resource' AND d.source_id=?) \
+                OR (d.kind='blob' AND d.source_id IN (SELECT sha256 FROM entity_attachment WHERE entity_id=?)) \
+             ORDER BY s.sent_at DESC,s.id",
+        )
+        .bind(id)
+        .bind(id)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    send_id,
+                    sent_at,
+                    recipient_id,
+                    recipient_name,
+                    opportunity_id,
+                    opportunity_title,
+                    material_id,
+                    material_version,
+                )| {
+                    DeliveryRow {
+                        send_id,
+                        sent_at,
+                        recipient_id,
+                        recipient_name,
+                        opportunity_id,
+                        opportunity_title,
+                        material_id,
+                        material_version,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    /// Retire a resource: removed from ordinary use, board and picker.
+    /// Affected material versions signal a release recheck; a later edit or
+    /// link to the retired card is rejected.
+    pub async fn retire_resource_card(&self, id: &str, key: &str) -> Result<Value, WorkspaceError> {
+        let canonical =
+            canonical_digest("POST", &format!("/resource-cards/{id}/retire"), &json!({}));
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(replay) = receipt_lookup(&mut tx, key, &canonical).await? {
+            tx.commit().await?;
+            return Ok(json!({"_replay_status": replay.status, "result": replay.body}));
+        }
+        let revision: Option<i64> = sqlx::query_scalar(
+            "SELECT revision FROM entity WHERE id=? AND kind='resource' AND readiness <> 'retired'",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(revision) = revision else {
+            return Err(WorkspaceError::NotFound);
+        };
+        let next_revision = revision + 1;
+        let updated = sqlx::query(
+            "UPDATE entity SET readiness='retired',revision=?,updated_at=? WHERE id=? AND revision=?",
+        )
+        .bind(next_revision)
+        .bind(now_utc())
+        .bind(id)
+        .bind(revision)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(WorkspaceError::StaleRevision);
+        }
+        write_event(
+            &mut tx,
+            "resource",
+            id,
+            next_revision,
+            "resource.retired",
+            json!({"revision": next_revision}),
+        )
+        .await?;
+        let affected: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT DISTINCT d.material_id,d.version_no FROM version_dependency d \
+             WHERE d.kind='resource' AND d.source_id=? AND d.source_revision <> ?",
+        )
+        .bind(id)
+        .bind(next_revision.to_string())
+        .fetch_all(&mut *tx)
+        .await?;
+        let affected_json: Vec<Value> = affected
+            .iter()
+            .map(|(material_id, version_no)| {
+                json!({"material_id": material_id, "version_no": version_no})
+            })
+            .collect();
+        for (material_id, version_no) in &affected {
+            write_event(
+                &mut tx,
+                "material",
+                material_id,
+                *version_no,
+                "material.release_recheck_required",
+                json!({"resource_id": id, "version_no": version_no}),
+            )
+            .await?;
+        }
+        let result = json!({
+            "entity": {"id": id, "kind": "resource", "readiness": "retired", "revision": next_revision},
+            "affected_versions": affected_json
+        });
+        receipt_store(&mut tx, key, &canonical, 200, &result).await?;
+        tx.commit().await?;
+        Ok(json!({"_replay_status": 200, "result": result}))
+    }
+
+    /// Full read of one board card (entity kind resource) with typed body,
+    /// notes and revisions, for the shared editor.
+    pub async fn resource_card_read(&self, id: &str) -> Result<Value, WorkspaceError> {
+        let row: Option<(String, String, String, String, String, i64, i64)> = sqlx::query_as(
+            "SELECT name,subtype,body_json,readiness,notes_md,revision,notes_rev FROM entity WHERE id=? AND kind='resource' AND readiness <> 'retired'",
+        )
+        .bind(id)
+        .fetch_optional(self.pool())
+        .await?;
+        let Some((name, subtype, body, readiness, notes, revision, notes_rev)) = row else {
+            return Err(WorkspaceError::NotFound);
+        };
+        Ok(json!({
+            "id": id,
+            "kind": "resource",
+            "title": name,
+            "subtype": subtype,
+            "body": serde_json::from_str::<Value>(&body).unwrap_or_else(|_| json!({})),
+            "readiness": readiness,
+            "revision": revision,
+            "notes": {"markdown": notes, "revision": notes_rev},
+            "etag": entity_etag(&self.epoch, id, revision)
+        }))
+    }
+
+    /// Read the resource board: ordered columns, paged card summaries and,
+    /// optionally, active off-board resources (resource picker).
+    pub async fn resource_board_snapshot(
+        &self,
+        limit: Option<i64>,
+        cursor: Option<String>,
+        include_offboard: bool,
+    ) -> Result<ResourceBoardSnapshot, WorkspaceError> {
+        let limit = limit.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE);
+        let columns: Vec<(String, String, i64, i64)> = sqlx::query_as(
+            "SELECT id,title,position,revision FROM resource_column ORDER BY position,id",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        let columns = columns
+            .into_iter()
+            .map(|(id, title, position, revision)| ResourceColumn {
+                id,
+                title,
+                position,
+                revision,
+            })
+            .collect::<Vec<_>>();
+        let after = cursor.as_deref().map(decode_cursor).transpose()?;
+        let mut builder = sqlx::QueryBuilder::new(
+            "SELECT p.resource_id,e.subtype,e.name,e.readiness,e.body_json,p.column_id,p.position,p.revision,e.revision AS entity_rev,c.position AS col_pos, \
+             (SELECT COUNT(*) FROM entity_attachment a WHERE a.entity_id=e.id) AS files, \
+             (SELECT COUNT(*) FROM edge x WHERE x.state='active' AND (x.from_id=e.id OR x.to_id=e.id)) AS connections, \
+             (SELECT COUNT(*) FROM send s JOIN send_part sp ON sp.send_id=s.id JOIN version_dependency d ON d.material_id=sp.material_id AND d.version_no=sp.version_no \
+               WHERE (d.kind='resource' AND d.source_id=e.id) OR (d.kind='blob' AND d.source_id IN (SELECT sha256 FROM entity_attachment WHERE entity_id=e.id))) AS deliveries \
+             FROM resource_placement p JOIN entity e ON e.id=p.resource_id JOIN resource_column c ON c.id=p.column_id \
+             WHERE e.readiness <> 'retired'",
+        );
+        if let Some((col_pos, pos, id)) = after {
+            builder
+                .push(" AND (c.position,p.position,p.resource_id) > (")
+                .push_bind(col_pos)
+                .push(",")
+                .push_bind(pos)
+                .push(",")
+                .push_bind(id)
+                .push(")");
+        }
+        builder.push(" ORDER BY c.position,p.position,p.resource_id LIMIT ");
+        builder.push_bind(limit + 1);
+        let rows: Vec<CardRow> = builder.build_query_as().fetch_all(self.pool()).await?;
+        let mut cards = Vec::with_capacity(rows.len());
+        let mut next_cursor = None;
+        for (index, row) in rows.into_iter().enumerate() {
+            if index as i64 == limit {
+                next_cursor = Some(encode_cursor(row.10, row.6, row.0.clone()));
+                break;
+            }
+            let (
+                resource_id,
+                subtype,
+                title,
+                readiness,
+                body_json,
+                column_id,
+                position,
+                placement_rev,
+                entity_rev,
+                _col_pos,
+                files,
+                connections,
+                deliveries,
+            ) = row;
+            let body = serde_json::from_str::<Value>(&body_json).unwrap_or_else(|_| json!({}));
+            let gaps = subtype_gaps(&subtype, &body);
+            cards.push(ResourceCardSummary {
+                resource_id: resource_id.clone(),
+                subtype,
+                title,
+                readiness,
+                placement: Some(PlacementView {
+                    column_id,
+                    position,
+                    revision: placement_rev,
+                }),
+                counts: ResourceCounts {
+                    files,
+                    connections,
+                    proposed: 0,
+                    deliveries,
+                },
+                gaps,
+                etag: entity_etag(&self.epoch, &resource_id, entity_rev),
+            });
+        }
+        let off_board = if include_offboard {
+            self.off_board_resources().await?
+        } else {
+            Vec::new()
+        };
+        let event_cursor: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(cursor),0) FROM event")
+            .fetch_one(self.pool())
+            .await?;
+        Ok(ResourceBoardSnapshot {
+            columns,
+            cards,
+            off_board,
+            next_cursor,
+            event_cursor,
+        })
+    }
+
+    async fn off_board_resources(&self) -> Result<Vec<OffBoardResource>, WorkspaceError> {
+        // Entity-kind resources without a placement.
+        let rows: Vec<OffBoardRow> = sqlx::query_as(
+            "SELECT e.id,e.subtype,e.name,e.readiness,e.body_json,e.revision, \
+             (SELECT COUNT(*) FROM entity_attachment a WHERE a.entity_id=e.id), \
+             (SELECT COUNT(*) FROM edge x WHERE x.state='active' AND (x.from_id=e.id OR x.to_id=e.id)), \
+             (SELECT COUNT(*) FROM send s JOIN send_part sp ON sp.send_id=s.id JOIN version_dependency d ON d.material_id=sp.material_id AND d.version_no=sp.version_no \
+               WHERE (d.kind='resource' AND d.source_id=e.id) OR (d.kind='blob' AND d.source_id IN (SELECT sha256 FROM entity_attachment WHERE entity_id=e.id))) \
+             FROM entity e WHERE e.kind='resource' AND e.readiness <> 'retired' \
+             AND NOT EXISTS (SELECT 1 FROM resource_placement p WHERE p.resource_id=e.id) \
+             ORDER BY e.name COLLATE NOCASE,e.id",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        let mut off = rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    subtype,
+                    title,
+                    readiness,
+                    body_json,
+                    revision,
+                    files,
+                    connections,
+                    deliveries,
+                )| {
+                    let body =
+                        serde_json::from_str::<Value>(&body_json).unwrap_or_else(|_| json!({}));
+                    let gaps = subtype_gaps(&subtype, &body);
+                    OffBoardResource {
+                        resource_id: id.clone(),
+                        subtype,
+                        title,
+                        readiness,
+                        legacy: false,
+                        counts: ResourceCounts {
+                            files,
+                            connections,
+                            proposed: 0,
+                            deliveries,
+                        },
+                        gaps,
+                        etag: entity_etag(&self.epoch, &id, revision),
+                    }
+                },
+            )
+            .collect::<Vec<_>>();
+        // Legacy `resource` rows are always off board and stay recoverable.
+        let legacy: Vec<LegacyRow> = sqlx::query_as(
+            "SELECT id,kind,title,readiness,revision FROM resource WHERE readiness <> 'retired' ORDER BY title COLLATE NOCASE,id",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        for (id, subtype, title, readiness, revision) in legacy {
+            off.push(OffBoardResource {
+                resource_id: id.clone(),
+                subtype,
+                title,
+                readiness,
+                legacy: true,
+                counts: ResourceCounts {
+                    files: 0,
+                    connections: 0,
+                    proposed: 0,
+                    deliveries: 0,
+                },
+                gaps: Vec::new(),
+                etag: format!("\"p1.{}.legacy-resource.{}.{}\"", self.epoch, id, revision),
+            });
+        }
+        Ok(off)
+    }
+
+    /// Atomic resource card commit: create or edit the entity, bind/unbind
+    /// staged attachments, change placement, and optionally add a graph-only
+    /// relationship (link existing or create a related card), all in one
+    /// writer transaction.
+    pub async fn commit_resource_card(
+        &self,
+        input: &ResourceCardCommitInput,
+        key: &str,
+    ) -> Result<Value, WorkspaceError> {
+        if input.create.is_none() && input.edit.is_none() {
+            return Err(WorkspaceError::Invalid(
+                "a commit must create or edit a card".into(),
+            ));
+        }
+        if input.create.is_some() && input.edit.is_some() {
+            return Err(WorkspaceError::Invalid(
+                "create and edit are mutually exclusive".into(),
+            ));
+        }
+        let canonical = canonical_digest("POST", "/resource-card-commits", input);
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(replay) = receipt_lookup(&mut tx, key, &canonical).await? {
+            tx.commit().await?;
+            return Ok(json!({"_replay_status": replay.status, "result": replay.body}));
+        }
+        let (status, result) = if let Some(create) = &input.create {
+            let id = self
+                .create_entity_card(
+                    &mut tx,
+                    &create.title,
+                    &create.subtype,
+                    &create.body,
+                    &create.notes_md,
+                    "resource.created",
+                )
+                .await?;
+            if let Some(relation) = &input.relation_add {
+                self.apply_relation(&mut tx, &id, relation).await?;
+            }
+            if let Some(placement) = &create.placement {
+                let applied = self
+                    .apply_placement(&mut tx, &id, placement, None, None, None)
+                    .await?;
+                let _ = applied;
+            }
+            let entity = entity_card_json(&self.epoch, &mut tx, &id).await?;
+            let placement = current_placement_json(&mut tx, &id).await?;
+            let cursor = max_event_cursor(&mut tx).await?;
+            let result = json!({
+                "entity": entity,
+                "placement": placement,
+                "created_related": relation_result(&mut tx, &id).await?,
+                "event_cursor": cursor
+            });
+            receipt_store(&mut tx, key, &canonical, 201, &result).await?;
+            (201, result)
+        } else if let Some(edit) = &input.edit {
+            let id = self.edit_entity_card(&mut tx, edit).await?;
+            if let Some(relation) = &input.relation_add {
+                self.apply_relation(&mut tx, &id, relation).await?;
+            }
+            if let Some(placement) = &input.placement {
+                let applied = self
+                    .apply_placement(&mut tx, &id, placement, None, None, None)
+                    .await?;
+                let _ = applied;
+            }
+            let entity = entity_card_json(&self.epoch, &mut tx, &id).await?;
+            let placement = current_placement_json(&mut tx, &id).await?;
+            let cursor = max_event_cursor(&mut tx).await?;
+            let new_rev = entity["revision"].as_i64().unwrap_or(1);
+            let affected: Vec<(String, i64)> = sqlx::query_as(
+                "SELECT DISTINCT d.material_id,d.version_no FROM version_dependency d \
+                 WHERE d.kind='resource' AND d.source_id=? AND d.source_revision <> ?",
+            )
+            .bind(&id)
+            .bind(new_rev.to_string())
+            .fetch_all(&mut *tx)
+            .await?;
+            let affected_json: Vec<Value> = affected
+                .iter()
+                .map(|(material_id, version_no)| {
+                    json!({"material_id": material_id, "version_no": version_no})
+                })
+                .collect();
+            for (material_id, version_no) in &affected {
+                write_event(
+                    &mut tx,
+                    "material",
+                    material_id,
+                    *version_no,
+                    "material.release_recheck_required",
+                    json!({"resource_id": id, "version_no": version_no}),
+                )
+                .await?;
+            }
+            let result = json!({
+                "entity": entity,
+                "placement": placement,
+                "created_related": relation_result(&mut tx, &id).await?,
+                "affected_versions": affected_json,
+                "event_cursor": cursor
+            });
+            receipt_store(&mut tx, key, &canonical, 200, &result).await?;
+            (200, result)
+        } else {
+            unreachable!("create or edit is present")
+        };
+        tx.commit().await?;
+        Ok(json!({"_replay_status": status, "result": result}))
+    }
+
+    async fn create_entity_card(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        title: &str,
+        subtype: &str,
+        body: &serde_json::Map<String, Value>,
+        notes_md: &str,
+        event_kind: &str,
+    ) -> Result<String, WorkspaceError> {
+        let title = validate_title(title)?;
+        let subtype = validate_subtype(subtype)?;
+        let notes = notes::canonicalize(notes_md);
+        if notes.len() > MAX_NOTES_BYTES {
+            return Err(WorkspaceError::Invalid(
+                "notes exceed the 1 MB limit".into(),
+            ));
+        }
+        let id = new_id(&digest(format!("{title}\0{subtype}\0{notes}").as_bytes()));
+        sqlx::query(
+            "INSERT INTO entity(id,kind,name,focus,notes_md,notes_rev,revision,created_at,updated_at,subtype,body_json,readiness) \
+             VALUES(?,?,?,'',?,?,1,?,?,?,?,'draft')",
+        )
+        .bind(&id)
+        .bind("resource")
+        .bind(&title)
+        .bind(&notes)
+        .bind(1)
+        .bind(now_utc())
+        .bind(now_utc())
+        .bind(&subtype)
+        .bind(serde_json::to_string(body).unwrap())
+        .execute(&mut **tx)
+        .await?;
+        write_event(
+            tx,
+            "resource",
+            &id,
+            1,
+            event_kind,
+            json!({"subtype": subtype, "title": title}),
+        )
+        .await?;
+        Ok(id)
+    }
+
+    async fn edit_entity_card(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        edit: &EditResourceCard,
+    ) -> Result<String, WorkspaceError> {
+        let row: Option<EditCardRow> = sqlx::query_as(
+                "SELECT name,notes_md,subtype,body_json,readiness,revision,notes_rev,id FROM entity WHERE id=? AND kind='resource' AND readiness <> 'retired'",
+            )
+            .bind(&edit.resource_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+        let Some((name, current_notes, subtype, body_json, _readiness, revision, notes_rev, id)) =
+            row
+        else {
+            return Err(WorkspaceError::NotFound);
+        };
+        if revision != edit.expected_revision {
+            return Err(WorkspaceError::StaleRevision);
+        }
+        let next_notes = match &edit.notes_md {
+            Some(raw) => {
+                if notes_rev != edit.expected_notes_rev {
+                    return Err(WorkspaceError::StaleRevision);
+                }
+                let canonical = notes::canonicalize(raw);
+                if canonical.len() > MAX_NOTES_BYTES {
+                    return Err(WorkspaceError::Invalid(
+                        "notes exceed the 1 MB limit".into(),
+                    ));
+                }
+                canonical
+            }
+            None => current_notes,
+        };
+        let next_subtype = match &edit.subtype {
+            Some(raw) => validate_subtype(raw)?,
+            None => subtype,
+        };
+        let next_name = match &edit.title {
+            Some(raw) => validate_title(raw)?,
+            None => name,
+        };
+        let next_body = match &edit.body {
+            Some(raw) => serde_json::to_string(raw).unwrap(),
+            None => body_json,
+        };
+        let next_revision = revision + 1;
+        sqlx::query(
+            "UPDATE entity SET name=?,notes_md=?,notes_rev=?,subtype=?,body_json=?,revision=?,updated_at=? WHERE id=?",
+        )
+        .bind(&next_name)
+        .bind(&next_notes)
+        .bind(if edit.notes_md.is_some() { notes_rev + 1 } else { notes_rev })
+        .bind(&next_subtype)
+        .bind(&next_body)
+        .bind(next_revision)
+        .bind(now_utc())
+        .bind(&id)
+        .execute(&mut **tx)
+        .await?;
+        write_event(
+            tx,
+            "resource",
+            &id,
+            next_revision,
+            "resource.updated",
+            json!({"revision": next_revision}),
+        )
+        .await?;
+        for upload_id in &edit.staged_uploads {
+            bind_upload_row(tx, &id, upload_id).await?;
+        }
+        for attachment_id in &edit.unbind_ids {
+            unbind_attachment_row(tx, &id, attachment_id).await?;
+        }
+        Ok(id)
+    }
+
+    /// Apply a relationship intent: link to an existing endpoint or create a
+    /// related card (off board by default) and connect it.
+    async fn apply_relation(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        from_id: &str,
+        relation: &RelationAdd,
+    ) -> Result<(), WorkspaceError> {
+        let verb = relation.verb.trim();
+        if verb.is_empty() || verb.len() > MAX_VERB_BYTES {
+            return Err(WorkspaceError::Invalid(
+                "relationship verb must contain 1–120 bytes".into(),
+            ));
+        }
+        let basis = relation.basis.trim();
+        if basis.is_empty() || basis.len() > MAX_BASIS_BYTES {
+            return Err(WorkspaceError::Invalid(
+                "relationship basis must contain 1–2000 bytes".into(),
+            ));
+        }
+        let to_id = match (&relation.target_id, &relation.create) {
+            (Some(target), None) => {
+                let exists: Option<i64> = sqlx::query_scalar(
+                    "SELECT 1 FROM entity WHERE id=? AND readiness <> 'retired'",
+                )
+                .bind(target)
+                .fetch_optional(&mut **tx)
+                .await?;
+                if exists.is_none() {
+                    return Err(WorkspaceError::NotFound);
+                }
+                target.clone()
+            }
+            (None, Some(child)) => {
+                let id = self
+                    .create_entity_card(
+                        tx,
+                        &child.title,
+                        &child.subtype,
+                        &child.body,
+                        &child.notes_md,
+                        "resource.created",
+                    )
+                    .await?;
+                if let Some(placement) = &child.placement {
+                    self.apply_placement(tx, &id, placement, None, None, None)
+                        .await?;
+                }
+                id
+            }
+            _ => {
+                return Err(WorkspaceError::Invalid(
+                    "a relationship needs exactly one target or created card".into(),
+                ));
+            }
+        };
+        if to_id == from_id {
+            return Err(WorkspaceError::Invalid(
+                "an edge cannot connect a card to itself".into(),
+            ));
+        }
+        let duplicate: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM edge WHERE state='active' AND from_id=? AND verb=? AND to_id=?",
+        )
+        .bind(from_id)
+        .bind(verb)
+        .bind(&to_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if duplicate.is_some() {
+            return Err(WorkspaceError::Invalid(
+                "this relationship already exists".into(),
+            ));
+        }
+        let edge_id = new_id(&digest(format!("{from_id}\0{verb}\0{to_id}").as_bytes()));
+        sqlx::query(
+            "INSERT INTO edge(id,from_id,verb,to_id,state,revision,basis,author_kind,created_at) \
+             VALUES(?,?,?,?, 'active',1,?, 'owner',?)",
+        )
+        .bind(&edge_id)
+        .bind(from_id)
+        .bind(verb)
+        .bind(&to_id)
+        .bind(basis)
+        .bind(now_utc())
+        .execute(&mut **tx)
+        .await?;
+        write_event(
+            tx,
+            "edge",
+            &edge_id,
+            1,
+            "edge.created",
+            json!({"from_id": from_id, "verb": verb, "to_id": to_id}),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Move a card between columns, reorder within one column, or remove it
+    /// from the board. Order changes commit atomically with revision checks.
+    pub async fn move_resource_card(
+        &self,
+        input: &MoveResourceCardInput,
+        key: &str,
+    ) -> Result<Value, WorkspaceError> {
+        let canonical = canonical_digest("POST", "/resource-board/moves", input);
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(replay) = receipt_lookup(&mut tx, key, &canonical).await? {
+            tx.commit().await?;
+            return Ok(json!({"_replay_status": replay.status, "result": replay.body}));
+        }
+        let placement = ResourcePlacementInput {
+            column_id: input.destination_column_id.clone(),
+            before_resource_id: input.before_resource_id.clone(),
+        };
+        let applied = self
+            .apply_placement(
+                &mut tx,
+                &input.resource_id,
+                &placement,
+                input.expected_source_column_revision,
+                input.expected_destination_column_revision,
+                input.expected_placement_revision,
+            )
+            .await?;
+        let result = json!({
+            "placement": applied.view,
+            "source_column_revision": applied.source_column_revision,
+            "destination_column_revision": applied.destination_column_revision
+        });
+        receipt_store(&mut tx, key, &canonical, 200, &result).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn apply_placement(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        resource_id: &str,
+        input: &ResourcePlacementInput,
+        expected_source_column_revision: Option<i64>,
+        expected_destination_column_revision: Option<i64>,
+        expected_placement_revision: Option<i64>,
+    ) -> Result<PlacementApply, WorkspaceError> {
+        let current: Option<(String, i64, i64)> = sqlx::query_as(
+            "SELECT column_id,position,revision FROM resource_placement WHERE resource_id=?",
+        )
+        .bind(resource_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let Some(destination_column_id) = &input.column_id else {
+            if let Some((source_column, position, placement_rev)) = &current {
+                if let Some(expected) = expected_placement_revision
+                    && expected != *placement_rev
+                {
+                    return Err(WorkspaceError::StaleRevision);
+                }
+                if let Some(expected) = expected_source_column_revision {
+                    let source_rev: i64 =
+                        sqlx::query_scalar("SELECT revision FROM resource_column WHERE id=?")
+                            .bind(source_column)
+                            .fetch_one(&mut **tx)
+                            .await?;
+                    if source_rev != expected {
+                        return Err(WorkspaceError::StaleRevision);
+                    }
+                }
+                sqlx::query("DELETE FROM resource_placement WHERE resource_id=?")
+                    .bind(resource_id)
+                    .execute(&mut **tx)
+                    .await?;
+                sqlx::query("UPDATE resource_column SET revision=revision+1 WHERE id=?")
+                    .bind(source_column)
+                    .execute(&mut **tx)
+                    .await?;
+                write_event(
+                    tx,
+                    "resource",
+                    resource_id,
+                    *placement_rev + 1,
+                    "resource.removed_from_board",
+                    json!({"column_id": source_column, "position": position}),
+                )
+                .await?;
+                let source_rev: i64 =
+                    sqlx::query_scalar("SELECT revision FROM resource_column WHERE id=?")
+                        .bind(source_column)
+                        .fetch_one(&mut **tx)
+                        .await?;
+                return Ok(PlacementApply {
+                    view: None,
+                    source_column_revision: Some(source_rev),
+                    destination_column_revision: None,
+                });
+            }
+            return Ok(PlacementApply {
+                view: None,
+                source_column_revision: None,
+                destination_column_revision: None,
+            });
+        };
+        let destination_rev: i64 =
+            sqlx::query_scalar("SELECT revision FROM resource_column WHERE id=?")
+                .bind(destination_column_id)
+                .fetch_one(&mut **tx)
+                .await?;
+        if let Some(expected) = expected_destination_column_revision
+            && destination_rev != expected
+        {
+            return Err(WorkspaceError::StaleRevision);
+        }
+        if let Some((source_column, _, placement_rev)) = &current {
+            if let Some(expected) = expected_placement_revision
+                && expected != *placement_rev
+            {
+                return Err(WorkspaceError::StaleRevision);
+            }
+            if let Some(expected) = expected_source_column_revision {
+                let source_rev: i64 =
+                    sqlx::query_scalar("SELECT revision FROM resource_column WHERE id=?")
+                        .bind(source_column)
+                        .fetch_one(&mut **tx)
+                        .await?;
+                if source_rev != expected {
+                    return Err(WorkspaceError::StaleRevision);
+                }
+            }
+            if source_column == destination_column_id
+                && input.before_resource_id.as_deref() == Some(resource_id)
+            {
+                return Err(WorkspaceError::Invalid(
+                    "a card cannot be placed before itself".into(),
+                ));
+            }
+            if input.before_resource_id.as_deref() == Some(resource_id) {
+                return Err(WorkspaceError::Invalid(
+                    "a card cannot be placed before itself".into(),
+                ));
+            }
+        } else if input.before_resource_id.as_deref() == Some(resource_id) {
+            return Err(WorkspaceError::Invalid(
+                "a card cannot be placed before itself".into(),
+            ));
+        }
+        if let Some(anchor) = &input.before_resource_id {
+            let anchor_column: Option<String> =
+                sqlx::query_scalar("SELECT column_id FROM resource_placement WHERE resource_id=?")
+                    .bind(anchor)
+                    .fetch_optional(&mut **tx)
+                    .await?;
+            if anchor_column.as_deref() != Some(destination_column_id.as_str()) {
+                return Err(WorkspaceError::Invalid(
+                    "before_resource_id must be in the destination column".into(),
+                ));
+            }
+        }
+        let mut target: Vec<(String, i64, i64)> = sqlx::query_as(
+            "SELECT resource_id,position,revision FROM resource_placement WHERE column_id=? AND resource_id<>? ORDER BY position,resource_id",
+        )
+        .bind(destination_column_id)
+        .bind(resource_id)
+        .fetch_all(&mut **tx)
+        .await?;
+        let insert_index = match &input.before_resource_id {
+            Some(anchor) => target
+                .iter()
+                .position(|row| &row.0 == anchor)
+                .ok_or(WorkspaceError::NotFound)?,
+            None => target.len(),
+        };
+        let left = insert_index
+            .checked_sub(1)
+            .map(|index| target[index].1)
+            .unwrap_or(0);
+        let right = target.get(insert_index).map(|row| row.1);
+        let candidate = match right {
+            Some(right) if right - left > 1 => left + (right - left) / 2,
+            Some(_) => 0,
+            None => left.saturating_add(RANK_STEP),
+        };
+        let prior_placement_rev = current.as_ref().map(|row| row.2).unwrap_or(0);
+        let mut reordered = Vec::new();
+        if candidate == 0 {
+            for (index, (id, _, _)) in target.iter().enumerate() {
+                sqlx::query("UPDATE resource_placement SET position=? WHERE resource_id=?")
+                    .bind(-((index as i64) + 1))
+                    .bind(id)
+                    .execute(&mut **tx)
+                    .await?;
+            }
+            target.insert(
+                insert_index,
+                (resource_id.to_owned(), 0, prior_placement_rev),
+            );
+            for (index, (id, _, revision)) in target.iter_mut().enumerate() {
+                let position = (index as i64 + 1) * RANK_STEP;
+                if id.as_str() == resource_id {
+                    upsert_placement(
+                        tx,
+                        resource_id,
+                        destination_column_id,
+                        position,
+                        prior_placement_rev,
+                    )
+                    .await?;
+                } else {
+                    sqlx::query(
+                        "UPDATE resource_placement SET position=?,revision=revision+1 WHERE resource_id=?",
+                    )
+                    .bind(position)
+                    .bind(&*id)
+                    .execute(&mut **tx)
+                    .await?;
+                    reordered.push((id.clone(), position, *revision + 1));
+                }
+            }
+        } else {
+            let temp_position = i64::MIN + prior_placement_rev;
+            if let Some((_, _, _)) = &current {
+                sqlx::query("UPDATE resource_placement SET position=? WHERE resource_id=?")
+                    .bind(temp_position)
+                    .bind(resource_id)
+                    .execute(&mut **tx)
+                    .await?;
+            }
+            upsert_placement(
+                tx,
+                resource_id,
+                destination_column_id,
+                candidate,
+                prior_placement_rev,
+            )
+            .await?;
+        }
+        let source_column_id = current.as_ref().map(|row| row.0.clone());
+        let touched = BTreeSet::from([
+            source_column_id.clone(),
+            Some(destination_column_id.clone()),
+        ]);
+        for column_id in touched.iter().flatten() {
+            sqlx::query("UPDATE resource_column SET revision=revision+1 WHERE id=?")
+                .bind(column_id)
+                .execute(&mut **tx)
+                .await?;
+        }
+        let (column_id, position, revision): (String, i64, i64) = sqlx::query_as(
+            "SELECT column_id,position,revision FROM resource_placement WHERE resource_id=?",
+        )
+        .bind(resource_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        write_event(
+            tx,
+            "resource",
+            resource_id,
+            revision,
+            if current.is_some() { "resource.card_moved" } else { "resource.placed" },
+            json!({"from_column_id": source_column_id, "column_id": column_id, "position": position}),
+        )
+        .await?;
+        for (id, position, placement_rev) in reordered {
+            write_event(
+                tx,
+                "resource",
+                &id,
+                placement_rev,
+                "resource.card_reordered",
+                json!({"column_id": column_id, "position": position}),
+            )
+            .await?;
+        }
+        let source_rev = match &source_column_id {
+            Some(id) => Some(
+                sqlx::query_scalar("SELECT revision FROM resource_column WHERE id=?")
+                    .bind(id)
+                    .fetch_one(&mut **tx)
+                    .await?,
+            ),
+            None => None,
+        };
+        let destination_rev = if source_column_id.as_deref() == Some(column_id.as_str()) {
+            source_rev
+        } else {
+            Some(
+                sqlx::query_scalar("SELECT revision FROM resource_column WHERE id=?")
+                    .bind(&column_id)
+                    .fetch_one(&mut **tx)
+                    .await?,
+            )
+        };
+        Ok(PlacementApply {
+            view: Some(PlacementView {
+                column_id,
+                position,
+                revision,
+            }),
+            source_column_revision: source_rev,
+            destination_column_revision: destination_rev,
+        })
+    }
+}
+
+impl Workspace {
+    /// Create an owner-authored edge with its basis (graph editor "link
+    /// existing" path). Endpoints must be real entities and the active edge
+    /// must be unique per (from, verb, to).
+    pub async fn create_owner_edge(
+        &self,
+        input: &EdgeInput,
+        key: &str,
+    ) -> Result<Value, WorkspaceError> {
+        let verb = input.verb.trim();
+        if verb.is_empty() || verb.len() > MAX_VERB_BYTES {
+            return Err(WorkspaceError::Invalid(
+                "relationship verb must contain 1–120 bytes".into(),
+            ));
+        }
+        let basis = input.basis.trim();
+        if basis.is_empty() || basis.len() > MAX_BASIS_BYTES {
+            return Err(WorkspaceError::Invalid(
+                "relationship basis must contain 1–2000 bytes".into(),
+            ));
+        }
+        if input.from_id == input.to_id {
+            return Err(WorkspaceError::Invalid(
+                "an edge cannot connect a card to itself".into(),
+            ));
+        }
+        let canonical = canonical_digest("POST", "/edges", input);
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(replay) = receipt_lookup(&mut tx, key, &canonical).await? {
+            tx.commit().await?;
+            return Ok(json!({"_replay_status": replay.status, "result": replay.body}));
+        }
+        for endpoint in [&input.from_id, &input.to_id] {
+            let exists: Option<i64> =
+                sqlx::query_scalar("SELECT 1 FROM entity WHERE id=? AND readiness <> 'retired'")
+                    .bind(endpoint)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            if exists.is_none() {
+                return Err(WorkspaceError::NotFound);
+            }
+        }
+        let duplicate: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM edge WHERE state='active' AND from_id=? AND verb=? AND to_id=?",
+        )
+        .bind(&input.from_id)
+        .bind(verb)
+        .bind(&input.to_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if duplicate.is_some() {
+            return Err(WorkspaceError::Invalid(
+                "this relationship already exists".into(),
+            ));
+        }
+        let id = new_id(&digest(
+            format!("{}\0{verb}\0{}", input.from_id, input.to_id).as_bytes(),
+        ));
+        sqlx::query(
+            "INSERT INTO edge(id,from_id,verb,to_id,state,revision,basis,author_kind,created_at) \
+             VALUES(?,?,?,?, 'active',1,?, 'owner',?)",
+        )
+        .bind(&id)
+        .bind(&input.from_id)
+        .bind(verb)
+        .bind(&input.to_id)
+        .bind(basis)
+        .bind(now_utc())
+        .execute(&mut *tx)
+        .await?;
+        write_event(
+            &mut tx,
+            "edge",
+            &id,
+            1,
+            "edge.created",
+            json!({"from_id": input.from_id, "verb": verb, "to_id": input.to_id}),
+        )
+        .await?;
+        let edge = edge_view(&mut tx, &id).await?;
+        let result = json!({"edge": edge});
+        receipt_store(&mut tx, key, &canonical, 201, &result).await?;
+        tx.commit().await?;
+        Ok(json!({"_replay_status": 201, "result": result}))
+    }
+
+    /// Correct an owner-authored edge (verb/basis) under its revision.
+    pub async fn update_owner_edge(
+        &self,
+        id: &str,
+        input: &UpdateEdgeInput,
+        key: &str,
+    ) -> Result<Value, WorkspaceError> {
+        let canonical = canonical_digest("PATCH", &format!("/edges/{id}"), input);
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(replay) = receipt_lookup(&mut tx, key, &canonical).await? {
+            tx.commit().await?;
+            return Ok(json!({"_replay_status": replay.status, "result": replay.body}));
+        }
+        let row: Option<(String, String, String, i64, String, String)> = sqlx::query_as(
+            "SELECT from_id,verb,to_id,revision,basis,author_kind FROM edge WHERE id=?",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((from_id, current_verb, to_id, revision, current_basis, author_kind)) = row else {
+            return Err(WorkspaceError::NotFound);
+        };
+        if revision != input.expected_revision {
+            return Err(WorkspaceError::StaleRevision);
+        }
+        let next_verb = match &input.verb {
+            Some(raw) => {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() || trimmed.len() > MAX_VERB_BYTES {
+                    return Err(WorkspaceError::Invalid(
+                        "relationship verb must contain 1–120 bytes".into(),
+                    ));
+                }
+                trimmed.to_owned()
+            }
+            None => current_verb,
+        };
+        let next_basis = match &input.basis {
+            Some(raw) => {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() || trimmed.len() > MAX_BASIS_BYTES {
+                    return Err(WorkspaceError::Invalid(
+                        "relationship basis must contain 1–2000 bytes".into(),
+                    ));
+                }
+                trimmed.to_owned()
+            }
+            None => current_basis,
+        };
+        let next_revision = revision + 1;
+        sqlx::query("UPDATE edge SET verb=?,basis=?,revision=? WHERE id=?")
+            .bind(&next_verb)
+            .bind(&next_basis)
+            .bind(next_revision)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        write_event(
+            &mut tx,
+            "edge",
+            id,
+            next_revision,
+            "edge.corrected",
+            json!({"from_id": from_id, "verb": next_verb, "to_id": to_id}),
+        )
+        .await?;
+        let edge = edge_view(&mut tx, id).await?;
+        let result = json!({"edge": edge, "author_kind": author_kind});
+        receipt_store(&mut tx, key, &canonical, 200, &result).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Detach a mutable owner edge (retraction): both endpoints survive.
+    pub async fn detach_edge(&self, id: &str, key: &str) -> Result<(), WorkspaceError> {
+        let canonical = canonical_digest("DELETE", &format!("/edges/{id}"), &json!({}));
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(replay) = receipt_lookup(&mut tx, key, &canonical).await? {
+            tx.commit().await?;
+            if replay.status == 204 {
+                return Ok(());
+            }
+            return Err(WorkspaceError::Invalid("edge retraction replay".into()));
+        }
+        let row: Option<(String, String, String, i64)> = sqlx::query_as(
+            "SELECT from_id,verb,to_id,revision FROM edge WHERE id=? AND state='active'",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((from_id, verb, to_id, revision)) = row else {
+            return Err(WorkspaceError::NotFound);
+        };
+        let next_revision = revision + 1;
+        sqlx::query("UPDATE edge SET state='retracted',revision=? WHERE id=?")
+            .bind(next_revision)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        write_event(
+            &mut tx,
+            "edge",
+            id,
+            next_revision,
+            "edge.detached",
+            json!({"from_id": from_id, "verb": verb, "to_id": to_id}),
+        )
+        .await?;
+        receipt_store(&mut tx, key, &canonical, 204, &json!({})).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Attachments for an entity, with sharing/review flags from the upload.
+    pub async fn list_attachments(
+        &self,
+        entity_id: &str,
+    ) -> Result<Vec<EntityAttachmentRow>, WorkspaceError> {
+        let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM entity WHERE id=?")
+            .bind(entity_id)
+            .fetch_optional(self.pool())
+            .await?;
+        if exists.is_none() {
+            return Err(WorkspaceError::NotFound);
+        }
+        let rows: Vec<AttachmentListRow> = sqlx::query_as(
+            "SELECT a.id,a.entity_id,a.upload_id,a.filename,a.content_type,a.size,a.sha256,u.share_permission,u.reviewed_by_owner,a.created_at \
+             FROM entity_attachment a JOIN blob_upload u ON u.id=a.upload_id WHERE a.entity_id=? ORDER BY a.created_at,a.id",
+        )
+        .bind(entity_id)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    entity_id,
+                    upload_id,
+                    filename,
+                    content_type,
+                    size,
+                    sha256,
+                    share_permission,
+                    reviewed_by_owner,
+                    created_at,
+                )| {
+                    EntityAttachmentRow {
+                        id,
+                        entity_id,
+                        upload_id,
+                        filename,
+                        content_type,
+                        size,
+                        sha256,
+                        share_permission,
+                        reviewed_by_owner,
+                        created_at,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    /// Bind a staged upload to an entity card (one binding per upload).
+    pub async fn bind_attachment(
+        &self,
+        entity_id: &str,
+        upload_id: &str,
+        key: &str,
+    ) -> Result<Value, WorkspaceError> {
+        let body = json!({"entity_id": entity_id, "upload_id": upload_id});
+        let canonical =
+            canonical_digest("POST", &format!("/entities/{entity_id}/attachments"), &body);
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(replay) = receipt_lookup(&mut tx, key, &canonical).await? {
+            tx.commit().await?;
+            return Ok(json!({"_replay_status": replay.status, "result": replay.body}));
+        }
+        let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM entity WHERE id=?")
+            .bind(entity_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if exists.is_none() {
+            return Err(WorkspaceError::NotFound);
+        }
+        bind_upload_row(&mut tx, entity_id, upload_id).await?;
+        let attachment: Option<BoundAttachmentRow> = sqlx::query_as(
+            "SELECT a.id,a.upload_id,a.filename,a.content_type,a.size,a.sha256,u.share_permission,u.reviewed_by_owner \
+             FROM entity_attachment a JOIN blob_upload u ON u.id=a.upload_id WHERE a.entity_id=? AND a.upload_id=?",
+        )
+        .bind(entity_id)
+        .bind(upload_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((
+            id,
+            upload_id,
+            filename,
+            content_type,
+            size,
+            sha256,
+            share_permission,
+            reviewed_by_owner,
+        )) = attachment
+        else {
+            return Err(WorkspaceError::NotFound);
+        };
+        let result = json!({"attachment": {"id": id, "entity_id": entity_id, "upload_id": upload_id, "filename": filename, "content_type": content_type, "size": size, "sha256": sha256, "share_permission": share_permission, "reviewed_by_owner": reviewed_by_owner, "created_at": now_utc()}});
+        receipt_store(&mut tx, key, &canonical, 201, &result).await?;
+        tx.commit().await?;
+        Ok(json!({"_replay_status": 201, "result": result}))
+    }
+
+    /// Unbind an attachment binding (the file itself is untouched).
+    pub async fn unbind_attachment(
+        &self,
+        entity_id: &str,
+        attachment_id: &str,
+        key: &str,
+    ) -> Result<(), WorkspaceError> {
+        let canonical = canonical_digest(
+            "DELETE",
+            &format!("/entities/{entity_id}/attachments/{attachment_id}"),
+            &json!({}),
+        );
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(replay) = receipt_lookup(&mut tx, key, &canonical).await? {
+            tx.commit().await?;
+            if replay.status == 204 {
+                return Ok(());
+            }
+            return Err(WorkspaceError::Invalid("attachment unbind replay".into()));
+        }
+        unbind_attachment_row(&mut tx, entity_id, attachment_id).await?;
+        receipt_store(&mut tx, key, &canonical, 204, &json!({})).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Owner-content read: stream the bound file's verified bytes.
+    pub async fn attachment_bytes(
+        &self,
+        entity_id: &str,
+        attachment_id: &str,
+    ) -> Result<(Vec<u8>, String), WorkspaceError> {
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT a.sha256,a.filename FROM entity_attachment a WHERE a.id=? AND a.entity_id=?",
+        )
+        .bind(attachment_id)
+        .bind(entity_id)
+        .fetch_optional(self.pool())
+        .await?;
+        let Some((sha256, filename)) = row else {
+            return Err(WorkspaceError::NotFound);
+        };
+        let path = self.blob_root().join(&sha256);
+        let bytes = tokio::fs::read(&path).await.map_err(|error| {
+            WorkspaceError::Invalid(format!("blob file is not readable: {error}"))
+        })?;
+        Ok((bytes, filename))
+    }
+}
+
+async fn edge_view(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<EdgeView, WorkspaceError> {
+    let row: Option<EdgeRow> = sqlx::query_as(
+            "SELECT id,from_id,verb,to_id,state,revision,basis,author_kind,created_at FROM edge WHERE id=?",
+        )
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    let Some((id, from_id, verb, to_id, state, revision, basis, author_kind, created_at)) = row
+    else {
+        return Err(WorkspaceError::NotFound);
+    };
+    Ok(EdgeView {
+        id,
+        from_id,
+        verb,
+        to_id,
+        state,
+        revision,
+        basis,
+        author_kind,
+        created_at,
+    })
+}
+
+fn validate_title(title: &str) -> Result<String, WorkspaceError> {
+    let trimmed = title.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > MAX_RESOURCE_TITLE {
+        return Err(WorkspaceError::Invalid(
+            "card title must contain 1–240 characters".into(),
+        ));
+    }
+    Ok(trimmed.to_owned())
+}
+
+fn validate_subtype(subtype: &str) -> Result<String, WorkspaceError> {
+    if !SUBTYPES.contains(&subtype) {
+        return Err(WorkspaceError::Invalid(format!(
+            "subtype must be one of {}",
+            SUBTYPES.join(", ")
+        )));
+    }
+    Ok(subtype.to_owned())
+}
+
+async fn bind_upload_row(
+    tx: &mut Transaction<'_, Sqlite>,
+    entity_id: &str,
+    upload_id: &str,
+) -> Result<(), WorkspaceError> {
+    let upload: Option<(String, String, i64, String)> =
+        sqlx::query_as("SELECT filename,mime,size,blob_sha256 FROM blob_upload WHERE id=?")
+            .bind(upload_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let Some((filename, mime, size, sha256)) = upload else {
+        return Err(WorkspaceError::Invalid(format!(
+            "staged upload {upload_id} does not exist"
+        )));
+    };
+    let bound: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM entity_attachment WHERE upload_id=?")
+            .bind(upload_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    if bound.is_some() {
+        return Err(WorkspaceError::Invalid(
+            "staged upload is already bound to a card".into(),
+        ));
+    }
+    let id = new_id(&digest(format!("{entity_id}\0{upload_id}").as_bytes()));
+    sqlx::query(
+        "INSERT INTO entity_attachment(id,entity_id,upload_id,filename,content_type,size,sha256,created_at) \
+         VALUES(?,?,?,?,?,?,?,?)",
+    )
+    .bind(&id)
+    .bind(entity_id)
+    .bind(upload_id)
+    .bind(&filename)
+    .bind(&mime)
+    .bind(size)
+    .bind(&sha256)
+    .bind(now_utc())
+    .execute(&mut **tx)
+    .await?;
+    write_event(
+        tx,
+        "entity_attachment",
+        &id,
+        1,
+        "entity_attachment.bound",
+        json!({"entity_id": entity_id, "upload_id": upload_id}),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn unbind_attachment_row(
+    tx: &mut Transaction<'_, Sqlite>,
+    entity_id: &str,
+    attachment_id: &str,
+) -> Result<(), WorkspaceError> {
+    let changed = sqlx::query("DELETE FROM entity_attachment WHERE id=? AND entity_id=?")
+        .bind(attachment_id)
+        .bind(entity_id)
+        .execute(&mut **tx)
+        .await?;
+    if changed.rows_affected() == 0 {
+        return Err(WorkspaceError::NotFound);
+    }
+    write_event(
+        tx,
+        "entity_attachment",
+        attachment_id,
+        1,
+        "entity_attachment.unbound",
+        json!({"entity_id": entity_id}),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn upsert_placement(
+    tx: &mut Transaction<'_, Sqlite>,
+    resource_id: &str,
+    column_id: &str,
+    position: i64,
+    prior_revision: i64,
+) -> Result<(), WorkspaceError> {
+    sqlx::query(
+        "INSERT INTO resource_placement(resource_id,column_id,position,revision) VALUES(?,?,?,?) \
+         ON CONFLICT(resource_id) DO UPDATE SET column_id=excluded.column_id,position=excluded.position,revision=excluded.revision",
+    )
+    .bind(resource_id)
+    .bind(column_id)
+    .bind(position)
+    .bind(prior_revision + 1)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn entity_card_json(
+    epoch: &str,
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+) -> Result<Value, WorkspaceError> {
+    let row: Option<(String, String, String, String, String, i64, i64)> = sqlx::query_as(
+        "SELECT name,subtype,body_json,readiness,notes_md,revision,notes_rev FROM entity WHERE id=?",
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((name, subtype, body, readiness, notes, revision, notes_rev)) = row else {
+        return Err(WorkspaceError::NotFound);
+    };
+    Ok(json!({
+        "id": id,
+        "kind": "resource",
+        "title": name,
+        "subtype": subtype,
+        "body": serde_json::from_str::<Value>(&body).unwrap_or_else(|_| json!({})),
+        "readiness": readiness,
+        "revision": revision,
+        "notes": {"markdown": notes, "revision": notes_rev},
+        "etag": entity_etag(epoch, id, revision)
+    }))
+}
+
+async fn current_placement_json(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+) -> Result<Value, WorkspaceError> {
+    let row: Option<(String, i64, i64)> = sqlx::query_as(
+        "SELECT column_id,position,revision FROM resource_placement WHERE resource_id=?",
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(match row {
+        Some((column_id, position, revision)) => {
+            json!({"column_id": column_id, "position": position, "revision": revision})
+        }
+        None => Value::Null,
+    })
+}
+
+async fn relation_result(
+    tx: &mut Transaction<'_, Sqlite>,
+    from_id: &str,
+) -> Result<Value, WorkspaceError> {
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT id,to_id FROM edge WHERE state='active' AND from_id=? ORDER BY created_at DESC LIMIT 1")
+            .bind(from_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    Ok(match row {
+        Some((edge_id, to_id)) => json!({"edge_id": edge_id, "to_id": to_id}),
+        None => Value::Null,
+    })
+}
+
+async fn max_event_cursor(tx: &mut Transaction<'_, Sqlite>) -> Result<i64, WorkspaceError> {
+    Ok(
+        sqlx::query_scalar("SELECT COALESCE(MAX(cursor),0) FROM event")
+            .fetch_one(&mut **tx)
+            .await?,
+    )
+}
+
+/// Keyset cursor: `column position | card position | resource id`. It is
+/// opaque to the client and decoded without a lookup.
+fn encode_cursor(column_position: i64, position: i64, resource_id: String) -> String {
+    format!("{column_position}|{position}|{resource_id}")
+}
+
+fn decode_cursor(value: &str) -> Result<(i64, i64, String), WorkspaceError> {
+    let mut parts = value.splitn(3, '|');
+    let column_position = parts
+        .next()
+        .unwrap_or_default()
+        .parse::<i64>()
+        .map_err(|_| WorkspaceError::Invalid("malformed board cursor".into()))?;
+    let position = parts
+        .next()
+        .unwrap_or_default()
+        .parse::<i64>()
+        .map_err(|_| WorkspaceError::Invalid("malformed board cursor".into()))?;
+    let resource_id = parts.next().unwrap_or_default();
+    if resource_id.is_empty() {
+        return Err(WorkspaceError::Invalid("malformed board cursor".into()));
+    }
+    Ok((column_position, position, resource_id.to_owned()))
+}
+
+// Receipt/event plumbing (mirrors board.rs).
+
+fn canonical_digest(method: &str, target: &str, body: &impl Serialize) -> String {
+    let body = serde_json::to_vec(body).unwrap_or_default();
+    digest(&[method.as_bytes(), b"\n", target.as_bytes(), b"\n", &body].concat())
+}
+
+async fn receipt_lookup(
+    tx: &mut Transaction<'_, Sqlite>,
+    key: &str,
+    canonical: &str,
+) -> Result<Option<Replay>, WorkspaceError> {
+    let row: Option<(String, i64, String)> = sqlx::query_as(
+        "SELECT canonical_digest,status_code,result_json FROM idempotency_receipt WHERE owner_id=1 AND epoch=(SELECT epoch FROM workspace_meta WHERE singleton=1) AND key=?",
+    )
+    .bind(key)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((stored, status, body)) = row else {
+        return Ok(None);
+    };
+    if stored != canonical {
+        return Err(WorkspaceError::IdempotencyConflict);
+    }
+    let body: Value =
+        serde_json::from_str(&body).map_err(|error| WorkspaceError::Invalid(error.to_string()))?;
+    Ok(Some(Replay { status, body }))
+}
+
+async fn receipt_store(
+    tx: &mut Transaction<'_, Sqlite>,
+    key: &str,
+    canonical: &str,
+    status: i64,
+    result: &Value,
+) -> Result<(), WorkspaceError> {
+    sqlx::query("INSERT INTO idempotency_receipt(owner_id,epoch,key,canonical_digest,status_code,result_json,last_event_cursor,created_at) VALUES(1,(SELECT epoch FROM workspace_meta WHERE singleton=1),?,?,?,?,(SELECT COALESCE(MAX(cursor),0) FROM event),?)")
+        .bind(key)
+        .bind(canonical)
+        .bind(status)
+        .bind(result.to_string())
+        .bind(now_utc())
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+async fn write_event(
+    tx: &mut Transaction<'_, Sqlite>,
+    entity_type: &str,
+    id: &str,
+    revision: i64,
+    kind: &str,
+    payload: Value,
+) -> Result<(), WorkspaceError> {
+    sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?,?,?,?,?,?)")
+        .bind(new_id(id))
+        .bind(now_utc())
+        .bind(entity_type)
+        .bind(id)
+        .bind(revision)
+        .bind(kind)
+        .bind(payload.to_string())
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+// Handlers.
+
+async fn get_resource_board(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<BoardQuery>,
+) -> Response {
+    if let Err(error) = authenticate(&headers, &state).await {
+        return error.into_response();
+    }
+    match state
+        .workspace
+        .resource_board_snapshot(query.limit, query.cursor, query.include_offboard)
+        .await
+    {
+        Ok(board) => (StatusCode::OK, Json(board)).into_response(),
+        Err(error) => rb_error(error),
+    }
+}
+
+async fn get_resource_card(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authenticate(&headers, &state).await {
+        return error.into_response();
+    }
+    match state.workspace.resource_card_read(&id).await {
+        Ok(entity) => (StatusCode::OK, Json(json!({"data": entity}))).into_response(),
+        Err(error) => rb_error(error),
+    }
+}
+
+async fn get_resource_card_deliveries(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authenticate(&headers, &state).await {
+        return error.into_response();
+    }
+    match state.workspace.resource_card_deliveries(&id).await {
+        Ok(rows) => (StatusCode::OK, Json(json!({"data": rows}))).into_response(),
+        Err(error) => rb_error(error),
+    }
+}
+
+async fn retire_resource_card(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let key = match command_key(&state, &headers).await {
+        Ok(key) => key,
+        Err(response) => return *response,
+    };
+    command_handler(state.workspace.retire_resource_card(&id, &key)).await
+}
+
+async fn commit_resource_card(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<ResourceCardCommitInput>,
+) -> Response {
+    let key = match command_key(&state, &headers).await {
+        Ok(key) => key,
+        Err(response) => return *response,
+    };
+    command_handler(state.workspace.commit_resource_card(&input, &key)).await
+}
+
+async fn move_resource_card(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<MoveResourceCardInput>,
+) -> Response {
+    let key = match command_key(&state, &headers).await {
+        Ok(key) => key,
+        Err(response) => return *response,
+    };
+    command_handler(state.workspace.move_resource_card(&input, &key)).await
+}
+
+async fn create_edge(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<EdgeInput>,
+) -> Response {
+    let key = match command_key(&state, &headers).await {
+        Ok(key) => key,
+        Err(response) => return *response,
+    };
+    command_handler(state.workspace.create_owner_edge(&input, &key)).await
+}
+
+async fn update_edge(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(input): Json<UpdateEdgeInput>,
+) -> Response {
+    let key = match command_key(&state, &headers).await {
+        Ok(key) => key,
+        Err(response) => return *response,
+    };
+    command_handler(state.workspace.update_owner_edge(&id, &input, &key)).await
+}
+
+async fn delete_edge(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let key = match command_key(&state, &headers).await {
+        Ok(key) => key,
+        Err(response) => return *response,
+    };
+    if let Err(error) = state.workspace.detach_edge(&id, &key).await {
+        return rb_error(error);
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn list_attachments(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authenticate(&headers, &state).await {
+        return error.into_response();
+    }
+    match state.workspace.list_attachments(&id).await {
+        Ok(items) => (StatusCode::OK, Json(json!({"data": items}))).into_response(),
+        Err(error) => rb_error(error),
+    }
+}
+
+async fn bind_attachment(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(input): Json<BindAttachmentInput>,
+) -> Response {
+    let key = match command_key(&state, &headers).await {
+        Ok(key) => key,
+        Err(response) => return *response,
+    };
+    command_handler(state.workspace.bind_attachment(&id, &input.upload_id, &key)).await
+}
+
+async fn unbind_attachment(
+    State(state): State<AppState>,
+    Path((id, reference)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let key = match command_key(&state, &headers).await {
+        Ok(key) => key,
+        Err(response) => return *response,
+    };
+    if let Err(error) = state
+        .workspace
+        .unbind_attachment(&id, &reference, &key)
+        .await
+    {
+        return rb_error(error);
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn attachment_content(
+    State(state): State<AppState>,
+    Path((id, reference)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authenticate(&headers, &state).await {
+        return error.into_response();
+    }
+    match state.workspace.attachment_bytes(&id, &reference).await {
+        Ok((bytes, filename)) => (
+            StatusCode::OK,
+            [
+                (axum::http::header::CONTENT_TYPE, "application/octet-stream"),
+                (
+                    axum::http::header::CONTENT_DISPOSITION,
+                    &format!("attachment; filename=\"{filename}\""),
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(error) => rb_error(error),
+    }
+}
+
+async fn command_key(state: &AppState, headers: &HeaderMap) -> Result<String, Box<Response>> {
+    if let Err(error) = authenticate(headers, state).await {
+        return Err(Box::new(error.into_response()));
+    }
+    idempotency_key(headers).map_err(|error| Box::new(key_error(error)))
+}
+
+async fn command_handler<F>(command: F) -> Response
+where
+    F: std::future::Future<Output = Result<Value, WorkspaceError>>,
+{
+    match command.await {
+        Ok(value) => {
+            let status = value
+                .get("_replay_status")
+                .and_then(Value::as_i64)
+                .unwrap_or(StatusCode::OK.as_u16() as i64) as u16;
+            let body = value.get("result").cloned().unwrap_or(value);
+            let status = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
+            (status, Json(body)).into_response()
+        }
+        Err(error) => rb_error(error),
+    }
+}
+
+fn key_error(error: (StatusCode, &'static str, &'static str)) -> Response {
+    (
+        error.0,
+        Json(json!({"error": {"code": error.1, "message": error.2, "details": []}})),
+    )
+        .into_response()
+}
+
+fn rb_error(error: WorkspaceError) -> Response {
+    let (status, code, message) = match error {
+        WorkspaceError::Database(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "WRITE_FAILED",
+            "The workspace could not complete the command".to_owned(),
+        ),
+        WorkspaceError::Invalid(message) => {
+            (StatusCode::UNPROCESSABLE_ENTITY, "INVALID_REQUEST", message)
+        }
+        WorkspaceError::IdempotencyConflict => (
+            StatusCode::CONFLICT,
+            "KEY_REUSED",
+            "Idempotency key was used for a different command".to_owned(),
+        ),
+        WorkspaceError::NotFound => (
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            "Resource does not exist".to_owned(),
+        ),
+        WorkspaceError::StaleRevision => (
+            StatusCode::PRECONDITION_FAILED,
+            "STALE_REVISION",
+            "The addressed resource, notes, placement, or column changed in another session"
+                .to_owned(),
+        ),
+    };
+    (
+        status,
+        Json(json!({"error": {"code": code, "message": message, "details": []}})),
+    )
+        .into_response()
+}
