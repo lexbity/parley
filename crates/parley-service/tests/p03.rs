@@ -19,7 +19,10 @@ async fn p03_private_attachments() {
             "/api/v1/uploads",
             bytes,
             "text/plain",
-            &[("X-Parley-Filename", "name=fixture.txt")],
+            &[
+                ("X-Parley-Filename", "name=fixture.txt"),
+                ("X-Parley-Purpose", "card-attachment"),
+            ],
         )
         .await;
         assert_eq!(file.status, 201, "{file:?}");
@@ -46,6 +49,8 @@ async fn p03_private_attachments() {
         }
         references.push(format!("{path}/{}", bound.unwrap()));
     }
+    let uploads = request(&service, &session, "GET", "/api/v1/uploads", None, &[]).await;
+    assert_eq!(uploads.body.as_array().unwrap().len(), 0);
     let path = format!(
         "/api/v1/entities/{b}/attachments/{}/content",
         references[0].rsplit('/').next().unwrap()

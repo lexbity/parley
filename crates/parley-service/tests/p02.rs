@@ -210,5 +210,43 @@ async fn p02_related_and_existing_edges() {
     assert_eq!(card_title.status, 200, "{card_title:?}");
     let card = request(&s, &sess, "GET", &resource_path, None, &[]).await;
     assert_eq!(card.body["data"]["title"], "Accepted fixture");
+    let evidence = &root.body["data"]["direct_links"][0];
+    let revision_path = format!(
+        "/api/v1/claims/{}/revisions",
+        evidence["claim_id"].as_str().unwrap()
+    );
+    let correction = json!({"expected_revision":1,"occurrence_id":occurrence,"wording":quoted,"speaker_kind":"party","speaker_entity_id":org});
+    let changed = request(
+        &s,
+        &sess,
+        "POST",
+        &revision_path,
+        Some(correction.clone()),
+        &[("Idempotency-Key", &next_key())],
+    )
+    .await;
+    assert_eq!(changed.status, 201, "{changed:?}");
+    assert_eq!(changed.body["data"]["revision"], 2);
+    let stale = request(
+        &s,
+        &sess,
+        "POST",
+        &revision_path,
+        Some(correction),
+        &[("Idempotency-Key", &next_key())],
+    )
+    .await;
+    assert_eq!(stale.status, 412);
+    let graph = request(
+        &s,
+        &sess,
+        "GET",
+        &format!("/api/v1/graph?center_id={org}"),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(graph.body["edges"][0]["speaker_entity_id"], org);
+    assert_eq!(graph.body["edges"][0]["claim_revision"], 2);
     s.shutdown().await;
 }

@@ -311,7 +311,7 @@ pub struct EntityNotes {
     pub revision: i64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, sqlx::FromRow)]
 pub struct DossierLink {
     pub id: String,
     pub from_id: String,
@@ -320,6 +320,11 @@ pub struct DossierLink {
     pub revision: i64,
     pub tier: Option<i64>,
     pub wording: Option<String>,
+    pub claim_id: Option<String>,
+    pub claim_revision: Option<i64>,
+    pub speaker_kind: Option<String>,
+    pub speaker_entity_id: Option<String>,
+    pub occurrence_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -372,7 +377,7 @@ struct GraphNode {
     position_revision: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, sqlx::FromRow)]
 struct GraphEdge {
     id: String,
     from_id: String,
@@ -386,22 +391,10 @@ struct GraphEdge {
     captured_at: String,
     source_title: Option<String>,
     source_url: Option<String>,
+    claim_id: String,
+    claim_revision: i64,
+    speaker_entity_id: Option<String>,
 }
-
-type GraphEdgeRow = (
-    String,
-    String,
-    String,
-    String,
-    i64,
-    String,
-    String,
-    i64,
-    String,
-    String,
-    Option<String>,
-    Option<String>,
-);
 
 #[derive(Debug, Serialize)]
 struct GraphSnapshot {
@@ -1155,46 +1148,11 @@ impl Workspace {
             Some(entity) => entity,
             None => return Ok(None),
         };
-        let links = sqlx::query_as::<
-            _,
-            (
-                String,
-                String,
-                String,
-                String,
-                i64,
-                Option<i64>,
-                Option<String>,
-            ),
-        >(
-            "SELECT eg.id,eg.from_id,eg.to_id,eg.verb,eg.revision,cr.tier,cr.wording \
-             FROM edge eg \
-             LEFT JOIN edge_evidence ee ON ee.edge_id=eg.id \
-             LEFT JOIN claim c ON c.id=ee.claim_id \
-             LEFT JOIN claim_revision cr ON cr.claim_id=c.id AND cr.revision=c.current_revision \
-             WHERE eg.state='active' AND (eg.from_id=? OR eg.to_id=?) \
-             ORDER BY eg.created_at DESC LIMIT 60",
-        )
-        .bind(id)
-        .bind(id)
-        .fetch_all(&self.pool)
-        .await?;
-        let mut seen = std::collections::HashSet::new();
-        let direct_links = links
-            .into_iter()
-            .filter(|link| seen.insert(link.0.clone()))
-            .map(
-                |(link_id, from_id, to_id, verb, revision, tier, wording)| DossierLink {
-                    id: link_id,
-                    from_id,
-                    to_id,
-                    verb,
-                    revision,
-                    tier,
-                    wording,
-                },
-            )
-            .collect();
+        let direct_links=sqlx::query_as::<_,DossierLink>("SELECT eg.id,eg.from_id,eg.to_id,eg.verb,eg.revision,cr.tier,cr.wording,cr.claim_id,cr.revision claim_revision,cr.speaker_kind,cr.speaker_entity_id,cr.occurrence_id
+            FROM edge eg LEFT JOIN edge_evidence ee ON ee.rowid=(SELECT latest.rowid FROM edge_evidence latest WHERE latest.edge_id=eg.id ORDER BY latest.rowid DESC LIMIT 1)
+            LEFT JOIN claim c ON c.id=ee.claim_id LEFT JOIN claim_revision cr ON cr.claim_id=c.id AND cr.revision=c.current_revision
+            WHERE eg.state='active' AND (eg.from_id=? OR eg.to_id=?) ORDER BY eg.created_at DESC,eg.id LIMIT 60")
+            .bind(id).bind(id).fetch_all(&self.pool).await?;
         let files = sqlx::query_as::<_, (String, String, String, i64, String, i64, i64, String)>(
             "SELECT a.id,a.filename,a.content_type,a.size,a.sha256,u.share_permission,u.reviewed_by_owner,a.created_at \
              FROM entity_attachment a JOIN blob_upload u ON u.id=a.upload_id \
@@ -1365,11 +1323,11 @@ impl Workspace {
                 .fetch_one(&self.pool)
                 .await?
         };
-        let edge_rows: Vec<GraphEdgeRow> = if visible.is_empty() {
+        let mut edges: Vec<GraphEdge> = if visible.is_empty() {
             Vec::new()
         } else {
             let mut query = sqlx::QueryBuilder::new(
-                "SELECT e.id,e.from_id,e.to_id,e.verb,e.revision,cr.occurrence_id,cr.wording,cr.tier,cr.speaker_kind,so.captured_at,sv.title,sv.url FROM edge e JOIN edge_evidence ee ON ee.rowid=(SELECT newest.rowid FROM edge_evidence newest WHERE newest.edge_id=e.id ORDER BY newest.rowid DESC LIMIT 1) JOIN claim_revision cr ON cr.claim_id=ee.claim_id AND cr.revision=ee.claim_revision JOIN source_occurrence so ON so.id=cr.occurrence_id JOIN source_variant sv ON sv.id=cr.source_variant_id WHERE e.state='active' AND e.from_id IN (",
+                "SELECT e.id,e.from_id,e.to_id,e.verb,e.revision,cr.occurrence_id,cr.wording quote,cr.tier,cr.speaker_kind,so.captured_at,sv.title source_title,sv.url source_url,cr.claim_id,cr.revision claim_revision,cr.speaker_entity_id FROM edge e JOIN edge_evidence ee ON ee.rowid=(SELECT newest.rowid FROM edge_evidence newest WHERE newest.edge_id=e.id ORDER BY newest.rowid DESC LIMIT 1) JOIN claim_revision cr ON cr.claim_id=ee.claim_id AND cr.revision=ee.claim_revision JOIN source_occurrence so ON so.id=cr.occurrence_id JOIN source_variant sv ON sv.id=cr.source_variant_id WHERE e.state='active' AND e.from_id IN (",
             );
             {
                 let mut separated = query.separated(",");
@@ -1387,38 +1345,6 @@ impl Workspace {
             query.push(") ORDER BY e.from_id,e.to_id,e.id LIMIT 401");
             query.build_query_as().fetch_all(&self.pool).await?
         };
-        let mut edges = edge_rows
-            .into_iter()
-            .map(
-                |(
-                    id,
-                    from_id,
-                    to_id,
-                    verb,
-                    revision,
-                    occurrence_id,
-                    quote,
-                    tier,
-                    speaker_kind,
-                    captured_at,
-                    source_title,
-                    source_url,
-                )| GraphEdge {
-                    id,
-                    from_id,
-                    to_id,
-                    verb,
-                    revision,
-                    occurrence_id,
-                    quote,
-                    tier,
-                    speaker_kind,
-                    captured_at,
-                    source_title,
-                    source_url,
-                },
-            )
-            .collect::<Vec<_>>();
         let omitted_edges = (total_edges - 400).max(0);
         edges.truncate(400);
         Ok(GraphSnapshot {
@@ -2342,6 +2268,23 @@ fn command_error(err: WorkspaceError) -> Response {
             "RESOURCE_INVALID",
             message,
         ),
+        WorkspaceError::Database(sqlx::Error::Database(db))
+            if db
+                .code()
+                .as_deref()
+                .and_then(|c| c.parse::<i32>().ok())
+                .is_some_and(|code| matches!(code & 255, 5 | 6)) =>
+        {
+            let mut response = error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "WRITER_BUSY",
+                "The workspace is busy. Retry the same operation.",
+            );
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+            response
+        }
         WorkspaceError::Database(_) => error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "WRITE_FAILED",

@@ -294,3 +294,58 @@ async fn p01_dossier_lists_direct_links_and_open_opportunities() {
     service.shutdown().await;
     let _ = fs::remove_file(&db);
 }
+
+#[tokio::test]
+async fn p01_bounded_directory_and_neighborhood_at_5000_parties() {
+    let db = path();
+    let workspace = parley_service::Workspace::open(&db).await.unwrap();
+    sqlx::query("WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<5000) INSERT INTO entity(id,kind,name,revision,created_at,updated_at) SELECT printf('scale-%05d',i),'person',printf('Person %05d',i),1,'2026-11-22','2026-11-22' FROM n").execute(workspace.pool()).await.unwrap();
+    workspace.pool().close().await;
+    let service = parley_service::start_workspace(&db).await.unwrap();
+    let session = owner_session(&service).await;
+    let mut latency = Vec::new();
+    for _ in 0..20 {
+        let start = std::time::Instant::now();
+        let list = request(
+            &service,
+            &session,
+            "GET",
+            "/api/v1/directory?limit=50",
+            None,
+            &[],
+        )
+        .await;
+        let page = &list.body["data"];
+        assert_eq!(page.as_array().unwrap().len(), 50);
+        assert_eq!(page[0]["id"], "scale-00001");
+        let next = list.body["next_cursor"].as_str().unwrap();
+        let next_page = request(
+            &service,
+            &session,
+            "GET",
+            &format!("/api/v1/directory?limit=50&cursor={next}"),
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(next_page.body["data"][0]["id"], "scale-00051");
+        let neighborhood = request(
+            &service,
+            &session,
+            "GET",
+            "/api/v1/graph?center_id=scale-05000",
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(neighborhood.body["nodes"].as_array().unwrap().len(), 1);
+        latency.push(start.elapsed());
+    }
+    latency.sort();
+    eprintln!(
+        "Party directory, next page and neighborhood, 5000 parties: p95 {:?}",
+        latency[18]
+    );
+    assert!(latency[18] < std::time::Duration::from_millis(500));
+    service.shutdown().await;
+}

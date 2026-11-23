@@ -175,7 +175,7 @@ pub(crate) fn start_scheduler(
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(900));
         loop {
-            tokio::select! {_ = interval.tick()=>{let due=match workspace.maintenance_settings().await{Ok(s)=>match s.last_successful_at{None=>true,Some(v)=>chrono::DateTime::parse_from_rfc3339(&v).ok().is_none_or(|t|chrono::Utc::now().signed_duration_since(t).num_hours()>=s.interval_hours)},Err(_)=>false};if due{let _=make_backup(&workspace).await;}},r=restart.changed()=>{if r.is_ok(){break;}}}
+            tokio::select! {_ = interval.tick()=>{let _=workspace.run_gc().await;let due=match workspace.maintenance_settings().await{Ok(s)=>match s.last_successful_at{None=>true,Some(v)=>chrono::DateTime::parse_from_rfc3339(&v).ok().is_none_or(|t|chrono::Utc::now().signed_duration_since(t).num_hours()>=s.interval_hours)},Err(_)=>false};if due{let _=make_backup(&workspace).await;}},r=restart.changed()=>{if r.is_ok(){break;}}}
         }
     })
 }
@@ -1323,6 +1323,27 @@ async fn erase_from_database(
         .await
         .map_err(|e| e.to_string())?;
     sqlx::query("INSERT OR REPLACE INTO erasure_tombstone(entity_id,erased_at,source_generation) VALUES(?,?,?)").bind(subject).bind(now_utc()).bind(source_generation).execute(&mut *tx).await.map_err(|e|e.to_string())?;
+    // The fresh generation should omit files owned only by the erased party.
+    // Retain an independent upload when it shares the same digest.
+    sqlx::query("DELETE FROM blob_upload WHERE card_private=1 AND id IN (SELECT upload_id FROM entity_attachment WHERE entity_id=?) AND id NOT IN (SELECT blob_upload_id FROM material_version WHERE blob_upload_id IS NOT NULL)").bind(subject).execute(&mut *tx).await.map_err(|e|e.to_string())?;
+    sqlx::query("DELETE FROM blob WHERE sha256 NOT IN (SELECT blob_sha256 FROM blob_upload UNION SELECT blob_sha256 FROM material_version WHERE blob_sha256 IS NOT NULL UNION SELECT blob_sha256 FROM blob_snapshot_pin UNION SELECT blob_sha256 FROM blob_upload_lease)").execute(&mut *tx).await.map_err(|e|e.to_string())?;
+    // Stages belong to the replaced epoch, including mapping/preview receipts.
+    sqlx::query("DELETE FROM party_import_stage")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM party_stage_receipt")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM edge_evidence WHERE edge_id IN (SELECT id FROM edge WHERE from_id=? OR to_id=?) OR claim_id IN (SELECT id FROM claim WHERE subject_id=?)").bind(subject).bind(subject).bind(subject).execute(&mut *tx).await.map_err(|e|e.to_string())?;
+    sqlx::query(
+        "DELETE FROM claim_revision WHERE claim_id IN (SELECT id FROM claim WHERE subject_id=?)",
+    )
+    .bind(subject)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
     let tables:Vec<String>=sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").fetch_all(&mut *tx).await.map_err(|e|e.to_string())?;
     for table in tables {
         if matches!(

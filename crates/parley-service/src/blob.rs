@@ -195,6 +195,16 @@ impl Workspace {
         filename: Option<String>,
         mime: Option<String>,
     ) -> Result<UploadRecord, WorkspaceError> {
+        self.stage_upload(body, filename, mime, false).await
+    }
+
+    async fn stage_upload(
+        &self,
+        body: axum::body::Body,
+        filename: Option<String>,
+        mime: Option<String>,
+        card_private: bool,
+    ) -> Result<UploadRecord, WorkspaceError> {
         let filename = filename
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "attachment.bin".to_owned());
@@ -270,13 +280,14 @@ impl Workspace {
                 .bind(&now)
                 .execute(&mut *tx)
                 .await?;
-            sqlx::query("INSERT INTO blob_upload(id,blob_sha256,filename,mime,size,share_permission,reviewed_by_owner,revision,created_at) VALUES(?,?,?,?,?,0,0,1,?)")
+            sqlx::query("INSERT INTO blob_upload(id,blob_sha256,filename,mime,size,share_permission,reviewed_by_owner,revision,created_at,card_private) VALUES(?,?,?,?,?,0,0,1,?,?)")
                 .bind(&upload_id)
                 .bind(&sha256)
                 .bind(&filename)
                 .bind(&mime)
                 .bind(size as i64)
                 .bind(&now)
+                .bind(card_private)
                 .execute(&mut *tx)
                 .await?;
             sqlx::query("DELETE FROM blob_upload_lease WHERE upload_id=?")
@@ -376,7 +387,7 @@ impl Workspace {
             });
         }
         let now = now_utc();
-        let updated = sqlx::query("UPDATE blob_upload SET reviewed_by_owner=1,share_permission=?,revision=revision+1 WHERE id=? AND reviewed_by_owner=0")
+        let updated = sqlx::query("UPDATE blob_upload SET reviewed_by_owner=1,card_private=0,share_permission=?,revision=revision+1 WHERE id=? AND reviewed_by_owner=0")
             .bind(requested)
             .bind(upload_id)
             .execute(&mut *tx)
@@ -409,7 +420,7 @@ impl Workspace {
 
     pub async fn list_uploads(&self) -> Result<Vec<UploadRecord>, WorkspaceError> {
         let rows = sqlx::query_as::<_, (String, String, String, String, i64, i64, i64, String)>(
-            "SELECT id,blob_sha256,filename,mime,size,share_permission,revision,created_at FROM blob_upload ORDER BY created_at DESC,id",
+            "SELECT id,blob_sha256,filename,mime,size,share_permission,revision,created_at FROM blob_upload WHERE card_private=0 ORDER BY created_at DESC,id",
         )
         .fetch_all(self.pool())
         .await?;
@@ -442,6 +453,14 @@ impl Workspace {
         sqlx::query("DELETE FROM blob_upload_lease WHERE created_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-24 hours')")
             .execute(self.pool())
             .await?;
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        sqlx::query("DELETE FROM party_import_stage WHERE expires_at<=unixepoch() OR epoch<>?")
+            .bind(self.epoch())
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM blob_upload WHERE card_private=1 AND unixepoch(created_at)<=unixepoch()-1800 AND NOT EXISTS(SELECT 1 FROM entity_attachment a WHERE a.upload_id=blob_upload.id) AND NOT EXISTS(SELECT 1 FROM material_version v WHERE v.blob_upload_id=blob_upload.id)").execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM blob WHERE NOT EXISTS(SELECT 1 FROM blob_upload WHERE blob_sha256=blob.sha256) AND NOT EXISTS(SELECT 1 FROM material_version WHERE blob_sha256=blob.sha256) AND NOT EXISTS(SELECT 1 FROM blob_snapshot_pin WHERE blob_sha256=blob.sha256) AND NOT EXISTS(SELECT 1 FROM blob_upload_lease WHERE blob_sha256=blob.sha256)").execute(&mut *tx).await?;
+        tx.commit().await?;
         let referenced: HashSet<String> = sqlx::query_scalar(
             "SELECT DISTINCT sha256 FROM blob UNION SELECT DISTINCT blob_sha256 FROM blob_upload_lease UNION SELECT DISTINCT blob_sha256 FROM blob_snapshot_pin",
         )
@@ -570,7 +589,14 @@ async fn upload(
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
-    match state.workspace.save_upload(body, filename, mime).await {
+    let card_private = headers
+        .get("x-parley-purpose")
+        .is_some_and(|v| v == "card-attachment");
+    match state
+        .workspace
+        .stage_upload(body, filename, mime, card_private)
+        .await
+    {
         Ok(value) => (StatusCode::CREATED, Json(value)).into_response(),
         Err(error) => crate::materials::workspace_error(error),
     }

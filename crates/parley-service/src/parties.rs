@@ -73,6 +73,9 @@ fn parse_csv(text: &str) -> Result<Csv, WorkspaceError> {
             "Split your CSV into files of at most {MAX_BYTES} bytes."
         )));
     }
+    if text.trim().is_empty() {
+        return Err(invalid("CSV needs a header row."));
+    }
     let mut chars = text.trim_start_matches('\u{feff}').chars().peekable();
     let mut record = 1;
     let mut field = String::new();
@@ -127,9 +130,6 @@ fn parse_csv(text: &str) -> Result<Csv, WorkspaceError> {
                         }
                     }
                 } else {
-                    if fields.len() == 1 && fields[0].is_empty() {
-                        return Err(invalid("CSV needs a header row."));
-                    }
                     headers = Some(std::mem::take(&mut fields));
                 }
                 fields.clear();
@@ -266,14 +266,17 @@ async fn execute(
         let ws=&state.workspace;
         let mut tx=ws.pool().begin_with("BEGIN IMMEDIATE").await?;
         if let Some(old)=material_receipt_replay(&mut tx,ws.epoch(),&key,&canonical).await? {return Ok(old);}
+        let mut transient_stage=None;
         let result=match cmd {
             Command::Stage(raw,csv)=>{
                 let id=new_id("party-import");
+                transient_stage=Some(id.clone());
                 sqlx::query("DELETE FROM party_import_stage WHERE expires_at <= unixepoch() OR epoch<>?").bind(ws.epoch()).execute(&mut *tx).await?;
                 sqlx::query("INSERT INTO party_import_stage(id,epoch,source_digest,csv_text,expires_at) VALUES(?,?,?,?,unixepoch()+1800)").bind(&id).bind(ws.epoch()).bind(digest(raw.as_bytes())).bind(raw).execute(&mut *tx).await?;
                 json!({"stage_id":id,"headers":csv.headers,"row_count":csv.rows.len(),"max_rows":MAX_ROWS,"max_bytes":MAX_BYTES})
             },
             Command::Preview(id,mapping)=>{
+                transient_stage=Some(id.clone());
                 let (raw,source)=staged(&mut tx,ws,&id).await?;
                 let rows=project(&mut tx,&parse_csv(&raw)?,&mapping).await?;
                 let preview_id=new_id(&id);
@@ -292,6 +295,9 @@ async fn execute(
             },
         };
         material_receipt_store(&mut tx,ws.epoch(),&key,&canonical,status.as_u16(),&result).await?;
+        if let Some(stage)=transient_stage {
+            sqlx::query("INSERT INTO party_stage_receipt(stage_id,epoch,key) VALUES(?,?,?)").bind(stage).bind(ws.epoch()).bind(&key).execute(&mut *tx).await?;
+        }
         tx.commit().await?;
         Ok::<Value, WorkspaceError>(result)
     }.await;
@@ -534,25 +540,57 @@ async fn content(
         Ok(None) => return command_error(WorkspaceError::NotFound),
         Err(e) => return command_error(e.into()),
     };
-    let bytes = match tokio::fs::read(s.workspace.blob_path(&sha)).await {
-        Ok(bytes) if bytes.len() as i64 == size && digest(&bytes) == sha => bytes,
-        _ => {
-            return error(
-                StatusCode::GONE,
-                "BYTES_UNAVAILABLE",
-                "Attached bytes are missing or failed verification.",
-            );
-        }
+    use sha2::{Digest, Sha256};
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    let unavailable = || {
+        error(
+            StatusCode::GONE,
+            "BYTES_UNAVAILABLE",
+            "Attached bytes are missing or failed verification.",
+        )
     };
+    let Ok(mut file) = tokio::fs::File::open(s.workspace.blob_path(&sha)).await else {
+        return unavailable();
+    };
+    let mut hash = Sha256::new();
+    let mut read_size = 0i64;
+    let mut buf = vec![0u8; 65536];
+    loop {
+        let Ok(count) = file.read(&mut buf).await else {
+            return unavailable();
+        };
+        if count == 0 {
+            break;
+        }
+        read_size += count as i64;
+        if read_size > size {
+            return unavailable();
+        }
+        hash.update(&buf[..count]);
+    }
+    if read_size != size || hex::encode(hash.finalize()) != sha || file.rewind().await.is_err() {
+        return unavailable();
+    }
+    let stream = futures_util::stream::try_unfold(file, |mut file| async move {
+        let mut buf = vec![0u8; 65536];
+        let n = file.read(&mut buf).await?;
+        buf.truncate(n);
+        Ok::<_, std::io::Error>((n > 0).then_some((Bytes::from(buf), file)))
+    });
     let mut response = (
         [
             (header::CONTENT_TYPE, "application/octet-stream"),
             (header::CONTENT_DISPOSITION, "attachment"),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         ],
-        bytes,
+        axum::body::Body::from_stream(stream),
     )
         .into_response();
+    if let Ok(length) = size.to_string().parse() {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_LENGTH, length);
+    }
     private_headers(&mut response, s.workspace.epoch());
     response
 }

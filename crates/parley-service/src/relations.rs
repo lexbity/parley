@@ -66,8 +66,19 @@ struct Removal {
     expected_revision: i64,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ClaimRevision {
+    expected_revision: i64,
+    occurrence_id: String,
+    wording: String,
+    speaker_kind: String,
+    speaker_entity_id: Option<String>,
+}
+
 #[derive(Serialize)]
 enum Command {
+    ReviseClaim(String, ClaimRevision),
     Related(RelatedCard),
     Link(Link),
     Correct(String, Correction),
@@ -77,6 +88,7 @@ enum Command {
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/graph/related", post(related))
+        .route("/api/v1/claims/{id}/revisions", post(revise_claim))
         .route("/api/v1/edges", post(link))
         .route("/api/v1/edges/{id}", patch(correct).delete(remove))
 }
@@ -338,6 +350,7 @@ async fn run(
         return Ok(saved);
     }
     let result = match cmd {
+        Command::ReviseClaim(id, input) => save_revision(&mut tx, &id, input).await?,
         Command::Related(input) => create_card(&mut tx, input).await?,
         Command::Link(input) => save_edge(&mut tx, &input, None).await?,
         Command::Correct(id, input) => {
@@ -429,4 +442,65 @@ impl Workspace {
         let value = run(self, key, Command::Related(input), StatusCode::CREATED).await?;
         serde_json::from_value(value).map_err(|e| WorkspaceError::Invalid(e.to_string()))
     }
+}
+
+async fn revise_claim(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    h: HeaderMap,
+    Json(i): Json<ClaimRevision>,
+) -> Response {
+    execute(s, h, Command::ReviseClaim(id, i), StatusCode::CREATED).await
+}
+
+async fn save_revision(
+    tx: &mut Tx<'_>,
+    id: &str,
+    i: ClaimRevision,
+) -> Result<Value, WorkspaceError> {
+    let current: i64 = sqlx::query_scalar("SELECT current_revision FROM claim WHERE id=?")
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(WorkspaceError::NotFound)?;
+    if current != i.expected_revision {
+        return Err(WorkspaceError::StaleRevision);
+    }
+    if !matches!(i.speaker_kind.as_str(), "owner" | "party" | "unknown")
+        || (i.speaker_kind == "party") != i.speaker_entity_id.is_some()
+    {
+        return Err(invalid("Select the speaker explicitly, or choose unknown."));
+    }
+    if let Some(party) = &i.speaker_entity_id
+        && !matches!(kind(tx, party, None).await?.as_str(), "person" | "org")
+    {
+        return Err(invalid("Select a person or organization as the speaker."));
+    }
+    let (variant,text):(String,String)=sqlx::query_as("SELECT v.id,v.raw_text FROM source_occurrence o JOIN source_variant v ON v.id=o.source_variant_id WHERE o.id=?").bind(&i.occurrence_id).fetch_optional(&mut **tx).await?.ok_or_else(||invalid("Select a saved source occurrence."))?;
+    let span = parley_domain::evidence::verify_quote(&text, &i.wording, None)
+        .map_err(|_| invalid("Quote is absent or ambiguous in this source."))?;
+    let revision = current + 1;
+    sqlx::query("INSERT INTO claim_revision(claim_id,revision,wording,knowledge_kind,tier,speaker_kind,speaker_entity_id,occurrence_id,source_variant_id,source_start,source_end,normalized_start,normalized_end,normalization_version,confirmed_by_owner,created_at) VALUES(?,?,?,'observation',1,?,?,?,?,?,?,?,?,?,1,?)")
+        .bind(id).bind(revision).bind(&i.wording).bind(&i.speaker_kind).bind(&i.speaker_entity_id).bind(&i.occurrence_id).bind(variant).bind(span.source_start as i64).bind(span.source_end as i64).bind(span.normalized_start as i64).bind(span.normalized_end as i64).bind(parley_domain::evidence::NORMALIZATION_VERSION as i64).bind(now_utc()).execute(&mut **tx).await?;
+    // The existing claim revision trigger advances dependent opportunity-interest
+    // revisions. Material gates then compare their frozen dependency vectors.
+    sqlx::query("UPDATE claim SET current_revision=? WHERE id=?")
+        .bind(revision)
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    let edges:Vec<(String,i64)>=sqlx::query_as("SELECT e.id,e.revision FROM edge e JOIN edge_evidence ee ON ee.edge_id=e.id WHERE ee.claim_id=? AND ee.claim_revision=? AND e.state='active'").bind(id).bind(current).fetch_all(&mut **tx).await?;
+    for (edge, rev) in edges {
+        archive(tx, &edge, rev).await?;
+        sqlx::query("UPDATE edge_evidence SET claim_revision=? WHERE edge_id=? AND claim_id=? AND claim_revision=?").bind(revision).bind(&edge).bind(id).bind(current).execute(&mut **tx).await?;
+        sqlx::query("UPDATE edge SET revision=revision+1 WHERE id=?")
+            .bind(&edge)
+            .execute(&mut **tx)
+            .await?;
+        event(tx, "edge", &edge, rev + 1, "edge.evidence_corrected").await?;
+    }
+    event(tx, "claim", id, revision, "claim.corrected").await?;
+    Ok(
+        json!({"data":{"id":id,"revision":revision,"wording":i.wording,"occurrence_id":i.occurrence_id,"speaker_kind":i.speaker_kind,"speaker_entity_id":i.speaker_entity_id}}),
+    )
 }
