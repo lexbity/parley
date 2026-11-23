@@ -6,9 +6,9 @@ import ResourcesWorkspace from './ResourcesWorkspace.vue';
 
 const emptyBoard: ResourceBoardSnapshot = {
   columns: [
-    { id: 'inbox', title: 'Inbox', position: 1024, revision: 1 },
-    { id: 'developing', title: 'Developing', position: 2048, revision: 1 },
-    { id: 'available', title: 'Available', position: 3072, revision: 1 },
+    { id: 'inbox', title: 'Inbox', position: 1024, revision: 1, kind: 'system' },
+    { id: 'developing', title: 'Developing', position: 2048, revision: 1, kind: 'owner' },
+    { id: 'available', title: 'Available', position: 3072, revision: 1, kind: 'owner' },
   ],
   cards: [],
   off_board: [],
@@ -23,6 +23,7 @@ const oneCardBoard: ResourceBoardSnapshot = {
     subtype: 'artifact',
     title: 'Importer checklist',
     readiness: 'draft',
+    revision: 1,
     placement: { column_id: 'developing', position: 1024, revision: 1 },
     counts: { files: 0, connections: 0, proposed: 0, deliveries: 0 },
     gaps: [],
@@ -52,7 +53,7 @@ describe('ResourcesWorkspace', () => {
     expect(lanes[0]!.text()).toContain('Inbox');
     expect(lanes[1]!.text()).toContain('Developing');
     expect(lanes[2]!.text()).toContain('Available');
-    expect(wrapper.findAll('button.add-card').length).toBe(3);
+    expect(wrapper.findAll('input[aria-label^="Add card to"]').length).toBe(3);
     const boardHeader = wrapper.get('section[aria-label="Resource board"] header.panel-header');
     expect(boardHeader.findAll('button').map(button => button.text())).toEqual(['Find resource']);
     expect(wrapper.get('.new-list button').text()).toContain('Add another list');
@@ -73,10 +74,9 @@ describe('ResourcesWorkspace', () => {
     });
     const wrapper = mount(ResourcesWorkspace);
     await flushPromises();
-    await wrapper.findAll('button.add-card')[1]!.trigger('click');
-    const inline = wrapper.get('form[aria-label="New card in Developing"]');
-    await inline.get('input').setValue('Workshop outline');
-    await inline.findAll('button').find(button => button.text() === 'More options')!.trigger('click');
+    const lane = wrapper.get('section.lane[aria-label="Developing"]');
+    await lane.get('.card-inline input').setValue('Workshop outline');
+    await lane.findAll('button').find(button => button.text() === 'More options')!.trigger('click');
     const form = wrapper.get('form[aria-label="Resource card editor"]');
     expect((form.get('input[maxlength="240"]').element as HTMLInputElement).value).toBe('Workshop outline');
     await form.get('select').setValue('note');
@@ -111,7 +111,7 @@ describe('ResourcesWorkspace', () => {
     });
     const wrapper = mount(ResourcesWorkspace);
     await flushPromises();
-    const tile = wrapper.get('button.tile-body');
+    const tile = wrapper.get('.tile-body');
     await tile.trigger('click');
     await flushPromises();
     expect(wrapper.get('.tile.selected')).toBeTruthy();
@@ -141,7 +141,7 @@ describe('ResourcesWorkspace', () => {
     });
     const wrapper = mount(ResourcesWorkspace);
     await flushPromises();
-    await wrapper.get('button.tile-body').trigger('click');
+    await wrapper.get('.tile-body').trigger('click');
     await flushPromises();
     const boardButtons = wrapper.findAll('section[aria-label="Resource board"] button');
     const editButton = boardButtons.find((button) => button.text() === 'Edit')!;
@@ -171,6 +171,7 @@ describe('ResourcesWorkspace', () => {
         subtype: 'proof',
         title: 'Unfinished proof',
         readiness: 'draft',
+        revision: 1,
         placement: { column_id: 'available', position: 1024, revision: 1 },
         counts: { files: 0, connections: 0, proposed: 0, deliveries: 2 },
         gaps: ['Result', 'Context', 'Time', 'Owner role'],
@@ -186,7 +187,7 @@ describe('ResourcesWorkspace', () => {
     }]);
     const wrapper = mount(ResourcesWorkspace);
     await flushPromises();
-    await wrapper.get('button.tile-body').trigger('click');
+    await wrapper.get('.tile-body').trigger('click');
     await flushPromises();
     const inspector = wrapper.get('section[aria-label="Resource inspector"]');
     expect(inspector.text()).toContain('Available, but still ineligible');
@@ -224,7 +225,7 @@ describe('ResourcesWorkspace', () => {
     });
     const wrapper = mount(ResourcesWorkspace);
     await flushPromises();
-    await wrapper.get('button.tile-body').trigger('click');
+    await wrapper.get('.tile-body').trigger('click');
     await flushPromises();
     const boardButtons = wrapper.findAll('section[aria-label="Resource board"] button');
     const editButton = boardButtons.find((button) => button.text() === 'Edit')!;
@@ -248,7 +249,7 @@ describe('ResourcesWorkspace', () => {
     wrapper.unmount();
   });
 
-  it('retires the selected card through the inspector', async () => {
+  it('archives the selected card through the inspector', async () => {
     stubBoard(oneCardBoard);
     const retire = vi.spyOn(parley, 'retireResourceCard').mockResolvedValue({
       entity: { id: 'card-1', kind: 'resource', readiness: 'retired', revision: 2 },
@@ -257,15 +258,31 @@ describe('ResourcesWorkspace', () => {
     const confirmSpy = vi.spyOn(globalThis, 'confirm').mockReturnValue(true);
     const wrapper = mount(ResourcesWorkspace);
     await flushPromises();
-    await wrapper.get('button.tile-body').trigger('click');
+    await wrapper.get('.tile-body').trigger('click');
     await flushPromises();
     const inspectorButtons = wrapper.findAll('section[aria-label="Resource inspector"] button');
-    const retireButton = inspectorButtons.find((button) => button.text() === 'Retire card')!;
-    await retireButton.trigger('click');
+    const archiveButton = inspectorButtons.find((button) => button.text() === 'Archive card')!;
+    await archiveButton.trigger('click');
     await flushPromises();
     expect(confirmSpy).toHaveBeenCalled();
     expect(retire).toHaveBeenCalledTimes(1);
     expect((retire.mock.calls[0]![0] as string)).toBe('card-1');
+    wrapper.unmount();
+  });
+
+  it('erases the selected card through the inspector', async () => {
+    stubBoard(oneCardBoard);
+    const erase = vi.spyOn(parley, 'eraseResourceCard').mockResolvedValue({ id: 'card-1', erased: true });
+    vi.spyOn(globalThis, 'confirm').mockReturnValue(true);
+    const wrapper = mount(ResourcesWorkspace);
+    await flushPromises();
+    await wrapper.get('.tile-body').trigger('click');
+    await flushPromises();
+    const inspectorButtons = wrapper.findAll('section[aria-label="Resource inspector"] button');
+    await inspectorButtons.find((button) => button.text() === 'Delete card')!.trigger('click');
+    await flushPromises();
+    expect(erase).toHaveBeenCalledTimes(1);
+    expect((erase.mock.calls[0]![0] as string)).toBe('card-1');
     wrapper.unmount();
   });
 
@@ -275,14 +292,14 @@ describe('ResourcesWorkspace', () => {
       off_board: [
         {
           resource_id: 'off-1', subtype: 'artifact', title: 'Fixture walkthrough',
-          readiness: 'draft', legacy: false,
+          readiness: 'draft', revision: 1, legacy: false,
           counts: { files: 0, connections: 0, proposed: 0, deliveries: 0 },
           gaps: [],
           etag: '"p1.e.off-1.1"',
         },
         {
           resource_id: 'legacy-1', subtype: 'note', title: 'Legacy checklist idea',
-          readiness: 'draft', legacy: true,
+          readiness: 'draft', revision: 1, legacy: true,
           counts: { files: 0, connections: 0, proposed: 0, deliveries: 0 },
           gaps: [],
           etag: '"p1.e.legacy-1.1"',
@@ -310,25 +327,25 @@ describe('ResourcesWorkspace', () => {
     });
     const wrapper = mount(ResourcesWorkspace);
     await flushPromises();
-    await wrapper.get('button.tile-body').trigger('click');
+    await wrapper.get('.tile-body').trigger('click');
     await flushPromises();
     await wrapper.findAll('section[aria-label="Resource board"] button').find((button) => button.text() === 'Edit')!.trigger('click');
     await flushPromises();
     const form = wrapper.get('form[aria-label="Resource card editor"]');
     await form.get('input[maxlength="240"]').setValue('Uncommitted local edit');
 
-    // Opening another card keeps the draft and offers the three-way switch.
-    await wrapper.get('button.add-card').trigger('click');
+    // Opening the quick-add editor keeps the draft and offers the three-way switch.
+    await wrapper.findAll('button').find((button) => button.text() === 'More options')!.trigger('click');
     const prompt = wrapper.get('[role="alertdialog"]');
     expect(prompt.text()).toContain('Unsaved card draft');
     await prompt.findAll('button').find((button) => button.text() === 'Stay')!.trigger('click');
-    expect((wrapper.get('input[maxlength="240"]').element as HTMLInputElement).value).toBe('Uncommitted local edit');
+    expect((wrapper.get('form[aria-label="Resource card editor"]').get('input[maxlength="240"]').element as HTMLInputElement).value).toBe('Uncommitted local edit');
 
-    // Discard clears the draft and completes the pending switch.
-    await wrapper.get('button.add-card').trigger('click');
+    // Discard completes the pending switch into a fresh create editor.
+    await wrapper.findAll('button').find((button) => button.text() === 'More options')!.trigger('click');
     await wrapper.get('[role="alertdialog"]').findAll('button').find((button) => button.text() === 'Discard unsaved changes')!.trigger('click');
     await flushPromises();
-    expect((wrapper.get('input[maxlength="240"]').element as HTMLInputElement).value).toBe('');
+    expect((wrapper.get('form[aria-label="Resource card editor"]').get('input[maxlength="240"]').element as HTMLInputElement).value).toBe('');
     wrapper.unmount();
   });
 
@@ -339,7 +356,7 @@ describe('ResourcesWorkspace', () => {
         ...oneCardBoard.cards,
         {
           resource_id: 'card-2', subtype: 'note', title: 'Workshop outline',
-          readiness: 'draft', placement: { column_id: 'inbox', position: 1024, revision: 1 },
+          readiness: 'draft', revision: 1, placement: { column_id: 'inbox', position: 1024, revision: 1 },
           counts: { files: 0, connections: 0, proposed: 0, deliveries: 0 },
           gaps: [], etag: '"p1.e.card-2.1"',
         },
@@ -366,7 +383,7 @@ describe('ResourcesWorkspace', () => {
     const wrapper = mount(ResourcesWorkspace);
     await flushPromises();
     // Selecting the checklist tile roots the graph at it.
-    const tileFor = (title: string) => wrapper.findAll('button.tile-body').find((tile) => tile.text().includes(title))!;
+    const tileFor = (title: string) => wrapper.findAll('.tile-body').find((tile) => tile.text().includes(title))!;
     await tileFor('Importer checklist').trigger('click');
     await flushPromises();
     expect(wrapper.get('section[aria-label="Connections graph"] header.panel-header h2').text()).toBe('Importer checklist · connections');
@@ -384,6 +401,274 @@ describe('ResourcesWorkspace', () => {
       expect.any(String),
     );
     expect(wrapper.get('section[aria-label="Connections graph"] header.panel-header h2').text()).toBe('Importer checklist · connections');
+    wrapper.unmount();
+  });
+
+  it('adds a card from the always-visible list input', async () => {
+    stubBoard();
+    const commit = vi.spyOn(parley, 'commitResourceCard').mockResolvedValue({
+      entity: { id: 'new-1', kind: 'resource', title: 'Workshop outline', subtype: 'artifact', body: {}, readiness: 'draft', revision: 1, notes: { markdown: '', revision: 1 }, etag: '"p1.e.new-1.1"' },
+      placement: { column_id: 'developing', position: 2048, revision: 1 },
+      created_related: null,
+      event_cursor: 4,
+    });
+    const wrapper = mount(ResourcesWorkspace);
+    await flushPromises();
+    const lane = wrapper.get('section.lane[aria-label="Developing"]');
+    await lane.get('.card-inline input').setValue('Workshop outline');
+    await lane.get('form.card-inline').trigger('submit');
+    await flushPromises();
+    expect(commit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ title: 'Workshop outline', placement: { column_id: 'developing' } }),
+      }),
+      expect.any(String),
+    );
+    expect((lane.get('.card-inline input').element as HTMLInputElement).value).toBe('');
+    wrapper.unmount();
+  });
+
+  it('renames a list in place through the lane menu', async () => {
+    stubBoard();
+    const rename = vi.spyOn(parley, 'renameResourceColumn').mockResolvedValue({ id: 'developing', title: 'Studio', position: 2048, revision: 2, kind: 'owner' });
+    const wrapper = mount(ResourcesWorkspace);
+    await flushPromises();
+    const lane = wrapper.get('section.lane[aria-label="Developing"]');
+    await lane.get('.lane-menu-button').trigger('click');
+    await lane.get('[role="menu"]').findAll('button').find((button) => button.text() === 'Rename list')!.trigger('click');
+    await flushPromises();
+    const input = lane.get('.lane-rename input');
+    await input.setValue('Studio');
+    await lane.get('form.lane-rename').trigger('submit');
+    await flushPromises();
+    expect(rename).toHaveBeenCalledWith('developing', { title: 'Studio', expected_revision: 1 }, expect.any(String));
+    wrapper.unmount();
+  });
+
+  it('demands a typed confirmation before removing the system list', async () => {
+    stubBoard();
+    const remove = vi.spyOn(parley, 'removeResourceColumn').mockResolvedValue({ id: 'inbox', off_board_count: 0 });
+    const confirmSpy = vi.spyOn(globalThis, 'confirm').mockReturnValue(true);
+    const wrapper = mount(ResourcesWorkspace);
+    await flushPromises();
+    const lane = wrapper.get('section.lane[aria-label="Inbox"]');
+    await lane.get('.lane-menu-button').trigger('click');
+    await lane.get('[role="menu"]').findAll('button').find((button) => button.text() === 'Remove list')!.trigger('click');
+    await flushPromises();
+    expect(confirmSpy).not.toHaveBeenCalled();
+    const dialog = wrapper.get('dialog[aria-labelledby="system-remove-title"]');
+    expect(dialog.text()).toContain('system list');
+    const input = dialog.get('input[aria-label="Confirm list name"]');
+    await input.setValue('wrong name');
+    await dialog.get('form').trigger('submit');
+    expect(remove).not.toHaveBeenCalled();
+    expect(dialog.text()).toContain('Type the list name exactly');
+    await input.setValue('Inbox');
+    await dialog.get('form').trigger('submit');
+    await flushPromises();
+    expect(remove).toHaveBeenCalledWith('inbox', { expected_revision: 1 }, expect.any(String));
+    wrapper.unmount();
+  });
+
+  it('collapses an empty list into a pill and expands it again', async () => {
+    stubBoard();
+    const wrapper = mount(ResourcesWorkspace);
+    await flushPromises();
+    const lane = () => wrapper.get('section.lane[aria-label="Inbox"]');
+    await lane().get('.lane-menu-button').trigger('click');
+    await lane().get('[role="menu"]').findAll('button').find((button) => button.text() === 'Collapse')!.trigger('click');
+    const pill = wrapper.get('button[aria-label="Expand empty list Inbox"]');
+    expect(pill.text()).toContain('Inbox');
+    expect(wrapper.find('section.lane[aria-label="Inbox"]').exists()).toBe(false);
+    await pill.trigger('click');
+    expect(wrapper.find('section.lane[aria-label="Inbox"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('edits a card title in place on the tile', async () => {
+    stubBoard(oneCardBoard);
+    vi.spyOn(parley, 'getEntityCard').mockResolvedValue({
+      id: 'card-1', kind: 'resource', title: 'Importer checklist', subtype: 'artifact',
+      body: {}, readiness: 'draft', revision: 3,
+      notes: { markdown: '', revision: 4 }, etag: '"p1.e.card-1.3"',
+    });
+    const commit = vi.spyOn(parley, 'commitResourceCard').mockResolvedValue({
+      entity: { id: 'card-1', kind: 'resource', title: 'Importer checklist v2', subtype: 'artifact', body: {}, readiness: 'draft', revision: 4, notes: { markdown: '', revision: 4 }, etag: '"p1.e.card-1.4"' },
+      placement: { column_id: 'developing', position: 1024, revision: 2 },
+      created_related: null,
+      event_cursor: 6,
+    });
+    const wrapper = mount(ResourcesWorkspace);
+    await flushPromises();
+    const lane = wrapper.get('section.lane[aria-label="Developing"]');
+    // A double-click on the title opens the in-place editor.
+    await lane.get('button.tile-title').trigger('dblclick');
+    await flushPromises();
+    const input = lane.get('.tile-body input');
+    await input.setValue('Importer checklist v2');
+    await input.trigger('keydown.enter');
+    await flushPromises();
+    expect(commit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        edit: expect.objectContaining({ resource_id: 'card-1', expected_revision: 3, expected_notes_rev: 4, title: 'Importer checklist v2' }),
+      }),
+      expect.any(String),
+    );
+    wrapper.unmount();
+  });
+
+  it('keeps a lane draft when its list is removed and offers it in another lane', async () => {
+    const withoutDeveloping: ResourceBoardSnapshot = {
+      ...emptyBoard,
+      columns: [emptyBoard.columns[0]!, emptyBoard.columns[2]!],
+    };
+    vi.spyOn(parley, 'getResourceBoard').mockResolvedValueOnce(emptyBoard).mockResolvedValue(withoutDeveloping);
+    vi.spyOn(parley, 'getGraph').mockResolvedValue({ nodes: [], edges: [], omitted_nodes: 0, omitted_edges: 0 });
+    vi.spyOn(parley, 'getEntityCard').mockRejectedValue(new Error('not opened'));
+    vi.spyOn(parley, 'getEntityCardDeliveries').mockResolvedValue([]);
+    vi.spyOn(parley, 'listAttachments').mockResolvedValue([]);
+    const remove = vi.spyOn(parley, 'removeResourceColumn').mockResolvedValue({ id: 'developing', off_board_count: 0 });
+    vi.spyOn(globalThis, 'confirm').mockReturnValue(true);
+    const wrapper = mount(ResourcesWorkspace);
+    await flushPromises();
+    const developing = wrapper.get('section.lane[aria-label="Developing"]');
+    await developing.get('.card-inline input').setValue('Displaced thought');
+    await developing.get('.lane-menu-button').trigger('click');
+    await developing.get('[role="menu"]').findAll('button').find((button) => button.text() === 'Remove list')!.trigger('click');
+    await flushPromises();
+    expect(remove).toHaveBeenCalled();
+    expect(wrapper.get('.notice').text()).toContain('Displaced thought');
+    const inbox = wrapper.get('section.lane[aria-label="Inbox"]');
+    await inbox.get('.card-inline input').trigger('focus');
+    expect((inbox.get('.card-inline input').element as HTMLInputElement).value).toBe('Displaced thought');
+    expect(wrapper.find('.notice').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('keeps the lane draft and shows the error when a quick add fails', async () => {
+    stubBoard();
+    vi.spyOn(parley, 'commitResourceCard').mockRejectedValue(new ApiError('nope', 422, 'INVALID_REQUEST'));
+    const wrapper = mount(ResourcesWorkspace);
+    await flushPromises();
+    const lane = wrapper.get('section.lane[aria-label="Developing"]');
+    await lane.get('.card-inline input').setValue('Doomed card');
+    await lane.get('form.card-inline').trigger('submit');
+    await flushPromises();
+    expect(lane.get('.card-inline p[role="alert"]').text()).toBe('nope');
+    expect((lane.get('.card-inline input').element as HTMLInputElement).value).toBe('Doomed card');
+    wrapper.unmount();
+  });
+
+  it('closes the rename and refreshes when the list revision is stale', async () => {
+    stubBoard();
+    const rename = vi.spyOn(parley, 'renameResourceColumn').mockRejectedValue(new ApiError('stale', 412, 'STALE_REVISION'));
+    const wrapper = mount(ResourcesWorkspace);
+    await flushPromises();
+    const lane = wrapper.get('section.lane[aria-label="Developing"]');
+    await lane.get('.lane-menu-button').trigger('click');
+    await lane.get('[role="menu"]').findAll('button').find((button) => button.text() === 'Rename list')!.trigger('click');
+    await flushPromises();
+    const input = lane.get('.lane-rename input');
+    await input.setValue('Studio');
+    await lane.get('form.lane-rename').trigger('submit');
+    await flushPromises();
+    expect(rename).toHaveBeenCalled();
+    expect(wrapper.find('form.lane-rename').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('closes the lane menu on an outside pointer press', async () => {
+    stubBoard();
+    const wrapper = mount(ResourcesWorkspace, { attachTo: document.body });
+    await flushPromises();
+    const lane = wrapper.get('section.lane[aria-label="Inbox"]');
+    await lane.get('.lane-menu-button').trigger('click');
+    expect(lane.find('[role="menu"]').exists()).toBe(true);
+    wrapper.get('header.panel-header').element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    await flushPromises();
+    expect(lane.find('[role="menu"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('surfaces an erase refusal without clearing the board', async () => {
+    stubBoard(oneCardBoard);
+    vi.spyOn(parley, 'eraseResourceCard').mockRejectedValue(new ApiError('delivered', 409, 'RESOURCE_DELIVERED'));
+    vi.spyOn(globalThis, 'confirm').mockReturnValue(true);
+    const wrapper = mount(ResourcesWorkspace);
+    await flushPromises();
+    const tileActions = wrapper.get('.tile').findAll('button');
+    await tileActions.find((button) => button.text() === 'Delete')!.trigger('click');
+    await flushPromises();
+    expect(wrapper.get('p.workspace-status[role="status"]').text()).toBe('');
+    expect(wrapper.get('p.workspace-status.notice[role="alert"]').text()).toContain('delivered');
+    wrapper.unmount();
+  });
+
+  it('cancels the in-place title edit when the title is unchanged', async () => {
+    stubBoard(oneCardBoard);
+    vi.spyOn(parley, 'getEntityCard').mockResolvedValue({
+      id: 'card-1', kind: 'resource', title: 'Importer checklist', subtype: 'artifact',
+      body: {}, readiness: 'draft', revision: 1,
+      notes: { markdown: '', revision: 1 }, etag: '"p1.e.card-1.1"',
+    });
+    const commit = vi.spyOn(parley, 'commitResourceCard');
+    const wrapper = mount(ResourcesWorkspace);
+    await flushPromises();
+    const lane = wrapper.get('section.lane[aria-label="Developing"]');
+    await lane.get('button.tile-title').trigger('dblclick');
+    await flushPromises();
+    await lane.get('.tile-body input').trigger('keydown.enter');
+    await flushPromises();
+    expect(commit).not.toHaveBeenCalled();
+    expect(lane.find('button.tile-title').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('validates the in-place title and keeps editing on stale revisions', async () => {
+    stubBoard(oneCardBoard);
+    vi.spyOn(parley, 'getEntityCard').mockResolvedValue({
+      id: 'card-1', kind: 'resource', title: 'Importer checklist', subtype: 'artifact',
+      body: {}, readiness: 'draft', revision: 1,
+      notes: { markdown: '', revision: 1 }, etag: '"p1.e.card-1.1"',
+    });
+    vi.spyOn(parley, 'commitResourceCard').mockRejectedValue(new ApiError('stale', 412, 'STALE_REVISION'));
+    const wrapper = mount(ResourcesWorkspace);
+    await flushPromises();
+    const lane = wrapper.get('section.lane[aria-label="Developing"]');
+    await lane.get('button.tile-title').trigger('dblclick');
+    await flushPromises();
+    const input = lane.get('.tile-body input');
+    await input.setValue('');
+    await input.trigger('keydown.enter');
+    expect(lane.get('.tile-body p[role="alert"]').text()).toBe('Enter a title.');
+    await input.setValue('r'.repeat(241));
+    await input.trigger('keydown.enter');
+    expect(lane.get('.tile-body p[role="alert"]').text()).toBe('Keep the title within 240 characters.');
+    await input.setValue('Fresh title');
+    await input.trigger('keydown.enter');
+    await flushPromises();
+    expect(lane.get('.tile-body p[role="alert"]').text()).toBe('stale');
+    expect(lane.find('.tile-body input').exists()).toBe(true);
+    await input.trigger('keydown.esc');
+    expect(lane.find('button.tile-title').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('adds and cancels the list composer', async () => {
+    stubBoard();
+    const create = vi.spyOn(parley, 'createResourceColumn').mockResolvedValue({ id: 'c-new', title: 'Workshop', position: 4096, revision: 1, kind: 'owner' });
+    const wrapper = mount(ResourcesWorkspace);
+    await flushPromises();
+    await wrapper.get('.new-list > button').trigger('click');
+    const input = wrapper.get('.new-list input[aria-label="List name"]');
+    await input.setValue('Workshop');
+    await wrapper.get('.new-list form.board-composer').trigger('submit');
+    await flushPromises();
+    expect(create).toHaveBeenCalledWith({ title: 'Workshop' }, expect.any(String));
+    await wrapper.get('.new-list > button').trigger('click');
+    await wrapper.get('.new-list input[aria-label="List name"]').setValue('Cancelled');
+    await wrapper.get('.new-list input[aria-label="List name"]').trigger('keydown.esc');
+    expect(wrapper.find('.new-list form.board-composer').exists()).toBe(false);
     wrapper.unmount();
   });
 });

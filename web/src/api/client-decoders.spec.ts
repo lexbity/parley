@@ -152,7 +152,7 @@ describe('ParleyClient administration decoders', () => {
 describe('ParleyClient resource board decoders', () => {
   const counts = { files: 1, connections: 2, proposed: 3, deliveries: 4 };
   const card = {
-    resource_id: 'r1', subtype: 'proof', title: 'Case study', readiness: 'ready',
+    resource_id: 'r1', subtype: 'proof', title: 'Case study', readiness: 'ready', revision: 2,
     placement: { column_id: 'c1', position: 0, revision: 1 }, counts, gaps: [], etag: '"r1"',
   };
   const entity = {
@@ -166,7 +166,7 @@ describe('ParleyClient resource board decoders', () => {
 
   it('decodes the board snapshot, cards, deliveries, moves and attachments', async () => {
     const client = clientWith(
-      { columns: [{ id: 'c1', title: 'Inbox', position: 0, revision: 1 }], cards: [card], off_board: [{ resource_id: 'r2', subtype: 'gift', title: 'Offer', readiness: 'draft', legacy: true, counts, gaps: ['detail'], etag: '"r2"' }], next_cursor: '1', event_cursor: 9 },
+      { columns: [{ id: 'c1', title: 'Inbox', position: 0, revision: 1, kind: 'system' }], cards: [card], off_board: [{ resource_id: 'r2', subtype: 'gift', title: 'Offer', readiness: 'draft', revision: 1, legacy: true, counts, gaps: ['detail'], etag: '"r2"' }], next_cursor: '1', event_cursor: 9 },
       { data: entity },
       { entity, placement: { column_id: 'c1', position: 0, revision: 1 }, created_related: { edge_id: 'e1', to_id: 'p1' }, affected_versions: [{ material_id: 'm1', version_no: 2 }], event_cursor: 9 },
       { data: [{ send_id: 's1', sent_at: '2026-11-23T00:00:00Z', recipient_id: 'p1', recipient_name: 'Dana Lee', opportunity_id: 'o1', opportunity_title: 'Onboarding', material_id: 'm1', material_version: 2 }] },
@@ -189,7 +189,7 @@ describe('ParleyClient resource board decoders', () => {
   it('rejects malformed board, delivery and attachment payloads', async () => {
     const client = clientWith(
       { columns: [{ id: 'c', title: 'x', position: 'bad', revision: 1 }], cards: [], off_board: [], event_cursor: 0 },
-      { columns: [], cards: [], off_board: [{ resource_id: 'r', subtype: 'gift', title: 'x', readiness: 'draft', legacy: true, counts: { files: 1 }, gaps: [], etag: '"r"' }], event_cursor: 0 },
+      { columns: [], cards: [], off_board: [{ resource_id: 'r', subtype: 'gift', title: 'x', readiness: 'draft', revision: 1, legacy: true, counts: { files: 1 }, gaps: [], etag: '"r"' }], event_cursor: 0 },
       { data: [{ send_id: 's', sent_at: 'now', recipient_id: 'p', recipient_name: 'n', opportunity_id: 'o', opportunity_title: 't', material_id: 'm', material_version: 'two' }] },
       { data: [{ ...attachment, sha256: 'not-a-hash' }] },
     );

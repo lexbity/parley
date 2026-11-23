@@ -99,7 +99,7 @@ pub(super) fn routes() -> Router<AppState> {
         )
         .route(
             "/api/v1/resource-board/columns/{id}",
-            axum::routing::delete(remove_resource_column),
+            axum::routing::delete(remove_resource_column).patch(rename_resource_column),
         )
         .route("/api/v1/resource-cards/{id}", get(get_resource_card))
         .route(
@@ -109,6 +109,10 @@ pub(super) fn routes() -> Router<AppState> {
         .route(
             "/api/v1/resource-cards/{id}/retire",
             post(retire_resource_card),
+        )
+        .route(
+            "/api/v1/resource-cards/{id}/erase",
+            post(erase_resource_card),
         )
         .route(
             "/api/v1/resource-cards/{id}/deliveries/{send_id}/{material_id}/{version}",
@@ -127,6 +131,10 @@ pub struct ResourceColumn {
     pub title: String,
     pub position: i64,
     pub revision: i64,
+    /// `system` marks the seeded Inbox; every other list is owner-managed.
+    /// System lists demand an extra confirmation before removal because the
+    /// seed never recreates them.
+    pub kind: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -139,6 +147,58 @@ pub struct CreateResourceColumn {
 #[serde(deny_unknown_fields)]
 pub struct RemoveResourceColumn {
     pub expected_revision: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RenameResourceColumn {
+    pub title: String,
+    pub expected_revision: i64,
+}
+
+/// Why a card cannot be erased; the UI routes the owner to archive instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ErasureRefusal {
+    /// Recorded sends captured this card's content in a material version.
+    Delivered,
+    /// Drafted material versions depend on this card's content or files.
+    InMaterials,
+    /// Claims or claim-evidenced relationships must keep citing the card.
+    InEvidence,
+}
+
+impl ErasureRefusal {
+    pub fn code(&self) -> &'static str {
+        match self {
+            ErasureRefusal::Delivered => "RESOURCE_DELIVERED",
+            ErasureRefusal::InMaterials => "RESOURCE_IN_MATERIALS",
+            ErasureRefusal::InEvidence => "RESOURCE_IN_EVIDENCE",
+        }
+    }
+
+    pub fn message(&self) -> String {
+        match self {
+            ErasureRefusal::Delivered => {
+                "This card was delivered, so its content is part of the delivery record. Archive it instead."
+                    .to_owned()
+            }
+            ErasureRefusal::InMaterials => {
+                "Drafted materials still use this card. Remove it from those materials or archive it instead."
+                    .to_owned()
+            }
+            ErasureRefusal::InEvidence => {
+                "Claims and evidenced relationships still cite this card. Retract them or archive the card instead."
+                    .to_owned()
+            }
+        }
+    }
+}
+
+/// The outcome of an erase command: either the card is gone (with the
+/// receipted result body) or the domain refused it for a stated reason.
+pub enum EraseOutcome {
+    Erased(Value),
+    Refused(ErasureRefusal),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -162,6 +222,8 @@ pub struct ResourceCardSummary {
     pub subtype: String,
     pub title: String,
     pub readiness: String,
+    /// Entity revision; guards in-place title edits from the tile itself.
+    pub revision: i64,
     pub placement: Option<PlacementView>,
     pub counts: ResourceCounts,
     /// Missing typed fields for this subtype; an empty list means eligible.
@@ -175,6 +237,7 @@ pub struct OffBoardResource {
     pub subtype: String,
     pub title: String,
     pub readiness: String,
+    pub revision: i64,
     pub legacy: bool,
     pub counts: ResourceCounts,
     pub gaps: Vec<String>,
@@ -416,16 +479,6 @@ pub struct MoveResourceCardInput {
     pub expected_destination_column_revision: Option<i64>,
     #[serde(default)]
     pub expected_placement_revision: Option<i64>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct EdgeInput {
-    pub from_id: String,
-    pub verb: String,
-    pub to_id: String,
-    #[serde(default)]
-    pub basis: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -757,6 +810,149 @@ impl Workspace {
         Ok(json!({"_replay_status": 200, "result": result}))
     }
 
+    /// Permanently erase a board card: the entity, its placement, attachments,
+    /// owner edges and any paired legacy row. Provenance that must outlive the
+    /// card refuses the erasure — recorded deliveries, drafting dependencies
+    /// and claim evidence — so archive remains the loss-free path.
+    pub async fn erase_resource_card(
+        &self,
+        id: &str,
+        key: &str,
+    ) -> Result<EraseOutcome, WorkspaceError> {
+        let canonical =
+            canonical_digest("POST", &format!("/resource-cards/{id}/erase"), &json!({}));
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(replay) = receipt_lookup(&mut tx, key, &canonical).await? {
+            tx.commit().await?;
+            return Ok(EraseOutcome::Erased(replay.body));
+        }
+        let revision: Option<i64> = sqlx::query_scalar(
+            "SELECT revision FROM entity WHERE id=? AND subtype<>'' AND readiness<>'retired' AND retired_at IS NULL",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(revision) = revision else {
+            return Err(WorkspaceError::NotFound);
+        };
+        let delivered: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM delivered_resource_version WHERE resource_id=?",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if delivered > 0 {
+            return Ok(EraseOutcome::Refused(ErasureRefusal::Delivered));
+        }
+        let dependencies: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM version_dependency WHERE kind='resource' AND source_id=?",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if dependencies > 0 {
+            return Ok(EraseOutcome::Refused(ErasureRefusal::InMaterials));
+        }
+        let claims: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM claim WHERE subject_id=?")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let evidenced: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM edge_evidence e JOIN edge x ON x.id=e.edge_id WHERE x.from_id=?1 OR x.to_id=?1",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if claims + evidenced > 0 {
+            return Ok(EraseOutcome::Refused(ErasureRefusal::InEvidence));
+        }
+        let referenced: i64 = sqlx::query_scalar(
+            "SELECT (SELECT COUNT(*) FROM unresolved_mention WHERE resolved_entity_id=?1) \
+             + (SELECT COUNT(*) FROM proposal_decision WHERE target_entity_id=?1)",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if referenced > 0 {
+            return Ok(EraseOutcome::Refused(ErasureRefusal::InEvidence));
+        }
+        // Owner edges and their recorded history exist only through their
+        // endpoints; the erased card takes them with it.
+        sqlx::query("DELETE FROM edge_history WHERE edge_id IN (SELECT id FROM edge WHERE from_id=?1 OR to_id=?1)")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM edge WHERE from_id=?1 OR to_id=?1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        // Attachment rows RESTRICT both the entity and their uploads; capture
+        // the card's uploads, drop the attachments, then the entity
+        // (placement and view position cascade).
+        let uploads: Vec<String> =
+            sqlx::query_scalar("SELECT upload_id FROM entity_attachment WHERE entity_id=?")
+                .bind(id)
+                .fetch_all(&mut *tx)
+                .await?;
+        sqlx::query("DELETE FROM entity_attachment WHERE entity_id=?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM entity WHERE id=?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        // Release private uploads this card owned exclusively; shared digests
+        // stay (the same rule as party erasure).
+        for upload_id in &uploads {
+            sqlx::query(
+                "DELETE FROM blob_upload WHERE id=? AND card_private=1 \
+                 AND id NOT IN (SELECT blob_upload_id FROM material_version WHERE blob_upload_id IS NOT NULL)",
+            )
+            .bind(upload_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        sqlx::query("DELETE FROM blob WHERE sha256 NOT IN (SELECT blob_sha256 FROM blob_upload UNION SELECT blob_sha256 FROM material_version WHERE blob_sha256 IS NOT NULL UNION SELECT blob_sha256 FROM blob_snapshot_pin UNION SELECT blob_sha256 FROM blob_upload_lease)")
+            .execute(&mut *tx)
+            .await?;
+        // A paired legacy row (backfilled entities) keeps its own referencers;
+        // a foreign-key violation means drafted materials still use it.
+        if let Err(reason) = sqlx::query("DELETE FROM resource WHERE id=?")
+            .execute(&mut *tx)
+            .await
+        {
+            if reason
+                .as_database_error()
+                .is_some_and(|error| error.is_foreign_key_violation())
+            {
+                return Ok(EraseOutcome::Refused(ErasureRefusal::InMaterials));
+            }
+            return Err(reason.into());
+        }
+        sqlx::query(
+            "INSERT OR REPLACE INTO erasure_tombstone(entity_id,erased_at,source_generation) VALUES(?,?,?)",
+        )
+        .bind(id)
+        .bind(now_utc())
+        .bind(self.epoch())
+        .execute(&mut *tx)
+        .await?;
+        write_event(
+            &mut tx,
+            "resource",
+            id,
+            revision + 1,
+            "resource.erased",
+            json!({"erased": true}),
+        )
+        .await?;
+        let result = json!({"id": id, "erased": true});
+        receipt_store(&mut tx, key, &canonical, 200, &result).await?;
+        tx.commit().await?;
+        Ok(EraseOutcome::Erased(result))
+    }
+
     /// Full read of one board card (entity kind resource) with typed body,
     /// notes and revisions, for the shared editor.
     pub async fn resource_card_read(&self, id: &str) -> Result<Value, WorkspaceError> {
@@ -793,7 +989,7 @@ impl Workspace {
         let limit = limit.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE);
         let mut read = self.pool().begin().await?;
         let columns: Vec<ResourceColumn> = sqlx::query_as(
-            "SELECT id,title,position,revision FROM resource_column ORDER BY position,id",
+            "SELECT id,title,position,revision,kind FROM resource_column ORDER BY position,id",
         )
         .fetch_all(&mut *read)
         .await?;
@@ -860,6 +1056,7 @@ impl Workspace {
                 subtype,
                 title,
                 readiness,
+                revision: entity_rev,
                 placement: Some(PlacementView {
                     column_id,
                     position,
@@ -933,6 +1130,7 @@ impl Workspace {
                         subtype,
                         title,
                         readiness,
+                        revision,
                         legacy: false,
                         counts: ResourceCounts {
                             files,
@@ -1406,7 +1604,7 @@ impl Workspace {
                 .fetch_one(&mut *tx)
                 .await?;
         let id = new_id("resource-column");
-        sqlx::query("INSERT INTO resource_column(id,title,position) VALUES(?,?,?)")
+        sqlx::query("INSERT INTO resource_column(id,title,position,kind) VALUES(?,?,?,'owner')")
             .bind(&id)
             .bind(title)
             .bind(position)
@@ -1417,6 +1615,7 @@ impl Workspace {
             title: title.to_owned(),
             position,
             revision: 1,
+            kind: "owner".to_owned(),
         };
         let result = json!(&column);
         write_event(
@@ -1431,6 +1630,62 @@ impl Workspace {
         receipt_store(&mut tx, key, &canonical, 201, &result).await?;
         tx.commit().await?;
         Ok(json!({"_replay_status": 201, "result": result}))
+    }
+
+    /// Rename a list in place under its revision guard.
+    pub async fn rename_resource_column(
+        &self,
+        id: &str,
+        input: &RenameResourceColumn,
+        key: &str,
+    ) -> Result<Value, WorkspaceError> {
+        let title = input.title.trim();
+        if !(1..=100).contains(&title.chars().count()) {
+            return Err(WorkspaceError::Invalid(
+                "Enter a list name of 1–100 characters.".into(),
+            ));
+        }
+        let canonical = canonical_digest("PATCH", &format!("/resource-board/columns/{id}"), input);
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(replay) = receipt_lookup(&mut tx, key, &canonical).await? {
+            tx.commit().await?;
+            return Ok(json!({"_replay_status": replay.status, "result": replay.body}));
+        }
+        let revision: i64 = sqlx::query_scalar("SELECT revision FROM resource_column WHERE id=?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(WorkspaceError::NotFound)?;
+        if revision != input.expected_revision {
+            return Err(WorkspaceError::StaleRevision);
+        }
+        sqlx::query(
+            "UPDATE resource_column SET title=?,revision=revision+1 WHERE id=? AND revision=?",
+        )
+        .bind(title)
+        .bind(id)
+        .bind(revision)
+        .execute(&mut *tx)
+        .await?;
+        let column: ResourceColumn = sqlx::query_as(
+            "SELECT id,title,position,revision,kind FROM resource_column WHERE id=?",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        write_event(
+            &mut tx,
+            "resource_column",
+            id,
+            column.revision,
+            "resource_column.renamed",
+            json!({"title": title}),
+        )
+        .await?;
+        let result = json!(&column);
+        receipt_store(&mut tx, key, &canonical, 200, &result).await?;
+        tx.commit().await?;
+        Ok(json!({"_replay_status": 200, "result": result}))
     }
 
     /// Remove a list atomically and retain its resources in the off-board picker.
@@ -1812,91 +2067,6 @@ impl Workspace {
 }
 
 impl Workspace {
-    /// Create an owner-authored edge with its basis (graph editor "link
-    /// existing" path). Endpoints must be real entities and the active edge
-    /// must be unique per (from, verb, to).
-    pub async fn create_owner_edge(
-        &self,
-        input: &EdgeInput,
-        key: &str,
-    ) -> Result<Value, WorkspaceError> {
-        let verb = input.verb.trim();
-        if verb.is_empty() || verb.len() > MAX_VERB_BYTES {
-            return Err(WorkspaceError::Invalid(
-                "relationship verb must contain 1–120 bytes".into(),
-            ));
-        }
-        let basis = input.basis.trim();
-        if basis.is_empty() || basis.len() > MAX_BASIS_BYTES {
-            return Err(WorkspaceError::Invalid(
-                "relationship basis must contain 1–2000 bytes".into(),
-            ));
-        }
-        if input.from_id == input.to_id {
-            return Err(WorkspaceError::Invalid(
-                "an edge cannot connect a card to itself".into(),
-            ));
-        }
-        let canonical = canonical_digest("POST", "/edges", input);
-        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
-        if let Some(replay) = receipt_lookup(&mut tx, key, &canonical).await? {
-            tx.commit().await?;
-            return Ok(json!({"_replay_status": replay.status, "result": replay.body}));
-        }
-        for endpoint in [&input.from_id, &input.to_id] {
-            let exists: Option<i64> =
-                sqlx::query_scalar("SELECT 1 FROM entity WHERE id=? AND readiness <> 'retired'")
-                    .bind(endpoint)
-                    .fetch_optional(&mut *tx)
-                    .await?;
-            if exists.is_none() {
-                return Err(WorkspaceError::NotFound);
-            }
-        }
-        let duplicate: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM edge WHERE state='active' AND from_id=? AND verb=? AND to_id=?",
-        )
-        .bind(&input.from_id)
-        .bind(verb)
-        .bind(&input.to_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if duplicate.is_some() {
-            return Err(WorkspaceError::Invalid(
-                "this relationship already exists".into(),
-            ));
-        }
-        let id = new_id(&digest(
-            format!("{}\0{verb}\0{}", input.from_id, input.to_id).as_bytes(),
-        ));
-        sqlx::query(
-            "INSERT INTO edge(id,from_id,verb,to_id,state,revision,basis,author_kind,created_at) \
-             VALUES(?,?,?,?, 'active',1,?, 'owner',?)",
-        )
-        .bind(&id)
-        .bind(&input.from_id)
-        .bind(verb)
-        .bind(&input.to_id)
-        .bind(basis)
-        .bind(now_utc())
-        .execute(&mut *tx)
-        .await?;
-        write_event(
-            &mut tx,
-            "edge",
-            &id,
-            1,
-            "edge.created",
-            json!({"from_id": input.from_id, "verb": verb, "to_id": input.to_id}),
-        )
-        .await?;
-        let edge = edge_view(&mut tx, &id).await?;
-        let result = json!({"edge": edge});
-        receipt_store(&mut tx, key, &canonical, 201, &result).await?;
-        tx.commit().await?;
-        Ok(json!({"_replay_status": 201, "result": result}))
-    }
-
     /// Correct an owner-authored edge (verb/basis) under its revision.
     pub async fn update_owner_edge(
         &self,
@@ -1997,46 +2167,6 @@ impl Workspace {
         receipt_store(&mut tx, key, &canonical, 200, &result).await?;
         tx.commit().await?;
         Ok(result)
-    }
-
-    /// Detach a mutable owner edge (retraction): both endpoints survive.
-    pub async fn detach_edge(&self, id: &str, key: &str) -> Result<(), WorkspaceError> {
-        let canonical = canonical_digest("DELETE", &format!("/edges/{id}"), &json!({}));
-        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
-        if let Some(replay) = receipt_lookup(&mut tx, key, &canonical).await? {
-            tx.commit().await?;
-            if replay.status == 204 {
-                return Ok(());
-            }
-            return Err(WorkspaceError::Invalid("edge retraction replay".into()));
-        }
-        let row: Option<(String, String, String, i64)> = sqlx::query_as(
-            "SELECT from_id,verb,to_id,revision FROM edge WHERE id=? AND state='active'",
-        )
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let Some((from_id, verb, to_id, revision)) = row else {
-            return Err(WorkspaceError::NotFound);
-        };
-        let next_revision = revision + 1;
-        sqlx::query("UPDATE edge SET state='retracted',revision=? WHERE id=?")
-            .bind(next_revision)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        write_event(
-            &mut tx,
-            "edge",
-            id,
-            next_revision,
-            "edge.detached",
-            json!({"from_id": from_id, "verb": verb, "to_id": to_id}),
-        )
-        .await?;
-        receipt_store(&mut tx, key, &canonical, 204, &json!({})).await?;
-        tx.commit().await?;
-        Ok(())
     }
 
     /// Attachments for an entity, with sharing/review flags from the upload.
@@ -2520,6 +2650,41 @@ async fn remove_resource_column(
         Err(response) => return *response,
     };
     command_handler(state.workspace.remove_resource_column(&id, &input, &key)).await
+}
+
+async fn rename_resource_column(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(input): Json<RenameResourceColumn>,
+) -> Response {
+    let key = match command_key(&state, &headers).await {
+        Ok(key) => key,
+        Err(response) => return *response,
+    };
+    command_handler(state.workspace.rename_resource_column(&id, &input, &key)).await
+}
+
+async fn erase_resource_card(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let key = match command_key(&state, &headers).await {
+        Ok(key) => key,
+        Err(response) => return *response,
+    };
+    match state.workspace.erase_resource_card(&id, &key).await {
+        Ok(EraseOutcome::Erased(result)) => (StatusCode::OK, Json(result)).into_response(),
+        Ok(EraseOutcome::Refused(refusal)) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": {"code": refusal.code(), "message": refusal.message(), "details": []}
+            })),
+        )
+            .into_response(),
+        Err(error) => rb_error(error),
+    }
 }
 
 async fn get_resource_card(

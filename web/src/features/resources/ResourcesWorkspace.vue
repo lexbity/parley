@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/* global DragEvent, Event, HTMLElement, HTMLDialogElement, HTMLSelectElement, MediaQueryList, BeforeUnloadEvent, BroadcastChannel, MessageEvent */
+/* global DragEvent, Event, HTMLElement, HTMLDialogElement, HTMLInputElement, HTMLSelectElement, MediaQueryList, BeforeUnloadEvent, BroadcastChannel, Element, MessageEvent */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ApiError, newOperationKey, parley, type DeliveryRow, type EntityAttachment, type EntityCard, type GraphSnapshot, type PlacementView, type ResourceBoardSnapshot, type ResourceColumn } from '../../api/client';
 import { kindLabel } from '../parties/relations';
@@ -55,13 +55,37 @@ const boardHeading = ref<HTMLElement | null>(null);
 const layoutBusy = ref(false);
 const moveBusy = ref(false);
 const boardWriteBusy = ref(false);
-const composer = ref<{ kind: 'card'; columnId: string } | { kind: 'list' } | null>(null);
+const composer = ref<{ kind: 'list' } | null>(null);
 const composerTitle = ref('');
 const displacedCardTitle = ref('');
 const composerError = ref('');
 const composerInput = ref<HTMLElement | null>(null);
 const addList = ref<HTMLElement | null>(null);
+const cardDrafts = ref<Record<string, string>>({});
+const cardErrors = ref<Record<string, string>>({});
+const collapsedLists = ref<string[]>([]);
+const laneMenu = ref('');
+const renamingColumnId = ref('');
+const columnRenameDraft = ref('');
+const renameInput = ref<HTMLInputElement | null>(null);
+const titleEditId = ref('');
+const titleDraft = ref('');
+const titleError = ref('');
+const titleBusy = ref(false);
+const titleInput = ref<HTMLInputElement | null>(null);
+const systemRemovalDialog = ref<HTMLDialogElement | null>(null);
+const systemRemovalTarget = ref<ResourceColumn | null>(null);
+const systemRemovalTyped = ref('');
+const systemRemovalError = ref('');
+const systemRemovalInput = ref<HTMLInputElement | null>(null);
+let systemRemovalTrigger: HTMLElement | null = null;
+let titleBase: EntityCard | null = null;
+let cardIntent: { signature: string; key: string } | null = null;
+let renameIntent: { signature: string; key: string } | null = null;
+let eraseIntent: { signature: string; key: string } | null = null;
 let composerTrigger: HTMLElement | null = null;
+let columnRenameTrigger: HTMLElement | null = null;
+let titleEditTrigger: HTMLElement | null = null;
 let composerIntent: { signature: string; key: string } | null = null;
 let removalIntent: { signature: string; key: string } | null = null;
 let retirementIntent: { signature: string; key: string } | null = null;
@@ -174,7 +198,7 @@ function remember() {
   if (!key || props.active === false) return;
   try {
     globalThis.sessionStorage.setItem(key, JSON.stringify({
-      selected: selectedId.value, root: rootId.value, inspected: inspectedId.value, edge: edgeId.value, view: view.value, filter: graphFilter.value, scrollTop: boardViewport.value?.scrollTop ?? 0,
+      selected: selectedId.value, root: rootId.value, inspected: inspectedId.value, edge: edgeId.value, view: view.value, filter: graphFilter.value, collapsed: collapsedLists.value, scrollTop: boardViewport.value?.scrollTop ?? 0,
     }));
   } catch { /* View state remains in memory. */ }
 }
@@ -189,6 +213,7 @@ function restore() {
     edgeId.value = typeof data.edge === 'string' ? data.edge : null;
     if (['board', 'connections', 'details'].includes(data.view)) view.value = data.view;
     if (['all', 'resources', 'parties', 'activity'].includes(data.filter)) graphFilter.value = data.filter;
+    if (Array.isArray(data.collapsed)) collapsedLists.value = data.collapsed.filter((id: unknown) => typeof id === 'string');
     if (typeof data.scrollTop === 'number') initialBoardScroll = data.scrollTop;
   } catch { /* Use the first visible card. */ }
 }
@@ -219,10 +244,7 @@ async function refreshBoard() {
       cursor = page.next_cursor;
     }
     snapshot.value = { ...next, cards: [...cards.values()] };
-    const draft = composer.value;
-    if (draft?.kind === 'card' && !next.columns.some(column => column.id === draft.columnId) && !boardWriteBusy.value) {
-      retainDisplacedCard();
-    }
+    if (!boardWriteBusy.value) retainDisplacedDrafts(next.columns.map(column => column.id));
     eventCursor = String(next.event_cursor);
     if (initialBoardScroll) {
       await nextTick();
@@ -416,15 +438,18 @@ function stay(showErrors = false) {
   void nextTick(() => showErrors ? form.value?.focusTitle() : restoreInvocation(promptInvocation));
 }
 function closeEditor() { requestSwitch(() => restoreInvocation(invocation)); }
-function openCreate(column: string) {
+function openCreate(column: string, draft = '') {
   const trigger = composerTrigger;
-  const title = composerTitle.value;
+  const title = draft.trim();
 
   requestSwitch(() => {
     invocation = trigger;
     editorKey.value += 1;
     editor.value = { mode: 'create', column, title };
-    cancelComposer(false);
+    composer.value = null;
+    composerTitle.value = '';
+    composerError.value = '';
+    composerIntent = null;
     void showModalEditor();
   });
 }
@@ -532,15 +557,17 @@ function startComposer(next: NonNullable<typeof composer.value>, event: Event) {
   requestSwitch(() => {
     composerTrigger = trigger;
     composer.value = next;
-    composerTitle.value = next.kind === 'card' ? displacedCardTitle.value : '';
-    if (next.kind === 'card') displacedCardTitle.value = '';
+    composerTitle.value = '';
     composerError.value = '';
     composerIntent = null;
     focusComposer();
   });
 }
-function assignComposerInput(element: unknown) {
-  if (element instanceof HTMLElement) composerInput.value = element;
+function setRenameInput(element: unknown) {
+  renameInput.value = element instanceof HTMLInputElement ? element : null;
+}
+function setTitleInput(element: unknown) {
+  titleInput.value = element instanceof HTMLInputElement ? element : null;
 }
 function focusComposer() {
   void nextTick(() => {
@@ -555,14 +582,64 @@ function cancelComposer(restoreFocus = true) {
   composerIntent = null;
   if (restoreFocus) void nextTick(() => restoreInvocation(composerTrigger));
 }
-function retainDisplacedCard() {
-  displacedCardTitle.value = composerTitle.value;
-  cancelComposer(false);
+function retainDisplacedDrafts(living: string[]) {
+  const gone = Object.keys(cardDrafts.value).filter(id => !living.includes(id) && cardDrafts.value[id]);
+  for (const id of Object.keys(cardDrafts.value)) {
+    if (!living.includes(id)) {
+      if (cardDrafts.value[id] && !displacedCardTitle.value) displacedCardTitle.value = cardDrafts.value[id];
+      delete cardDrafts.value[id];
+      delete cardErrors.value[id];
+      collapsedLists.value = collapsedLists.value.filter(item => item !== id);
+    }
+  }
+  if (gone.length) displacedCardTitle.value = gone.map(id => cardDrafts.value[id] ?? '').find(Boolean) ?? displacedCardTitle.value;
+}
+const cardInputs = new Map<string, HTMLInputElement>();
+function assignCardInput(columnId: string, element: unknown) {
+  if (element instanceof HTMLInputElement) cardInputs.set(columnId, element);
+  else cardInputs.delete(columnId);
+}
+function focusCardInput(columnId: string) {
+  void nextTick(() => cardInputs.get(columnId)?.focus());
+}
+function adoptDisplacedDraft(columnId: string) {
+  if (!displacedCardTitle.value || cardDrafts.value[columnId]) return;
+  cardDrafts.value[columnId] = displacedCardTitle.value;
+  displacedCardTitle.value = '';
+}
+function clearCardDraft(columnId: string) {
+  cardDrafts.value[columnId] = '';
+  cardErrors.value[columnId] = '';
+}
+async function addCard(columnId: string) {
+  const title = (cardDrafts.value[columnId] ?? '').trim();
+  if (!title || boardWriteBusy.value || boardLoading.value) return;
+  const epoch = parley.workspaceEpoch;
+  const signature = JSON.stringify([epoch, columnId, title]);
+  if (cardIntent?.signature !== signature) cardIntent = { signature, key: newOperationKey() };
+  const { key } = cardIntent;
+  boardWriteBusy.value = true;
+  cardErrors.value[columnId] = '';
+  error.value = '';
+  try {
+    await parley.commitResourceCard({ create: { title, subtype: 'artifact', body: {}, placement: { column_id: columnId } } }, key);
+    if (epoch !== parley.workspaceEpoch) return;
+    cardIntent = null;
+    cardDrafts.value[columnId] = '';
+    status.value = 'Card added.';
+    notify();
+    await refreshBoard();
+  } catch (reason) {
+    if (epoch === parley.workspaceEpoch) cardErrors.value[columnId] = message(reason, 'Could not add the card.');
+  } finally {
+    boardWriteBusy.value = false;
+    if (epoch === parley.workspaceEpoch && snapshot.value?.columns.some(column => column.id === columnId)) focusCardInput(columnId);
+  }
 }
 async function saveComposer() {
   const draft = composer.value;
   const title = composerTitle.value.trim();
-  if (!draft || !title || boardWriteBusy.value || boardLoading.value) return;
+  if (!draft || draft.kind !== 'list' || !title || boardWriteBusy.value || boardLoading.value) return;
   const epoch = parley.workspaceEpoch;
   const signature = JSON.stringify([epoch, draft, title]);
   if (composerIntent?.signature !== signature) composerIntent = { signature, key: newOperationKey() };
@@ -571,31 +648,123 @@ async function saveComposer() {
   composerError.value = '';
   error.value = '';
   try {
-    if (draft.kind === 'card') {
-      await parley.commitResourceCard({ create: { title, subtype: 'artifact', body: {}, placement: { column_id: draft.columnId } } }, key);
-    } else {
-      await parley.createResourceColumn({ title }, key);
-    }
+    await parley.createResourceColumn({ title }, key);
     if (epoch !== parley.workspaceEpoch) return;
-    status.value = draft.kind === 'card' ? 'Card added.' : 'List added.';
+    status.value = 'List added.';
     composerIntent = null;
     composerTitle.value = '';
     notify();
     await refreshBoard();
   } catch (reason) {
-    if (epoch === parley.workspaceEpoch) composerError.value = message(reason, draft.kind === 'card' ? 'Could not add the card.' : 'Could not add the list.');
+    if (epoch === parley.workspaceEpoch) composerError.value = message(reason, 'Could not add the list.');
   } finally {
     boardWriteBusy.value = false;
-    if (draft === composer.value) {
-      if (draft.kind === 'card' && !snapshot.value?.columns.some(column => column.id === draft.columnId)) retainDisplacedCard();
-      else focusComposer();
-    }
+    if (composer.value === draft) focusComposer();
   }
 }
-async function removeColumn(column: ResourceColumn) {
+function toggleLaneMenu(columnId: string) {
+  laneMenu.value = laneMenu.value === columnId ? '' : columnId;
+}
+function closeLaneMenu() {
+  laneMenu.value = '';
+}
+function onDocumentPointer(event: Event) {
+  if (!laneMenu.value) return;
+  if (event.target instanceof Element && event.target.closest('[data-lane-menu]')) return;
+  closeLaneMenu();
+}
+function startColumnRename(column: ResourceColumn, event: Event) {
+  const trigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : focused();
+  closeLaneMenu();
+  requestSwitch(() => {
+    columnRenameTrigger = trigger;
+    renamingColumnId.value = column.id;
+    columnRenameDraft.value = column.title;
+    void nextTick(() => renameInput.value?.focus());
+  });
+}
+function cancelColumnRename() {
+  renamingColumnId.value = '';
+  columnRenameDraft.value = '';
+  void nextTick(() => restoreInvocation(columnRenameTrigger));
+}
+async function saveColumnRename() {
+  const column = snapshot.value?.columns.find(item => item.id === renamingColumnId.value);
+  const title = columnRenameDraft.value.trim();
+  if (!column || !title || boardWriteBusy.value || boardLoading.value) return;
+  const epoch = parley.workspaceEpoch;
+  const signature = JSON.stringify([epoch, column.id, column.revision, title]);
+  if (renameIntent?.signature !== signature) renameIntent = { signature, key: newOperationKey() };
+  boardWriteBusy.value = true;
+  error.value = '';
+  try {
+    await parley.renameResourceColumn(column.id, { title, expected_revision: column.revision }, renameIntent.key);
+    if (epoch !== parley.workspaceEpoch) return;
+    renameIntent = null;
+    status.value = 'List renamed.';
+    notify();
+    await refreshBoard();
+    if (epoch === parley.workspaceEpoch) {
+      renamingColumnId.value = '';
+      columnRenameDraft.value = '';
+      await nextTick();
+      restoreInvocation(columnRenameTrigger);
+    }
+  } catch (reason) {
+    if (epoch !== parley.workspaceEpoch) return;
+    error.value = message(reason, 'Could not rename the list.');
+    if (reason instanceof ApiError && [404, 412].includes(reason.status)) {
+      await refreshBoard();
+      cancelColumnRename();
+    }
+  } finally {
+    boardWriteBusy.value = false;
+  }
+}
+function requestColumnRemoval(column: ResourceColumn, event: Event) {
+  const trigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : focused();
+  closeLaneMenu();
+  if (column.kind === 'system') {
+    requestSwitch(() => {
+      systemRemovalTrigger = trigger;
+      systemRemovalTarget.value = column;
+      systemRemovalTyped.value = '';
+      systemRemovalError.value = '';
+      void nextTick(() => {
+        const dialog = systemRemovalDialog.value;
+        if (dialog?.isConnected && typeof dialog.showModal === 'function') dialog.showModal();
+        systemRemovalInput.value?.focus();
+      });
+    });
+    return;
+  }
+  requestSwitch(() => { void confirmColumnRemoval(column, trigger); });
+}
+function cancelSystemRemoval() {
+  if (systemRemovalDialog.value?.open) systemRemovalDialog.value.close();
+  systemRemovalTarget.value = null;
+  systemRemovalTyped.value = '';
+  systemRemovalError.value = '';
+  restoreInvocation(systemRemovalTrigger);
+}
+async function confirmSystemRemoval() {
+  const column = systemRemovalTarget.value;
+  if (!column || boardWriteBusy.value) return;
+  if (systemRemovalTyped.value !== column.title) {
+    systemRemovalError.value = 'Type the list name exactly as shown to confirm.';
+    return;
+  }
+  if (systemRemovalDialog.value?.open) systemRemovalDialog.value.close();
+  systemRemovalTarget.value = null;
+  await confirmColumnRemoval(column, systemRemovalTrigger, true);
+}
+async function confirmColumnRemoval(column: ResourceColumn, trigger: HTMLElement | null, skipConfirm = false) {
   const count = cardsByColumn.value.get(column.id)?.length ?? 0;
   const description = count ? ` ${count === 1 ? 'Its card will' : 'Its cards will'} move to Find resource, where you can add them to another list.` : '';
-  if (boardWriteBusy.value || boardLoading.value || !globalThis.confirm(`Remove “${column.title}”?${description}`)) return;
+  if (boardWriteBusy.value || boardLoading.value || (!skipConfirm && !globalThis.confirm(`Remove “${column.title}”?${description}`))) {
+    restoreInvocation(trigger);
+    return;
+  }
   const epoch = parley.workspaceEpoch;
   const signature = JSON.stringify([epoch, column.id, column.revision]);
   if (removalIntent?.signature !== signature) removalIntent = { signature, key: newOperationKey() };
@@ -615,9 +784,11 @@ async function removeColumn(column: ResourceColumn) {
   } finally {
     boardWriteBusy.value = false;
     if (!snapshot.value?.columns.some(item => item.id === column.id)) {
-      if (composer.value?.kind === 'card' && composer.value.columnId === column.id) retainDisplacedCard();
+      retainDisplacedDrafts(snapshot.value?.columns.map(item => item.id) ?? []);
       await nextTick();
       restoreInvocation(addList.value);
+    } else if (trigger?.isConnected) {
+      restoreInvocation(trigger);
     }
   }
 }
@@ -792,11 +963,11 @@ async function download(file: EntityAttachment) {
     globalThis.setTimeout(() => globalThis.URL.revokeObjectURL(url), 30_000);
   } catch (reason) { detailsError.value = message(reason, 'Could not download this file.'); }
 }
-function retire(card: CardSummary) {
-  requestSwitch(() => { void confirmRetirement(card); });
+function archive(card: CardSummary) {
+  requestSwitch(() => { void confirmArchive(card); });
 }
-async function confirmRetirement(card: CardSummary) {
-  if (boardWriteBusy.value || !globalThis.confirm(`Delete “${card.title}”? This retires the resource from the board and picker. Its delivery history is preserved.`)) return;
+async function confirmArchive(card: CardSummary) {
+  if (boardWriteBusy.value || !globalThis.confirm(`Archive “${card.title}”? This removes it from the board and picker. Its delivery history is preserved.`)) return;
   const trigger = focused();
   const epoch = parley.workspaceEpoch;
   const signature = JSON.stringify([epoch, card.resource_id]);
@@ -811,13 +982,115 @@ async function confirmRetirement(card: CardSummary) {
     if (rootId.value === card.resource_id) rootId.value = null;
     if (inspectedId.value === card.resource_id) inspectedId.value = null;
     if (props.routeId === card.resource_id) emit('navigate', '/resources');
-    status.value = 'Card deleted.';
+    status.value = 'Card archived.';
     notify();
     await refresh();
     await nextTick();
     if (trigger && !trigger.isConnected) restoreInvocation(boardHeading.value);
-  } catch (reason) { error.value = message(reason, 'Could not delete the card.'); }
+  } catch (reason) { error.value = message(reason, 'Could not archive the card.'); }
   finally { boardWriteBusy.value = false; }
+}
+function erase(card: CardSummary) {
+  requestSwitch(() => { void confirmErase(card); });
+}
+async function confirmErase(card: CardSummary) {
+  if (boardWriteBusy.value || !globalThis.confirm(`Erase “${card.title}” permanently? This deletes the card, its files and its relationships. Delivered or cited cards refuse erasure — archive those instead.`)) return;
+  const trigger = focused();
+  const epoch = parley.workspaceEpoch;
+  const signature = JSON.stringify([epoch, card.resource_id]);
+  if (eraseIntent?.signature !== signature) eraseIntent = { signature, key: newOperationKey() };
+  boardWriteBusy.value = true;
+  error.value = '';
+  try {
+    await parley.eraseResourceCard(card.resource_id, eraseIntent.key);
+    if (epoch !== parley.workspaceEpoch) return;
+    eraseIntent = null;
+    if (selectedId.value === card.resource_id) selectedId.value = null;
+    if (rootId.value === card.resource_id) rootId.value = null;
+    if (inspectedId.value === card.resource_id) inspectedId.value = null;
+    if (props.routeId === card.resource_id) emit('navigate', '/resources');
+    status.value = 'Card erased.';
+    notify();
+    await refresh();
+    await nextTick();
+    if (trigger && !trigger.isConnected) restoreInvocation(boardHeading.value);
+  } catch (reason) {
+    error.value = message(reason, 'Could not erase the card.');
+    if (reason instanceof ApiError && reason.status === 409) status.value = '';
+  } finally { boardWriteBusy.value = false; }
+}
+async function startTitleEdit(card: CardSummary, event: Event) {
+  if (titleBusy.value) return;
+  if (titleEditId.value === card.resource_id) {
+    titleInput.value?.focus();
+    return;
+  }
+  const trigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : focused();
+  requestSwitch(() => {
+    titleEditTrigger = trigger;
+    titleEditId.value = card.resource_id;
+    titleDraft.value = card.title;
+    titleError.value = '';
+    titleBase = null;
+    void nextTick(() => titleInput.value?.focus());
+    void parley.getEntityCard(card.resource_id).then(loaded => {
+      if (titleEditId.value !== card.resource_id) return;
+      titleBase = loaded;
+      titleDraft.value = loaded.title;
+    }).catch(reason => {
+      if (titleEditId.value === card.resource_id) titleError.value = message(reason, 'Could not load this card for renaming.');
+    });
+  });
+}
+function cancelTitleEdit() {
+  titleEditId.value = '';
+  titleDraft.value = '';
+  titleError.value = '';
+  titleBase = null;
+  void nextTick(() => restoreInvocation(titleEditTrigger));
+}
+async function saveTitleEdit() {
+  const summary = resourceById.value.get(titleEditId.value);
+  const title = titleDraft.value.trim();
+  if (!summary || titleBusy.value) return cancelTitleEdit();
+  if (!title || title.length > 240) {
+    titleError.value = title ? 'Keep the title within 240 characters.' : 'Enter a title.';
+    return;
+  }
+  if (!titleBase) {
+    titleError.value = 'Loading this card…';
+    return;
+  }
+  if (title === titleBase.title) return cancelTitleEdit();
+  const epoch = parley.workspaceEpoch;
+  titleBusy.value = true;
+  titleError.value = '';
+  try {
+    await parley.commitResourceCard({ edit: { resource_id: summary.resource_id, expected_revision: titleBase.revision, expected_notes_rev: titleBase.notes.revision, title } }, newOperationKey());
+    if (epoch !== parley.workspaceEpoch) return;
+    titleEditId.value = '';
+    titleDraft.value = '';
+    titleBase = null;
+    status.value = 'Card renamed.';
+    notify();
+    await refreshBoard();
+    if (epoch === parley.workspaceEpoch) await nextTick();
+    restoreInvocation(titleEditTrigger);
+  } catch (reason) {
+    if (epoch !== parley.workspaceEpoch) return;
+    titleError.value = message(reason, 'Could not rename the card.');
+    if (reason instanceof ApiError && [404, 412].includes(reason.status)) await refreshBoard();
+  } finally { titleBusy.value = false; }
+}
+function isCollapsed(column: ResourceColumn) {
+  return !(cardsByColumn.value.get(column.id)?.length) && collapsedLists.value.includes(column.id);
+}
+function expandList(columnId: string) {
+  collapsedLists.value = collapsedLists.value.filter(id => id !== columnId);
+}
+function collapseList(columnId: string) {
+  if (!collapsedLists.value.includes(columnId)) collapsedLists.value = [...collapsedLists.value, columnId];
+  closeLaneMenu();
 }
 async function searchParties(query: string) {
   const own = ++partyGeneration;
@@ -835,7 +1108,8 @@ async function searchParties(query: string) {
   }
 }
 function onBeforeUnload(event: BeforeUnloadEvent) {
-  if (!editorDirty.value && !composerTitle.value.trim() && !displacedCardTitle.value) return;
+  const drafting = Object.values(cardDrafts.value).some(title => title.trim());
+  if (!editorDirty.value && !drafting && !composerTitle.value.trim() && !displacedCardTitle.value) return;
   event.preventDefault();
   event.returnValue = true;
 }
@@ -848,8 +1122,19 @@ function workspaceChanged() {
     displacedCardTitle.value = '';
     composerError.value = '';
     composerIntent = null;
+    cardIntent = null;
+    renameIntent = null;
+    eraseIntent = null;
     removalIntent = null;
     retirementIntent = null;
+    cardDrafts.value = {};
+    cardErrors.value = {};
+    collapsedLists.value = [];
+    laneMenu.value = '';
+    renamingColumnId.value = '';
+    columnRenameDraft.value = '';
+    if (titleEditId.value) cancelTitleEdit();
+    if (systemRemovalDialog.value?.open) cancelSystemRemoval();
     if (graphRemovalDialog.value?.open) closeGraphRemoval();
   }
   if (editorDirty.value) form.value?.quarantine();
@@ -886,6 +1171,7 @@ onMounted(() => {
   globalThis.addEventListener('parley:workspace-reloaded', workspaceChanged);
   globalThis.addEventListener('parley:workspace-changed', workspaceChanged);
   globalThis.addEventListener('parley:workspace-quarantined', workspaceChanged);
+  globalThis.document.addEventListener('pointerdown', onDocumentPointer);
   channelEpoch = parley.workspaceEpoch;
   if (typeof BroadcastChannel !== 'undefined') {
     channel = new BroadcastChannel('parley-resource-board');
@@ -903,6 +1189,7 @@ onBeforeUnmount(() => {
   globalThis.removeEventListener('parley:workspace-reloaded', workspaceChanged);
   globalThis.removeEventListener('parley:workspace-changed', workspaceChanged);
   globalThis.removeEventListener('parley:workspace-quarantined', workspaceChanged);
+  globalThis.document.removeEventListener('pointerdown', onDocumentPointer);
   channel?.close();
   if (eventTimer) globalThis.clearInterval(eventTimer);
 });
@@ -986,126 +1273,224 @@ defineExpose({ refresh, requestSwitch, hasDraft, columns });
         :aria-busy="boardLoading"
         @scroll.passive="remember"
       >
-        <section
+        <template
           v-for="column in snapshot?.columns ?? []"
           :key="column.id"
-          class="lane"
-          :class="{ 'drop-lane': dropTarget === column.id }"
-          :aria-label="column.title"
-          @dragover.prevent="draggedId && (dropTarget = column.id)"
-          @drop.prevent="drop($event, column.id)"
         >
-          <header class="lane-header">
-            <h3>{{ column.title }} <small>{{ cardsByColumn.get(column.id)?.length ?? 0 }}</small></h3>
-            <button
-              type="button"
-              class="remove-list"
-              :aria-label="'Remove list ' + column.title"
-              :disabled="boardLoading || boardWriteBusy || moveBusy"
-              @click="removeColumn(column)"
+          <button
+            v-if="isCollapsed(column)"
+            type="button"
+            class="lane-pill"
+            :class="{ 'drop-lane': dropTarget === column.id }"
+            :aria-label="'Expand empty list ' + column.title"
+            @click="expandList(column.id)"
+            @dragover.prevent="draggedId && (dropTarget = column.id)"
+            @drop.prevent="expandList(column.id); drop($event, column.id)"
+          >
+            <span class="pill-name">{{ column.title }}</span>
+            <span class="pill-count">0</span>
+          </button>
+          <section
+            v-else
+            class="lane"
+            :class="{ 'drop-lane': dropTarget === column.id }"
+            :aria-label="column.title"
+            @dragover.prevent="draggedId && (dropTarget = column.id)"
+            @drop.prevent="drop($event, column.id)"
+          >
+            <header
+              class="lane-header"
+              data-lane-menu
             >
-              Remove
-            </button>
-          </header>
-          <ul class="tile-list">
-            <li
-              v-for="card in cardsByColumn.get(column.id) ?? []"
-              :key="card.resource_id"
-              class="tile"
-              :class="{ selected: card.resource_id === selectedId, 'drop-card': dropTarget === card.resource_id }"
-              @dragover.stop.prevent="draggedId && (dropTarget = card.resource_id)"
-              @drop.stop.prevent="drop($event, column.id, card.resource_id)"
-            >
-              <button
-                type="button"
-                class="tile-body"
-                draggable="true"
-                :data-resource-id="card.resource_id"
-                :aria-pressed="card.resource_id === selectedId"
-                @click="chooseBoard(card.resource_id)"
-                @dragstart="startDrag($event, card.resource_id)"
-                @dragend="endDrag"
+              <form
+                v-if="renamingColumnId === column.id"
+                class="lane-rename"
+                @submit.prevent="saveColumnRename"
+                @keydown.esc.stop.prevent="cancelColumnRename"
               >
-                <small>{{ resourceLabel(card.subtype) }}</small>
-                <strong>{{ card.title }}</strong>
-                <span class="tile-counts">{{ card.counts.files }} {{ card.counts.files === 1 ? 'file' : 'files' }} · {{ card.counts.connections }} linked<span v-if="card.counts.proposed"> · {{ card.counts.proposed }} proposed</span></span>
-              </button>
-              <div class="tile-actions">
-                <button
-                  type="button"
-                  :aria-label="'Edit ' + card.title"
-                  @click="openEdit(card.resource_id)"
+                <input
+                  :ref="setRenameInput"
+                  v-model="columnRenameDraft"
+                  :aria-label="'Rename list ' + column.title"
+                  maxlength="100"
+                  :disabled="boardWriteBusy"
                 >
-                  Edit
+              </form>
+              <template v-else>
+                <h3>{{ column.title }} <small>{{ cardsByColumn.get(column.id)?.length ?? 0 }}</small></h3>
+                <div class="lane-tools">
+                  <button
+                    type="button"
+                    class="lane-menu-button"
+                    :aria-label="'List actions for ' + column.title"
+                    aria-haspopup="menu"
+                    :aria-expanded="laneMenu === column.id"
+                    :disabled="boardLoading || boardWriteBusy || moveBusy"
+                    @click.stop="toggleLaneMenu(column.id)"
+                  >
+                    <span aria-hidden="true">…</span>
+                  </button>
+                  <ul
+                    v-if="laneMenu === column.id"
+                    class="lane-menu"
+                    role="menu"
+                    :aria-label="'List actions for ' + column.title"
+                  >
+                    <li role="none">
+                      <button
+                        role="menuitem"
+                        type="button"
+                        @click="startColumnRename(column, $event)"
+                      >
+                        Rename list
+                      </button>
+                    </li>
+                    <li role="none">
+                      <button
+                        role="menuitem"
+                        type="button"
+                        :disabled="boardWriteBusy || moveBusy"
+                        @click="requestColumnRemoval(column, $event)"
+                      >
+                        Remove list
+                      </button>
+                    </li>
+                    <li
+                      v-if="!cardsByColumn.get(column.id)?.length"
+                      role="none"
+                    >
+                      <button
+                        role="menuitem"
+                        type="button"
+                        @click="collapseList(column.id)"
+                      >
+                        Collapse
+                      </button>
+                    </li>
+                  </ul>
+                </div>
+              </template>
+            </header>
+            <ul class="tile-list">
+              <li
+                v-for="card in cardsByColumn.get(column.id) ?? []"
+                :key="card.resource_id"
+                class="tile"
+                :class="{ selected: card.resource_id === selectedId, 'drop-card': dropTarget === card.resource_id }"
+                @dragover.stop.prevent="draggedId && (dropTarget = card.resource_id)"
+                @drop.stop.prevent="drop($event, column.id, card.resource_id)"
+              >
+                <div
+                  class="tile-body"
+                  :draggable="titleEditId !== card.resource_id"
+                  :data-resource-id="card.resource_id"
+                  :role="titleEditId === card.resource_id ? undefined : 'button'"
+                  :tabindex="titleEditId === card.resource_id ? -1 : 0"
+                  :aria-pressed="titleEditId === card.resource_id ? undefined : card.resource_id === selectedId"
+                  @click="chooseBoard(card.resource_id)"
+                  @keydown.enter.prevent="titleEditId !== card.resource_id && chooseBoard(card.resource_id)"
+                  @dragstart="startDrag($event, card.resource_id)"
+                  @dragend="endDrag"
+                >
+                  <small>{{ resourceLabel(card.subtype) }}</small>
+                  <input
+                    v-if="titleEditId === card.resource_id"
+                    :ref="setTitleInput"
+                    v-model="titleDraft"
+                    :aria-label="'Rename card ' + card.title"
+                    maxlength="240"
+                    :disabled="titleBusy"
+                    @click.stop
+                    @keydown.enter.prevent="saveTitleEdit"
+                    @keydown.esc.prevent="cancelTitleEdit"
+                  >
+                  <button
+                    v-else
+                    type="button"
+                    class="tile-title"
+                    :aria-label="'Rename ' + card.title"
+                    @dblclick.stop="startTitleEdit(card, $event)"
+                    @keydown.enter.prevent.stop="startTitleEdit(card, $event)"
+                  >
+                    {{ card.title }}
+                  </button>
+                  <p
+                    v-if="titleEditId === card.resource_id && titleError"
+                    role="alert"
+                  >
+                    {{ titleError }}
+                  </p>
+                  <span class="tile-counts">{{ card.counts.files }} {{ card.counts.files === 1 ? 'file' : 'files' }} · {{ card.counts.connections }} linked<span v-if="card.counts.proposed"> · {{ card.counts.proposed }} proposed</span></span>
+                </div>
+                <div class="tile-actions">
+                  <button
+                    type="button"
+                    :aria-label="'Edit ' + card.title"
+                    @click="openEdit(card.resource_id)"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    class="retire"
+                    :aria-label="'Archive ' + card.title"
+                    :disabled="boardWriteBusy || moveBusy"
+                    @click="archive(card)"
+                  >
+                    Archive
+                  </button>
+                  <button
+                    type="button"
+                    class="retire"
+                    :aria-label="'Delete ' + card.title"
+                    :disabled="boardWriteBusy || moveBusy"
+                    @click="erase(card)"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </li>
+            </ul>
+            <form
+              class="card-inline"
+              :aria-label="'Add card to ' + column.title"
+              @submit.prevent="addCard(column.id)"
+            >
+              <input
+                :ref="element => assignCardInput(column.id, element)"
+                v-model="cardDrafts[column.id]"
+                :aria-label="'Add card to ' + column.title"
+                placeholder="Enter a card title"
+                maxlength="240"
+                :disabled="boardWriteBusy"
+                @focus="adoptDisplacedDraft(column.id)"
+                @keydown.esc.prevent="clearCardDraft(column.id)"
+              >
+              <p
+                v-if="cardErrors[column.id]"
+                role="alert"
+              >
+                {{ cardErrors[column.id] }}
+              </p>
+              <div class="card-inline-actions">
+                <button
+                  class="primary"
+                  type="submit"
+                  :disabled="!(cardDrafts[column.id] ?? '').trim() || boardLoading || boardWriteBusy"
+                >
+                  Add card
                 </button>
                 <button
                   type="button"
-                  class="retire"
-                  :aria-label="'Delete ' + card.title"
-                  :disabled="boardWriteBusy || moveBusy"
-                  @click="retire(card)"
+                  :disabled="boardWriteBusy"
+                  @click="openCreate(column.id, cardDrafts[column.id])"
                 >
-                  Delete
+                  More options
                 </button>
               </div>
-            </li>
-          </ul>
-          <form
-            v-if="composer?.kind === 'card' && composer.columnId === column.id"
-            class="board-composer"
-            :aria-label="'New card in ' + column.title"
-            @submit.prevent="saveComposer"
-            @keydown.esc.stop.prevent="cancelComposer()"
-          >
-            <input
-              :ref="assignComposerInput"
-              v-model="composerTitle"
-              :aria-label="'Card title in ' + column.title"
-              placeholder="Enter a card title"
-              maxlength="240"
-              :disabled="boardWriteBusy"
-            >
-            <p
-              v-if="composerError"
-              role="alert"
-            >
-              {{ composerError }}
-            </p>
-            <div class="actions">
-              <button
-                class="primary"
-                type="submit"
-                :disabled="!composerTitle.trim() || boardLoading || boardWriteBusy"
-              >
-                Add card
-              </button>
-              <button
-                type="button"
-                :disabled="boardWriteBusy"
-                @click="openCreate(column.id)"
-              >
-                More options
-              </button>
-              <button
-                type="button"
-                :disabled="boardWriteBusy"
-                @click="cancelComposer()"
-              >
-                Cancel
-              </button>
-            </div>
-          </form>
-          <button
-            v-show="composer?.kind !== 'card' || composer.columnId !== column.id"
-            type="button"
-            class="add-card"
-            :aria-label="'Add card to ' + column.title"
-            :disabled="boardWriteBusy || (composer !== null && !!composerTitle.trim())"
-            @click="startComposer({ kind: 'card', columnId: column.id }, $event)"
-          >
-            + Add card
-          </button>
-        </section>
+            </form>
+          </section>
+        </template>
         <div
           v-if="snapshot"
           class="new-list"
@@ -1657,13 +2042,21 @@ defineExpose({ refresh, requestSwitch, hasDraft, columns });
             <p v-else>
               {{ selectedSummary.readiness === 'ready' ? 'Ready' : 'Draft' }}
             </p>
-            <button
-              type="button"
-              class="retire"
-              @click="retire(selectedSummary)"
-            >
-              Retire card
-            </button>
+            <div class="inspector-actions">
+              <button
+                type="button"
+                @click="archive(selectedSummary)"
+              >
+                Archive card
+              </button>
+              <button
+                type="button"
+                class="retire"
+                @click="erase(selectedSummary)"
+              >
+                Delete card
+              </button>
+            </div>
           </details>
         </template>
         <template v-else>
@@ -1841,6 +2234,57 @@ defineExpose({ refresh, requestSwitch, hasDraft, columns });
       </form>
     </dialog>
     <dialog
+      ref="systemRemovalDialog"
+      class="resource-dialog"
+      aria-labelledby="system-remove-title"
+      @cancel.prevent="cancelSystemRemoval"
+    >
+      <form
+        v-if="systemRemovalTarget"
+        class="board-composer"
+        @submit.prevent="confirmSystemRemoval"
+      >
+        <h2 id="system-remove-title">
+          Remove “{{ systemRemovalTarget.title }}”?
+        </h2>
+        <p>
+          This is a system list. Removing it cannot be undone — the workspace
+          never recreates it. Its cards stay available in Find resource.
+        </p>
+        <label>Type “{{ systemRemovalTarget.title }}” to confirm
+          <input
+            ref="systemRemovalInput"
+            v-model="systemRemovalTyped"
+            aria-label="Confirm list name"
+            autocomplete="off"
+            :disabled="boardWriteBusy"
+          >
+        </label>
+        <p
+          v-if="systemRemovalError"
+          role="alert"
+        >
+          {{ systemRemovalError }}
+        </p>
+        <div class="actions">
+          <button
+            type="submit"
+            class="danger"
+            :disabled="boardWriteBusy || systemRemovalTyped !== systemRemovalTarget.title"
+          >
+            Remove system list
+          </button>
+          <button
+            type="button"
+            :disabled="boardWriteBusy"
+            @click="cancelSystemRemoval"
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <dialog
       ref="editorDialog"
       class="resource-dialog editor-dialog"
       aria-label="Resource card editor"
@@ -1945,10 +2389,18 @@ defineExpose({ refresh, requestSwitch, hasDraft, columns });
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
 .actions button, .panel-header button { min-height: 2.5rem; }
 .board { display: flex; align-items: flex-start; min-width: 0; max-height: min(65dvh, 41rem); overflow: auto; gap: .65rem; padding: .7rem; background: #f4f6ed; }
-.lane, .new-list { flex: 0 0 clamp(13rem, 31%, 17rem); min-width: 0; }
+.lane, .new-list, .lane-pill { flex: 0 0 clamp(13rem, 31%, 17rem); min-width: 0; }
 .new-list > button { width: 100%; border-style: dashed; text-align: start; background: #fffdf8; min-height: 2.75rem; }
 .lane-header { display: flex; align-items: start; justify-content: space-between; gap: .3rem; margin-bottom: .55rem; }
-.lane-header .remove-list { font-size: .8rem; color: #832d25; min-height: 2rem; padding: .25rem .4rem; background: transparent; border-color: transparent; }
+.lane-rename { flex: 1; margin: .15rem 0; }
+.lane-rename input { width: 100%; font-size: 1.03rem; }
+.lane-tools { position: relative; display: grid; }
+.lane-menu-button { min-height: 2rem; min-width: 2rem; padding: .1rem .45rem; background: transparent; border-color: transparent; font-size: 1.05rem; line-height: 1; color: #344f40; }
+.lane-menu { position: absolute; right: 0; top: calc(100% + .15rem); z-index: 5; list-style: none; margin: 0; padding: .25rem; background: var(--panel); border: 1px solid var(--line); border-radius: .45rem; box-shadow: 0 8px 22px #263f2d2e; display: grid; min-width: 10rem; }
+.lane-menu button { width: 100%; text-align: left; border: 0; background: transparent; min-height: 2.1rem; font-size: .9rem; }
+.lane-menu button:not(:disabled):hover { background: #eaf0eb; }
+.lane-pill { writing-mode: vertical-rl; text-orientation: mixed; display: inline-flex; align-items: center; gap: .4rem; justify-content: center; background: #e9eee2; border: 1px solid #d3dbcc; border-radius: .5rem; padding: .55rem .3rem; font: 1rem Georgia, serif; color: #213b2f; }
+.lane-pill .pill-count { writing-mode: horizontal-tb; font-variant-numeric: tabular-nums; font-size: .85rem; color: var(--muted); }
 .board-composer { background: #fffefb; border: 1px solid #c3cdbf; border-radius: .4rem; display: grid; gap: .5rem; padding: .55rem; }
 .board-composer input { min-width: 0; width: 100%; }
 .board-composer .actions button { font-size: .85rem; min-height: 2.25rem; }
@@ -1967,12 +2419,21 @@ defineExpose({ refresh, requestSwitch, hasDraft, columns });
 .tile-body { display: grid; gap: .32rem; min-width: 0; text-align: left; border: 0; box-shadow: none; background: transparent; padding: .65rem .6rem .4rem; overflow-wrap: anywhere; }
 .tile-body[aria-pressed="true"] { background: transparent; box-shadow: none; }
 .tile-body small, .eyebrow { color: var(--muted); font: .88rem/1.4 ui-monospace, monospace; }
-.tile-body strong { font: 1.23rem/1.2 Georgia, serif; }
+.tile-body strong, .tile-title { font: 1.23rem/1.2 Georgia, serif; }
+.tile-title { text-align: left; min-height: 0; width: 100%; padding: 0; border: 0; background: transparent; border-color: transparent; overflow-wrap: anywhere; }
+.tile-title:hover { text-decoration: underline; text-decoration-color: #a48e68; text-underline-offset: .18em; }
+.tile-body input { width: 100%; font: 1.23rem/1.2 Georgia, serif; }
+.tile-body p { margin: 0; color: #832d25; font-size: .88rem; }
 .tile-counts { color: var(--muted); font-size: .9rem; }
-.tile-actions { display: flex; justify-content: flex-end; gap: .3rem; padding: 0 .37rem; }
+.tile-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: .3rem; padding: 0 .37rem; }
 .tile-actions button { min-height: 2rem; font-size: .82rem; }
-.add-card, .text-button { text-align: left; background: none; color: #245640; }
-.add-card { border-color: transparent; min-height: 2.5rem; margin-top: .1rem; padding-inline: .35rem; }
+.card-inline { background: #fffefb; border: 1px dashed #c3cdbf; border-radius: .4rem; display: grid; gap: .35rem; padding: .4rem; }
+.card-inline input { min-width: 0; width: 100%; border-style: dashed; border-color: transparent; background: transparent; }
+.card-inline input:focus { border-color: #a48e68; background: #fffefb; }
+.card-inline p { margin: 0; color: #832d25; overflow-wrap: anywhere; font-size: .88rem; }
+.card-inline-actions { display: flex; gap: .35rem; }
+.card-inline-actions button { min-height: 2.1rem; font-size: .85rem; }
+.text-button { text-align: left; background: none; color: #245640; }
 .drop-lane { outline: 2px dashed #30654d; outline-offset: -3px; }
 .drop-card { box-shadow: 0 -3px #30654d; }
 .panel-note { margin: 0; padding: .65rem 1rem; color: var(--muted); }
@@ -2008,6 +2469,8 @@ defineExpose({ refresh, requestSwitch, hasDraft, columns });
 .picker-content li select { grid-column: 2; grid-row: 1 / span 2; align-self: center; max-width: 10rem; }
 .sent-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .retire { color: #832d25; }
+.danger { color: #832d25; border-color: #832d25; }
+.inspector-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .55rem; }
 .edge-form { padding: 0; border: 0; background: none; }
 .check { display: flex; }
 @media (max-width: 850px) {

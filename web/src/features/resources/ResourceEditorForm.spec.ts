@@ -4,9 +4,9 @@ import { ApiError, parley, type EntityAttachment, type EntityCard, type Resource
 import ResourceEditorForm from './ResourceEditorForm.vue';
 
 const columns: ResourceColumn[] = [
-  { id: 'inbox', title: 'Inbox', position: 1024, revision: 1 },
-  { id: 'developing', title: 'Developing', position: 2048, revision: 1 },
-  { id: 'available', title: 'Available', position: 3072, revision: 1 },
+  { id: 'inbox', title: 'Inbox', position: 1024, revision: 1, kind: 'system' },
+  { id: 'developing', title: 'Developing', position: 2048, revision: 1, kind: 'owner' },
+  { id: 'available', title: 'Available', position: 3072, revision: 1, kind: 'owner' },
 ];
 
 const card: EntityCard = {

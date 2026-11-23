@@ -1061,3 +1061,159 @@ async fn resource_lists_replay_create_and_remove_with_current_revision() {
     service.shutdown().await;
     let _ = fs::remove_file(db);
 }
+
+#[tokio::test]
+async fn resource_lists_rename_updates_title_with_revision_guard() {
+    let db = path();
+    let service = parley_service::start_workspace(&db).await.unwrap();
+    let session = owner_session(&service).await;
+
+    // Only the seeded Inbox remains a system list (amendment 0022).
+    let board = request(
+        &service,
+        &session,
+        "GET",
+        "/api/v1/resource-board",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(board.status, 200);
+    let kinds: Vec<&str> = board.body["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|column| column["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["system", "owner", "owner"]);
+
+    let create_key = next_key();
+    let create = [("Idempotency-Key", create_key.as_str())];
+    let lists = "/api/v1/resource-board/columns";
+    let input = json!({"title": " Workshop "});
+    let list = request(
+        &service,
+        &session,
+        "POST",
+        lists,
+        Some(input.clone()),
+        &create,
+    )
+    .await;
+    assert_eq!(list.status, 201);
+    assert_eq!(list.body["kind"], "owner");
+    let id = list.body["id"].as_str().unwrap().to_owned();
+
+    let list_path = format!("{lists}/{id}");
+    let rename_key = next_key();
+    let rename = [("Idempotency-Key", rename_key.as_str())];
+    let input = json!({"title": " Lab Notes ", "expected_revision": 1});
+    let renamed = request(
+        &service,
+        &session,
+        "PATCH",
+        &list_path,
+        Some(input.clone()),
+        &rename,
+    )
+    .await;
+    assert_eq!(renamed.status, 200, "{}", renamed.body);
+    assert_eq!(renamed.body["title"], "Lab Notes");
+    assert_eq!(renamed.body["revision"], 2);
+    assert_eq!(renamed.body["kind"], "owner");
+    let replay = request(
+        &service,
+        &session,
+        "PATCH",
+        &list_path,
+        Some(input),
+        &rename,
+    )
+    .await;
+    assert_eq!(replay.status, 200);
+    assert_eq!(replay.body, renamed.body);
+
+    // Stale guard, validation and missing lists fail closed.
+    let stale = request(
+        &service,
+        &session,
+        "PATCH",
+        &list_path,
+        Some(json!({"title": "Other", "expected_revision": 1})),
+        &[("Idempotency-Key", &next_key())],
+    )
+    .await;
+    assert_eq!(stale.status, 412);
+    let blank = request(
+        &service,
+        &session,
+        "PATCH",
+        &list_path,
+        Some(json!({"title": "   ", "expected_revision": 2})),
+        &[("Idempotency-Key", &next_key())],
+    )
+    .await;
+    assert_eq!(blank.status, 422);
+    let missing = request(
+        &service,
+        &session,
+        "PATCH",
+        &format!("{lists}/resource-column-absent"),
+        Some(json!({"title": "Other", "expected_revision": 1})),
+        &[("Idempotency-Key", &next_key())],
+    )
+    .await;
+    assert_eq!(missing.status, 404);
+
+    // A placed card bumps the column revision; renaming still guards on the
+    // live revision, and the board summary exposes the card revision.
+    let card = request(
+        &service,
+        &session,
+        "POST",
+        "/api/v1/resource-card-commits",
+        Some(json!({"create": {"title": "Handout", "subtype": "artifact", "placement": {"column_id": id}}})),
+        &[("Idempotency-Key", &next_key())],
+    )
+    .await;
+    assert_eq!(card.status, 201);
+    let resource_id = card.body["entity"]["id"].as_str().unwrap().to_owned();
+    let board = request(
+        &service,
+        &session,
+        "GET",
+        "/api/v1/resource-board",
+        None,
+        &[],
+    )
+    .await;
+    let summary = board.body["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|card| card["resource_id"] == resource_id.as_str())
+        .expect("placed card on board")
+        .clone();
+    assert_eq!(summary["revision"], 1);
+    let revision = board.body["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|column| column["id"] == id.as_str())
+        .map(|column| column["revision"].as_i64().unwrap())
+        .unwrap();
+    let renamed = request(
+        &service,
+        &session,
+        "PATCH",
+        &list_path,
+        Some(json!({"title": "Lab Notes v2", "expected_revision": revision})),
+        &[("Idempotency-Key", &next_key())],
+    )
+    .await;
+    assert_eq!(renamed.status, 200, "{}", renamed.body);
+    assert_eq!(renamed.body["title"], "Lab Notes v2");
+
+    service.shutdown().await;
+    let _ = fs::remove_file(db);
+}

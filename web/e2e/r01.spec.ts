@@ -16,8 +16,7 @@ test('r01_board_create_edit_move_remove_and_related_card', async ({ page }) => {
   await expect(board.getByRole('heading', { name: /Available/ })).toBeVisible();
 
   // Column entry: create a card in Developing with Markdown notes.
-  await board.getByRole('button', { name: 'Add card to Developing' }).click();
-  await board.getByRole('button', { name: 'More options' }).click();
+  await board.getByRole('region', { name: 'Developing', exact: true }).getByRole('button', { name: 'More options' }).click();
   const editor = page.getByRole('form', { name: 'Resource card editor' });
   await expect(editor).toBeVisible();
   await editor.getByLabel('Title').fill('Importer checklist');
@@ -42,7 +41,7 @@ test('r01_board_create_edit_move_remove_and_related_card', async ({ page }) => {
   await board.getByRole('button', { name: 'Edit Importer checklist', exact: true }).click();
   await editor.getByLabel('Title').fill('Importer checklist v2');
   await editor.getByRole('button', { name: 'Save card' }).click();
-  await expect(board.getByRole('button', { name: /^(?:Artifact )?Importer checklist v2/ })).toBeVisible();
+  await expect(board.getByRole('button', { name: /Importer checklist v2/ }).first()).toBeVisible();
 
   // Move to Available through the accessible column control.
   const details = page.getByRole('region', { name: 'Resource inspector' });
@@ -117,8 +116,7 @@ test('narrow Resource views preserve a graph draft and return keyboard focus aft
   const views = page.getByRole('navigation', { name: 'Resources views' });
   const editor = page.getByRole('form', { name: 'Resource card editor' });
 
-  await board.getByRole('button', { name: 'Add card to Inbox' }).click();
-  await board.getByRole('button', { name: 'More options' }).click();
+  await board.getByRole('region', { name: 'Inbox', exact: true }).getByRole('button', { name: 'More options' }).click();
   await editor.getByLabel('Title').fill('Mobile checklist');
   await editor.getByRole('button', { name: 'Save card' }).click();
   const details = page.getByRole('region', { name: 'Resource inspector' });
@@ -161,19 +159,20 @@ test('resource lists and cards can be added inline, removed and recovered from t
   await expect(workshop).toBeVisible();
   await listName.press('Escape');
 
-  await workshop.getByRole('button', { name: 'Add card to Workshop' }).click();
-  const cardTitle = workshop.getByRole('textbox', { name: 'Card title in Workshop' });
-  await expect(cardTitle).toBeFocused();
+  const cardTitle = workshop.getByRole('textbox', { name: 'Add card to Workshop' });
+  await expect(cardTitle).toBeVisible();
   await cardTitle.fill('Practice handout');
   await cardTitle.press('Enter');
-  await expect(workshop.getByRole('button', { name: /^(?:Artifact )?Practice handout/ })).toBeVisible();
+  await expect(workshop.getByRole('button', { name: /Practice handout/ }).first()).toBeVisible();
   await expect(cardTitle).toHaveValue('');
   await expect(cardTitle).toBeFocused();
+  await cardTitle.fill('Half thought');
   await cardTitle.press('Escape');
-  await expect(workshop.getByRole('button', { name: 'Add card to Workshop' })).toBeFocused();
+  await expect(cardTitle).toHaveValue('');
 
   page.once('dialog', dialog => dialog.accept());
-  await workshop.getByRole('button', { name: 'Remove list Workshop' }).click();
+  await workshop.getByRole('button', { name: 'List actions for Workshop' }).click();
+  await workshop.getByRole('menuitem', { name: 'Remove list' }).click();
   await expect(workshop).toHaveCount(0);
   await board.getByRole('button', { name: 'Find resource' }).click();
   const picker = page.getByRole('dialog', { name: 'Find resource' });
@@ -192,4 +191,86 @@ test('resource lists and cards can be added inline, removed and recovered from t
   await expect(removeCard).toHaveCount(0);
   await board.getByRole('button', { name: 'Find resource' }).click();
   await expect(handout).toHaveCount(0);
+});
+
+test('r01_inline_composer_adds_cards_from_list_bottom', async ({ page }) => {
+  await page.goto('/');
+  const board = page.getByRole('region', { name: 'Resource board' });
+  const inbox = board.getByRole('region', { name: 'Inbox', exact: true });
+  const draft = inbox.getByRole('textbox', { name: 'Add card to Inbox' });
+  await expect(draft).toBeVisible();
+  await expect(inbox.getByRole('button', { name: 'Add card' })).toBeDisabled();
+  await draft.fill('Morning pages');
+  await draft.press('Enter');
+  await expect(inbox.getByRole('button', { name: 'Rename Morning pages', exact: true })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Card added.' })).toBeVisible();
+  await expect(draft).toHaveValue('');
+  await expect(draft).toBeFocused();
+  await draft.fill('Half thought');
+  await draft.press('Escape');
+  await expect(draft).toHaveValue('');
+  await expect(inbox.getByRole('button', { name: 'Rename Half thought', exact: true })).toHaveCount(0);
+});
+
+test('r01_list_menu_renames_in_place_and_confirms_system_removal', async ({ page }) => {
+  await page.goto('/');
+  const board = page.getByRole('region', { name: 'Resource board' });
+
+  // Owner lists rename in place through the lane menu.
+  const developing = board.getByRole('region', { name: 'Developing', exact: true });
+  await developing.getByRole('button', { name: 'List actions for Developing' }).click();
+  await developing.getByRole('menuitem', { name: 'Rename list' }).click();
+  const renameInput = developing.getByRole('textbox', { name: 'Rename list Developing' });
+  await expect(renameInput).toBeFocused();
+  await renameInput.fill('Studio');
+  await renameInput.press('Enter');
+  await expect(board.getByRole('region', { name: 'Studio', exact: true })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'List renamed.' })).toBeVisible();
+
+  // The system list refuses removal until the exact name is typed.
+  const inbox = board.getByRole('region', { name: 'Inbox', exact: true });
+  await inbox.getByRole('button', { name: 'List actions for Inbox' }).click();
+  await inbox.getByRole('menuitem', { name: 'Remove list' }).click();
+  const challenge = page.getByRole('dialog', { name: /Remove .Inbox./ });
+  await expect(challenge).toBeVisible();
+  await expect(challenge.getByText('This is a system list.')).toBeVisible();
+  const confirmName = challenge.getByRole('textbox', { name: 'Confirm list name' });
+  await confirmName.fill('inbox');
+  await expect(challenge.getByRole('button', { name: 'Remove system list' })).toBeDisabled();
+  await confirmName.fill('Inbox');
+  await challenge.getByRole('button', { name: 'Remove system list' }).click();
+  await expect(board.getByRole('region', { name: 'Inbox', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('status').filter({ hasText: 'List removed.' })).toBeVisible();
+});
+
+test('r01_empty_lists_collapse_into_pills', async ({ page }) => {
+  await page.goto('/');
+  const board = page.getByRole('region', { name: 'Resource board' });
+  const available = board.getByRole('region', { name: 'Available', exact: true });
+  await available.getByRole('button', { name: 'List actions for Available' }).click();
+  await available.getByRole('menuitem', { name: 'Collapse' }).click();
+  const pill = board.getByRole('button', { name: 'Expand empty list Available' });
+  await expect(pill).toBeVisible();
+  await expect(pill).toContainText('Available');
+  await expect(board.getByRole('region', { name: 'Available', exact: true })).toHaveCount(0);
+  await pill.click();
+  await expect(board.getByRole('region', { name: 'Available', exact: true })).toBeVisible();
+  await expect(board.getByRole('button', { name: 'Expand empty list Available' })).toHaveCount(0);
+});
+
+test('r01_tile_title_edits_in_place', async ({ page }) => {
+  await page.goto('/');
+  const board = page.getByRole('region', { name: 'Resource board' });
+  const inbox = board.getByRole('region', { name: 'Inbox', exact: true });
+  const draft = inbox.getByRole('textbox', { name: 'Add card to Inbox' });
+  await draft.fill('Scratch note');
+  await draft.press('Enter');
+  const title = inbox.getByRole('button', { name: 'Rename Scratch note', exact: true });
+  await title.dblclick();
+  const edit = inbox.getByRole('textbox', { name: 'Rename card Scratch note' });
+  await expect(edit).toBeFocused();
+  await edit.fill('Scratch note v2');
+  await edit.press('Enter');
+  await expect(inbox.getByRole('button', { name: 'Rename Scratch note v2', exact: true })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Card renamed.' })).toBeVisible();
 });

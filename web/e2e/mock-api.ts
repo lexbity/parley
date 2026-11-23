@@ -94,14 +94,15 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
   const partyImportOrigins = new Map<string, { batch_id: string; source_record: number }>();
   const importStages = new Map<string, { csv: ReturnType<typeof parsePartyCsv>; epoch: string; expires: number; review?: { mapping: PartyImportMapping; result: PartyImportPreview } }>();
   const entityAttachments = new Map<string, RecordData[]>();
-  interface BoardColumn { id: string; title: string; position: number; revision: number }
+  interface BoardColumn { id: string; title: string; position: number; revision: number; kind: 'owner' | 'system' }
   interface ResourcePlacementView { column_id: string; position: number; revision: number }
   interface ResourceEntityRecord { id: string; kind: string; name: string; focus: string; revision: number; subtype: string; body: RecordData; readiness: string; notes: { markdown: string; revision: number }; etag: string }
   const resourceColumns: BoardColumn[] = [
-    { id: 'inbox', title: 'Inbox', position: 1024, revision: 1 },
-    { id: 'developing', title: 'Developing', position: 2048, revision: 1 },
-    { id: 'available', title: 'Available', position: 3072, revision: 1 },
+    { id: 'inbox', title: 'Inbox', position: 1024, revision: 1, kind: 'system' },
+    { id: 'developing', title: 'Developing', position: 2048, revision: 1, kind: 'owner' },
+    { id: 'available', title: 'Available', position: 3072, revision: 1, kind: 'owner' },
   ];
+  const erasedResources = new Set<string>();
   const resourcePlacements = new Map<string, ResourcePlacementView>();
   const entityResources = new Map<string, ResourceEntityRecord>();
   const sourceTextByOccurrence = new Map<string, { text: string; title: string | null; url: string | null }>();
@@ -1588,7 +1589,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
         if (!res || res.readiness === 'retired') continue;
         placed.push({
           resource_id: resourceId, subtype: String(res.subtype), title: String(res.name),
-          readiness: String(res.readiness), placement, counts: resourceCountsFor(resourceId),
+          readiness: String(res.readiness), revision: Number(res.revision), placement, counts: resourceCountsFor(resourceId),
           gaps: resourceGapsFor(resourceId), etag: entityTag(res),
         });
       }
@@ -1600,15 +1601,16 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
       if (includeOff) {
         for (const [resourceId, res] of entityResources) {
           if (resourcePlacements.has(resourceId) || res.readiness === 'retired') continue;
-          off_board.push({ resource_id: resourceId, subtype: String(res.subtype), title: String(res.name), readiness: String(res.readiness), legacy: resources.has(resourceId), counts: resourceCountsFor(resourceId), gaps: resourceGapsFor(resourceId), etag: entityTag(res) });
+          off_board.push({ resource_id: resourceId, subtype: String(res.subtype), title: String(res.name), readiness: String(res.readiness), revision: Number(res.revision), legacy: resources.has(resourceId), counts: resourceCountsFor(resourceId), gaps: resourceGapsFor(resourceId), etag: entityTag(res) });
         }
           }
       return json(response, 200, { columns: resourceColumns, cards: page, off_board, next_cursor, event_cursor: events.length });
     }
     const resourceColumnPath = /^\/api\/v1\/resource-board\/columns(?:\/([^/]+))?$/.exec(url.pathname);
     const creatingColumn = resourceColumnPath && !resourceColumnPath[1] && request.method === 'POST';
+    const renamingColumn = resourceColumnPath?.[1] && request.method === 'PATCH';
     const removingColumn = resourceColumnPath?.[1] && request.method === 'DELETE';
-    if (creatingColumn || removingColumn) {
+    if (creatingColumn || renamingColumn || removingColumn) {
       let input: RecordData;
       try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
       const key = request.headers['idempotency-key'];
@@ -1619,11 +1621,24 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
       if (creatingColumn) {
         const title = typeof input.title === 'string' ? input.title.trim() : '';
         if (!title || Array.from(title).length > 100) return fail(response, 422, 'INVALID_REQUEST', 'Enter a list name of 1–100 characters.');
-        const column = { id: randomHex(), title, position: (resourceColumns.at(-1)?.position ?? 0) + 1024, revision: 1 };
+        const column = { id: randomHex(), title, position: (resourceColumns.at(-1)?.position ?? 0) + 1024, revision: 1, kind: 'owner' as const };
         resourceColumns.push(column);
         pushEvent({ event_id: randomHex(), entity_type: 'resource_column', entity_id: column.id, revision: 1, event_type: 'resource_column.created', payload: column });
         receipts.set(key, { digest, result: column, status: 201 });
         return json(response, 201, column);
+      }
+      if (renamingColumn) {
+        const column = resourceColumns.find(item => item.id === String(resourceColumnPath?.[1]));
+        if (!column) return fail(response, 404, 'NOT_FOUND', 'List does not exist');
+        const title = typeof input.title === 'string' ? input.title.trim() : '';
+        if (!title || Array.from(title).length > 100) return fail(response, 422, 'INVALID_REQUEST', 'Enter a list name of 1–100 characters.');
+        if (input.expected_revision !== column.revision) return fail(response, 412, 'STALE_REVISION', 'List changed in another session');
+        column.title = title;
+        column.revision += 1;
+        const renamed = { ...column };
+        pushEvent({ event_id: randomHex(), entity_type: 'resource_column', entity_id: column.id, revision: column.revision, event_type: 'resource_column.renamed', payload: { title } });
+        receipts.set(key, { digest, result: renamed, status: 200 });
+        return json(response, 200, renamed);
       }
       const id = String(resourceColumnPath?.[1]);
       const column = resourceColumns.find(item => item.id === id);
@@ -1639,6 +1654,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
     }
     const resourceCardRead = /^\/api\/v1\/resource-cards\/([^/]+)$/.exec(url.pathname);
     if (resourceCardRead && request.method === 'GET') {
+      if (erasedResources.has(resourceCardRead[1]!)) return fail(response, 404, 'RESOURCE_ERASED', 'This resource was erased');
       const entity = entityResources.get(resourceCardRead[1]!);
       if (!entity) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
       if (entity.readiness === 'retired') return fail(response, 404, 'RESOURCE_RETIRED', 'This resource was retired');
@@ -1666,6 +1682,28 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
       applyPlacement(String(entity.id), { column_id: null });
       pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: entity.id as string, revision: Number(entity.revision), event_type: 'resource.retired', payload: {} });
       const result = { entity: { id: entity.id, kind: 'resource', readiness: 'retired', revision: Number(entity.revision) }, affected_versions: [] };
+      receipts.set(key, { digest, result, status: 200 });
+      return json(response, 200, result);
+    }
+    const resourceErase = /^\/api\/v1\/resource-cards\/([^/]+)\/erase$/.exec(url.pathname);
+    if (resourceErase && request.method === 'POST') {
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+      const digest = createHash('sha256').update(JSON.stringify(['POST', url.pathname, {}])).digest('hex');
+      const prior = receipts.get(key);
+      if (prior) return prior.digest === digest ? json(response, prior.status ?? 200, prior.result) : fail(response, 409, 'KEY_REUSED', 'Idempotency key was used for a different command');
+      const id = resourceErase[1]!;
+      if (erasedResources.has(id) || !entityResources.has(id)) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
+      if (Number(resourceCountsFor(id).deliveries) > 0) return fail(response, 409, 'RESOURCE_DELIVERED', 'This card was delivered, so its content is part of the delivery record. Archive it instead.');
+      resourcePlacements.delete(id);
+      entityResources.delete(id);
+      erasedResources.add(id);
+      for (let index = graphEdges.length - 1; index >= 0; index -= 1) {
+        const edge = graphEdges[index]!;
+        if (edge.from_id === id || edge.to_id === id) graphEdges.splice(index, 1);
+      }
+      pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: id, revision: 1, event_type: 'resource.erased', payload: { erased: true } });
+      const result = { id, erased: true };
       receipts.set(key, { digest, result, status: 200 });
       return json(response, 200, result);
     }

@@ -2981,6 +2981,19 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
         '412': {$ref: '#/components/responses/Error'}
+    patch:
+      operationId: renameResourceColumn
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/RenameResourceColumn'}}}
+      responses:
+        '200': {description: List renamed in place under its revision guard., content: {application/json: {schema: {$ref: '#/components/schemas/ResourceColumn'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '412': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
   /resource-cards/{id}:
     get:
       operationId: getResourceCard
@@ -3044,6 +3057,24 @@ paths:
                       additionalProperties: false
                 additionalProperties: false
         '404': {$ref: '#/components/responses/Error'}
+        '412': {$ref: '#/components/responses/Error'}
+  /resource-cards/{id}/erase:
+    post:
+      operationId: eraseResourceCard
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      responses:
+        '200':
+          description: Card erased with its edges, attachments and placement; the tombstone makes later reads report RESOURCE_ERASED.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErasedResourceCard'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409':
+          description: Provenance must outlive the card; archive the card instead.
+          content:
+            application/json:
+              schema: {$ref: '#/components/responses/Error'}
         '412': {$ref: '#/components/responses/Error'}
   /resource-cards/{id}/deliveries/{send_id}/{material_id}/{version}:
     get:
@@ -5787,6 +5818,13 @@ components:
       properties:
         expected_revision: {type: integer, minimum: 1}
       additionalProperties: false
+    RenameResourceColumn:
+      type: object
+      required: [title, expected_revision]
+      properties:
+        title: {type: string, minLength: 1, maxLength: 100}
+        expected_revision: {type: integer, minimum: 1}
+      additionalProperties: false
     RemovedResourceColumn:
       type: object
       required: [id, off_board_count]
@@ -5794,14 +5832,22 @@ components:
         id: {type: string}
         off_board_count: {type: integer, minimum: 0}
       additionalProperties: false
+    ErasedResourceCard:
+      type: object
+      required: [id, erased]
+      properties:
+        id: {type: string}
+        erased: {type: boolean}
+      additionalProperties: false
     ResourceColumn:
       type: object
-      required: [id, title, position, revision]
+      required: [id, title, position, revision, kind]
       properties:
         id: {type: string}
         title: {type: string}
         position: {type: integer}
         revision: {type: integer}
+        kind: {type: string, enum: [owner, system]}
       additionalProperties: false
     PlacementView:
       type: object
@@ -5822,12 +5868,13 @@ components:
       additionalProperties: false
     ResourceCardSummary:
       type: object
-      required: [resource_id, subtype, title, readiness, placement, counts, gaps, etag]
+      required: [resource_id, subtype, title, readiness, revision, placement, counts, gaps, etag]
       properties:
         resource_id: {type: string}
         subtype: {type: string}
         title: {type: string}
         readiness: {type: string}
+        revision: {type: integer}
         placement:
           anyOf:
           - $ref: '#/components/schemas/PlacementView'
@@ -5840,12 +5887,13 @@ components:
       additionalProperties: false
     OffBoardResource:
       type: object
-      required: [resource_id, subtype, title, readiness, legacy, counts, gaps, etag]
+      required: [resource_id, subtype, title, readiness, revision, legacy, counts, gaps, etag]
       properties:
         resource_id: {type: string}
         subtype: {type: string}
         title: {type: string}
         readiness: {type: string}
+        revision: {type: integer}
         legacy: {type: boolean}
         counts: {$ref: '#/components/schemas/ResourceCounts'}
         gaps:

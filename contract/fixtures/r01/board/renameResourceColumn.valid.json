@@ -1,0 +1,7 @@
+{
+  "$schema": "#/components/schemas/RenameResourceColumn",
+  "body": {
+    "title": "Workshop notes",
+    "expected_revision": 1
+  }
+}

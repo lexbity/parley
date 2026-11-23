@@ -657,8 +657,8 @@ function decodeEventPage(value: unknown): EventPage {
 
 function decodeResourceColumn(value: unknown): ResourceColumn {
   const item = object(value);
-  if (!item || !Number.isSafeInteger(item.position) || !Number.isSafeInteger(item.revision)) throw new Error('Invalid response: resource column is malformed');
-  return { id: requiredString(item.id, 'column.id'), title: requiredString(item.title, 'column.title'), position: Number(item.position), revision: Number(item.revision) };
+  if (!item || !Number.isSafeInteger(item.position) || !Number.isSafeInteger(item.revision) || (item.kind !== 'owner' && item.kind !== 'system')) throw new Error('Invalid response: resource column is malformed');
+  return { id: requiredString(item.id, 'column.id'), title: requiredString(item.title, 'column.title'), position: Number(item.position), revision: Number(item.revision), kind: item.kind };
 }
 
 function decodePlacementView(value: unknown): PlacementView | null {
@@ -676,14 +676,14 @@ function decodeResourceCounts(value: unknown): ResourceCounts {
 
 function decodeResourceCardSummary(value: unknown): ResourceCardSummary {
   const item = object(value);
-  if (!item || !object(item.counts) || !Array.isArray(item.gaps)) throw new Error('Invalid response: card summary is malformed');
-  return { resource_id: requiredString(item.resource_id, 'card.resource_id'), subtype: requiredString(item.subtype, 'card.subtype'), title: requiredString(item.title, 'card.title'), readiness: requiredString(item.readiness, 'card.readiness'), placement: decodePlacementView(item.placement), counts: decodeResourceCounts(item.counts), gaps: stringArray(item.gaps, 'card.gaps'), etag: requiredString(item.etag, 'card.etag') };
+  if (!item || !Number.isSafeInteger(item.revision) || !object(item.counts) || !Array.isArray(item.gaps)) throw new Error('Invalid response: card summary is malformed');
+  return { resource_id: requiredString(item.resource_id, 'card.resource_id'), subtype: requiredString(item.subtype, 'card.subtype'), title: requiredString(item.title, 'card.title'), readiness: requiredString(item.readiness, 'card.readiness'), revision: Number(item.revision), placement: decodePlacementView(item.placement), counts: decodeResourceCounts(item.counts), gaps: stringArray(item.gaps, 'card.gaps'), etag: requiredString(item.etag, 'card.etag') };
 }
 
 function decodeOffBoardResource(value: unknown): OffBoardResource {
   const item = object(value);
-  if (!item || typeof item.legacy !== 'boolean' || !object(item.counts) || !Array.isArray(item.gaps)) throw new Error('Invalid response: off-board resource is malformed');
-  return { resource_id: requiredString(item.resource_id, 'off.resource_id'), subtype: requiredString(item.subtype, 'off.subtype'), title: requiredString(item.title, 'off.title'), readiness: requiredString(item.readiness, 'off.readiness'), legacy: item.legacy, counts: decodeResourceCounts(item.counts), gaps: stringArray(item.gaps, 'off.gaps'), etag: requiredString(item.etag, 'off.etag') };
+  if (!item || !Number.isSafeInteger(item.revision) || typeof item.legacy !== 'boolean' || !object(item.counts) || !Array.isArray(item.gaps)) throw new Error('Invalid response: off-board resource is malformed');
+  return { resource_id: requiredString(item.resource_id, 'off.resource_id'), subtype: requiredString(item.subtype, 'off.subtype'), title: requiredString(item.title, 'off.title'), readiness: requiredString(item.readiness, 'off.readiness'), revision: Number(item.revision), legacy: item.legacy, counts: decodeResourceCounts(item.counts), gaps: stringArray(item.gaps, 'off.gaps'), etag: requiredString(item.etag, 'off.etag') };
 }
 
 function decodeResourceBoardSnapshot(value: unknown): ResourceBoardSnapshot {
@@ -1643,6 +1643,16 @@ export class ParleyClient {
       throw new Error('Invalid response: list removal receipt is malformed');
     }
     return { id, off_board_count: Number(result.off_board_count) };
+  }
+
+  async renameResourceColumn(id: string, input: components['schemas']['RenameResourceColumn'], key: string): Promise<ResourceColumn> {
+    return decodeResourceColumn(await this.mutate('/resource-board/columns/' + encodeURIComponent(id), 'PATCH', input, { 'Idempotency-Key': key }));
+  }
+
+  async eraseResourceCard(id: string, key = newOperationKey()): Promise<components['schemas']['ErasedResourceCard']> {
+    const result = object(await this.mutate(`/resource-cards/${encodeURIComponent(id)}/erase`, 'POST', {}, { 'Idempotency-Key': key }));
+    if (!result || result.id !== id || result.erased !== true) throw new Error('Invalid response: erasure receipt is malformed');
+    return { id, erased: true };
   }
 
   async retireResourceCard(id: string, key = newOperationKey()): Promise<{ entity: { id: string; kind: string; readiness: string; revision: number }; affected_versions: Array<{ material_id: string; version_no: number }> }> {

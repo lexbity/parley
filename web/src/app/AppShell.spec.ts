@@ -33,9 +33,9 @@ function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [],
   vi.spyOn(parley, 'getGraph').mockResolvedValue({ nodes: [], edges: [], omitted_nodes: 0, omitted_edges: 0 });
   vi.spyOn(parley, 'getResourceBoard').mockResolvedValue({
     columns: [
-      { id: 'inbox', title: 'Inbox', position: 1024, revision: 1 },
-      { id: 'developing', title: 'Developing', position: 2048, revision: 1 },
-      { id: 'available', title: 'Available', position: 3072, revision: 1 },
+      { id: 'inbox', title: 'Inbox', position: 1024, revision: 1, kind: 'system' },
+      { id: 'developing', title: 'Developing', position: 2048, revision: 1, kind: 'owner' },
+      { id: 'available', title: 'Available', position: 3072, revision: 1, kind: 'owner' },
     ],
     cards: [],
     off_board: [],
@@ -74,7 +74,6 @@ describe('AppShell', () => {
     const wrapper = mount(AppShell);
     await flushPromises();
     const board = wrapper.get('section[aria-label="Resource board"]');
-    await board.get('button.add-card').trigger('click');
     await board.findAll('button').find(button => button.text() === 'More options')!.trigger('click');
     const editor = wrapper.get('form[aria-label="Resource card editor"]');
     const titleInput = editor.get('label:has(input) input');

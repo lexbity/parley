@@ -1070,6 +1070,55 @@ slices:
       owner_role: owner
       package_target: rust+mock
       evidence_path: evidence/r01.md
+    - requirement: R01-LIST-RENAME
+      operationId: renameResourceColumn
+      test_id: resource_lists_rename_updates_title_with_revision_guard
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r01.md
+    - requirement: R01-LIST-KIND
+      operationId: getResourceBoard
+      test_id: resource_lists_rename_updates_title_with_revision_guard
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r01.md
+    - requirement: R01-CARD-REVISION
+      operationId: getResourceBoard
+      test_id: resource_lists_rename_updates_title_with_revision_guard
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r01.md
+    - requirement: FE-R01-LIST-MENU
+      operationId: n/a
+      test_id: r01_list_menu_renames_in_place_and_confirms_system_removal
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r01.md
+    - requirement: FE-R01-INLINE-COMPOSER
+      operationId: n/a
+      test_id: r01_inline_composer_adds_cards_from_list_bottom
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r01.md
+    - requirement: FE-R01-PILL
+      operationId: n/a
+      test_id: r01_empty_lists_collapse_into_pills
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r01.md
+    - requirement: FE-R01-INLINE-TITLE
+      operationId: n/a
+      test_id: r01_tile_title_edits_in_place
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r01.md
   r02:
     - requirement: R02-ELIGIBILITY
       operationId: getResourceBoard
@@ -1113,6 +1162,20 @@ slices:
       fixture_id: board
       owner_role: owner
       package_target: rust
+      evidence_path: evidence/r03.md
+    - requirement: R03-ERASE
+      operationId: eraseResourceCard
+      test_id: r03_erase_removes_clean_cards_and_refuses_provenance
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/r03.md
+    - requirement: FE-R03-ARCHIVE
+      operationId: n/a
+      test_id: r03_archive_and_erase_split_in_ui
+      fixture_id: board
+      owner_role: owner
+      package_target: rust+mock
       evidence_path: evidence/r03.md
   r04:
     - requirement: R04-PARTY-LINK
