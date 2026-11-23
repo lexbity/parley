@@ -425,6 +425,114 @@ fn tool_text(turns: &[Value]) -> String {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn u03_noop_phase_consumes_zero_executed_write_allowance() {
+    let (path, workspace, port, service) = setup("noop").await;
+    let party = create_party(port, "Noop Party").await;
+    let opportunity = create_opportunity(port, "Noop opportunity", &party).await;
+    // The owner moves the opportunity from Unmapped to preparing (one write).
+    let (status, changed) = cmd(
+        port,
+        "opportunity.set_phase",
+        "noop-owner-set",
+        phase_args(&opportunity, 1, "preparing"),
+    )
+    .await;
+    assert_eq!(status, 200, "{changed:?}");
+    let tool_opportunity = opportunity.clone();
+    let provider = FakeProvider::with(
+        Box::new(move |index, _body| {
+            if index == 0 {
+                return final_answer("probe-ok");
+            }
+            if index == 1 {
+                return tool_call(
+                    "opportunity__set_phase",
+                    phase_args(&tool_opportunity, 2, "preparing"),
+                    "same-stage no-op",
+                );
+            }
+            final_answer("done")
+        }),
+        false,
+    )
+    .await;
+    set_provider(port, &provider.url(), "provider-u03-noop").await;
+    let (status, run) = start_run(
+        port,
+        "No-op phase",
+        json!([{"kind":"opportunity","id":opportunity}]),
+        json!(["opportunity.phase.edit"]),
+        false,
+        "noop-run-key-01",
+    )
+    .await;
+    assert_eq!(status, 201, "{run:?}");
+    let id = run["run_id"].as_str().unwrap();
+    assert_eq!(
+        wait_state(port, id, &["succeeded", "failed"]).await["state"],
+        "succeeded"
+    );
+    // A true no-op returns current permitted state, emits zero events and
+    // consumes zero executed-write allowance (FR-2).
+    assert_eq!(
+        count(
+            &workspace,
+            &format!("SELECT executed_writes FROM agent_run_budget WHERE run_id='{id}'")
+        )
+        .await,
+        0
+    );
+    assert_eq!(
+        count(
+            &workspace,
+            &format!("SELECT invocations FROM agent_run_budget WHERE run_id='{id}'")
+        )
+        .await,
+        1,
+        "the no-op is still one admitted invocation"
+    );
+    assert_eq!(
+        count(
+            &workspace,
+            &format!("SELECT phase_revision FROM opportunity WHERE id='{opportunity}'")
+        )
+        .await,
+        2
+    );
+    assert_eq!(
+        count(
+            &workspace,
+            &format!("SELECT COUNT(*) FROM event WHERE entity_id='{opportunity}' AND event_type='opportunity.phase_changed'")
+        )
+        .await,
+        1,
+        "only the owner transition produced a phase event"
+    );
+    assert_eq!(
+        count(
+            &workspace,
+            "SELECT COUNT(*) FROM command_audit_event WHERE actor_kind='agent' AND kind='outcome' AND command_id='opportunity.set_phase' AND outcome_code='ok'"
+        )
+        .await,
+        1,
+        "the no-op attempt still has its terminal outcome"
+    );
+    assert_eq!(
+        count(
+            &workspace,
+            "SELECT COUNT(*) FROM command_receipt WHERE command_id='opportunity.set_phase'"
+        )
+        .await,
+        2,
+        "owner transition and agent no-op each keep a receipt"
+    );
+    let text = tool_text(&transcript(port, id).await);
+    assert!(text.contains("\"event_id\":null"), "{text}");
+    provider.stop().await;
+    cleanup(&path, workspace, service);
+}
+
+#[tokio::test]
 async fn u03_rest_and_command_create_share_one_fact_and_events() {
     let (path, workspace, port, service) = setup("parity").await;
     let party = create_party(port, "Parity Party").await;

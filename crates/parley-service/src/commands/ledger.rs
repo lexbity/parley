@@ -408,7 +408,16 @@ pub(crate) fn redact_args(
 
 /// One interrupted attempt row: audit ID, epoch, actor kind, principal
 /// pseudonym, run pseudonym, command ID, command version and mode.
-type InterruptedAttempt = (String, String, String, String, String, Option<String>, i64, String);
+type InterruptedAttempt = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    i64,
+    String,
+);
 
 /// Startup finalization: every attempt without a terminal outcome from an
 /// earlier process is marked interrupted.

@@ -11,6 +11,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
 
+use super::RunOutcome;
 use super::descriptor::{CommandDescriptor, PaletteSpec, PromptSpec};
 use super::policy::{Effect, Permission, Surface};
 use crate::application::phase::{PhaseAction, PhaseError, PhaseInput, apply_phase};
@@ -196,7 +197,7 @@ pub(crate) async fn run(
     tx: &mut Transaction<'_, Sqlite>,
     args: &Value,
     operation_key_digest: &str,
-) -> Result<Value, RunError> {
+) -> Result<RunOutcome, RunError> {
     let input = match command {
         PhaseCommand::Set => {
             let parsed: SetPhaseWireArgs =
@@ -236,19 +237,22 @@ pub(crate) async fn run(
         }
     };
     let outcome = apply_phase(tx, &input).await.map_err(RunError::Phase)?;
-    let result = match outcome {
-        crate::application::phase::PhaseOutcome::Changed(result) => result,
-        crate::application::phase::PhaseOutcome::NoOp(result) => result,
+    let (result, effected) = match outcome {
+        crate::application::phase::PhaseOutcome::Changed(result) => (result, true),
+        crate::application::phase::PhaseOutcome::NoOp(result) => (result, false),
     };
-    Ok(serde_json::json!({
-        "opportunity_id": result.opportunity_id,
-        "phase_revision": result.phase_revision,
-        "previous_stage_id": result.previous_stage_id,
-        "stage_id": result.stage_id,
-        "event_id": result.event_id,
-        "event_cursor": result.event_cursor.map(|cursor| cursor.to_string()),
-        "reverted": result.reverted,
-    }))
+    Ok(RunOutcome {
+        result: serde_json::json!({
+            "opportunity_id": result.opportunity_id,
+            "phase_revision": result.phase_revision,
+            "previous_stage_id": result.previous_stage_id,
+            "stage_id": result.stage_id,
+            "event_id": result.event_id,
+            "event_cursor": result.event_cursor.map(|cursor| cursor.to_string()),
+            "reverted": result.reverted,
+        }),
+        effected,
+    })
 }
 
 /// Serde/schema agreement: parse valid wire args through the typed structs.

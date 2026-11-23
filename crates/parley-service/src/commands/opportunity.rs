@@ -112,7 +112,7 @@ pub(crate) async fn run(
     args: &Value,
     operation_key_digest: &str,
     created_by_run: Option<String>,
-) -> Result<Value, RunError> {
+) -> Result<super::RunOutcome, RunError> {
     let parsed: CreateWireArgs =
         serde_json::from_value(args.clone()).map_err(|_| RunError::InvalidArgs)?;
     let result = create(
@@ -126,7 +126,12 @@ pub(crate) async fn run(
     )
     .await
     .map_err(RunError::Create)?;
-    Ok(serde_json::to_value(&result).unwrap_or_default())
+    Ok(super::RunOutcome {
+        result: serde_json::to_value(&result).unwrap_or_default(),
+        // Create always emits the creation events and a placement; there is
+        // no no-op form of this command.
+        effected: true,
+    })
 }
 
 /// Serde/schema agreement: parse valid wire args through the typed struct.
