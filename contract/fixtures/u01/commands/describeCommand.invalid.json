@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/CommandErrorEnvelope","body":{"error":{"code":"unknown_command","message":"Command is not available","details":[]}}}

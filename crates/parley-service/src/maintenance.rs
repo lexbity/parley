@@ -12,12 +12,55 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use sqlx::{AssertSqlSafe, sqlite::SqlitePoolOptions};
+use sqlx::{AssertSqlSafe, Connection, sqlite::SqlitePoolOptions};
 use std::{
     fs,
     io::Read,
     path::{Path, PathBuf},
+    str::FromStr,
 };
+
+/// Versioned table policy for transient UCR-001 command state. Backups carry
+/// scrubbed metadata only; portable exports omit the rows entirely (FR-10).
+pub(crate) const COMMAND_TABLE_POLICY_VERSION: u32 = 1;
+pub(crate) const SCRUB_ON_BACKUP: &[&str] = &[
+    "command_audit_event",
+    "command_receipt",
+    "command_ledger_meta",
+];
+pub(crate) const OMIT_FROM_EXPORT: &[&str] = SCRUB_ON_BACKUP;
+
+/// Remove command transcripts, approval arguments and receipt bodies from a
+/// detached snapshot before it is hashed or shipped. The live database and
+/// its domain history are untouched.
+async fn scrub_command_tables(db: &Path) -> Result<(), String> {
+    let options =
+        sqlx::sqlite::SqliteConnectOptions::from_str(&format!("sqlite://{}", db.display()))
+            .map_err(|e| format!("scrub snapshot options: {e}"))?
+            .foreign_keys(false);
+    let mut conn = sqlx::sqlite::SqliteConnection::connect_with(&options)
+        .await
+        .map_err(|e| format!("scrub snapshot connection: {e}"))?;
+    let mut tx = conn
+        .begin()
+        .await
+        .map_err(|e| format!("scrub snapshot transaction: {e}"))?;
+    for table in OMIT_FROM_EXPORT {
+        // The table names come from the closed, versioned policy above.
+        sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("scrub {table}: {e}"))?;
+    }
+    tx.commit()
+        .await
+        .map_err(|e| format!("scrub snapshot commit: {e}"))?;
+    sqlx::query("VACUUM")
+        .execute(&mut conn)
+        .await
+        .map_err(|e| format!("scrub snapshot vacuum: {e}"))?;
+    Ok(())
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MaintenanceSettings {
@@ -430,6 +473,10 @@ async fn commit_erasure(
             "Could not publish clean generation",
         );
     };
+    // The replacement rotates the generation key and advances the adopted
+    // generation token: pending writer jobs fail closed (UCR-001 §5.1).
+    s.workspace.rotate_command_secret();
+    s.workspace.bump_generation().await;
     let now = now_utc();
     let _ = sqlx::query("UPDATE maintenance_preview SET consumed_at=? WHERE id=?")
         .bind(&now)
@@ -579,6 +626,15 @@ async fn create_export(State(s): State<AppState>, h: HeaderMap) -> Response {
             StatusCode::INTERNAL_SERVER_ERROR,
             "EXPORT_SNAPSHOT_FAILED",
             "Could not create a consistent database snapshot",
+        );
+    }
+    if let Err(error) = scrub_command_tables(&db).await {
+        let _ = fs::remove_file(&db);
+        eprintln!("export scrub failed: {error}");
+        return super::error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "EXPORT_SCRUB_FAILED",
+            "Could not scrub transient command state",
         );
     }
     let entries: Vec<(String, i64)> =
@@ -1040,6 +1096,8 @@ async fn commit_import(
             "Could not atomically publish imported workspace",
         );
     };
+    s.workspace.rotate_command_secret();
+    s.workspace.bump_generation().await;
     let _ = sqlx::query("UPDATE maintenance_preview SET consumed_at=? WHERE id=?")
         .bind(now_utc())
         .bind(&i.preview_id)
@@ -1752,6 +1810,8 @@ async fn commit_restore(
             "Could not publish restore generation",
         );
     };
+    s.workspace.rotate_command_secret();
+    s.workspace.bump_generation().await;
     let _ = sqlx::query("UPDATE maintenance_preview SET consumed_at=? WHERE id=?")
         .bind(now_utc())
         .bind(&i.preview_id)
@@ -1793,6 +1853,8 @@ async fn make_backup(w: &Workspace) -> Result<Manifest, String> {
         .execute(&mut *conn)
         .await
         .map_err(|e| e.to_string())?;
+    drop(conn);
+    scrub_command_tables(&db).await?;
     let blobs: Vec<(String, i64)> = sqlx::query_as("SELECT sha256,size FROM blob ORDER BY sha256")
         .fetch_all(w.pool())
         .await

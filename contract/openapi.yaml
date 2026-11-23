@@ -2138,6 +2138,115 @@ paths:
                 oneOf:
                 - $ref: '#/components/schemas/QueueSnapshot'
                 - $ref: '#/components/schemas/QueueSheetResponse'
+  /commands/query:
+    post:
+      operationId: queryCommands
+      summary: Return the owner's authorized Tier 1 command descriptors.
+      description: Owner session, mutation token and epoch are required. Agent surfaces and tiers are rejected for owner callers.
+      security: [{sessionCookie: []}]
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/QueryCommandsInput'}
+      responses:
+        '200':
+          description: Ordered descriptor manifest; never cached or shared.
+          headers:
+            Cache-Control: {$ref: '#/components/headers/PrivateNoStore'}
+            X-Parley-Epoch: {$ref: '#/components/headers/ParleyEpoch'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/QueryCommandsResult'}
+        '400': {$ref: '#/components/responses/CommandError'}
+        '401': {$ref: '#/components/responses/CommandError'}
+        '403': {$ref: '#/components/responses/CommandError'}
+  /commands/search:
+    post:
+      operationId: searchCommands
+      summary: Search the owner's palette command catalogue.
+      description: Uses the same permission filter as queryCommands and returns closed summaries without schemas or private record data.
+      security: [{sessionCookie: []}]
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SearchCommandsInput'}
+      responses:
+        '200':
+          description: Ranked, bounded command summaries; never cached or shared.
+          headers:
+            Cache-Control: {$ref: '#/components/headers/PrivateNoStore'}
+            X-Parley-Epoch: {$ref: '#/components/headers/ParleyEpoch'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CommandSearchResult'}
+        '400': {$ref: '#/components/responses/CommandError'}
+        '401': {$ref: '#/components/responses/CommandError'}
+        '403': {$ref: '#/components/responses/CommandError'}
+  /commands/{id}:
+    get:
+      operationId: describeCommand
+      summary: Describe one owner-visible command.
+      description: Visibility follows the registry's owner filter, not a client-reported context. Concealed and absent commands return the same unknown_command envelope.
+      security: [{sessionCookie: []}]
+      parameters:
+      - {in: path, name: id, required: true, schema: {type: string, minLength: 1, maxLength: 48}}
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Closed command descriptor; never cached or shared.
+          headers:
+            Cache-Control: {$ref: '#/components/headers/PrivateNoStore'}
+            X-Parley-Epoch: {$ref: '#/components/headers/ParleyEpoch'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CommandDescriptor'}
+        '401': {$ref: '#/components/responses/CommandError'}
+        '403': {$ref: '#/components/responses/CommandError'}
+        '404': {$ref: '#/components/responses/CommandError'}
+    post:
+      operationId: runCommand
+      summary: Invoke one registered command through the shared application operation.
+      description: Owner session, mutation token, epoch and a mandatory Idempotency-Key are required. Retries reuse the same key, version and canonical arguments.
+      security: [{sessionCookie: []}]
+      parameters:
+      - {in: path, name: id, required: true, schema: {type: string, minLength: 1, maxLength: 48}}
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/CommandIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CommandInvocationInput'}
+      responses:
+        '200':
+          description: Committed or replayed command result; never cached or shared.
+          headers:
+            Cache-Control: {$ref: '#/components/headers/PrivateNoStore'}
+            X-Parley-Epoch: {$ref: '#/components/headers/ParleyEpoch'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CommandRunSuccess'}
+        '400': {$ref: '#/components/responses/CommandError'}
+        '401': {$ref: '#/components/responses/CommandError'}
+        '403': {$ref: '#/components/responses/CommandError'}
+        '404': {$ref: '#/components/responses/CommandError'}
+        '409': {$ref: '#/components/responses/CommandError'}
+        '413': {$ref: '#/components/responses/CommandError'}
+        '422': {$ref: '#/components/responses/CommandRunFailure'}
+        '429': {$ref: '#/components/responses/CommandError'}
+        '500': {$ref: '#/components/responses/CommandError'}
+        '503': {$ref: '#/components/responses/CommandError'}
+        '504': {$ref: '#/components/responses/CommandError'}
   /insights:
     get:
       operationId: getInsights
@@ -2998,6 +3107,14 @@ components:
         type: string
         minLength: 1
         maxLength: 100
+    CommandIdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: true
+      description: Bounded invocation key. A retry reuses this key with the same version and canonical arguments.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9_.-]{1,128}$'
   responses:
     Error:
       description: Stable error envelope.
@@ -3005,6 +3122,29 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
+    CommandError:
+      description: Stable command error envelope with a typed detail array.
+      headers:
+        Cache-Control: {$ref: '#/components/headers/PrivateNoStore'}
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CommandErrorEnvelope'
+    CommandRunFailure:
+      description: Stable command invocation failure envelope with a typed detail array.
+      headers:
+        Cache-Control: {$ref: '#/components/headers/PrivateNoStore'}
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CommandRunFailure'
+  headers:
+    PrivateNoStore:
+      description: Owner command responses are private and must not be stored by any cache.
+      schema: {type: string, const: 'private, no-store'}
+    ParleyEpoch:
+      description: Workspace epoch that produced the command response.
+      schema: {type: string, minLength: 1}
   schemas:
     Health:
       type: object
@@ -5332,19 +5472,21 @@ components:
         kind: {type: string, enum: [terminal, touch, task, blocked, wait, choose]}
         label: {type: string}
         reason: {type: string}
-        date: {type: string, nullable: true, format: date-time}
-        thread_id: {type: string, nullable: true}
-        recipient_id: {type: string, nullable: true}
-        recipient_name: {type: string, nullable: true}
+        date: {type: [string, 'null'], nullable: true, format: date-time}
+        thread_id: {type: [string, 'null'], nullable: true}
+        recipient_id: {type: [string, 'null'], nullable: true}
+        recipient_name: {type: [string, 'null'], nullable: true}
       additionalProperties: false
     QueueSheetRow:
       type: object
-      required: [opportunity_id, title, lifecycle, phase, participants, next_action, other_action_count]
+      required: [opportunity_id, title, lifecycle, phase, participants, next_action, other_action_count, pack_id, pack_version]
       properties:
         opportunity_id: {type: string}
         title: {type: string}
         lifecycle: {type: string, enum: [open, resolved, dormant, closed]}
-        close_reason: {type: string, nullable: true}
+        close_reason: {type: [string, 'null'], nullable: true}
+        pack_id: {type: string, minLength: 1}
+        pack_version: {type: string, minLength: 1}
         phase:
           oneOf:
           - $ref: '#/components/schemas/SheetPhase'
@@ -5373,8 +5515,8 @@ components:
         total: {type: integer, minimum: 0}
         rows: {type: array, items: {$ref: '#/components/schemas/QueueSheetRow'}}
         phases: {type: array, items: {$ref: '#/components/schemas/PhaseKind'}}
-        cursor: {type: string, nullable: true}
-        next_cursor: {type: string, nullable: true}
+        cursor: {type: [string, 'null'], nullable: true}
+        next_cursor: {type: [string, 'null'], nullable: true}
       additionalProperties: false
     SetPhaseInput:
       type: object
@@ -6012,3 +6154,182 @@ components:
       properties:
         attachment: {$ref: '#/components/schemas/EntityAttachment'}
       additionalProperties: false
+    CommandErrorDetail:
+      type: object
+      description: One stable JSON Pointer path and typed problem code; never a validation-engine message.
+      required: [path, problem]
+      properties:
+        path: {type: string, maxLength: 512}
+        problem: {type: string, maxLength: 120}
+      additionalProperties: false
+    CommandError:
+      type: object
+      required: [code, message, details]
+      properties:
+        code:
+          type: string
+          enum:
+          - malformed_request
+          - unauthenticated
+          - origin_denied
+          - unsupported_media_type
+          - forbidden
+          - approval_required
+          - approval_invalid
+          - unknown_command
+          - target_unavailable
+          - conflict
+          - epoch_changed
+          - version_mismatch
+          - operation_in_progress
+          - approval_stale
+          - cursor_stale
+          - requires_owner_workflow
+          - request_too_large
+          - result_too_large
+          - invalid_args
+          - idempotency_mismatch
+          - budget_exceeded
+          - unavailable
+          - timeout
+          - internal
+        message: {type: string, maxLength: 2048}
+        details:
+          type: array
+          maxItems: 32
+          items: {$ref: '#/components/schemas/CommandErrorDetail'}
+      additionalProperties: false
+    CommandErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error: {$ref: '#/components/schemas/CommandError'}
+      additionalProperties: false
+    QueryCommandsInput:
+      type: object
+      required: [surface]
+      properties:
+        surface: {type: string, const: palette}
+        context:
+          type: object
+          maxProperties: 16
+          additionalProperties: {type: [string, boolean]}
+      additionalProperties: false
+    CommandPaletteSpec:
+      type: object
+      required: [context_fields, prompts]
+      properties:
+        context_fields:
+          type: array
+          maxItems: 16
+          items: {type: string}
+        prompts:
+          type: array
+          maxItems: 8
+          items:
+            type: object
+            required: [field, picker, title]
+            properties:
+              field: {type: string, minLength: 1}
+              picker: {type: string, enum: [party, planning_stage, opportunity_task]}
+              title: {type: string, minLength: 1}
+            additionalProperties: false
+      additionalProperties: false
+    CommandDescriptor:
+      type: object
+      description: Closed descriptor published only after boot validation; schemas are self-contained Draft 2020-12 objects.
+      required: [id, version, title, summary, description, keywords, effect, requires_permission, surfaces, args_schema, result_schema, supports_dry_run, palette]
+      properties:
+        id: {type: string, pattern: '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$', maxLength: 48}
+        version: {type: integer, minimum: 1}
+        title: {type: string, maxLength: 60}
+        summary: {type: string, maxLength: 140}
+        description: {type: string, maxLength: 1024}
+        keywords: {type: array, maxItems: 16, items: {type: string}}
+        effect: {type: string, enum: [read, write, destructive]}
+        requires_permission: {type: string, minLength: 1}
+        surfaces: {type: array, items: {type: string, enum: [palette, agent]}}
+        agent_tier: {type: integer, minimum: 1, maximum: 2}
+        args_schema: {type: object, additionalProperties: true}
+        result_schema: {type: object, additionalProperties: true}
+        supports_dry_run: {type: boolean}
+        when: {type: string, maxLength: 512}
+        palette: {$ref: '#/components/schemas/CommandPaletteSpec'}
+      additionalProperties: false
+    QueryCommandsResult:
+      type: object
+      required: [contract_major, manifest_version, truncated, commands]
+      properties:
+        contract_major: {type: integer, const: 1}
+        manifest_version: {type: string, minLength: 1}
+        truncated: {type: boolean}
+        commands:
+          type: array
+          maxItems: 20
+          items: {$ref: '#/components/schemas/CommandDescriptor'}
+      additionalProperties: false
+    SearchCommandsInput:
+      type: object
+      required: [query]
+      properties:
+        query: {type: string, maxLength: 256}
+        limit: {type: integer, minimum: 1, maximum: 25}
+        context:
+          type: object
+          maxProperties: 16
+          additionalProperties: {type: [string, boolean]}
+      additionalProperties: false
+    CommandSummary:
+      type: object
+      required: [id, version, title, summary, effect]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 48}
+        version: {type: integer, minimum: 1}
+        title: {type: string, maxLength: 60}
+        summary: {type: string, maxLength: 140}
+        effect: {type: string, enum: [read, write, destructive]}
+      additionalProperties: false
+    CommandSearchResult:
+      type: object
+      required: [items, total, next_cursor]
+      properties:
+        items:
+          type: array
+          maxItems: 25
+          items: {$ref: '#/components/schemas/CommandSummary'}
+        total: {type: integer, minimum: 0}
+        next_cursor: {type: [string, 'null']}
+      additionalProperties: false
+    CommandInvocationInput:
+      type: object
+      required: [version, args]
+      properties:
+        version: {type: integer, minimum: 1}
+        args: {type: object, minProperties: 1}
+        dry_run: {type: boolean}
+      additionalProperties: false
+    CommandRunSuccess:
+      type: object
+      required: [ok, command_version, audit_id, original_audit_id, replayed, dry_run, result]
+      properties:
+        ok: {type: boolean, const: true}
+        command_version: {type: integer, minimum: 1}
+        audit_id: {type: string, minLength: 1}
+        original_audit_id: {type: [string, 'null']}
+        replayed: {type: boolean}
+        dry_run: {type: boolean}
+        result: {type: object}
+      additionalProperties: false
+    CommandRunFailure:
+      type: object
+      required: [ok, command_version, error]
+      properties:
+        ok: {type: boolean, const: false}
+        command_version: {type: integer, minimum: 1}
+        audit_id: {type: string, minLength: 1}
+        error: {$ref: '#/components/schemas/CommandError'}
+      additionalProperties: false
+    CommandRunResult:
+      oneOf:
+      - $ref: '#/components/schemas/CommandRunSuccess'
+      - $ref: '#/components/schemas/CommandRunFailure'

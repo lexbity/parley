@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/CommandSearchResult","body":{"items":[{"id":"opportunity.set_phase","version":1,"title":"Change opportunity phase","summary":"Move an open opportunity to a planning phase","effect":"write"}],"total":1,"next_cursor":null}}

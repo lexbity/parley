@@ -188,6 +188,10 @@ async fn s12_sheet_defaults_phase_edit_undo_and_conflicts() {
     let row = &all["rows"][0];
     assert_eq!(row["opportunity_id"].as_str().unwrap(), opp);
     assert_eq!(row["lifecycle"].as_str().unwrap(), "open");
+    // Pack identity is present for an Unmapped row too, so the palette can
+    // freeze the precondition from this authoritative read (UCR-001 U01).
+    assert_eq!(row["pack_id"].as_str().unwrap(), "job_search");
+    assert_eq!(row["pack_version"].as_str().unwrap(), "1.0.0");
     assert_eq!(
         row_phase(row),
         None,
@@ -385,7 +389,10 @@ async fn s12_events_filter_returns_scoped_history_with_timestamps() {
     let mut previous_cursor = 0i64;
     for item in items {
         assert!(
-            item["occurred_at"].as_str().map(|value| !value.is_empty()).unwrap_or(false),
+            item["occurred_at"]
+                .as_str()
+                .map(|value| !value.is_empty())
+                .unwrap_or(false),
             "{item}"
         );
         let cursor: i64 = item["cursor"].as_str().unwrap().parse().unwrap();

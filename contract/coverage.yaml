@@ -1122,3 +1122,215 @@ slices:
       owner_role: owner
       package_target: rust+mock
       evidence_path: evidence/r04.md
+  s12:
+    - requirement: UCR-FR-1
+      operationId: getQueue
+      test_id: s12_sheet_defaults_phase_edit_undo_and_conflicts
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s12.md
+    - requirement: UCR-FR-2
+      operationId: getQueue
+      test_id: s12_sheet_defaults_phase_edit_undo_and_conflicts
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s12.md
+    - requirement: UCR-FR-7
+      operationId: getQueue
+      test_id: s12_events_filter_returns_scoped_history_with_timestamps
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s12.md
+    - requirement: UCR-FR-1
+      operationId: setOpportunityPhase
+      test_id: s12_sheet_defaults_phase_edit_undo_and_conflicts
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s12.md
+    - requirement: UCR-FR-2
+      operationId: setOpportunityPhase
+      test_id: s12_browser_sheet_phase_edit_undo_and_conflicts
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/s12.md
+  u01:
+    - requirement: UCR-FR-1
+      operationId: runCommand
+      test_id: u01_set_phase_single_effect_under_32_concurrent_same_key
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u01.md
+    - requirement: UCR-NFR-3
+      operationId: runCommand
+      test_id: u01_set_phase_single_effect_under_32_concurrent_same_key
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u01.md
+    - requirement: UCR-A1
+      operationId: runCommand
+      test_id: u01_set_phase_single_effect_under_32_concurrent_same_key
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u01.md
+    - requirement: UCR-FR-2
+      operationId: runCommand
+      test_id: u01_replay_after_lost_ack_restores_original_result
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u01.md
+    - requirement: UCR-A5
+      operationId: runCommand
+      test_id: u01_replay_after_lost_ack_restores_original_result
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u01.md
+    - requirement: UCR-FR-2
+      operationId: runCommand
+      test_id: u01_canonical_member_order_replays_same_intent
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u01.md
+    - requirement: UCR-A1
+      operationId: runCommand
+      test_id: u01_canonical_member_order_replays_same_intent
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u01.md
+    - requirement: UCR-FR-4
+      operationId: describeCommand
+      test_id: u01_boot_validation_rejects_invalid_registration
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u01.md
+    - requirement: UCR-NFR-1
+      operationId: runCommand
+      test_id: u01_invalid_args_are_terminal_and_redacted
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u01.md
+    - requirement: UCR-A2
+      operationId: runCommand
+      test_id: u01_precommit_crash_leaves_no_effect
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u01.md
+    - requirement: UCR-A5
+      operationId: runCommand
+      test_id: u01_postcommit_crash_replays_committed_effect
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u01.md
+    - requirement: UCR-A2
+      operationId: runCommand
+      test_id: u01_startup_recovery_finalizes_interrupted_attempt
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u01.md
+    - requirement: UCR-NFR-1
+      operationId: runCommand
+      test_id: u01_audit_unavailable_fails_closed
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u01.md
+    - requirement: UCR-FR-1
+      operationId: runCommand
+      test_id: u01_rest_and_command_share_one_fact_and_event
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u01.md
+    - requirement: UCR-A1
+      operationId: runCommand
+      test_id: u01_rest_and_command_share_one_fact_and_event
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u01.md
+    - requirement: UCR-FR-1
+      operationId: runCommand
+      test_id: u01_undo_restores_unmapped_predecessor
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u01.md
+    - requirement: UCR-NFR-1
+      operationId: n/a
+      test_id: u01_backup_scrubs_command_canary
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u01.md
+    - requirement: UCR-FR-4
+      operationId: queryCommands
+      test_id: u01_manifest_search_describe_contract
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u01.md
+    - requirement: UCR-FR-6
+      operationId: searchCommands
+      test_id: u01_manifest_search_describe_contract
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u01.md
+    - requirement: UCR-FR-4
+      operationId: describeCommand
+      test_id: u01_manifest_search_describe_contract
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u01.md
+    - requirement: UCR-FR-7
+      operationId: queryCommands
+      test_id: u01_palette_keyboard_change_and_undo_phase
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u01.md
+    - requirement: UCR-FR-7
+      operationId: runCommand
+      test_id: u01_palette_keyboard_change_and_undo_phase
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u01.md
+    - requirement: UCR-FR-7
+      operationId: queryCommands
+      test_id: u01_palette_accessibility_and_focus
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u01.md
+    - requirement: UCR-FR-3
+      operationId: runCommand
+      test_id: u01_stale_selection_conflict
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u01.md
+    - requirement: UCR-FR-7
+      operationId: runCommand
+      test_id: u01_stale_selection_conflict
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u01.md

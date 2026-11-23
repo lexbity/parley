@@ -782,6 +782,24 @@ export class ParleyClient {
   get workspaceEpoch(): string | undefined { return this.session?.epoch; }
   get workspaceId(): string | undefined { return this.session?.workspace_id; }
 
+  /**
+   * Owner authentication for sibling API clients (the command client) that
+   * share this singleton session. The bootstrap secret is redeemed once by
+   * connect(); every other owner request reuses these exact credentials.
+   */
+  authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      ...extra,
+    };
+    if (this.session) {
+      headers['X-Parley-Token'] = this.session.mutation_token;
+      headers['X-Parley-Epoch'] = this.session.epoch;
+    }
+    return headers;
+  }
+
   async stagePartyImport(csv: Blob, key: string): Promise<PartyImportStage> {
     const result = object(await this.request('/party-imports', {
       method: 'POST', body: csv, headers: { 'Content-Type': 'text/csv', 'Idempotency-Key': key },

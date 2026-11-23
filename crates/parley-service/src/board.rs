@@ -1052,6 +1052,11 @@ fn board_error(error: WorkspaceError) -> Response {
             "STALE_REVISION",
             "The addressed notes, placement, or list changed in another session".to_owned(),
         ),
+        WorkspaceError::LedgerFull => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "LEDGER_CAPACITY",
+            "The command ledger is at capacity".to_owned(),
+        ),
     };
     (
         status,

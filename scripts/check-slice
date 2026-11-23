@@ -5,7 +5,7 @@
 # tests with a filter that succeeds on zero matches — the slice-gated
 # verifiers (contract, migrations, trace) report exactly what is absent.
 #
-# Usage: scripts/check-slice SLICE_ID    (lowercase s01..s12)
+# Usage: scripts/check-slice SLICE_ID    (lowercase s01..s12, p01..p04, r01..r04, u01..u09)
 set -euo pipefail
 
 if [ "$#" -ne 1 ]; then
@@ -15,6 +15,13 @@ fi
 slice=$1
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
+
+# One source of truth for accepted IDs: ci/common.py SLICE_ORDER.
+allowed_slices=$(python3 -B -c 'import sys; sys.path.insert(0, "ci"); from common import SLICE_ORDER; print("|".join(SLICE_ORDER))')
+if [[ "|$allowed_slices|" != *"|$slice|"* ]]; then
+  echo "invalid slice ID: $slice (expected one of: ${allowed_slices//|/, })" >&2
+  exit 2
+fi
 
 step() {
   printf '\n=== check-slice %s: %s ===\n' "$slice" "$*"
@@ -66,12 +73,20 @@ step python3 ci/trace.py --through "$slice" --check-manifest
 # AttachmentPanel.vue S06) are deliberately wired when that module lands; a
 # stub file would not satisfy the spec's behavioral requirement.
 #
+# UCR-001 U01: application operations carry no transport/status sentinels,
+# route strings, replay envelopes or raw transaction control statements.
+step scripts/absent 'HeaderMap|StatusCode|/api/v1|_replay_status|BEGIN IMMEDIATE' crates/parley-service/src/application/phase.rs
+# UCR-001: production command and application modules contain no abandoned
+# implementations or ignored tests; this scans Rust production modules after
+# every slice, including future ones as their directories land.
+step scripts/absent 'todo!\(|unimplemented!\(|#\[ignore\]' crates/parley-service/src/commands crates/parley-service/src/application
+
 # S03's mandated pattern also names navigator.clipboard; this tree's only
 # copy surface is MaterialActions.vue, which uses the modern Clipboard API
 # deliberately *after* a SHA-256 integrity check of the authorized release
 # bytes (the RFC's intent: no preview-text export). The legacy
 # document.execCommand path remains unconditionally banned.
-step scripts/absent 'localStorage|sessionStorage' web/src/features/resources/ResourceEditor.vue
+step scripts/absent 'localStorage|sessionStorage' web/src/features/resources/ResourceEditorForm.vue
 step scripts/absent 'v-html|key="[^"]*\.title"' web/src/features/leads
 step scripts/absent 'document\.execCommand' web/src/features/output
 step scripts/absent 'innerHTML|v-html|localStorage' web/src/shared/MarkdownEditor.vue

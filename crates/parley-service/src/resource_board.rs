@@ -2424,6 +2424,7 @@ async fn get_resource_card_deliveries(
     }
 }
 
+#[allow(clippy::type_complexity)] // published delivered-version projection
 async fn get_delivered_resource_version(
     State(state): State<AppState>,
     Path((id, send_id, material_id, version)): Path<(String, String, String, i64)>,
@@ -2564,6 +2565,11 @@ fn rb_error(error: WorkspaceError) -> Response {
             "STALE_REVISION",
             "The addressed resource, notes, placement, or column changed in another session"
                 .to_owned(),
+        ),
+        WorkspaceError::LedgerFull => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "LEDGER_CAPACITY",
+            "The command ledger is at capacity".to_owned(),
         ),
     };
     (

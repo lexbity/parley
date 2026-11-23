@@ -1,7 +1,15 @@
 import { mount, flushPromises } from '@vue/test-utils';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parley, type GraphEntity, type QueueSheetResponse, type SetPhaseResult, type SheetPhase } from '../../api/client';
+import { commands } from '../../api/commands';
+import { sessionEventReader } from '../../app/commands/events';
+import { createCommandRegistry, installCommandRegistry, useCommandRegistry } from '../../app/commands/registry';
 import QueueWorkspace from './QueueWorkspace.vue';
+
+beforeEach(() => {
+  installCommandRegistry(createCommandRegistry(vi.fn()));
+  vi.spyOn(commands, 'query').mockResolvedValue({ contract_major: 1, manifest_version: 'sha256:test', truncated: false, commands: [] });
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -238,6 +246,60 @@ describe('QueueWorkspace sheet: search, phase edit, undo', () => {
     await wrapper.findAll('button').find((button) => button.text() === 'Load more')!.trigger('click');
     await flushPromises();
     expect(wrapper.findAll('tbody tr[data-opportunity-id]')).toHaveLength(2);
+    wrapper.unmount();
+  });
+
+  it('freezes pack identity and revision in a scoped palette command and applies its receipt', async () => {
+    const wrapper = stub(); await flushPromises();
+    await wrapper.get('button[data-open="o1"]').trigger('click');
+    await flushPromises();
+    const result = {
+      ok: true as const, command_version: 1, audit_id: 'aud-1', replayed: false, dry_run: false,
+      result: { opportunity_id: 'o1', phase_revision: 5, previous_stage_id: null, stage_id: 'preparing', event_id: 'ev-9', event_cursor: '12' },
+    };
+    const invoke = vi.spyOn(commands, 'invoke').mockResolvedValue(result);
+    const ctx = { context: { route: 'queue', 'selection.opportunity': true }, selection: { opportunity: 'o1' } };
+    await useCommandRegistry().run('ui.queue.set_phase', { stage_id: 'preparing' }, ctx);
+    await flushPromises();
+    expect(invoke).toHaveBeenCalledWith('opportunity.set_phase', expect.objectContaining({
+      version: 1,
+      args: expect.objectContaining({ opportunity_id: 'o1', expected_pack_id: 'job_search', expected_pack_version: '1.0.0', stage_id: 'preparing' }),
+    }), expect.any(String));
+    expect(wrapper.text()).toContain('moved to Preparing');
+    expect(wrapper.emitted('binding')?.at(-1)?.[0]).toMatchObject({ opportunityId: 'o1', originalEventId: 'ev-9' });
+    wrapper.unmount();
+  });
+
+  it('reports a conflict when a command result names a row that is no longer visible', async () => {
+    const wrapper = stub(); await flushPromises();
+    await wrapper.get('button[data-open="o1"]').trigger('click');
+    await flushPromises();
+    vi.spyOn(commands, 'invoke').mockResolvedValue({
+      ok: true, command_version: 1, audit_id: 'aud-2', replayed: false, dry_run: false,
+      result: { opportunity_id: 'missing', phase_revision: 2, previous_stage_id: null, stage_id: 'preparing', event_id: null, event_cursor: '1' },
+    });
+    await useCommandRegistry().run('ui.queue.set_phase', { stage_id: 'preparing' }, {
+      context: { route: 'queue', 'selection.opportunity': true }, selection: { opportunity: 'o1' },
+    });
+    await flushPromises();
+    expect(wrapper.get('[role="alert"]').text()).toContain('no longer visible');
+    wrapper.unmount();
+  });
+
+  it('preserves a dirty phase edit when an external event arrives during a save', async () => {
+    let hooks!: Parameters<typeof sessionEventReader.start>[0];
+    vi.spyOn(sessionEventReader, 'start').mockImplementation((value) => { hooks = value; });
+    let finish!: (value: SetPhaseResult) => void;
+    const wrapper = stub();
+    vi.mocked(parley.setOpportunityPhase).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await flushPromises();
+    await wrapper.get('select[aria-label="Phase for Onboarding"]').setValue('preparing');
+    await flushPromises();
+    hooks.onEvents({ items: [], next_cursor: '1', observed_cursor: '1' } as never);
+    await flushPromises();
+    expect(wrapper.get('[role="alert"]').text()).toContain('in flight');
+    finish({ row: sheetResponse.rows[0]!, event_id: 'ev-1', phase_revision: 2, reverted: false });
+    await flushPromises();
     wrapper.unmount();
   });
 

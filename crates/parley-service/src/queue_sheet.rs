@@ -8,7 +8,8 @@
 //! benefit or ladder advance.
 
 use super::materials::workspace_error;
-use super::{AppState, WorkspaceError, authenticate, command_error, new_id, now_utc};
+use super::{AppState, WorkspaceError, authenticate};
+use crate::application::writer::{Failure, JobResult};
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -18,7 +19,8 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::{Sqlite, Transaction};
+use sqlx::{Connection, Sqlite, Transaction};
+use std::time::Instant;
 
 /// One opportunity row from the sheet SELECT (phase columns + derived flags).
 type SheetRowRecord = (
@@ -37,17 +39,6 @@ type SheetRowRecord = (
     Option<String>,
     Option<String>,
     bool,
-);
-
-/// Current phase state columns for the phase command.
-type PhaseStateRecord = (
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    i64,
-    Option<String>,
 );
 
 pub(super) fn routes() -> Router<AppState> {
@@ -105,6 +96,10 @@ pub(super) struct QueueSheetRow {
     pub title: String,
     pub lifecycle: String,
     pub close_reason: Option<String>,
+    /// Active pack identity, present even for an Unmapped row so a palette
+    /// prompt can freeze the pack precondition from the authoritative read.
+    pub pack_id: String,
+    pub pack_version: String,
     pub phase: Option<SheetPhase>,
     pub participants: Vec<SheetParticipant>,
     pub next_action: SheetNextAction,
@@ -144,7 +139,7 @@ pub(super) async fn sheet_query(
         Ok(v) => v,
         Err(e) => {
             eprintln!("queue sheet DB: {e:?}");
-            return command_error(e.into());
+            return workspace_error(e.into());
         }
     };
     let result = build_sheet(&mut tx, &query).await;
@@ -249,6 +244,10 @@ async fn build_sheet(
     let participants = load_participants(tx, &ids).await?;
     let threads = load_threads(tx, &ids).await?;
     let phases = load_phase_kinds(tx).await?;
+    let (active_pack_id, active_pack_version): (String, String) =
+        sqlx::query_as("SELECT pack_id,pack_version FROM owner_profile WHERE id=1")
+            .fetch_one(&mut **tx)
+            .await?;
 
     let rows = rows
         .into_iter()
@@ -310,6 +309,8 @@ async fn build_sheet(
                     title,
                     lifecycle: state,
                     close_reason,
+                    pack_id: active_pack_id.clone(),
+                    pack_version: active_pack_version.clone(),
                     phase,
                     participants: participants.get(&oid).cloned().unwrap_or_default(),
                     next_action,
@@ -631,88 +632,95 @@ struct SetPhaseInput {
     original_event_id: Option<String>,
 }
 
-fn canonical_digest(method: &str, target: &str, body: &impl Serialize) -> String {
-    let body = serde_json::to_vec(body).unwrap_or_default();
-    super::digest(&[method.as_bytes(), b"\n", target.as_bytes(), b"\n", &body].concat())
-}
-
-struct Replay {
-    status: i64,
-    body: Value,
-}
-
-async fn receipt_lookup(
-    tx: &mut Transaction<'_, Sqlite>,
-    key: &str,
-    canonical: &str,
-) -> Result<Option<Replay>, WorkspaceError> {
-    let row: Option<(String, i64, String)> = sqlx::query_as(
-        "SELECT canonical_digest,status_code,result_json FROM idempotency_receipt WHERE owner_id=1 AND epoch=(SELECT epoch FROM workspace_meta WHERE singleton=1) AND key=?",
-    )
-    .bind(key)
-    .fetch_optional(&mut **tx)
-    .await?;
-    let Some((stored, status, body)) = row else {
-        return Ok(None);
-    };
-    if stored != canonical {
-        return Err(WorkspaceError::IdempotencyConflict);
-    }
-    let body: Value =
-        serde_json::from_str(&body).map_err(|error| WorkspaceError::Invalid(error.to_string()))?;
-    Ok(Some(Replay { status, body }))
-}
-
-async fn receipt_store(
-    tx: &mut Transaction<'_, Sqlite>,
-    key: &str,
-    canonical: &str,
-    status: i64,
-    result: &Value,
-) -> Result<(), WorkspaceError> {
-    sqlx::query(
-        "INSERT INTO idempotency_receipt(owner_id,epoch,key,canonical_digest,status_code,result_json,last_event_cursor,created_at) VALUES(1,(SELECT epoch FROM workspace_meta WHERE singleton=1),?,?,?,?,(SELECT COALESCE(MAX(cursor),0) FROM event),?)",
-    )
-    .bind(key)
-    .bind(canonical)
-    .bind(status)
-    .bind(result.to_string())
-    .bind(now_utc())
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
-}
-
-async fn write_event(
-    tx: &mut Transaction<'_, Sqlite>,
-    entity_type: &str,
-    id: &str,
-    revision: i64,
-    kind: &str,
-    payload: Value,
-) -> Result<String, WorkspaceError> {
-    let event_id = new_id(id);
-    sqlx::query(
-        "INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?,?,?,?,?,?)",
-    )
-    .bind(&event_id)
-    .bind(now_utc())
-    .bind(entity_type)
-    .bind(id)
-    .bind(revision)
-    .bind(kind)
-    .bind(payload.to_string())
-    .execute(&mut **tx)
-    .await?;
-    Ok(event_id)
-}
-
 #[derive(Debug, Clone, Serialize)]
 struct PhaseResult {
     row: QueueSheetRow,
     event_id: String,
     phase_revision: i64,
     reverted: bool,
+}
+
+/// Finish a REST phase transaction: commit under the deadline or fail the
+/// job. Terminal legacy errors commit an empty transaction (nothing was
+/// written) so their body reaches the transport.
+async fn finish_rest_tx(
+    tx: Transaction<'_, Sqlite>,
+    deadline: Instant,
+    status: u16,
+    body: Value,
+) -> JobResult {
+    let transport = json!({
+        "_parley_rest_status": status,
+        "_parley_rest_body": body,
+    });
+    match crate::application::writer::commit_tx(tx, deadline, "").await {
+        Ok(()) => JobResult {
+            commit: true,
+            body: transport,
+            failure: None,
+        },
+        Err(failure) => JobResult {
+            commit: false,
+            body: Value::Null,
+            failure: Some(failure),
+        },
+    }
+}
+
+fn rest_error(_status: u16, code: &'static str, message: impl Into<String>) -> Value {
+    json!({"error": {"code": code, "message": message.into(), "details": []}})
+}
+
+/// Legacy REST error mapping for the shared phase operation (published
+/// statuses preserved at the adapter).
+fn legacy_phase_error(error: crate::application::phase::PhaseError) -> (u16, &'static str, String) {
+    use crate::application::phase::PhaseError;
+    match error {
+        PhaseError::NotFound => (404, "NOT_FOUND", "Opportunity does not exist".into()),
+        PhaseError::InvalidStage => (
+            422,
+            "INVALID_STAGE",
+            "Stage is not valid for the selected pack".into(),
+        ),
+        PhaseError::TerminalStage => (
+            422,
+            "REQUIRES_LIFECYCLE_CONFIRM",
+            "Closing or resolving an opportunity requires the explicit lifecycle flow with a recorded reason; an ordinary phase edit cannot close it."
+                .into(),
+        ),
+        PhaseError::LifecycleBlocked => (
+            409,
+            "LIFECYCLE_BLOCKS_PHASE",
+            "This opportunity is not open; reopen or resolve it through its explicit workflow before changing its phase."
+                .into(),
+        ),
+        PhaseError::StaleRevision => (
+            412,
+            "STALE_PHASE_REVISION",
+            "Expected phase revision is stale; reload the current phase.".into(),
+        ),
+        PhaseError::PackMismatch => (
+            412,
+            "STALE_PHASE_REVISION",
+            "Pack identity does not match the opportunity.".into(),
+        ),
+        PhaseError::UndoInvalidReference => (
+            422,
+            "INVALID_UNDO_REFERENCE",
+            "The referenced transition is not an ordinary manual phase change.".into(),
+        ),
+        PhaseError::UndoNotLatest => (
+            412,
+            "PHASE_CHANGED_ELSEWHERE",
+            "Undo cannot apply: a newer phase change already replaced the referenced transition. Review the current phase."
+                .into(),
+        ),
+        PhaseError::UndoTargetMismatch => (
+            422,
+            "INVALID_UNDO_TARGET",
+            "Undo must target the stage recorded before the original transition.".into(),
+        ),
+    }
 }
 
 async fn set_phase(
@@ -744,308 +752,255 @@ async fn set_phase(
         "expected_phase_revision": input.expected_phase_revision,
         "original_event_id": input.original_event_id,
     });
-    let canonical = canonical_digest("PATCH", &format!("/opportunities/{id}/phase"), &body);
-    let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("phase command DB: {e:?}");
-            return command_error(e.into());
+    let canonical = crate::commands::ledger::rest_canonical_digest(
+        "PATCH",
+        &format!("/opportunities/{id}/phase"),
+        &body,
+    );
+    let action = match input.original_event_id.clone() {
+        Some(original_event_id) => {
+            crate::application::phase::PhaseAction::Undo { original_event_id }
         }
+        None => crate::application::phase::PhaseAction::Set {
+            target_stage_id: input.target_stage_id.clone(),
+        },
     };
-    if let Some(replay) = match receipt_lookup(&mut tx, &key, &canonical).await {
-        Ok(v) => v,
-        Err(e) => return workspace_error(e),
-    } {
-        let _ = tx.commit().await;
-        return Json(json!({
-            "_replay_status": replay.status,
-            "result": replay.body,
-        }))
-        .into_response();
-    }
-
-    // Load current opportunity phase state.
-    let row: Option<PhaseStateRecord> = match sqlx::query_as(
-        "SELECT state,stage_id,stage_pack_id,stage_pack_version,stage_class,phase_revision,last_phase_event_id FROM opportunity WHERE id=?",
-    )
-    .bind(&id)
-    .fetch_optional(&mut *tx)
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => return command_error(e.into()),
+    let epoch = state.workspace.epoch().to_string();
+    let generation = state.workspace.generation_token().await;
+    let opportunity_id = id.clone();
+    let pack_version = input.pack_version.clone();
+    let input_target_stage = input.target_stage_id.clone();
+    let expected_revision = input.expected_phase_revision;
+    let operation_digest = crate::digest(format!("rest-phase\0{key}\0{opportunity_id}").as_bytes());
+    let job = crate::application::writer::WriterJob {
+        deadline: Instant::now() + crate::application::writer::EXECUTION_DEADLINE,
+        generation,
+        run: Box::new(
+            move |connection: &mut sqlx::sqlite::SqliteConnection, deadline: Instant| {
+                let key = key.clone();
+                let canonical = canonical.clone();
+                let epoch = epoch.clone();
+                let opportunity_id = opportunity_id.clone();
+                let pack_version = pack_version.clone();
+                let action = action.clone();
+                let operation_digest = operation_digest.clone();
+                let input_target_stage = input_target_stage.clone();
+                Box::pin(async move {
+                    let mut tx = match connection.begin_with("BEGIN IMMEDIATE").await {
+                        Ok(tx) => tx,
+                        Err(_) => {
+                            return JobResult {
+                                commit: false,
+                                body: Value::Null,
+                                failure: Some(Failure::Unavailable),
+                            };
+                        }
+                    };
+                    // Historical receipts keep their published replay envelope.
+                    match crate::commands::ledger::rest_receipt_lookup(&mut tx, &key, &canonical)
+                        .await
+                    {
+                        Ok(Some(replay)) => {
+                            let replayed =
+                                json!({"_replay_status": replay.status, "result": replay.body});
+                            return finish_rest_tx(tx, deadline, 200, replayed).await;
+                        }
+                        Ok(None) => {}
+                        Err(_) => {
+                            // Same key with a different canonical intent is a
+                            // terminal conflict; never re-execute the effect.
+                            return finish_rest_tx(
+                                tx,
+                                deadline,
+                                409,
+                                rest_error(
+                                    409,
+                                    "IDEMPOTENCY_CONFLICT",
+                                    "Idempotency key was used for a different request",
+                                ),
+                            )
+                            .await;
+                        }
+                    }
+                    let current_epoch: Option<String> =
+                        sqlx::query_scalar("SELECT epoch FROM workspace_meta WHERE singleton=1")
+                            .fetch_optional(&mut *tx)
+                            .await
+                            .ok()
+                            .flatten();
+                    if current_epoch.as_deref() != Some(&epoch) {
+                        return finish_rest_tx(
+                            tx,
+                            deadline,
+                            409,
+                            rest_error(
+                                409,
+                                "WORKSPACE_REPLACED",
+                                "Workspace changed; reconnect before continuing",
+                            ),
+                        )
+                        .await;
+                    }
+                    let pack_id: Option<String> =
+                        sqlx::query_scalar("SELECT pack_id FROM owner_profile WHERE id=1")
+                            .fetch_optional(&mut *tx)
+                            .await
+                            .ok()
+                            .flatten();
+                    let Some(pack_id) = pack_id else {
+                        return JobResult {
+                            commit: false,
+                            body: Value::Null,
+                            failure: Some(Failure::Unavailable),
+                        };
+                    };
+                    if sqlx::query("SAVEPOINT ucr_rest_operation")
+                        .execute(&mut *tx)
+                        .await
+                        .is_err()
+                    {
+                        return JobResult {
+                            commit: false,
+                            body: Value::Null,
+                            failure: Some(Failure::Unavailable),
+                        };
+                    }
+                    let expected_target_stage_id = match &action {
+                        crate::application::phase::PhaseAction::Undo { .. } => {
+                            Some(input_target_stage.clone())
+                        }
+                        crate::application::phase::PhaseAction::Set { .. } => None,
+                    };
+                    let phase_input = crate::application::phase::PhaseInput {
+                        opportunity_id: opportunity_id.clone(),
+                        expected_phase_revision: expected_revision,
+                        expected_pack_id: pack_id,
+                        expected_pack_version: pack_version,
+                        action,
+                        operation_key_digest: operation_digest,
+                        expected_target_stage_id,
+                    };
+                    match crate::application::phase::apply_phase(&mut tx, &phase_input).await {
+                        Ok(outcome) => {
+                            if sqlx::query("RELEASE SAVEPOINT ucr_rest_operation")
+                                .execute(&mut *tx)
+                                .await
+                                .is_err()
+                            {
+                                return JobResult {
+                                    commit: false,
+                                    body: Value::Null,
+                                    failure: Some(Failure::Unavailable),
+                                };
+                            }
+                            let (event_id_from_op, phase_revision, reverted) = match outcome {
+                                crate::application::phase::PhaseOutcome::Changed(result) => {
+                                    (result.event_id, result.phase_revision, result.reverted)
+                                }
+                                crate::application::phase::PhaseOutcome::NoOp(result) => {
+                                    (None, result.phase_revision, result.reverted)
+                                }
+                            };
+                            // The published narrow no-op acknowledgement keeps
+                            // the row's recorded event id (transport choice).
+                            let event_id = match event_id_from_op {
+                                Some(event_id) => event_id,
+                                None => sqlx::query_scalar(
+                                    "SELECT COALESCE(last_phase_event_id,'') FROM opportunity WHERE id=?",
+                                )
+                                .bind(&opportunity_id)
+                                .fetch_one(&mut *tx)
+                                .await
+                                .unwrap_or_default(),
+                            };
+                            let row = match row_json(&mut tx, &opportunity_id).await {
+                                Ok(row) => row,
+                                Err(_) => {
+                                    return JobResult {
+                                        commit: false,
+                                        body: Value::Null,
+                                        failure: Some(Failure::Unavailable),
+                                    };
+                                }
+                            };
+                            let result = PhaseResult {
+                                row,
+                                event_id,
+                                phase_revision,
+                                reverted,
+                            };
+                            let result_value = serde_json::to_value(&result).unwrap_or_default();
+                            if crate::commands::ledger::rest_receipt_store(
+                                &mut tx,
+                                &key,
+                                &canonical,
+                                200,
+                                &result_value,
+                            )
+                            .await
+                            .is_err()
+                            {
+                                return JobResult {
+                                    commit: false,
+                                    body: Value::Null,
+                                    failure: Some(Failure::Unavailable),
+                                };
+                            }
+                            finish_rest_tx(tx, deadline, 200, result_value).await
+                        }
+                        Err(error) => {
+                            // Roll the operation back; the outer transaction
+                            // still commits the published terminal response.
+                            let _ = sqlx::query("ROLLBACK TO SAVEPOINT ucr_rest_operation")
+                                .execute(&mut *tx)
+                                .await;
+                            let _ = sqlx::query("RELEASE SAVEPOINT ucr_rest_operation")
+                                .execute(&mut *tx)
+                                .await;
+                            let (status, code, message) = legacy_phase_error(error);
+                            finish_rest_tx(tx, deadline, status, rest_error(status, code, message))
+                                .await
+                        }
+                    }
+                })
+            },
+        ),
+        reply: tokio::sync::oneshot::channel().0,
     };
-    let Some((
-        lifecycle,
-        current_stage,
-        _current_pack,
-        _current_pack_version,
-        current_class,
-        phase_revision,
-        last_phase_event_id,
-    )) = row
-    else {
-        return workspace_error(WorkspaceError::NotFound);
-    };
-
-    // Resolve the target stage in the active pack.
-    let stage: Option<(String, String, String, String)> = match sqlx::query_as(
-        "SELECT stage_id,label,class,kind FROM pack_stage WHERE pack_id=(SELECT pack_id FROM owner_profile WHERE id=1) AND pack_version=? AND stage_id=?",
-    )
-    .bind(&input.pack_version)
-    .bind(&input.target_stage_id)
-    .fetch_optional(&mut *tx)
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => return command_error(e.into()),
-    };
-    let Some((target_stage_id, target_label, target_class, target_kind)) = stage else {
-        let _ = tx.commit().await;
-        return super::error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "INVALID_STAGE",
-            format!(
-                "Stage '{}' is not valid for pack version {}.",
-                input.target_stage_id, input.pack_version
+    match state.writer.run(job).await {
+        crate::application::writer::WriteOutcome::Committed(body) => {
+            let status = body
+                .get("_parley_rest_status")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u16)
+                .unwrap_or(200);
+            let payload = body.get("_parley_rest_body").cloned().unwrap_or(body);
+            let mut response = Json(payload).into_response();
+            *response.status_mut() =
+                StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            super::private_headers(&mut response, state.workspace.epoch());
+            response
+        }
+        crate::application::writer::WriteOutcome::Rejected(failure) => match failure {
+            Failure::Timeout => super::error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "TIMEOUT",
+                "The command timed out",
             ),
-        )
-        .into_response();
-    };
-
-    // Undo path: reference the original manual transition.
-    let mut reverted = false;
-    let mut reversal_of: Option<String> = None;
-    let mut from_stage_id = current_stage.clone();
-    let mut from_class = current_class.clone();
-    if let Some(original_event_id) = &input.original_event_id {
-        reverted = true;
-        reversal_of = Some(original_event_id.clone());
-        if last_phase_event_id.as_deref() != Some(original_event_id.as_str()) {
-            let _ = tx.commit().await;
-            return super::error(
-                StatusCode::PRECONDITION_FAILED,
-                "PHASE_CHANGED_ELSEWHERE",
-                "Undo cannot apply: a newer phase change already replaced the referenced transition. Review the current phase.",
-            )
-            .into_response();
-        }
-        let event: Option<(String, String, String)> = match sqlx::query_as(
-            "SELECT entity_type,event_type,payload_json FROM event WHERE event_id=?",
-        )
-        .bind(original_event_id)
-        .fetch_optional(&mut *tx)
-        .await
-        {
-            Ok(v) => v,
-            Err(e) => return command_error(e.into()),
-        };
-        let Some((entity_type, event_type, payload_json)) = event else {
-            let _ = tx.commit().await;
-            return super::error(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "INVALID_UNDO_REFERENCE",
-                "The referenced transition event does not exist.",
-            )
-            .into_response();
-        };
-        if entity_type != "opportunity" || event_type != "opportunity.phase_changed" {
-            let _ = tx.commit().await;
-            return super::error(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "INVALID_UNDO_REFERENCE",
-                "The referenced event is not a phase transition.",
-            )
-            .into_response();
-        }
-        let payload: Value = serde_json::from_str(&payload_json).unwrap_or_default();
-        if payload.get("operation").and_then(|v| v.as_str()) != Some("manual") {
-            let _ = tx.commit().await;
-            return super::error(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "INVALID_UNDO_REFERENCE",
-                "The referenced transition is not an ordinary manual phase change.",
-            )
-            .into_response();
-        }
-        let event_from = payload.get("from_stage_id").and_then(|v| v.as_str());
-        let event_to = payload.get("to_stage_id").and_then(|v| v.as_str());
-        if event_to != current_stage.as_deref() {
-            let _ = tx.commit().await;
-            return super::error(
-                StatusCode::PRECONDITION_FAILED,
-                "PHASE_CHANGED_ELSEWHERE",
-                "Undo cannot apply: the opportunity is no longer in the phase set by the referenced transition.",
-            )
-            .into_response();
-        }
-        let Some(event_from) = event_from else {
-            let _ = tx.commit().await;
-            return super::error(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "INVALID_UNDO_REFERENCE",
-                "The referenced transition carries no prior stage.",
-            )
-            .into_response();
-        };
-        if event_from != target_stage_id {
-            let _ = tx.commit().await;
-            return super::error(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "INVALID_UNDO_TARGET",
-                "Undo must target the stage recorded before the original transition.",
-            )
-            .into_response();
-        }
-        from_stage_id = Some(target_stage_id.clone());
-        from_class = Some(target_class.clone());
+            _ => {
+                let mut response = super::error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "WRITER_BUSY",
+                    "The workspace is busy. Retry the same operation.",
+                );
+                response.headers_mut().insert(
+                    axum::http::header::RETRY_AFTER,
+                    axum::http::HeaderValue::from_static("1"),
+                );
+                response
+            }
+        },
     }
-
-    // Same-phase selection is a no-op (no event, no revision bump).
-    if !reverted && current_stage.as_deref() == Some(target_stage_id.as_str()) {
-        let row = match row_json(&mut tx, &id).await {
-            Ok(r) => r,
-            Err(e) => return workspace_error(e),
-        };
-        let event_id = last_phase_event_id.unwrap_or_default();
-        let result = PhaseResult {
-            row,
-            event_id,
-            phase_revision,
-            reverted,
-        };
-        let result_value = serde_json::to_value(&result).unwrap_or_default();
-        if let Err(e) = receipt_store(&mut tx, &key, &canonical, 200, &result_value).await {
-            return workspace_error(e);
-        }
-        let _ = tx.commit().await;
-        return Json(result_value).into_response();
-    }
-
-    // Terminal stages require the explicit lifecycle flow, never an ordinary edit.
-    if target_kind == "terminal" {
-        let _ = tx.commit().await;
-        return super::error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "REQUIRES_LIFECYCLE_CONFIRM",
-            format!(
-                "Stage '{}' is terminal. Closing or resolving an opportunity requires the explicit lifecycle flow with a recorded reason; an ordinary phase edit cannot close it.",
-                target_label
-            ),
-        )
-        .into_response();
-    }
-
-    // Lifecycle eligibility: only open opportunities accept ordinary phase edits.
-    if lifecycle != "open" {
-        let _ = tx.commit().await;
-        return super::error(
-            StatusCode::CONFLICT,
-            "LIFECYCLE_BLOCKS_PHASE",
-            format!(
-                "This opportunity is {lifecycle}; reopen or resolve it through its explicit workflow before changing its phase."
-            ),
-        )
-        .into_response();
-    }
-
-    // Concurrency guard.
-    if phase_revision != input.expected_phase_revision {
-        let _ = tx.commit().await;
-        return super::error(
-            StatusCode::PRECONDITION_FAILED,
-            "STALE_PHASE_REVISION",
-            format!(
-                "Expected phase revision {} but the opportunity is at revision {}.",
-                input.expected_phase_revision, phase_revision
-            ),
-        )
-        .into_response();
-    }
-
-    let next_revision = phase_revision + 1;
-    let (pack_id, pack_version) = match sqlx::query_as::<_, (String, String)>(
-        "SELECT pack_id,pack_version FROM owner_profile WHERE id=1",
-    )
-    .fetch_one(&mut *tx)
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => return command_error(e.into()),
-    };
-
-    let event_payload = json!({
-        "from_stage_id": from_stage_id,
-        "from_class": from_class,
-        "to_stage_id": target_stage_id,
-        "to_class": target_class,
-        "pack_id": pack_id,
-        "pack_version": pack_version,
-        "operation": if reverted { "undo" } else { "manual" },
-        "origin": "queue.sheet",
-        "operation_key": key,
-        "reversal_of": reversal_of,
-    });
-    let event_id = match write_event(
-        &mut tx,
-        "opportunity",
-        &id,
-        next_revision,
-        "opportunity.phase_changed",
-        event_payload,
-    )
-    .await
-    {
-        Ok(e) => e,
-        Err(e) => return workspace_error(e),
-    };
-
-    let updated = sqlx::query(
-        "UPDATE opportunity SET stage_id=?,stage_pack_id=?,stage_pack_version=?,stage_class=?,phase_revision=?,last_phase_event_id=?,updated_at=? WHERE id=? AND phase_revision=?",
-    )
-    .bind(&target_stage_id)
-    .bind(&pack_id)
-    .bind(&pack_version)
-    .bind(&target_class)
-    .bind(next_revision)
-    .bind(&event_id)
-    .bind(now_utc())
-    .bind(&id)
-    .bind(phase_revision)
-    .execute(&mut *tx)
-    .await;
-    match updated {
-        Ok(result) if result.rows_affected() != 1 => {
-            let _ = tx.rollback().await;
-            return super::error(
-                StatusCode::PRECONDITION_FAILED,
-                "STALE_PHASE_REVISION",
-                "The phase changed in another session; reload and review the current phase.",
-            )
-            .into_response();
-        }
-        Ok(_) => {}
-        Err(e) => return command_error(e.into()),
-    }
-
-    let row = match row_json(&mut tx, &id).await {
-        Ok(r) => r,
-        Err(e) => return workspace_error(e),
-    };
-    let result = PhaseResult {
-        row,
-        event_id,
-        phase_revision: next_revision,
-        reverted,
-    };
-    let result_value = serde_json::to_value(&result).unwrap_or_default();
-    if let Err(e) = receipt_store(&mut tx, &key, &canonical, 200, &result_value).await {
-        return workspace_error(e);
-    }
-    let _ = tx.commit().await;
-    let mut r = Json(result_value).into_response();
-    super::private_headers(&mut r, state.workspace.epoch());
-    r
 }
 
 /// Canonical single-row projection shared by list and command responses.
@@ -1079,6 +1034,10 @@ async fn row_json(
     else {
         return Err(WorkspaceError::NotFound);
     };
+    let (active_pack_id, active_pack_version): (String, String) =
+        sqlx::query_as("SELECT pack_id,pack_version FROM owner_profile WHERE id=1")
+            .fetch_one(&mut **tx)
+            .await?;
     let phase = match (
         stage_id,
         pack_id,
@@ -1121,6 +1080,8 @@ async fn row_json(
         title,
         lifecycle: state,
         close_reason,
+        pack_id: active_pack_id,
+        pack_version: active_pack_version,
         phase,
         participants,
         next_action,

@@ -19,13 +19,17 @@ import {
   type SheetPhase,
   type SetPhaseResult,
 } from '../../api/client';
+import { commands, type CommandArgs, type CommandSuccess } from '../../api/commands';
+import { sessionEventReader } from '../../app/commands/events';
+import type { QueuePaletteBinding } from '../../app/commands/context';
+import { queuePhaseActions, registerScoped, useCommandRegistry } from '../../app/commands/registry';
 import Daily from './Daily.vue';
 import Insights from './Insights.vue';
 
 defineOptions({ name: 'QueueWorkspace' });
 
 const props = withDefaults(defineProps<{ parties: GraphEntity[]; outputs: Material[]; routeId?: string | null; active?: boolean }>(), { routeId: null, active: true });
-const emit = defineEmits<{ navigate: [path: string] }>();
+const emit = defineEmits<{ navigate: [path: string]; binding: [value: QueuePaletteBinding] }>();
 
 type View = 'sheet' | 'daily' | 'insights';
 const view = ref<View>('sheet');
@@ -50,6 +54,116 @@ const createPartyId = ref('');
 const createBusy = ref(false);
 const rowRefs = ref<Record<string, HTMLElement | null>>({});
 const phaseSelectRefs = ref<Record<string, HTMLSelectElement | null>>({});
+const lastPhaseEventId = ref<string | null>(null);
+const conflict = ref('');
+const epochAtLoad = ref('');
+const selectedRow = computed(() => sheet.value.rows.find((row) => row.opportunity_id === selectedId.value) ?? null);
+
+/** Defensive pack identity: row fields, a nested pack object or the phase list. */
+function packIdentity(row?: QueueSheetRow | null): { id: string; version: string } {
+  const extended = row as unknown as { pack_id?: unknown; pack_version?: unknown; pack?: { id?: unknown; version?: unknown } } | null | undefined;
+  if (typeof extended?.pack_id === 'string' && typeof extended.pack_version === 'string') {
+    return { id: extended.pack_id, version: extended.pack_version };
+  }
+  if (typeof extended?.pack?.id === 'string' && typeof extended.pack?.version === 'string') {
+    return { id: extended.pack.id, version: extended.pack.version };
+  }
+  const phase = row?.phase
+    ?? sheet.value.phases.find((item) => item.stage_id === row?.phase?.stage_id)
+    ?? sheet.value.phases[0];
+  if (phase?.pack_id && phase?.pack_version) return { id: phase.pack_id, version: phase.pack_version };
+  const sheetPack = sheet.value as QueueSheetResponse & { pack?: { id?: string; version?: string } };
+  if (sheetPack.pack?.id && sheetPack.pack?.version) return { id: sheetPack.pack.id, version: sheetPack.pack.version };
+  return { id: '', version: '' };
+}
+
+function emitBinding() {
+  const row = selectedRow.value;
+  const pack = packIdentity(row);
+  const binding: QueuePaletteBinding = {
+    opportunityId: row?.opportunity_id ?? null,
+    phaseRevision: row?.phase?.revision ?? 1,
+    pack,
+    stages: editablePhases.value.map((phase) => ({ value: phase.stage_id, label: phase.label })),
+    originalEventId: lastPhaseEventId.value,
+  };
+  emit('binding', binding);
+}
+
+watch([selectedRow, () => sheet.value.phases, lastPhaseEventId], () => emitBinding());
+
+const commandRegistry = useCommandRegistry();
+let disposeActions: (() => void) | null = null;
+
+/** Scoped palette front doors are rebuilt whenever the authoritative row changes. */
+function refreshScopedActions() {
+  disposeActions?.();
+  disposeActions = null;
+  const row = selectedRow.value;
+  if (!row) return;
+  const pack = packIdentity(row);
+  if (!pack.id || !pack.version) return;
+  const revision = row.phase?.revision ?? 1;
+  disposeActions = registerScoped(commandRegistry, queuePhaseActions({
+    opportunityId: row.opportunity_id,
+    phaseRevision: revision,
+    packId: pack.id,
+    packVersion: pack.version,
+    originalEventId: lastPhaseEventId.value,
+    intentFingerprint: `${epochAtLoad.value}|${row.opportunity_id}|${revision}`,
+    invoke: (id: string, args: CommandArgs, key: string) => commands.invoke(id, { version: 1, args, dry_run: false }, key),
+    onCommitted: (result, commandId) => applyCommandResult(result, commandId),
+  }));
+}
+
+watch([selectedRow, lastPhaseEventId, epochAtLoad], () => refreshScopedActions());
+
+/** Apply a command receipt to visible rows without clobbering a local edit. */
+function applyCommandResult(result: CommandSuccess, commandId = '') {
+  const value = result.result;
+  const id = typeof value.opportunity_id === 'string' ? value.opportunity_id : '';
+  const previous = sheet.value.rows.find((row) => row.opportunity_id === id);
+  if (!previous) {
+    conflict.value = 'The selected scenario is no longer visible. Refresh before retrying.';
+    void loadSheet();
+    return;
+  }
+  if (saving.value[id]) {
+    conflict.value = 'A local phase edit is still saving; review it before applying the command result.';
+    return;
+  }
+  conflict.value = '';
+  const revision = Number(value.phase_revision ?? previous.phase?.revision ?? 1);
+  const stageId = typeof value.stage_id === 'string' ? value.stage_id : null;
+  const pack = packIdentity(previous);
+  const stage = stageId ? phases.value.find((phase) => phase.stage_id === stageId) : null;
+  const nextPhase: SheetPhase | null = stage
+    ? { ...stage, pack_id: pack.id || stage.pack_id, pack_version: pack.version || stage.pack_version, revision }
+    : null;
+  const nextRow: QueueSheetRow = { ...previous, phase: nextPhase };
+  sheet.value = {
+    ...sheet.value,
+    rows: sheet.value.rows.map((row) => row.opportunity_id === id ? nextRow : row),
+  };
+  status.value = stageId === previous.phase?.stage_id
+    ? `${previous.title} is already at ${stageLabel(nextPhase)}.`
+    : commandId === 'opportunity.undo_phase_change'
+      ? `${previous.title} returned to ${stageLabel(nextPhase)}.`
+      : `${previous.title} moved to ${stageLabel(nextPhase)}.`;
+  if (stageId && previous.phase && stageId !== previous.phase.stage_id) {
+    undoIntent.value = {
+      opportunityId: id,
+      toStage: previous.phase.stage_id,
+      packVersion: previous.phase.pack_version,
+      eventId: typeof value.event_id === 'string' ? value.event_id : '',
+      phaseRevision: revision,
+      fromLabel: stageLabel(nextPhase),
+    };
+  }
+  if (typeof value.event_id === 'string') lastPhaseEventId.value = value.event_id;
+  sessionEventReader.hint();
+  void loadSheet();
+}
 
 // Entry restores the last valid search, filters, sort and selection for this
 // workspace (spec §2), scoped to the workspace epoch like the party desk.
@@ -85,7 +199,6 @@ const filteredPhaseOptions = computed(() => phases.value);
 const editablePhases = computed(() => filteredPhaseOptions.value.filter((phase) => phase.kind === 'planning' && phase.stage_id !== '__unmapped__'));
 const countLabel = computed(() => `${sheet.value.rows.length} of ${sheet.value.total} scenarios`);
 const hasFilters = computed(() => query.value.trim().length > 0 || phaseFilter.value.length > 0 || sortKey.value !== 'due');
-const selectedRow = computed(() => sheet.value.rows.find((row) => row.opportunity_id === selectedId.value) ?? null);
 const selectedMaterials = computed(() => props.outputs.filter((material) => material.opportunity_id === selectedId.value));
 const emptyWorkspace = computed(() => !loading.value && !loadError.value && sheet.value.total === 0 && !hasFilters.value);
 const noMatches = computed(() => !loading.value && !loadError.value && sheet.value.total === 0 && hasFilters.value);
@@ -333,7 +446,7 @@ async function loadDetail(opportunityId: string) {
       return { participant, exchange, interests };
     }));
     // History pages the focused event feed; 10 pages is a generous bound.
-    const historyItems: Array<{ cursor: string; event_type: string; occurred_at: string; payload: Record<string, unknown> }> = [];
+    const historyItems: Array<{ cursor: string; event_id: string; event_type: string; occurred_at: string; payload: Record<string, unknown> }> = [];
     let cursor = '0';
     for (let page = 0; page < 10; page += 1) {
       const result = await parley.getEvents(cursor, { entity_type: 'opportunity', entity_id: opportunityId });
@@ -343,6 +456,8 @@ async function loadDetail(opportunityId: string) {
     }
     const threads = await parley.listThreads({ opportunity_id: opportunityId }).catch(() => []);
     if (own !== detailVersion) return;
+    const phaseEvents = historyItems.filter((event) => event.event_type === 'opportunity.phase_changed');
+    lastPhaseEventId.value = phaseEvents.length ? phaseEvents[phaseEvents.length - 1]!.event_id : null;
     const exchanges: DetailExchange[] = [];
     const sources: DetailSource[] = [];
     for (const result of participantResults) {
@@ -412,13 +527,34 @@ watch(phaseFilter, () => { if (hydrated.value) return; void loadSheet(); });
 watch(sortKey, () => { if (hydrated.value) return; void loadSheet(); });
 watch(() => props.routeId, (id) => { if (id) { void loadSheet().then(openRouted); } });
 
+watch(() => parley.workspaceEpoch, (epoch, previous) => {
+  if (previous && epoch && epoch !== previous) {
+    conflict.value = 'The workspace epoch changed. Reload the Queue before retrying a phase command.';
+    epochAtLoad.value = epoch;
+    sessionEventReader.rebase(epoch);
+  }
+});
+
 onMounted(async () => {
   try {
     await parley.connect();
+    epochAtLoad.value = parley.workspaceEpoch ?? '';
+    sessionEventReader.start({
+      epoch: () => parley.workspaceEpoch ?? '',
+      onEvents: () => {
+        if (Object.values(saving.value).some(Boolean)) {
+          conflict.value = 'A phase edit is in flight; review it before applying events from another session.';
+          return;
+        }
+        void loadSheet();
+      },
+    });
     restorePrefs();
     await loadSheet();
     hydrated.value = false;
     openRouted();
+    emitBinding();
+    refreshScopedActions();
   } catch (reason) {
     loadError.value = reason instanceof Error ? reason.message : 'Could not load the Queue sheet.';
   }
@@ -426,6 +562,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   if (searchHandle) globalThis.clearTimeout(searchHandle);
+  disposeActions?.();
+  sessionEventReader.stop();
 });
 </script>
 
@@ -522,6 +660,13 @@ onBeforeUnmount(() => {
       class="announce"
     >
       {{ error }}
+    </p>
+    <p
+      v-if="conflict"
+      role="alert"
+      class="announce conflict"
+    >
+      {{ conflict }}
     </p>
     <div
       v-if="undoIntent"
@@ -963,6 +1108,7 @@ onBeforeUnmount(() => {
 .count { color: #56675d; font: 11px/1.5 monospace; letter-spacing: .045em; }
 .announce { min-height: 1.25rem; }
 .undo-toast { display: flex; align-items: center; gap: .75rem; border: 1px solid #cbd1c6; border-left: 3px solid #225744; background: #eff3e9; border-radius: 6px; padding: .5rem .9rem; margin-block: .5rem; font-size: 13px; color: #21372e; }
+.conflict { border-left: 3px solid #a2472b; background: #fbefe9; padding: .5rem .9rem; color: #6d2c1b; }
 .undo-toast .undo { margin-left: auto; }
 .sheet-layout { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(280px, 1fr); gap: 1rem; align-items: start; }
 .panel { border: 1px solid #cbd1c6; border-radius: 8px; background: #fcfbf6; overflow: hidden; }

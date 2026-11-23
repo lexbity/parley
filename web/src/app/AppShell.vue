@@ -1,9 +1,15 @@
 <script setup lang="ts">
-/* global MouseEvent, HTMLElement */
+/* global MouseEvent, HTMLElement, EventTarget, KeyboardEvent */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { parley, type AdminOperation, type ContactThread, type GraphEntity, type Material, type Opportunity, type ProviderConfig, type ReleasedMaterial, type Resource, type SavedSource } from '../api/client';
+import type { CommandDescriptor, CommandManifest, CommandSuccess } from '../api/commands';
 import { tabs } from './tabs';
 import { resolveRoute, routeForTab } from './router';
+import CommandPalette from './CommandPalette.vue';
+import { deriveContext, type QueuePaletteBinding } from './commands/context';
+import { CommandManifestSource } from './commands/manifest';
+import { sessionEventReader } from './commands/events';
+import { builtInNavigationCommands, createCommandRegistry, installCommandRegistry, mergeDescriptors, registerScoped } from './commands/registry';
 import ResourcesWorkspace from '../features/resources/ResourcesWorkspace.vue';
 import InterviewerWorkspace from '../features/resources/InterviewerWorkspace.vue';
 import QueueWorkspace from '../features/queue/QueueWorkspace.vue';
@@ -66,6 +72,109 @@ const provider = ref<ProviderConfig>({ endpoint: 'http://127.0.0.1:11434', model
 const providerHealth = ref('');
 const workspaceRefreshRequired = ref(false);
 let adminChannel: InstanceType<typeof globalThis.BroadcastChannel> | null = null;
+
+// --- Command palette (UCR-001 U01). The shell owns one registry and one
+// cached manifest source; selection and phase facts come from the active view.
+const paletteOpen = ref(false);
+const queueSelection = ref<string | null>(null);
+const queueBinding = ref<QueuePaletteBinding | null>(null);
+const paletteCommands = ref<CommandDescriptor[]>([]);
+const serverManifest = ref<CommandManifest | null>(null);
+const registry = createCommandRegistry((path) => navigate(path));
+registerScoped(registry, builtInNavigationCommands((path) => navigate(path)));
+const disposeRegistry = installCommandRegistry(registry);
+const manifestSource = new CommandManifestSource({
+  context: () => commandContext.value,
+  epoch: () => parley.workspaceEpoch,
+});
+const selection = computed(() => ({
+  opportunity: queueSelection.value ?? (route.value.tab === 'Queue' ? route.value.recordId : null),
+  party: route.value.tab === 'Parties' ? route.value.recordId : null,
+  material: route.value.tab === 'Output' ? route.value.recordId : null,
+  resource: route.value.tab === 'Resources' ? route.value.recordId : null,
+}));
+const commandContext = computed(() => deriveContext(route.value, selection.value));
+const intentFingerprint = computed(() => [
+  parley.workspaceEpoch ?? '',
+  queueBinding.value?.opportunityId ?? '',
+  queueBinding.value?.phaseRevision ?? 0,
+  queueBinding.value?.pack.id ?? '',
+  queueBinding.value?.pack.version ?? '',
+  queueBinding.value?.originalEventId ?? '',
+].join('|'));
+const pickerOptions = computed(() => ({
+  planning_stage: (queueBinding.value?.stages ?? []).map((stage) => ({ value: stage.value, label: stage.label })),
+}));
+
+function syncPaletteCommands() {
+  paletteCommands.value = mergeDescriptors(
+    serverManifest.value?.commands ?? [],
+    registry.list({ context: commandContext.value, selection: selection.value }),
+  );
+}
+
+function applyManifest(manifest: CommandManifest) {
+  serverManifest.value = manifest;
+  syncPaletteCommands();
+}
+
+watch(commandContext, () => {
+  manifestSource.invalidate();
+  syncPaletteCommands();
+}, { deep: true });
+watch(queueBinding, syncPaletteCommands);
+
+async function revalidatePalette(): Promise<void> {
+  applyManifest(await manifestSource.revalidate());
+}
+
+function onPaletteCommitted(result: CommandSuccess) {
+  status.value = result.dry_run ? 'Command dry run completed.' : 'Command committed and visible records refreshed.';
+  void refreshTab();
+  sessionEventReader.hint();
+  globalThis.dispatchEvent(new globalThis.CustomEvent('parley:command-committed', { detail: result }));
+}
+
+function onQueueBinding(binding: QueuePaletteBinding) {
+  const previous = queueBinding.value;
+  queueBinding.value = binding;
+  queueSelection.value = binding.opportunityId;
+  if (previous?.opportunityId !== binding.opportunityId
+    || previous?.phaseRevision !== binding.phaseRevision) manifestSource.invalidate();
+}
+
+function isEditable(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  return !!element && (element.isContentEditable === true || ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName));
+}
+
+/** A panel or dialog already owns Escape/chords; the palette does not pre-empt it. */
+function hasDialogPrecedence(): boolean {
+  const document = globalThis.document;
+  if (interviewerOpen.value) return true;
+  if (!document) return false;
+  return [...document.querySelectorAll('dialog[open]:not(.command-palette), [role="alertdialog"]')]
+    .some((element) => {
+      const node = element as HTMLElement;
+      if (node.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+      return globalThis.getComputedStyle?.(node).display !== 'none';
+    });
+}
+
+function onGlobalKeydown(event: KeyboardEvent) {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+    // Editable chord ownership: a focused editor keeps mod+k for itself.
+    if (isEditable(event.target) || hasDialogPrecedence()) return;
+    event.preventDefault();
+    paletteOpen.value = !paletteOpen.value;
+    if (paletteOpen.value) {
+      void manifestSource.refresh().then(applyManifest)
+        .catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Command catalog is unavailable.'; });
+    }
+    return;
+  }
+  if (event.key === 'Escape' && interviewerOpen.value && !paletteOpen.value) toggleInterviewer();
+}
 
 let tabRequest = 0;
 async function refreshTab(tab = active.value) {
@@ -212,6 +321,7 @@ onMounted(() => {
   const connection = parley.connect();
   globalThis.history.replaceState({ parleyIndex: historyIndex }, '', route.value.path);
   globalThis.addEventListener('popstate', handlePopState);
+  globalThis.addEventListener('keydown', onGlobalKeydown);
   outputThreadTimer = globalThis.setInterval(() => { void pollOutputThreads(); }, 2_000);
   globalThis.document.addEventListener('visibilitychange', onOutputVisibilityChange);
   globalThis.addEventListener('parley:workspace-quarantined', onWorkspaceQuarantined);
@@ -226,11 +336,18 @@ onMounted(() => {
     };
   }
   void connection
-    .then(() => { connected.value = true; })
+    .then(() => {
+      connected.value = true;
+      void manifestSource.refresh().then(applyManifest)
+        .catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Command catalog is unavailable.'; });
+    })
     .catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Workspace is unavailable.'; });
 });
 onBeforeUnmount(() => {
   globalThis.removeEventListener('popstate', handlePopState);
+  globalThis.removeEventListener('keydown', onGlobalKeydown);
+  manifestSource.stop();
+  disposeRegistry();
   globalThis.document.removeEventListener('visibilitychange', onOutputVisibilityChange);
   globalThis.removeEventListener('parley:workspace-quarantined', onWorkspaceQuarantined);
   globalThis.removeEventListener('parley:workspace-reloaded', onWorkspaceReloaded);
@@ -417,6 +534,7 @@ watch(() => route.value.recordId, () => { void focusRouteLocation(); });
           :active="active === 'Queue'"
           :route-id="route.tab === 'Queue' ? route.recordId : null"
           @material-updated="installMaterial"
+          @binding="onQueueBinding"
           @navigate="navigate"
         />
       </div>
@@ -538,6 +656,18 @@ watch(() => route.value.recordId, () => { void focusRouteLocation(); });
       Opening workspace…
     </p>
   </main>
+  <CommandPalette
+    :open="paletteOpen"
+    :descriptors="paletteCommands"
+    :context="commandContext"
+    :selection="selection"
+    :picker-options="pickerOptions"
+    :intent-fingerprint="intentFingerprint"
+    :epoch="parley.workspaceEpoch ?? ''"
+    :revalidate="revalidatePalette"
+    @close="paletteOpen = false"
+    @committed="onPaletteCommitted"
+  />
 </template>
 
 <style>

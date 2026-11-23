@@ -979,6 +979,7 @@ pub(super) fn workspace_error(error: WorkspaceError) -> axum::response::Response
         WorkspaceError::IdempotencyConflict => (StatusCode::CONFLICT, "idempotency_conflict"),
         WorkspaceError::NotFound => (StatusCode::NOT_FOUND, "not_found"),
         WorkspaceError::StaleRevision => (StatusCode::CONFLICT, "stale_revision"),
+        WorkspaceError::LedgerFull => (StatusCode::SERVICE_UNAVAILABLE, "ledger_capacity"),
     };
     error_response(status, code, &error.to_string())
 }

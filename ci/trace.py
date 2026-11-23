@@ -17,9 +17,10 @@ Two modes:
     records asset hashes for the later embedded-bundle proof.
 
 `--slice SLICE --require-executed`
-  * verifies the fresh cargo test log for tests/SLICE.rs ran positive executed
-    tests with zero failed/ignored/filtered (a filter that succeeds on zero
-    matches never counts),
+  * verifies the fresh cargo test log for the slice's Rust integration target
+    (tests/<target>.rs; see RUST_TEST_TARGETS for names that differ from the
+    semantic slice ID) ran positive executed tests with zero
+    failed/ignored/filtered (a filter that succeeds on zero matches never counts),
   * verifies the fresh Playwright JSON report executed the slice spec on both
     the mock and rust projects with positive expected results and zero
     skipped/unexpected/flaky,
@@ -47,6 +48,17 @@ from common import (
 
 ARTIFACTS_DIR = REPO_ROOT / "artifacts"
 DIST_DIR = REPO_ROOT / "web" / "dist"
+
+# Semantic slice IDs are stable; a few Rust integration files carry a more
+# specific target name. Keep that mapping here so prove and trace agree on
+# the exact binary that must have executed.
+RUST_TEST_TARGETS: dict[str, str] = {"s12": "s12_queue_sheet"}
+
+
+def rust_test_target(slice_id: str) -> str:
+    """Return the cargo integration target that proves `slice_id`."""
+    return RUST_TEST_TARGETS.get(slice_id, slice_id)
+
 
 # Import gates (RFC-0004). Patterns are exact regexes over the named scopes;
 # behavioral correctness is owned by the test suites, these catch regressions.
@@ -158,11 +170,12 @@ def check_cargo_log(slice_id: str, log_path: Path) -> int:
     if not log_path.exists():
         fail([f"cargo test log {log_path} is missing; run scripts/prove {slice_id} first"])
     log = log_path.read_text(encoding="utf-8")
+    target = rust_test_target(slice_id)
     errors: list[str] = []
-    if f"Running tests/{slice_id}.rs" not in log:
+    if f"Running tests/{target}.rs" not in log:
         errors.append(
-            f"cargo log does not contain 'Running tests/{slice_id}.rs'; the log is not the "
-            f"fresh result of cargo test --test {slice_id}"
+            f"cargo log does not contain 'Running tests/{target}.rs'; the log is not the "
+            f"fresh result of cargo test --test {target} for slice {slice_id}"
         )
     matches = TEST_RESULT_PATTERN.findall(log)
     if not matches:

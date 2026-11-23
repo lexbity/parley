@@ -2,6 +2,7 @@ import { mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises } from '@vue/test-utils';
 import { parley, type BoardOpportunity, type BoardSnapshot, type ExtractorJob, type GraphEntity, type Material, type Opportunity, type SavedSource } from '../api/client';
+import { commands } from '../api/commands';
 import AppShell from './AppShell.vue';
 import { tabs } from './tabs';
 
@@ -11,6 +12,7 @@ function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [],
   lists: [{ id: 'list-default', title: 'Opportunities', position: 0, archived: false, revision: 1 }], cards: [],
 }): void {
   vi.spyOn(parley, 'connect').mockResolvedValue();
+  vi.spyOn(commands, 'query').mockResolvedValue({ contract_major: 1, manifest_version: 'sha256:test', truncated: false, commands: [] });
   vi.spyOn(parley, 'listResources').mockResolvedValue([]);
   vi.spyOn(parley, 'listParties').mockResolvedValue(parties);
   vi.spyOn(parley, 'listSources').mockResolvedValue(sources);
@@ -417,6 +419,64 @@ describe('AppShell', () => {
     expect(connect).toHaveBeenCalled();
     expect(wrapper.text()).toContain('session refused');
     expect(listParties).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it('opens the palette with mod+k and closes it with Escape', async () => {
+    stubWorkspace();
+    const wrapper = mount(AppShell, { attachTo: globalThis.document.body });
+    await flushPromises();
+    globalThis.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
+    await flushPromises();
+    const dialog = wrapper.get('dialog.command-palette');
+    expect(dialog.attributes('open')).toBeDefined();
+    expect(dialog.get('[role="combobox"]').attributes('aria-expanded')).toBe('true');
+    await dialog.get('[role="combobox"]').trigger('keydown', { key: 'Escape' });
+    await flushPromises();
+    expect(wrapper.get('dialog.command-palette').attributes('open')).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it('leaves mod+k to a focused editable field and to an open dialog', async () => {
+    stubWorkspace();
+    const wrapper = mount(AppShell, { attachTo: globalThis.document.body });
+    await flushPromises();
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(3)').trigger('click');
+    await flushPromises();
+    const search = wrapper.get('input[aria-label="Find scenario"]');
+    (search.element as HTMLInputElement).focus();
+    search.element.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
+    await flushPromises();
+    expect(wrapper.get('dialog.command-palette').attributes('open')).toBeUndefined();
+
+    const blocking = globalThis.document.createElement('div');
+    blocking.setAttribute('role', 'alertdialog');
+    blocking.textContent = 'Another dialog owns the chord';
+    globalThis.document.body.appendChild(blocking);
+    (search.element as HTMLInputElement).blur();
+    globalThis.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
+    await flushPromises();
+    expect(wrapper.get('dialog.command-palette').attributes('open')).toBeUndefined();
+    blocking.remove();
+    wrapper.unmount();
+  });
+
+  it('restores focus to the workspace heading when the palette trigger is removed', async () => {
+    stubWorkspace();
+    const wrapper = mount(AppShell, { attachTo: globalThis.document.body });
+    await flushPromises();
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(3)').trigger('click');
+    await flushPromises();
+    const trigger = wrapper.get('button[aria-expanded="false"]');
+    (trigger.element as HTMLButtonElement).focus();
+    globalThis.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
+    await flushPromises();
+    expect(wrapper.get('dialog.command-palette').attributes('open')).toBeDefined();
+    trigger.element.remove();
+    await wrapper.get('dialog.command-palette [role="combobox"]').trigger('keydown', { key: 'Escape' });
+    await flushPromises();
+    expect((globalThis.document.activeElement as HTMLElement | null)?.tagName).toBe('H1');
+    expect(globalThis.document.activeElement?.textContent).toContain('Queue');
     wrapper.unmount();
   });
 
