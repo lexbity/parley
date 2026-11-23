@@ -1,0 +1,10 @@
+{
+  "from_id": "fieldwork",
+  "to_id": "guide",
+  "verb": "publishes",
+  "occurrence_id": "guide-passage",
+  "quote": "Our contributing guide",
+  "expected_from_revision": 1,
+  "expected_to_revision": 1,
+  "expected_revision": 2
+}

@@ -352,6 +352,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/edges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["linkExistingCards"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/edges/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["removeEdge"];
+        options?: never;
+        head?: never;
+        patch: operations["correctEdge"];
+        trace?: never;
+    };
+    "/directory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["queryDirectory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/graph/related": {
         parameters: {
             query?: never;
@@ -1766,10 +1814,39 @@ export interface components {
             revision: number;
             etag: string;
         };
+        EdgeWrite: {
+            from_id: string;
+            to_id: string;
+            verb: string;
+            occurrence_id: string;
+            quote: string;
+            expected_from_revision: number;
+            expected_to_revision: number;
+        };
+        EdgeCorrection: {
+            from_id: string;
+            to_id: string;
+            verb: string;
+            occurrence_id: string;
+            quote: string;
+            expected_from_revision: number;
+            expected_to_revision: number;
+            expected_revision: number;
+        };
+        EdgeRemoval: {
+            expected_revision: number;
+        };
+        EdgeReceipt: {
+            id: string;
+            from_id: string;
+            to_id: string;
+            verb: string;
+            revision: number;
+        };
         GraphEntity: {
             id: string;
             /** @enum {unknown} */
-            kind: "person" | "org" | "project" | "resource";
+            kind: "person" | "org" | "project" | "resource" | "source" | "interest" | "artifact";
             name: string;
             /** @description Owner-editable short descriptor shown on the party sheet. */
             focus?: string;
@@ -2043,8 +2120,13 @@ export interface components {
         };
         RelatedEntityInput: {
             /** @enum {unknown} */
-            kind: "person" | "org" | "project" | "resource";
+            kind: "person" | "org" | "project" | "resource" | "source" | "interest" | "artifact";
             name: string;
+            expected_parent_revision?: number;
+            /** @enum {string} */
+            direction?: "incoming" | "outgoing";
+            notes?: string;
+            staged_upload_ids?: string[];
             related_entity_id: string;
             verb: string;
             occurrence_id: string;
@@ -3529,6 +3611,133 @@ export interface operations {
                 };
             };
             422: components["responses"]["Error"];
+        };
+    };
+    linkExistingCards: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EdgeWrite"];
+            };
+        };
+        responses: {
+            /** @description Relationship command acknowledged. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["EdgeReceipt"];
+                    };
+                };
+            };
+            412: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    removeEdge: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EdgeRemoval"];
+            };
+        };
+        responses: {
+            /** @description Relationship command acknowledged. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            412: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    correctEdge: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EdgeCorrection"];
+            };
+        };
+        responses: {
+            /** @description Relationship command acknowledged. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["EdgeReceipt"];
+                    };
+                };
+            };
+            412: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+        };
+    };
+    queryDirectory: {
+        parameters: {
+            query?: {
+                q?: string;
+                kind?: string;
+                sort?: string;
+                limit?: number;
+                cursor?: string;
+                batch_id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded entity page with projection fence. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["GraphEntity"][];
+                        next_cursor: string | null;
+                        cursor: string;
+                    };
+                };
+            };
         };
     };
     createRelatedEntity: {

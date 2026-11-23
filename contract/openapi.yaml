@@ -800,6 +800,165 @@ paths:
                 additionalProperties: true
         '422':
           $ref: '#/components/responses/Error'
+  /edges:
+    post:
+      operationId: linkExistingCards
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EdgeWrite'
+      responses:
+        '200':
+          description: Relationship command acknowledged.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/EdgeReceipt'
+                additionalProperties: false
+        '412':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+  /edges/{id}:
+    patch:
+      operationId: correctEdge
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EdgeCorrection'
+      responses:
+        '200':
+          description: Relationship command acknowledged.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/EdgeReceipt'
+                additionalProperties: false
+        '412':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: removeEdge
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EdgeRemoval'
+      responses:
+        '204':
+          description: Relationship command acknowledged.
+        '412':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+  /directory:
+    get:
+      operationId: queryDirectory
+      parameters:
+      - name: q
+        in: query
+        schema:
+          type: string
+      - name: kind
+        in: query
+        schema:
+          type: string
+      - name: sort
+        in: query
+        schema:
+          type: string
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+      - name: cursor
+        in: query
+        schema:
+          type: string
+      - name: batch_id
+        in: query
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Bounded entity page with projection fence.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                - next_cursor
+                - cursor
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GraphEntity'
+                  next_cursor:
+                    type: string
+                    nullable: true
+                  cursor:
+                    type: string
+                    minLength: 1
+                additionalProperties: false
   /graph/related:
     post:
       operationId: createRelatedEntity
@@ -2593,6 +2752,110 @@ components:
         etag:
           type: string
       additionalProperties: false
+    EdgeWrite:
+      type: object
+      required:
+      - from_id
+      - to_id
+      - verb
+      - occurrence_id
+      - quote
+      - expected_from_revision
+      - expected_to_revision
+      properties:
+        from_id:
+          type: string
+          minLength: 1
+        to_id:
+          type: string
+          minLength: 1
+        verb:
+          type: string
+          minLength: 1
+        occurrence_id:
+          type: string
+          minLength: 1
+        quote:
+          type: string
+          minLength: 1
+        expected_from_revision:
+          type: integer
+          minimum: 1
+        expected_to_revision:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    EdgeCorrection:
+      type: object
+      required:
+      - from_id
+      - to_id
+      - verb
+      - occurrence_id
+      - quote
+      - expected_from_revision
+      - expected_to_revision
+      - expected_revision
+      properties:
+        from_id:
+          type: string
+          minLength: 1
+        to_id:
+          type: string
+          minLength: 1
+        verb:
+          type: string
+          minLength: 1
+        occurrence_id:
+          type: string
+          minLength: 1
+        quote:
+          type: string
+          minLength: 1
+        expected_from_revision:
+          type: integer
+          minimum: 1
+        expected_to_revision:
+          type: integer
+          minimum: 1
+        expected_revision:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    EdgeRemoval:
+      type: object
+      required:
+      - expected_revision
+      properties:
+        expected_revision:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    EdgeReceipt:
+      type: object
+      required:
+      - id
+      - from_id
+      - to_id
+      - verb
+      - revision
+      properties:
+        id:
+          type: string
+          minLength: 1
+        from_id:
+          type: string
+          minLength: 1
+        to_id:
+          type: string
+          minLength: 1
+        verb:
+          type: string
+          minLength: 1
+        revision:
+          type: integer
+          minimum: 1
+      additionalProperties: false
     GraphEntity:
       type: object
       required:
@@ -2609,6 +2872,9 @@ components:
           - org
           - project
           - resource
+          - source
+          - interest
+          - artifact
         name:
           type: string
         focus:
@@ -3256,8 +3522,15 @@ components:
           - org
           - project
           - resource
+          - source
+          - interest
+          - artifact
         name:
           type: string
+        expected_parent_revision: {type: integer, minimum: 1}
+        direction: {type: string, enum: [incoming, outgoing]}
+        notes: {type: string}
+        staged_upload_ids: {type: array, uniqueItems: true, items: {type: string}}
         related_entity_id:
           type: string
         verb:
