@@ -1066,7 +1066,7 @@ slices:
       evidence_path: evidence/r02.md
     - requirement: R02-DELIVERY-DETAIL
       operationId: getResourceCardDeliveries
-      test_id: r02_deliveries_detail_lists_only_sent_versions
+      test_id: r02_drafting_dependencies_do_not_establish_delivery
       fixture_id: board
       owner_role: owner
       package_target: rust+mock
@@ -1117,7 +1117,7 @@ slices:
       evidence_path: evidence/r04.md
     - requirement: R04-DELIVERY-DETAIL
       operationId: getResourceCardDeliveries
-      test_id: r02_deliveries_detail_lists_only_sent_versions
+      test_id: r02_drafting_dependencies_do_not_establish_delivery
       fixture_id: board
       owner_role: owner
       package_target: rust+mock

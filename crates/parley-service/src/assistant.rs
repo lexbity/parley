@@ -113,6 +113,8 @@ struct CandidateConfirmation {
     title: String,
     fields: Value,
     expected_chat_revision: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    column_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1939,6 +1941,14 @@ async fn confirm_candidate(
     let body = request.fields.to_string();
     if let Err(error)=sqlx::query("INSERT INTO resource(id,kind,title,body_json,readiness,revision,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?)")
         .bind(&resource_id).bind(&kind).bind(request.title.trim()).bind(&body).bind(readiness).bind(&now).bind(&now).execute(&mut *tx).await{return super::command_error(error.into());}
+    if let Some(column_id) = &request.column_id
+        && let Err(error) = state
+            .workspace
+            .place_confirmed_resource(&mut tx, &resource_id, column_id)
+            .await
+    {
+        return super::command_error(error);
+    }
     if let Err(error)=sqlx::query("UPDATE interviewer_candidate SET fields_json=?,missing_fields_json=?,state='saved',resource_id=?,updated_at=? WHERE id=? AND state='proposed'")
         .bind(&body).bind(serde_json::to_string(&missing).unwrap_or_default()).bind(&resource_id).bind(&now).bind(&id).execute(&mut *tx).await{return super::command_error(error.into());}
     sqlx::query("UPDATE agent_chat SET revision=revision+1,updated_at=? WHERE id=? AND revision=?")
@@ -1948,7 +1958,7 @@ async fn confirm_candidate(
         .execute(&mut *tx)
         .await
         .ok();
-    let result = json!({"id":resource_id,"kind":kind,"title":request.title.trim(),"body":request.fields,"readiness":readiness,"missing_fields":missing,"provenance":quotes_json});
+    let result = json!({"id":resource_id,"kind":kind,"title":request.title.trim(),"body":request.fields,"readiness":readiness,"missing_fields":missing,"provenance":quotes_json,"column_id":request.column_id});
     if let Err(error) =
         sqlx::query("UPDATE workspace_meta SET revision=revision+1 WHERE singleton=1")
             .execute(&mut *tx)

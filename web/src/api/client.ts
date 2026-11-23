@@ -163,7 +163,7 @@ function decodeResource(value: unknown): Resource {
 function decodeGraphEntity(value: unknown): GraphEntity {
   const entity = object(value);
   if (!entity
-    || !['person', 'org', 'project', 'resource', 'source', 'interest', 'artifact'].includes(String(entity.kind))
+    || !['person', 'org', 'project', 'resource', 'source', 'interest', 'artifact', 'opportunity', 'material'].includes(String(entity.kind))
     || !Number.isSafeInteger(entity.revision) || Number(entity.revision) < 1) {
     throw new Error('Invalid response: directory entity is malformed');
   }
@@ -181,13 +181,27 @@ function decodeGraphEdge(raw: unknown): GraphSnapshot['edges'][number] {
   const edge = object(raw);
   if (!edge || !Number.isSafeInteger(edge.revision) || ![1, 2, 3].includes(Number(edge.tier))
     || !['owner', 'party', 'unknown'].includes(String(edge.speaker_kind))) throw new Error('Invalid response: graph edge is malformed');
+  const record = object(edge.record);
+  if (record && (!['delivery', 'drafting', 'opportunity'].includes(String(record.kind))
+    || !Number.isSafeInteger(record.material_version))) throw new Error('Invalid response: relationship record is malformed');
   return {
     id: requiredString(edge.id, 'edge.id'), from_id: requiredString(edge.from_id, 'edge.from_id'),
     to_id: requiredString(edge.to_id, 'edge.to_id'), verb: requiredString(edge.verb, 'edge.verb'), revision: Number(edge.revision),
-    occurrence_id: requiredString(edge.occurrence_id, 'edge.occurrence_id'), quote: requiredString(edge.quote, 'edge.quote'), tier: Number(edge.tier) as 1 | 2 | 3,
+    occurrence_id: edge.owner_authored === true || record ? null : requiredString(edge.occurrence_id, 'edge.occurrence_id'), owner_authored: edge.owner_authored === true, quote: requiredString(edge.quote, 'edge.quote'), tier: Number(edge.tier) as 1 | 2 | 3,
     speaker_kind: requiredString(edge.speaker_kind, 'edge.speaker_kind') as 'owner' | 'party' | 'unknown', captured_at: requiredString(edge.captured_at, 'edge.captured_at'),
     source_title: typeof edge.source_title === 'string' ? edge.source_title : null,
     source_url: typeof edge.source_url === 'string' ? edge.source_url : null,
+    claim_id: typeof edge.claim_id === 'string' ? edge.claim_id : null,
+    claim_revision: Number.isSafeInteger(edge.claim_revision) ? Number(edge.claim_revision) : null,
+    speaker_entity_id: typeof edge.speaker_entity_id === 'string' ? edge.speaker_entity_id : null,
+    ...(record ? { record: {
+      kind: record.kind as NonNullable<GraphSnapshot['edges'][number]['record']>['kind'],
+      opportunity_id: requiredString(record.opportunity_id, 'edge.record.opportunity_id'),
+      opportunity_title: requiredString(record.opportunity_title, 'edge.record.opportunity_title'),
+      material_id: requiredString(record.material_id, 'edge.record.material_id'),
+      material_version: Number(record.material_version),
+      send_id: typeof record.send_id === 'string' ? record.send_id : null,
+    } } : {}),
   };
 }
 
@@ -793,7 +807,7 @@ export class ParleyClient {
     return receipt as PartyImportReceipt;
   }
 
-  stagePartyFile(file: File, onProgress: (percent: number) => void): Promise<string> {
+  stageEntityAttachment(file: File, onProgress: (percent: number) => void): Promise<string> {
     return new Promise((resolve, reject) => {
       const upload = new XMLHttpRequest();
       upload.open('POST', '/api/v1/uploads');
@@ -1385,7 +1399,7 @@ export class ParleyClient {
     await this.mutate(`/agent/chats/${encodeURIComponent(id)}/questions`, 'POST', { question_id, action }, { 'Idempotency-Key': key });
   }
 
-  async confirmInterviewerCandidate(id: string, input: { title: string; fields: Record<string, unknown>; expected_chat_revision: number }, key = newOperationKey()): Promise<void> {
+  async confirmInterviewerCandidate(id: string, input: { title: string; fields: Record<string, unknown>; expected_chat_revision: number; column_id?: string | null }, key = newOperationKey()): Promise<void> {
     await this.mutate(`/agent/candidates/${encodeURIComponent(id)}/confirm`, 'POST', input, { 'Idempotency-Key': key });
   }
 
@@ -1588,6 +1602,18 @@ export class ParleyClient {
     return envelope.data.map(decodeDeliveryRow);
   }
 
+  async getDeliveredResourceVersion(resourceId: string, sendId: string, materialId: string, version: number) {
+    const ids = [resourceId, sendId, materialId].map(encodeURIComponent);
+    const value = object(await this.request(`/resource-cards/${ids[0]}/deliveries/${ids[1]}/${ids[2]}/${version}`));
+    if (!value || !Number.isSafeInteger(value.resource_revision)) throw new Error('Invalid response: delivered version is malformed');
+    return {
+      resourceTitle: requiredString(value.resource_title, 'delivery.resource_title'),
+      resourceRevision: Number(value.resource_revision),
+      body: requiredString(value.body, 'delivery.body'),
+      filename: typeof value.filename === 'string' ? value.filename : null,
+    };
+  }
+
   async getEntityCard(id: string): Promise<EntityCard> {
     const envelope = object(await this.request(`/resource-cards/${encodeURIComponent(id)}`));
     if (!envelope || !object(envelope.data)) throw new Error('Invalid response: card read is malformed');
@@ -1602,8 +1628,8 @@ export class ParleyClient {
     return decodeMoveResourceCardResult(await this.mutate('/resource-board/moves', 'POST', input, { 'Idempotency-Key': key }));
   }
 
-  async deleteEdge(id: string, expectedRevision: number, key = newOperationKey()): Promise<void> {
-    await this.mutate(`/edges/${encodeURIComponent(id)}`, 'DELETE', { expected_revision: expectedRevision }, { 'Idempotency-Key': key });
+  async correctOwnerEdge(id: string, input: { expected_revision: number; verb: string; basis: string; reverse: boolean }, key = newOperationKey()): Promise<void> {
+    await this.mutate('/edges/' + encodeURIComponent(id), 'PATCH', input, { 'Idempotency-Key': key });
   }
 
   async listAttachments(entityId: string): Promise<EntityAttachment[]> {

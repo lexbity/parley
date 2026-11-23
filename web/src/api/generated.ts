@@ -139,7 +139,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        get: operations["listAttachments"];
         put?: never;
         post: operations["bindEntityAttachment"];
         delete?: never;
@@ -1907,6 +1907,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/resource-cards/{id}/deliveries/{send_id}/{material_id}/{version}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getDeliveredResourceVersion"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/resource-card-commits": {
         parameters: {
             query?: never;
@@ -1993,6 +2009,13 @@ export interface components {
             expected_to_revision: number;
             expected_revision: number;
         };
+        OwnerEdgeCorrection: {
+            expected_revision: number;
+            verb: string;
+            basis: string;
+            /** @default false */
+            reverse: boolean;
+        };
         EdgeRemoval: {
             expected_revision: number;
         };
@@ -2006,7 +2029,7 @@ export interface components {
         GraphEntity: {
             id: string;
             /** @enum {unknown} */
-            kind: "person" | "org" | "project" | "resource" | "source" | "interest" | "artifact";
+            kind: "person" | "org" | "project" | "resource" | "source" | "interest" | "artifact" | "opportunity" | "material";
             name: string;
             /** @description Owner-editable short descriptor shown on the party sheet. */
             focus?: string;
@@ -2073,7 +2096,8 @@ export interface components {
             to_id: string;
             verb: string;
             revision: number;
-            occurrence_id: string;
+            occurrence_id: string | null;
+            owner_authored?: boolean;
             quote: string;
             /** @enum {integer} */
             tier: 1 | 2 | 3;
@@ -2082,10 +2106,19 @@ export interface components {
             /** Format: date-time */
             captured_at: string;
             source_title: string | null;
-            claim_id?: string;
-            claim_revision?: number;
+            claim_id?: string | null;
+            claim_revision?: number | null;
             speaker_entity_id?: string | null;
             source_url: string | null;
+            record?: {
+                /** @enum {string} */
+                kind: "delivery" | "drafting" | "opportunity";
+                opportunity_id: string;
+                opportunity_title: string;
+                material_id: string;
+                material_version: number;
+                send_id: string | null;
+            };
         };
         GraphSnapshot: {
             nodes: components["schemas"]["GraphNode"][];
@@ -3165,6 +3198,7 @@ export interface components {
             before_resource_id?: string | null;
         };
         CreateResourceCard: {
+            staged_uploads?: string[];
             title: string;
             subtype: string;
             body?: {
@@ -3187,6 +3221,7 @@ export interface components {
             unbind_ids?: string[];
         };
         CreateRelatedCard: {
+            staged_uploads?: string[];
             title: string;
             subtype: string;
             body?: {
@@ -3196,15 +3231,28 @@ export interface components {
             placement?: components["schemas"]["ResourcePlacementInput"] | null;
         };
         RelationAdd: {
+            incoming?: boolean;
+            expected_target_revision?: number | null;
             verb: string;
             target_id?: string | null;
             create?: components["schemas"]["CreateRelatedCard"] | null;
+            create_party?: {
+                /** @enum {string} */
+                kind: "person" | "org";
+                name: string;
+                focus?: string;
+                notes_md?: string;
+            } | null;
             basis: string;
         };
         ResourceCardCommitInput: {
             create?: components["schemas"]["CreateResourceCard"] | null;
             edit?: components["schemas"]["EditResourceCard"] | null;
             placement?: components["schemas"]["ResourcePlacementInput"] | null;
+            /** @description Use 0 when the resource is off board. */
+            expected_placement_revision?: number | null;
+            expected_source_column_revision?: number | null;
+            expected_destination_column_revision?: number | null;
             relation_add?: components["schemas"]["RelationAdd"] | null;
         };
         EntityCard: {
@@ -3639,6 +3687,32 @@ export interface operations {
             404: components["responses"]["Error"];
             409: components["responses"]["Error"];
             422: components["responses"]["Error"];
+        };
+    };
+    listAttachments: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Private file bindings for the addressed card. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["EntityAttachment"][];
+                    };
+                };
+            };
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
         };
     };
     bindEntityAttachment: {
@@ -4305,7 +4379,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["EdgeCorrection"];
+                "application/json": components["schemas"]["EdgeCorrection"] | components["schemas"]["OwnerEdgeCorrection"];
             };
         };
         responses: {
@@ -6523,6 +6597,7 @@ export interface operations {
                     title: string;
                     fields: Record<string, never>;
                     expected_chat_revision: number;
+                    column_id?: string | null;
                 };
             };
         };
@@ -7522,6 +7597,38 @@ export interface operations {
             };
             404: components["responses"]["Error"];
             412: components["responses"]["Error"];
+        };
+    };
+    getDeliveredResourceVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                send_id: string;
+                material_id: string;
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Exact material version recorded as delivered with this resource. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        resource_title: string;
+                        resource_revision: number;
+                        body: string;
+                        filename: string | null;
+                    };
+                };
+            };
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
         };
     };
     commitResourceCard: {

@@ -5,7 +5,7 @@ import { parley, type BoardOpportunity, type BoardSnapshot, type ExtractorJob, t
 import AppShell from './AppShell.vue';
 import { tabs } from './tabs';
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); window.history.replaceState(null, '', '/'); });
 
 function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [], board: BoardSnapshot = {
   lists: [{ id: 'list-default', title: 'Opportunities', position: 0, archived: false, revision: 1 }], cards: [],
@@ -67,7 +67,7 @@ describe('AppShell', () => {
     wrapper.unmount();
   });
 
-  it('keeps the resource card draft mounted across tab switches', async () => {
+  it('protects the resource card draft when switching tabs', async () => {
     stubWorkspace();
     const wrapper = mount(AppShell);
     await flushPromises();
@@ -76,10 +76,14 @@ describe('AppShell', () => {
     const titleInput = editor.get('label:has(input) input');
     await titleInput.setValue('unsent resource title');
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
-    expect(wrapper.get('h1').text()).toBe('Parties');
-    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(1)').trigger('click');
+    expect(wrapper.get('h1').text()).toBe('Resources');
+    const prompt = wrapper.get('[role="alertdialog"]');
+    await prompt.findAll('button').find(button => button.text() === 'Stay')!.trigger('click');
     expect((wrapper.get('form[aria-label="Resource card editor"] input').element as HTMLInputElement).value)
       .toBe('unsent resource title');
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
+    await wrapper.get('[role="alertdialog"]').findAll('button').find(button => button.text() === 'Discard unsaved changes')!.trigger('click');
+    expect(wrapper.get('h1').text()).toBe('Parties');
     wrapper.unmount();
   });
 
@@ -152,6 +156,7 @@ describe('AppShell', () => {
     const wrapper = mount(AppShell);
     await flushPromises();
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
+    await flushPromises();
     await wrapper.findAll('button').find((element) => element.text() === 'Review proposals')!.trigger('click');
     await flushPromises();
     expect(openReview).toHaveBeenCalledWith('o1');
@@ -284,8 +289,9 @@ describe('AppShell', () => {
       .mockResolvedValueOnce({ available: false, model: 'missing', models: [], message: 'Local model is unavailable' })
       .mockRejectedValueOnce('health exception');
     const wrapper = mount(AppShell); await flushPromises();
-    expect(wrapper.get('[role="alert"]').text()).toContain('settings unavailable');
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(5)').trigger('click');
+    await flushPromises();
+    expect(wrapper.get('[role="alert"]').text()).toContain('settings unavailable');
     await wrapper.get('section[aria-labelledby="settings-heading"] form').trigger('submit'); await flushPromises();
     expect(update).toHaveBeenCalledOnce();
     expect(wrapper.get('[role="alert"]').text()).toContain('save denied');
@@ -356,10 +362,12 @@ describe('AppShell', () => {
     await flushPromises();
     expect(wrapper.text()).toContain('opportunity denied');
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(4)').trigger('click');
+    await flushPromises();
+    await wrapper.findAll('button').find((button) => button.text() === 'Review')!.trigger('click');
     await wrapper.findAll('button').find((button) => button.text() === 'Copy approved text')!.trigger('click');
     await flushPromises();
     expect(release).toHaveBeenCalledWith('m1');
-    expect(writeText).toHaveBeenCalledWith('Hi Dana.');
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith('Hi Dana.'));
     expect(acknowledge).toHaveBeenCalledWith('r1', true);
     expect(wrapper.text()).toContain('Mark sent remains a separate action');
     wrapper.unmount();
@@ -377,6 +385,14 @@ describe('AppShell', () => {
     const wrapper = mount(AppShell);
     await flushPromises();
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(4)').trigger('click');
+    await flushPromises();
+    expect(parley.evaluateMaterialGate).not.toHaveBeenCalled();
+    const review = wrapper.findAll('button').filter(button => button.text() === 'Review');
+    await review[1]!.trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).toContain('Approve this exact version');
+    expect(parley.evaluateMaterialGate).toHaveBeenCalledWith('m3', {});
+    await review[0]!.trigger('click');
     const copyButtons = wrapper.findAll('button').filter((button) => button.text() === 'Copy approved text');
     expect(copyButtons).toHaveLength(1);
     expect(wrapper.text()).toContain('Approve this exact version');

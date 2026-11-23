@@ -228,7 +228,7 @@ async fn r03_board_save_preserves_relationship_collection() {
         "POST",
         "/api/v1/resource-card-commits",
         Some(json!({
-            "edit": {"resource_id": root, "expected_revision": 2, "expected_notes_rev": 1, "title": "Checklist renamed"}
+            "edit": {"resource_id": root, "expected_revision": 1, "expected_notes_rev": 1, "title": "Checklist renamed"}
         })),
         &[("Idempotency-Key", next_key().as_str())],
     )

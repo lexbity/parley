@@ -254,7 +254,7 @@ describe('QueueWorkspace sheet: search, phase edit, undo', () => {
       items: [{ cursor: '1', event_id: 'e1', entity_type: 'opportunity', entity_id: 'o1', revision: 1, event_type: 'opportunity.created', occurred_at: '2026-11-20T09:00:00Z', payload: {} }],
       next_cursor: '1', observed_cursor: '1',
     };
-    vi.spyOn(parley, 'getEvents').mockImplementation(async (cursor: string) => cursor === '0' ? eventPage : { items: [], next_cursor: cursor, observed_cursor: '1' });
+    vi.spyOn(parley, 'getEvents').mockImplementation(async (cursor = '0') => cursor === '0' ? eventPage : { items: [], next_cursor: cursor, observed_cursor: '1' });
     vi.spyOn(parley, 'listThreads').mockResolvedValue([{
       id: 't1', opportunity_id: 'o1', recipient_id: 'p1', state: 'waiting', current_touch: 1,
       expires_at: null, next_action_at: '2026-11-25T09:00:00Z', sent_at: null, updated_at: '2026-11-21T09:00:00Z', sends: [],

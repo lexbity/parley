@@ -60,6 +60,12 @@ struct Correction {
     #[serde(flatten)]
     link: Link,
 }
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum EdgeCorrection {
+    Owner(super::resource_board::UpdateEdgeInput),
+    Sourced(Correction),
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Removal {
@@ -165,8 +171,12 @@ async fn add_evidence(tx: &mut Tx<'_>, id: &str, link: &Link) -> Result<bool, Wo
     Ok(true)
 }
 
-async fn archive(tx: &mut Tx<'_>, id: &str, revision: i64) -> Result<(), WorkspaceError> {
-    let changed=sqlx::query("INSERT INTO edge_history SELECT id,revision,from_id,to_id,verb,state,(SELECT json_group_array(json_object('claim_id',claim_id,'revision',claim_revision)) FROM edge_evidence WHERE edge_id=edge.id),? FROM edge WHERE id=? AND revision=? AND state='active'")
+pub(super) async fn archive(
+    tx: &mut Tx<'_>,
+    id: &str,
+    revision: i64,
+) -> Result<(), WorkspaceError> {
+    let changed=sqlx::query("INSERT INTO edge_history SELECT id,revision,from_id,to_id,verb,state,(SELECT json_group_array(json_object('claim_id',claim_id,'revision',claim_revision)) FROM edge_evidence WHERE edge_id=edge.id),?,basis FROM edge WHERE id=? AND revision=? AND state='active'")
         .bind(now_utc()).bind(id).bind(revision).execute(&mut **tx).await?;
     if changed.rows_affected() != 1 {
         return Err(WorkspaceError::StaleRevision);
@@ -420,9 +430,30 @@ async fn correct(
     State(s): State<AppState>,
     Path(id): Path<String>,
     h: HeaderMap,
-    Json(i): Json<Correction>,
+    Json(i): Json<EdgeCorrection>,
 ) -> Response {
-    execute(s, h, Command::Correct(id, i), StatusCode::OK).await
+    match i {
+        EdgeCorrection::Sourced(input) => {
+            execute(s, h, Command::Correct(id, input), StatusCode::OK).await
+        }
+        EdgeCorrection::Owner(input) => {
+            if let Err(reply) = authenticate(&h, &s).await {
+                return reply.into_response();
+            }
+            let key = match idempotency_key(&h) {
+                Ok(value) => value,
+                Err((status, code, message)) => return error(status, code, message),
+            };
+            match s.workspace.update_owner_edge(&id, &input, &key).await {
+                Ok(result) => {
+                    let mut response = Json(json!({"data": result["edge"]})).into_response();
+                    private_headers(&mut response, s.workspace.epoch());
+                    response
+                }
+                Err(reason) => command_error(reason),
+            }
+        }
+    }
 }
 async fn remove(
     State(s): State<AppState>,

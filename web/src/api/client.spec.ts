@@ -116,7 +116,7 @@ describe('ParleyClient S03 opportunity and release commands', () => {
 
   it('decodes and rejects graph snapshots with revision checks', async () => {
     const node = { id: 'e1', kind: 'person', name: 'Dana Lee', focus: '', revision: 1, x: 0, y: 0, position_revision: 0 };
-    const edge = { id: 'ed1', from_id: 'e2', to_id: 'e1', verb: 'member_of', revision: 1, occurrence_id: 'occ-1', quote: 'works with Dana', tier: 1, speaker_kind: 'unknown', captured_at: '2026-11-21T08:00:00Z', source_title: null, source_url: null };
+    const edge = { id: 'ed1', from_id: 'e2', to_id: 'e1', verb: 'member_of', revision: 1, occurrence_id: 'occ-1', owner_authored: false, claim_id: 'claim-1', claim_revision: 2, speaker_entity_id: null, quote: 'works with Dana', tier: 1, speaker_kind: 'unknown', captured_at: '2026-11-21T08:00:00Z', source_title: null, source_url: null };
     const snapshot = { nodes: [node], edges: [edge], omitted_nodes: 0, omitted_edges: 0 };
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(sessionResponse())

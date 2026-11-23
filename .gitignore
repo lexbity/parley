@@ -3,6 +3,7 @@
 
 # Rust
 /target
+/fuzz/target/
 
 # Node / frontend build output
 node_modules/

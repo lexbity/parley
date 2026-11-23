@@ -14,7 +14,7 @@ let operationKey = '';
 
 async function save() {
   const { claim_id, claim_revision, occurrence_id } = props.edge;
-  if (!claim_id || !claim_revision || busy.value) return;
+  if (!claim_id || !claim_revision || !occurrence_id || busy.value) return;
   const input = { expected_revision: claim_revision, occurrence_id, wording: wording.value,
     speaker_kind: speaker.value, speaker_entity_id: speaker.value === 'party' ? speakerId.value : null };
   const intent = JSON.stringify(input);

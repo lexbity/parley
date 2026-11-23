@@ -31,7 +31,7 @@ describe('InterviewerWorkspace', () => {
     await wrapper.get('input[maxlength="240"]').setValue('Onboarding proof');
     const confirmButton = wrapper.findAll('button').find((button) => button.text() === 'Confirm and save');
     await confirmButton!.trigger('click');
-    expect(confirm).toHaveBeenCalledWith('candidate-1', { title: 'Onboarding proof', fields: candidate.fields, expected_chat_revision: 2 });
+    expect(confirm).toHaveBeenCalledWith('candidate-1', { title: 'Onboarding proof', fields: candidate.fields, expected_chat_revision: 2 }, expect.any(String));
     wrapper.unmount();
   });
 

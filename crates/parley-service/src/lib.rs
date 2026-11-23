@@ -387,16 +387,20 @@ struct GraphEdge {
     to_id: String,
     verb: String,
     revision: i64,
-    occurrence_id: String,
+    occurrence_id: Option<String>,
     quote: String,
+    owner_authored: bool,
     tier: i64,
     speaker_kind: String,
     captured_at: String,
     source_title: Option<String>,
     source_url: Option<String>,
-    claim_id: String,
-    claim_revision: i64,
+    claim_id: Option<String>,
+    claim_revision: Option<i64>,
     speaker_entity_id: Option<String>,
+    #[sqlx(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    record: Option<sqlx::types::Json<resource_board::ResourceConnectionRecord>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1290,11 +1294,11 @@ impl Workspace {
             )
             .bind(view_scope).bind(view_id).fetch_all(&self.pool).await?
         };
-        let omitted_nodes = (total_nodes - 200).max(0);
+        let mut omitted_nodes = (total_nodes - 200).max(0);
         rows.truncate(200);
         let visible: std::collections::HashSet<String> =
             rows.iter().map(|row| row.0.clone()).collect();
-        let nodes = rows
+        let mut nodes = rows
             .into_iter()
             .map(
                 |(id, kind, name, revision, x, y, position_revision)| GraphNode {
@@ -1337,7 +1341,7 @@ impl Workspace {
             Vec::new()
         } else {
             let mut query = sqlx::QueryBuilder::new(
-                "SELECT e.id,e.from_id,e.to_id,e.verb,e.revision,cr.occurrence_id,cr.wording quote,cr.tier,cr.speaker_kind,so.captured_at,sv.title source_title,sv.url source_url,cr.claim_id,cr.revision claim_revision,cr.speaker_entity_id FROM edge e JOIN edge_evidence ee ON ee.rowid=(SELECT newest.rowid FROM edge_evidence newest WHERE newest.edge_id=e.id ORDER BY newest.rowid DESC LIMIT 1) JOIN claim_revision cr ON cr.claim_id=ee.claim_id AND cr.revision=ee.claim_revision JOIN source_occurrence so ON so.id=cr.occurrence_id JOIN source_variant sv ON sv.id=cr.source_variant_id WHERE e.state='active' AND e.from_id IN (",
+                "SELECT e.id,e.from_id,e.to_id,e.verb,e.revision,cr.occurrence_id,COALESCE(cr.wording,e.basis) quote, (cr.claim_id IS NULL) owner_authored, COALESCE(cr.tier,1) tier, COALESCE(cr.speaker_kind,e.author_kind) speaker_kind,COALESCE(so.captured_at,e.created_at) captured_at,sv.title source_title,sv.url source_url,cr.claim_id,cr.revision claim_revision,cr.speaker_entity_id FROM edge e LEFT JOIN edge_evidence ee ON ee.rowid=(SELECT newest.rowid FROM edge_evidence newest WHERE newest.edge_id=e.id ORDER BY newest.rowid DESC LIMIT 1) LEFT JOIN claim_revision cr ON cr.claim_id=ee.claim_id AND cr.revision=ee.claim_revision LEFT JOIN source_occurrence so ON so.id=cr.occurrence_id LEFT JOIN source_variant sv ON sv.id=cr.source_variant_id WHERE e.state='active' AND e.from_id IN (",
             );
             {
                 let mut separated = query.separated(",");
@@ -1355,8 +1359,20 @@ impl Workspace {
             query.push(") ORDER BY e.from_id,e.to_id,e.id LIMIT 401");
             query.build_query_as().fetch_all(&self.pool).await?
         };
-        let omitted_edges = (total_edges - 400).max(0);
+        let mut omitted_edges = (total_edges - 400).max(0);
         edges.truncate(400);
+        if view_scope == "resources"
+            && let Some(center) = center_id
+        {
+            self.add_resource_graph_records(
+                center,
+                &mut nodes,
+                &mut edges,
+                &mut omitted_nodes,
+                &mut omitted_edges,
+            )
+            .await?;
+        }
         Ok(GraphSnapshot {
             nodes,
             edges,
@@ -3093,16 +3109,7 @@ async fn get_events(
             "Event cursor is ahead of the workspace",
         );
     }
-    type EventRow = (
-        i64,
-        String,
-        String,
-        String,
-        i64,
-        String,
-        String,
-        String,
-    );
+    type EventRow = (i64, String, String, String, i64, String, String, String);
     let rows = match (query.entity_type.as_deref(), query.entity_id.as_deref()) {
         (None, None) => {
             sqlx::query_as::<_, EventRow>(
@@ -3154,7 +3161,16 @@ async fn get_events(
     let items: Vec<Value> = rows
         .into_iter()
         .map(
-            |(cursor, event_id, entity_type, entity_id, revision, event_type, payload, occurred_at)| {
+            |(
+                cursor,
+                event_id,
+                entity_type,
+                entity_id,
+                revision,
+                event_type,
+                payload,
+                occurred_at,
+            )| {
                 json!({
                     "cursor": cursor.to_string(),
                     "event_id": event_id,

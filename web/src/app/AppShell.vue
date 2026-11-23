@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/* global MouseEvent */
+/* global MouseEvent, HTMLElement */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { parley, type AdminOperation, type ContactThread, type GraphEntity, type Material, type Opportunity, type ProviderConfig, type ReleasedMaterial, type Resource, type SavedSource } from '../api/client';
 import { tabs } from './tabs';
@@ -25,7 +25,18 @@ const route = ref(resolveRoute(globalThis.location.pathname));
 const active = computed(() => route.value.tab);
 const writingOpen = ref(false);
 const outputStatus = ref('');
+const openedMaterials = ref(new Set<string>());
 const parties = ref<GraphEntity[]>([]);
+const openedTabs = ref(new Set([route.value.tab]));
+const interviewerOpen = ref(false);
+const interviewerMounted = ref(false);
+const interviewerToggle = ref<HTMLElement | null>(null);
+const interviewerPanel = ref<HTMLElement | null>(null);
+function toggleInterviewer() {
+  interviewerOpen.value = !interviewerOpen.value;
+  if (interviewerOpen.value) interviewerMounted.value = true;
+  void nextTick(() => (interviewerOpen.value ? interviewerPanel.value : interviewerToggle.value)?.focus());
+}
 const resourcesWorkspace = ref<InstanceType<typeof ResourcesWorkspace> | null>(null);
 const partyDesk = ref<InstanceType<typeof PartyDesk> | null>(null);
 const lastTabPaths = new Map<string, string>();
@@ -56,50 +67,87 @@ const providerHealth = ref('');
 const workspaceRefreshRequired = ref(false);
 let adminChannel: InstanceType<typeof globalThis.BroadcastChannel> | null = null;
 
-async function refreshLeads() {
-  const [directory, savedSources, savedOpportunities, savedOutputs, savedResources, savedThreads] = await Promise.all([parley.listParties(), parley.listSources(), parley.listOpportunities(), parley.listOutputs(), parley.listResources(), parley.listThreads()]);
-  parties.value = directory;
-  sources.value = savedSources;
-  opportunities.value = savedOpportunities;
-  outputs.value = savedOutputs;
-  resources.value = savedResources;
-  threads.value = savedThreads;
+let tabRequest = 0;
+async function refreshTab(tab = active.value) {
+  const request = ++tabRequest;
+  try {
+    if (tab === 'Parties') {
+      const result = await Promise.all([parley.listParties(), parley.listSources(), parley.listOpportunities()]);
+      if (request === tabRequest) [parties.value, sources.value, opportunities.value] = result;
+    } else if (tab === 'Queue') {
+      const result = await Promise.all([parley.listParties(), parley.listOutputs()]);
+      if (request === tabRequest) [parties.value, outputs.value] = result;
+    } else if (tab === 'Output') {
+      const result = await Promise.all([parley.listParties(), parley.listOpportunities(), parley.listOutputs(), parley.listResources(), parley.listThreads()]);
+      if (request === tabRequest) [parties.value, opportunities.value, outputs.value, resources.value, threads.value] = result;
+    } else if (tab === 'Settings') {
+      const [directory] = await Promise.all([parley.listParties(), loadProvider()]);
+      if (request === tabRequest) parties.value = directory;
+    }
+  } catch (reason) {
+    if (request === tabRequest) error.value = reason instanceof Error ? reason.message : `Could not load ${tab}.`;
+  }
 }
 
+let historyIndex = Number(globalThis.history.state?.parleyIndex ?? 0);
+let returningFromPop = false;
+let allowPop = false;
+
 function navigate(path: string, replace = false) {
-  if (route.value.tab === 'Parties' && partyDesk.value && path !== route.value.path) {
-    partyDesk.value.requestSwitch(() => commitNavigation(path, replace));
-  } else commitNavigation(path, replace);
+  if (path === route.value.path && !replace) return;
+  if (route.value.tab === 'Resources' && resourcesWorkspace.value) resourcesWorkspace.value.requestSwitch(() => commitNavigation(path, replace));
+  else if (route.value.tab === 'Parties' && partyDesk.value && path !== route.value.path) partyDesk.value.requestSwitch(() => commitNavigation(path, replace));
+  else commitNavigation(path, replace);
 }
-function commitNavigation(path: string, replace: boolean) {
+function applyNavigation(path: string) {
   lastTabPaths.set(route.value.tab, route.value.path);
   const next = resolveRoute(path);
-  if (replace) globalThis.history.replaceState(null, '', next.path);
-  else if (next.path !== route.value.path) globalThis.history.pushState(null, '', next.path);
+  openedTabs.value.add(next.tab);
   route.value = next;
+}
+function commitNavigation(path: string, replace: boolean) {
+  const next = resolveRoute(path);
+  if (replace) globalThis.history.replaceState({ parleyIndex: historyIndex }, '', next.path);
+  else if (next.path !== route.value.path) globalThis.history.pushState({ parleyIndex: ++historyIndex }, '', next.path);
+  applyNavigation(next.path);
 }
 
 function selectTab(tab: (typeof tabs)[number], event: MouseEvent) {
   if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
   event.preventDefault();
   navigate(lastTabPaths.get(tab) ?? routeForTab(tab));
-  if (tab === 'Output') void refreshLeads().catch((reason: unknown) => {
-    error.value = reason instanceof Error ? reason.message : 'Could not refresh Output records.';
-  });
 }
 
 function handlePopState() {
-  lastTabPaths.set(route.value.tab, route.value.path);
-  route.value = resolveRoute(globalThis.location.pathname);
-  if (route.value.path !== globalThis.location.pathname) globalThis.history.replaceState(null, '', route.value.path);
-  if (route.value.tab === 'Output') void refreshLeads().catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Could not refresh Output records.'; });
+  if (returningFromPop) { returningFromPop = false; return; }
+  const target = resolveRoute(globalThis.location.pathname);
+  const targetIndex = Number(globalThis.history.state?.parleyIndex ?? historyIndex);
+  const delta = targetIndex - historyIndex;
+  const apply = () => {
+    historyIndex = targetIndex;
+    applyNavigation(target.path);
+    if (target.path !== globalThis.location.pathname) globalThis.history.replaceState({ parleyIndex: historyIndex }, '', target.path);
+  };
+  if (allowPop) { allowPop = false; apply(); return; }
+  if (!resourcesWorkspace.value?.hasDraft || route.value.tab !== 'Resources') { apply(); return; }
+  if (delta) {
+    returningFromPop = true;
+    globalThis.history.go(-delta);
+    resourcesWorkspace.value.requestSwitch(() => {
+      allowPop = true;
+      globalThis.history.go(delta);
+    });
+  } else {
+    globalThis.history.replaceState({ parleyIndex: historyIndex }, '', route.value.path);
+    resourcesWorkspace.value.requestSwitch(() => commitNavigation(target.path, true));
+  }
 }
 
 async function focusRouteLocation() {
   if (route.value.location === 'templates') writingOpen.value = true;
   if (route.value.tab === 'Output' && route.value.recordId) {
-    await refreshLeads().catch(() => undefined);
-    if (!visibleOutputs.value.some(item => item.id === route.value.recordId)) materialQuery.value = '';
+    openedMaterials.value.add(route.value.recordId);
+    if (!visibleOutputs.value.some(item => item.id === route.value.recordId)) { materialQuery.value = ''; outputStatus.value = ''; }
   }
   await nextTick();
   const targetId = route.value.location === 'inbox' ? 'leads-inbox'
@@ -138,10 +186,10 @@ function installMaterial(updated: Material) {
 async function applyWorkspaceChange(operation: AdminOperation, epoch: string, announce: boolean) {
   if (announce) adminChannel?.postMessage({ type: 'workspace-changed', operation, epoch });
   if (operation === 'restore' || operation === 'erase_workspace') workspaceRefreshRequired.value = true;
-  globalThis.dispatchEvent(new globalThis.CustomEvent('parley:workspace-changed', { detail: { operation, epoch } }));
   try {
     if (operation === 'restore' || operation === 'erase_workspace') await parley.refreshSession();
-    await Promise.all([refreshLeads(), parley.listResources().then((next) => { resources.value = next; })]);
+    globalThis.dispatchEvent(new globalThis.CustomEvent('parley:workspace-changed', { detail: { operation, epoch } }));
+    await refreshTab();
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Workspace records changed; reload the current workspace before continuing.'; }
 }
 
@@ -162,7 +210,7 @@ function onWorkspaceReloaded() { workspaceRefreshRequired.value = false; }
 
 onMounted(() => {
   const connection = parley.connect();
-  if (route.value.path !== globalThis.location.pathname) navigate(route.value.path, true);
+  globalThis.history.replaceState({ parleyIndex: historyIndex }, '', route.value.path);
   globalThis.addEventListener('popstate', handlePopState);
   outputThreadTimer = globalThis.setInterval(() => { void pollOutputThreads(); }, 2_000);
   globalThis.document.addEventListener('visibilitychange', onOutputVisibilityChange);
@@ -178,7 +226,7 @@ onMounted(() => {
     };
   }
   void connection
-    .then(async () => { connected.value = true; await refreshLeads(); await focusRouteLocation(); await loadProvider(); })
+    .then(() => { connected.value = true; })
     .catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Workspace is unavailable.'; });
 });
 onBeforeUnmount(() => {
@@ -189,7 +237,13 @@ onBeforeUnmount(() => {
   if (outputThreadTimer) globalThis.clearInterval(outputThreadTimer);
   adminChannel?.close();
 });
-watch(route, () => { void focusRouteLocation(); });
+watch([connected, active], async ([ready, tab]) => {
+  if (!ready) return;
+  error.value = '';
+  await refreshTab(tab);
+  if (active.value === tab) void focusRouteLocation();
+});
+watch(() => route.value.recordId, () => { void focusRouteLocation(); });
 </script>
 
 <template>
@@ -214,7 +268,19 @@ watch(route, () => { void focusRouteLocation(); });
     </p>
   </header>
   <main>
-    <h1>{{ active }}</h1>
+    <div class="workspace-header">
+      <h1>{{ active }}</h1>
+      <button
+        v-if="connected && active === 'Resources'"
+        ref="interviewerToggle"
+        type="button"
+        :aria-expanded="interviewerOpen"
+        aria-controls="resource-interviewer"
+        @click="toggleInterviewer"
+      >
+        Interviewer
+      </button>
+    </div>
     <p
       v-if="status"
       role="status"
@@ -229,18 +295,41 @@ watch(route, () => { void focusRouteLocation(); });
     </p>
     <template v-if="connected">
       <div
+        v-if="openedTabs.has('Resources')"
         v-show="active === 'Resources'"
         class="resource-workspace"
       >
         <ResourcesWorkspace
           ref="resourcesWorkspace"
           :route-id="route.tab === 'Resources' ? route.recordId : null"
+          :active="active === 'Resources'"
           @navigate="navigate"
-          @changed="refreshLeads"
         />
-        <InterviewerWorkspace @saved="resourcesWorkspace?.refresh()" />
+        <aside
+          v-if="interviewerMounted"
+          v-show="interviewerOpen"
+          id="resource-interviewer"
+          ref="interviewerPanel"
+          class="resource-agent"
+          tabindex="-1"
+          aria-label="Resource Interviewer"
+          @keydown.esc.stop="toggleInterviewer"
+        >
+          <button
+            type="button"
+            class="close-agent"
+            @click="toggleInterviewer"
+          >
+            Close Interviewer
+          </button>
+          <InterviewerWorkspace
+            :columns="resourcesWorkspace?.columns"
+            @saved="resourcesWorkspace?.refresh()"
+          />
+        </aside>
       </div>
       <PartyDesk
+        v-if="openedTabs.has('Parties')"
         v-show="active === 'Parties'"
         ref="partyDesk"
         :parties="parties"
@@ -249,7 +338,7 @@ watch(route, () => { void focusRouteLocation(); });
         :active="active === 'Parties'"
         :inbox="route.tab === 'Parties' && route.location === 'inbox'"
         :party-id="route.tab === 'Parties' ? route.recordId ?? undefined : undefined"
-        @changed="refreshLeads"
+        @changed="refreshTab"
         @navigate="navigate"
       />
       <section
@@ -315,10 +404,13 @@ watch(route, () => { void focusRouteLocation(); });
         <Packs />
         <MaintenanceSettings
           :parties="parties"
-          @erased="refreshLeads"
+          @erased="refreshTab"
         />
       </section>
-      <div v-show="active === 'Queue'">
+      <div
+        v-if="openedTabs.has('Queue')"
+        v-show="active === 'Queue'"
+      >
         <QueueWorkspace
           :parties="parties"
           :outputs="outputs"
@@ -399,7 +491,10 @@ watch(route, () => { void focusRouteLocation(); });
                     </button>
                   </td>
                 </tr>
-                <tr v-show="route.recordId === material.id">
+                <tr
+                  v-if="openedMaterials.has(material.id)"
+                  v-show="route.recordId === material.id"
+                >
                   <td colspan="5">
                     <button @click="navigate('/output')">
                       Close material
@@ -414,7 +509,7 @@ watch(route, () => { void focusRouteLocation(); });
                       :material="material"
                       :delivered="deliveredReleases[material.id] ?? null"
                       :threads="threads"
-                      @changed="refreshLeads"
+                      @changed="refreshTab"
                     />
                   </td>
                 </tr>
@@ -466,11 +561,10 @@ button:not(:disabled):hover, .app-header a:hover { background: #eaf0eb; }
 button:not(:disabled):active { background: #d6e5da; }
 button[aria-pressed="true"], button[aria-current="true"] { background: #deebe2; box-shadow: inset 3px 0 #367757; }
 :focus-visible { outline: 2px solid #32735b; outline-offset: 2px; }
-.workspace-grid, .lead-desk, .resource-workspace { display: grid; gap: .85rem; align-items: start; }
+.workspace-grid, .lead-desk { display: grid; gap: .85rem; align-items: start; }
 .workspace-grid { grid-template-columns: repeat(auto-fit,minmax(min(100%, 19rem),1fr)); }
-.resource-workspace { grid-template-columns: minmax(0,2fr) minmax(17rem,1fr); }
 .lead-desk { grid-template-columns: minmax(14rem, 1fr) minmax(0, 3fr); }
-.resource-workspace > section, .lead-desk > section, .lead-desk aside, form, section section, .record-card { min-width: 0; background: white; border: 1px solid #d1dbd2; border-radius: .45rem; padding: .8rem; }
+.lead-desk > section, .lead-desk aside, form, section section, .record-card { min-width: 0; background: white; border: 1px solid #d1dbd2; border-radius: .45rem; padding: .8rem; }
 .directory-rows, .output-list { list-style: none; padding: 0; }
 .directory-rows { max-height: 40vh; overflow: auto; }
 .directory-rows button { width: 100%; text-align: left; }
@@ -481,15 +575,19 @@ small { color: #58665f; } .record-card { margin: .55rem 0; overflow-wrap: anywhe
 @media (prefers-reduced-motion: no-preference) {
   button, .app-header a, input, textarea, select { transition: background-color 120ms ease-out, border-color 120ms ease-out, box-shadow 120ms ease-out; }
 }
-@media (max-width: 68rem) { .resource-workspace { grid-template-columns: 1fr; } }
 @media (max-width: 54rem) { .lead-desk { grid-template-columns: 1fr; } }
 @media (max-width: 38rem) { .app-header { flex-wrap: wrap; gap: 0; } .app-header nav { flex-basis: 100%; } .app-header > strong { margin-top: .35rem; } }
 
 :root { background:#f8f7f3; }
 .app-header { min-height:54px; }
-.resource-workspace { grid-template-columns:minmax(0,2.2fr) minmax(18rem,1fr); align-items:stretch; }
+.workspace-header { display: flex; align-items: start; justify-content: space-between; gap: .75rem; }
+.workspace-header > button { min-height: 2.5rem; }
+.resource-workspace { position: relative; }
+.resource-agent { position: absolute; z-index: 10; inset-inline-end: 0; inset-block-start: 0; width: min(31rem, 100%); max-height: min(46rem, 80dvh); overflow: auto; background: #fffdf7; border: 1px solid #abbcac; border-radius: .55rem; box-shadow: 0 9px 36px #173b2940; }
+.resource-agent > .close-agent { display: block; margin: .65rem .75rem .25rem auto; }
+.resource-agent .chat-pane { padding: 0; border: 0; background: transparent; }
 .lead-desk { grid-template-columns:minmax(12rem,.8fr) minmax(0,2.2fr) minmax(15rem,1fr); align-items:stretch; }
-.resource-workspace > section, .lead-desk > section, .lead-desk aside, .lead-chat-column { background:white; border:1px solid #ccd5cc; border-radius:.55rem; padding:0; min-width:0; }
+.lead-desk > section, .lead-desk aside, .lead-chat-column { background:white; border:1px solid #ccd5cc; border-radius:.55rem; padding:0; min-width:0; }
 .lead-desk aside > section, .lead-chat-column section { border:0; border-radius:0; }
 .lead-desk aside > section { padding:0; }
 .lead-desk aside label,.lead-desk aside p { margin:.6rem; }
@@ -511,7 +609,7 @@ small { color: #58665f; } .record-card { margin: .55rem 0; overflow-wrap: anywhe
 .registry table {border-collapse:collapse;width:100%;text-align:left;}
 .registry th,.registry td {padding:.65rem .4rem;border-bottom:1px solid #e0e5df}
 .sr-only {position:absolute;clip-path:inset(50%);height:1px;width:1px;overflow:hidden;white-space:nowrap;}
-@media(max-width:800px){.resource-workspace,.lead-desk{grid-template-columns:minmax(0,1fr)}.chat-pane {min-height:18rem}}
+@media(max-width:800px){.lead-desk{grid-template-columns:minmax(0,1fr)}.chat-pane {min-height:18rem}}
 
 .chat-composer {margin-top:auto;padding:.8rem;border:0;border-top:1px solid #dce2db;border-radius:0;}
 .chat-composer textarea {resize:vertical;}

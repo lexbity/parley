@@ -1,0 +1,8 @@
+{
+  "operationId": "moveResourceCard",
+  "body": {
+    "resource_id": "checklist",
+    "opportunity_stage_id": "preparing"
+  },
+  "expected_status": 422
+}

@@ -353,11 +353,22 @@ export function createMockApi(): MockApi {
     return JSON.parse(Buffer.concat(chunks).toString('utf8')) as RecordData;
   }
 
+  function syncResourceCard(resource: ResourceRecord) {
+    const existing = entityResources.get(resource.id);
+    const card: ResourceEntityRecord = {
+      id: resource.id, kind: resource.kind === 'artifact' ? 'artifact' : 'resource', focus: '',
+      name: resource.title, subtype: resource.kind, body: resource.body, readiness: resource.readiness,
+      revision: resource.revision, notes: existing?.notes ?? { markdown: '', revision: 1 }, etag: '',
+    };
+    card.etag = entityTag(card);
+    entityResources.set(card.id, card);
+  }
+
   function findEntity(id: string): RecordData | undefined {
     const entity = directory.get(id);
     if (entity) return entity;
     const resource = entityResources.get(id);
-    return resource ? { id: resource.id, kind: resource.kind, name: resource.name, focus: resource.focus, revision: resource.revision } : undefined;
+    return resource && resource.readiness !== 'retired' ? { id: resource.id, kind: resource.kind, name: resource.name, focus: resource.focus, revision: resource.revision } : undefined;
   }
 
   function resourceCountsFor(resourceId: string): RecordData {
@@ -405,7 +416,7 @@ export function createMockApi(): MockApi {
     const before = typeof input.before_resource_id === 'string' ? input.before_resource_id : null;
     if (before === resourceId) return false;
     const rows = [...resourcePlacements.entries()]
-      .filter(([, p]) => p.column_id === columnId)
+      .filter(([id, p]) => id !== resourceId && p.column_id === columnId)
       .sort((a, b) => a[1].position - b[1].position || a[0].localeCompare(b[0]));
     const list = rows.map(([id]) => id);
     let index = list.length;
@@ -414,8 +425,6 @@ export function createMockApi(): MockApi {
       if (at < 0) return false;
       index = at;
     }
-    const existingIndex = list.indexOf(resourceId);
-    if (existingIndex >= 0) list.splice(existingIndex, 1);
     list.splice(index, 0, resourceId);
     const prior = resourcePlacements.get(resourceId);
     list.forEach((id, i) => {
@@ -423,6 +432,8 @@ export function createMockApi(): MockApi {
       resourcePlacements.set(id, { column_id: columnId, position: (i + 1) * 1024, revision: (existing?.revision ?? 0) + 1 });
     });
     column.revision = Number(column.revision) + 1;
+    const source = resourceColumns.find(c => c.id === prior?.column_id);
+    if (source && source !== column) source.revision = Number(source.revision) + 1;
     pushEvent({
       event_id: randomHex(), entity_type: 'resource', entity_id: resourceId,
       revision: resourcePlacements.get(resourceId)!.revision,
@@ -464,10 +475,18 @@ export function createMockApi(): MockApi {
     const verb = String(rel.verb ?? '').trim();
     const basis = String(rel.basis ?? '').trim();
     if (!verb || !basis) return 'invalid';
-    let toId: string | null = null;
+    let toId: string;
     if (typeof rel.target_id === 'string') {
       toId = rel.target_id;
-      if (!findEntity(toId)) return 'missing';
+      const target = findEntity(toId);
+      if (!target) return 'missing';
+      if (rel.expected_target_revision != null && rel.expected_target_revision !== target.revision) return 'stale';
+    } else if (rel.create_party && typeof rel.create_party === 'object') {
+      const party = rel.create_party as RecordData;
+      const name = String(party.name ?? '').trim();
+      if (!name || !['person', 'org'].includes(String(party.kind))) return 'invalid';
+      toId = randomHex();
+      directory.set(toId, { id: toId, name, kind: String(party.kind), focus: String(party.focus ?? ''), revision: 1 });
     } else if (rel.create && typeof rel.create === 'object') {
       const create = rel.create as RecordData;
       const title = String(create.title ?? '').trim();
@@ -482,18 +501,21 @@ export function createMockApi(): MockApi {
       child.etag = entityTag(child);
       entityResources.set(id, child);
       toId = id;
-      if (create.placement && typeof create.placement === 'object') applyPlacement(id, create.placement as RecordData);
+      if (create.placement && typeof create.placement === 'object' && !applyPlacement(id, create.placement as RecordData)) return 'invalid placement';
+      for (const upload of (create.staged_uploads ?? []) as string[]) if (!bindUploadTo(id, upload)) return 'invalid upload';
     } else {
       return 'invalid';
     }
     if (toId === fromId) return 'self';
+    const start = rel.incoming === true ? toId : fromId;
+    const end = rel.incoming === true ? fromId : toId;
     const duplicate = graphEdges.some(
-      (edge) => edge.state !== 'retracted' && String(edge.from_id) === fromId && edge.verb === verb && String(edge.to_id) === toId,
+      (edge) => edge.state !== 'retracted' && String(edge.from_id) === start && edge.verb === verb && String(edge.to_id) === end,
     );
     if (duplicate) return 'duplicate';
     const edge: RecordData = {
-      id: randomHex(), from_id: fromId, verb, to_id: toId, revision: 1, basis,
-      author_kind: 'owner', state: 'active', occurrence_id: '', quote: '',
+      id: randomHex(), from_id: start, verb, to_id: end, revision: 1, basis,
+      author_kind: 'owner', state: 'active', owner_authored: true, occurrence_id: null, quote: basis,
       tier: 1, speaker_kind: 'owner', captured_at: now(), source_title: null, source_url: null,
     };
     graphEdges.push(edge);
@@ -882,7 +904,24 @@ export function createMockApi(): MockApi {
       let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
       for (const chat of agentChats.values()) {
         const candidate = (chat.candidates as RecordData[]).find((item) => item.id === candidateMatch[1]);
-        if (candidate) { if (candidateMatch[2] === 'confirm') { candidate.state = 'saved'; candidate.resource_id = randomHex(); candidate.fields = input.fields; } else candidate.state = 'dismissed'; return json(response, candidateMatch[2] === 'confirm' ? 201 : 200, { candidate_id: candidate.id, state: candidate.state, resource_id: candidate.resource_id }); }
+        if (candidate) {
+          if (candidateMatch[2] === 'dismiss') {
+            candidate.state = 'dismissed';
+            return json(response, 200, { candidate_id: candidate.id, state: candidate.state });
+          }
+          const id = randomHex();
+          const title = String(input.title ?? '').trim();
+          if (!title || !input.fields || typeof input.fields !== 'object') return fail(response, 422, 'CANDIDATE_INVALID', 'Enter a title and typed fields');
+          if (input.column_id && !applyPlacement(id, { column_id: input.column_id })) return fail(response, 422, 'INVALID_REQUEST', 'Choose a column on the resource board');
+          const card: ResourceEntityRecord = { id, kind: 'resource', name: title, subtype: String(candidate.asset_kind), focus: '',
+            body: input.fields as RecordData, revision: 1, readiness: 'draft', notes: { markdown: '', revision: 1 }, etag: '' };
+          card.etag = entityTag(card);
+          entityResources.set(id, card);
+          candidate.state = 'saved';
+          candidate.resource_id = id;
+          candidate.fields = input.fields;
+          return json(response, 201, { id, kind: card.subtype, title, body: card.body, readiness: card.readiness });
+        }
       }
       return fail(response, 404, 'CANDIDATE_NOT_FOUND', 'Candidate does not exist');
     }
@@ -908,22 +947,17 @@ export function createMockApi(): MockApi {
       const viewId = url.searchParams.get('view_id') ?? 'all';
       const allEntities = new Map<string, RecordData>(directory);
       for (const [id, res] of entityResources) {
+        if (res.readiness === 'retired') continue;
         allEntities.set(id, { id, kind: 'resource', name: String(res.name), focus: '', revision: Number(res.revision) });
       }
       const relatedIds = new Set<string>(centerId ? [centerId] : allEntities.keys());
-      let changed = true;
-      while (changed) {
-        changed = false;
-        for (const edge of graphEdges) {
-          if (relatedIds.has(String(edge.from_id)) || relatedIds.has(String(edge.to_id))) {
-            const before = relatedIds.size;
-            relatedIds.add(String(edge.from_id)); relatedIds.add(String(edge.to_id));
-            changed ||= relatedIds.size !== before;
-          }
-        }
+      for (const edge of graphEdges) {
+        if (edge.state === 'retracted') continue;
+        if (edge.from_id === centerId) relatedIds.add(String(edge.to_id));
+        if (edge.to_id === centerId) relatedIds.add(String(edge.from_id));
       }
-      const records: RecordData[] = [...allEntities.values()];
-      const selected = records.filter((entity) => relatedIds.has(String(entity.id))).slice(0, 200);
+      const selected = [...allEntities.values()].filter(entity => relatedIds.has(String(entity.id)))
+        .sort((a, b) => Number(b.id === centerId) - Number(a.id === centerId) || String(a.name).localeCompare(String(b.name))).slice(0, 200);
       const nodes: RecordData[] = selected.map((entity, index) => {
         const id = String(entity.id);
         const key = `${viewScope}:${viewId}:${id}`;
@@ -931,7 +965,7 @@ export function createMockApi(): MockApi {
         return { ...entity, id, x: position.x, y: position.y, position_revision: position.revision };
       });
       const visible = new Set(nodes.map((node) => String(node.id)));
-      const scopedEdges = graphEdges.filter(edge => visible.has(String(edge.from_id)) && visible.has(String(edge.to_id)));
+      const scopedEdges = graphEdges.filter(edge => edge.state !== 'retracted' && visible.has(String(edge.from_id)) && visible.has(String(edge.to_id)));
       const edges = scopedEdges.slice(0, 400);
       return json(response, 200, { nodes, edges, omitted_nodes: Math.max(0, relatedIds.size - nodes.length), omitted_edges: Math.max(0, scopedEdges.length - edges.length) });
     }
@@ -1109,6 +1143,7 @@ export function createMockApi(): MockApi {
       };
       resource.etag = tag(resource);
       resources.set(resource.id, resource);
+      syncResourceCard(resource);
       pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: resource.id, revision: 1, event_type: 'resource.created', payload: { kind: resource.kind } });
       receipts.set(key, { digest, result: resource });
       return json(response, 201, { data: resource });
@@ -1155,6 +1190,7 @@ export function createMockApi(): MockApi {
         };
         updated.etag = tag(updated);
         resources.set(updated.id, updated);
+        syncResourceCard(updated);
         pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: updated.id, revision: updated.revision, event_type: 'resource.updated', payload: {} });
         receipts.set(key, { digest, result: updated });
         return json(response, 200, { data: updated });
@@ -1331,25 +1367,24 @@ export function createMockApi(): MockApi {
           gaps: resourceGapsFor(resourceId), etag: entityTag(res),
         });
       }
-      placed.sort((a, b) => Number((a.placement as { position: number }).position) - Number((b.placement as { position: number }).position) || String(a.resource_id).localeCompare(String(b.resource_id)));
+      const columnOrder = (card: RecordData) => resourceColumns.findIndex(column => column.id === (card.placement as { column_id: string }).column_id);
+      placed.sort((a, b) => columnOrder(a) - columnOrder(b) || Number((a.placement as { position: number }).position) - Number((b.placement as { position: number }).position) || String(a.resource_id).localeCompare(String(b.resource_id)));
       const page = placed.slice(cursor, cursor + limit);
       const next_cursor = cursor + limit < placed.length ? String(cursor + limit) : null;
       const off_board: RecordData[] = [];
       if (includeOff) {
         for (const [resourceId, res] of entityResources) {
           if (resourcePlacements.has(resourceId) || res.readiness === 'retired') continue;
-          off_board.push({ resource_id: resourceId, subtype: String(res.subtype), title: String(res.name), readiness: String(res.readiness), legacy: false, counts: resourceCountsFor(resourceId), gaps: resourceGapsFor(resourceId), etag: entityTag(res) });
+          off_board.push({ resource_id: resourceId, subtype: String(res.subtype), title: String(res.name), readiness: String(res.readiness), legacy: resources.has(resourceId), counts: resourceCountsFor(resourceId), gaps: resourceGapsFor(resourceId), etag: entityTag(res) });
         }
-        for (const legacy of resources.values()) {
-          off_board.push({ resource_id: legacy.id, subtype: legacy.kind, title: legacy.title, readiness: legacy.readiness, legacy: true, counts: { files: 0, connections: 0, proposed: 0, deliveries: 0 }, gaps: [], etag: legacy.etag });
-        }
-      }
+          }
       return json(response, 200, { columns: resourceColumns, cards: page, off_board, next_cursor, event_cursor: events.length });
     }
     const resourceCardRead = /^\/api\/v1\/resource-cards\/([^/]+)$/.exec(url.pathname);
     if (resourceCardRead && request.method === 'GET') {
       const entity = entityResources.get(resourceCardRead[1]!);
       if (!entity) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
+      if (entity.readiness === 'retired') return fail(response, 404, 'RESOURCE_RETIRED', 'This resource was retired');
       return json(response, 200, { data: { ...entity, title: entity.name } });
     }
     const resourceDeliveries = /^\/api\/v1\/resource-cards\/([^/]+)\/deliveries$/.exec(url.pathname);
@@ -1366,6 +1401,8 @@ export function createMockApi(): MockApi {
       entity.readiness = 'retired';
       entity.revision = Number(entity.revision) + 1;
       entity.etag = entityTag(entity);
+      const existing = resources.get(String(entity.id));
+      if (existing) { existing.readiness = 'retired'; existing.revision += 1; existing.etag = tag(existing); }
       resourcePlacements.delete(entity.id as string);
       pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: entity.id as string, revision: Number(entity.revision), event_type: 'resource.retired', payload: {} });
       const result = { entity: { id: entity.id, kind: 'resource', readiness: 'retired', revision: Number(entity.revision) }, affected_versions: [] };
@@ -1380,62 +1417,96 @@ export function createMockApi(): MockApi {
       const digest = createHash('sha256').update(JSON.stringify(input)).digest('hex');
       const prior = receipts.get(key);
       if (prior) return prior.digest === digest ? json(response, prior.status ?? 201, prior.result) : fail(response, 409, 'KEY_REUSED', 'Idempotency key was used for a different command');
-      const relatedInfo = { edge_id: null as string | null, to_id: null as string | null };
-      let entity: ResourceEntityRecord;
-      let status = 200;
-      if (input.create && typeof input.create === 'object') {
-        const create = input.create as RecordData;
-        const title = String(create.title ?? '').trim();
-        const subtype = String(create.subtype ?? '');
-        if (!title || title.length > 240 || !['gift', 'proof', 'artifact', 'skill', 'interest', 'note'].includes(subtype)) return fail(response, 422, 'INVALID_REQUEST', 'Card title or subtype is invalid');
-        const id = randomHex();
-        entity = { id, kind: 'resource', name: title, focus: '', revision: 1, subtype, body: (create.body ?? {}) as RecordData, readiness: 'draft', notes: { markdown: String(create.notes_md ?? ''), revision: 1 }, etag: '' };
-        entity.etag = entityTag(entity);
-        entityResources.set(id, entity);
-        pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: id, revision: 1, event_type: 'resource.created', payload: { subtype } });
-        status = 201;
-        if (create.placement && typeof create.placement === 'object' && !applyPlacement(id, create.placement as RecordData)) return fail(response, 422, 'INVALID_REQUEST', 'Placement column or anchor is invalid');
-        if (input.relation_add && typeof input.relation_add === 'object') {
-          const reserved = reservedDeliveryVerb((input.relation_add as RecordData).verb);
-          if (reserved) return fail(response, 422, 'INVALID_REQUEST', `A relationship cannot assert a delivery ('${reserved}'). Record the delivery through the opportunity's Mark sent workflow; delivery provenance is shown from recorded sends.`);
-          const reason = relateFrom(id, input.relation_add as RecordData, relatedInfo);
-          if (reason) return fail(response, 422, 'INVALID_REQUEST', `Relationship rejected: ${reason}`);
+      const originalResources = deepClone(entityResources);
+      const originalPlacements = deepClone(resourcePlacements);
+      const originalFiles = deepClone(entityAttachments);
+      const originalDirectory = deepClone(directory);
+      const originalColumns = deepClone(resourceColumns);
+      const originalEdges = graphEdges.length;
+      const originalEvents = events.length;
+      let committed = false;
+      try {
+        const relatedInfo = { edge_id: null as string | null, to_id: null as string | null };
+        let entity: ResourceEntityRecord;
+        let status = 200;
+        if (input.create && typeof input.create === 'object') {
+          const create = input.create as RecordData;
+          const title = String(create.title ?? '').trim();
+          const subtype = String(create.subtype ?? '');
+          if (!title || title.length > 240 || !['gift', 'proof', 'artifact', 'skill', 'interest', 'note'].includes(subtype)) return fail(response, 422, 'INVALID_REQUEST', 'Card title or subtype is invalid');
+          const id = randomHex();
+          entity = { id, kind: 'resource', name: title, focus: '', revision: 1, subtype, body: (create.body ?? {}) as RecordData, readiness: 'draft', notes: { markdown: String(create.notes_md ?? ''), revision: 1 }, etag: '' };
+          entity.etag = entityTag(entity);
+          entityResources.set(id, entity);
+          pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: id, revision: 1, event_type: 'resource.created', payload: { subtype } });
+          status = 201;
+          for (const upload of (create.staged_uploads ?? []) as string[]) {
+            if (!bindUploadTo(id, upload)) return fail(response, 422, 'INVALID_REQUEST', 'Staged upload does not exist or is already bound');
+          }
+          if (create.placement && typeof create.placement === 'object' && !applyPlacement(id, create.placement as RecordData)) return fail(response, 422, 'INVALID_REQUEST', 'Placement column or anchor is invalid');
+          if (input.relation_add && typeof input.relation_add === 'object') {
+            const reserved = reservedDeliveryVerb((input.relation_add as RecordData).verb);
+            if (reserved) return fail(response, 422, 'INVALID_REQUEST', `A relationship cannot assert a delivery ('${reserved}'). Record the delivery through the opportunity's Mark sent workflow; delivery provenance is shown from recorded sends.`);
+            const reason = relateFrom(id, input.relation_add as RecordData, relatedInfo);
+            if (reason === 'stale') return fail(response, 412, 'STALE_REVISION', 'The related card changed in another session');
+            if (reason) return fail(response, 422, 'INVALID_REQUEST', `Relationship rejected: ${reason}`);
+          }
+        } else if (input.edit && typeof input.edit === 'object') {
+          const edit = input.edit as RecordData;
+          const current = entityResources.get(String(edit.resource_id));
+          if (!current) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
+          const changesContent = typeof edit.title === 'string' || typeof edit.subtype === 'string' || Boolean(edit.body) || Boolean((edit.staged_uploads as string[] | undefined)?.length || (edit.unbind_ids as string[] | undefined)?.length);
+          if ((changesContent || typeof edit.notes_md !== 'string') && Number(current.revision) !== Number(edit.expected_revision)) return fail(response, 412, 'STALE_REVISION', 'The resource changed in another session');
+          if (typeof edit.notes_md === 'string' && Number(current.notes?.revision) !== Number(edit.expected_notes_rev)) return fail(response, 412, 'STALE_REVISION', 'Notes changed in another session');
+          if (typeof edit.title === 'string') {
+            const title = edit.title.trim();
+            if (!title || title.length > 240) return fail(response, 422, 'INVALID_REQUEST', 'Card title is invalid');
+            current.name = title;
+          }
+          if (typeof edit.subtype === 'string') current.subtype = edit.subtype;
+          if (edit.body && typeof edit.body === 'object') current.body = edit.body as RecordData;
+          if (typeof edit.notes_md === 'string') current.notes = { markdown: edit.notes_md, revision: Number(current.notes?.revision ?? 1) + 1 };
+          if (changesContent) current.revision = Number(current.revision) + 1;
+          current.etag = entityTag(current);
+          for (const uploadId of (edit.staged_uploads ?? []) as string[]) {
+            if (!bindUploadTo(String(current.id), uploadId)) return fail(response, 422, 'INVALID_REQUEST', 'Staged upload does not exist or is already bound');
+          }
+          for (const ref of (edit.unbind_ids ?? []) as string[]) unbindAttachmentFrom(String(current.id), ref);
+          pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: current.id as string, revision: Number(current.revision), event_type: 'resource.updated', payload: {} });
+          entity = current;
+          if (input.placement && typeof input.placement === 'object' && !applyPlacement(String(current.id), input.placement as RecordData)) return fail(response, 422, 'INVALID_REQUEST', 'Placement column or anchor is invalid');
+          if (input.relation_add && typeof input.relation_add === 'object') {
+            const reserved = reservedDeliveryVerb((input.relation_add as RecordData).verb);
+            if (reserved) return fail(response, 422, 'INVALID_REQUEST', `A relationship cannot assert a delivery ('${reserved}'). Record the delivery through the opportunity's Mark sent workflow; delivery provenance is shown from recorded sends.`);
+            const reason = relateFrom(String(current.id), input.relation_add as RecordData, relatedInfo);
+            if (reason === 'stale') return fail(response, 412, 'STALE_REVISION', 'The related card changed in another session');
+            if (reason) return fail(response, 422, 'INVALID_REQUEST', `Relationship rejected: ${reason}`);
+          }
+        } else {
+          return fail(response, 422, 'INVALID_REQUEST', 'A commit must create or edit a card');
         }
-      } else if (input.edit && typeof input.edit === 'object') {
-        const edit = input.edit as RecordData;
-        const current = entityResources.get(String(edit.resource_id));
-        if (!current) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
-        if (Number(current.revision) !== Number(edit.expected_revision)) return fail(response, 412, 'STALE_REVISION', 'The resource changed in another session');
-        if (Number(current.notes?.revision) !== Number(edit.expected_notes_rev)) return fail(response, 412, 'STALE_REVISION', 'Notes changed in another session');
-        if (typeof edit.title === 'string') {
-          const title = edit.title.trim();
-          if (!title || title.length > 240) return fail(response, 422, 'INVALID_REQUEST', 'Card title is invalid');
-          current.name = title;
+        const legacy = resources.get(entity.id);
+        if (legacy && (legacy.title !== entity.name || JSON.stringify(legacy.body) !== JSON.stringify(entity.body))) {
+          legacy.title = entity.name;
+          legacy.body = entity.body;
+          legacy.revision += 1;
+          legacy.etag = tag(legacy);
         }
-        if (typeof edit.subtype === 'string') current.subtype = edit.subtype;
-        if (edit.body && typeof edit.body === 'object') current.body = edit.body as RecordData;
-        if (typeof edit.notes_md === 'string') current.notes = { markdown: edit.notes_md, revision: Number(current.notes?.revision ?? 1) + 1 };
-        current.revision = Number(current.revision) + 1;
-        current.etag = entityTag(current);
-        for (const uploadId of (edit.staged_uploads ?? []) as string[]) {
-          if (!bindUploadTo(String(current.id), uploadId)) return fail(response, 422, 'INVALID_REQUEST', 'Staged upload does not exist or is already bound');
+        const result = { entity: { ...entity, title: entity.name }, placement: resourcePlacements.get(String(entity.id)) ?? null, created_related: relatedInfo.edge_id ? { edge_id: relatedInfo.edge_id, to_id: relatedInfo.to_id } : null, affected_versions: [], event_cursor: events.length };
+        receipts.set(key, { digest, result, status });
+        committed = true;
+        return json(response, status, result);
+      } finally {
+        if (!committed) {
+          entityResources.clear(); for (const [key, value] of originalResources) entityResources.set(key, value);
+          resourcePlacements.clear(); for (const [key, value] of originalPlacements) resourcePlacements.set(key, value);
+          entityAttachments.clear(); for (const [key, value] of originalFiles) entityAttachments.set(key, value);
+          directory.clear(); for (const [key, value] of originalDirectory) directory.set(key, value);
+          resourceColumns.splice(0, resourceColumns.length, ...originalColumns);
+          graphEdges.length = originalEdges;
+          events.length = originalEvents;
         }
-        for (const ref of (edit.unbind_ids ?? []) as string[]) unbindAttachmentFrom(String(current.id), ref);
-        pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: current.id as string, revision: Number(current.revision), event_type: 'resource.updated', payload: {} });
-        entity = current;
-        if (input.placement && typeof input.placement === 'object' && !applyPlacement(String(current.id), input.placement as RecordData)) return fail(response, 422, 'INVALID_REQUEST', 'Placement column or anchor is invalid');
-        if (input.relation_add && typeof input.relation_add === 'object') {
-          const reserved = reservedDeliveryVerb((input.relation_add as RecordData).verb);
-          if (reserved) return fail(response, 422, 'INVALID_REQUEST', `A relationship cannot assert a delivery ('${reserved}'). Record the delivery through the opportunity's Mark sent workflow; delivery provenance is shown from recorded sends.`);
-          const reason = relateFrom(String(current.id), input.relation_add as RecordData, relatedInfo);
-          if (reason) return fail(response, 422, 'INVALID_REQUEST', `Relationship rejected: ${reason}`);
-        }
-      } else {
-        return fail(response, 422, 'INVALID_REQUEST', 'A commit must create or edit a card');
       }
-      const result = { entity: { ...entity, title: entity.name }, placement: resourcePlacements.get(String(entity.id)) ?? null, created_related: relatedInfo.edge_id ? { edge_id: relatedInfo.edge_id, to_id: relatedInfo.to_id } : null, affected_versions: [], event_cursor: events.length };
-      receipts.set(key, { digest, result, status });
-      return json(response, status, result);
     }
     if (url.pathname === '/api/v1/resource-board/moves' && request.method === 'POST') {
       let input: RecordData;
@@ -1448,7 +1519,7 @@ export function createMockApi(): MockApi {
       const resourceId = String(input.resource_id);
       if (!entityResources.has(resourceId)) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
       const current = resourcePlacements.get(resourceId);
-      if (input.expected_placement_revision != null && current && Number(input.expected_placement_revision) !== current.revision) return fail(response, 412, 'STALE_REVISION', 'Placement changed in another session');
+      if (input.expected_placement_revision != null && Number(input.expected_placement_revision) !== (current?.revision ?? 0)) return fail(response, 412, 'STALE_REVISION', 'Placement changed in another session');
       if (input.expected_source_column_revision != null && current) {
         const column = resourceColumns.find((c) => c.id === current.column_id);
         if (column && Number(column.revision) !== Number(input.expected_source_column_revision)) return fail(response, 412, 'STALE_REVISION', 'Source column changed in another session');
@@ -1458,7 +1529,7 @@ export function createMockApi(): MockApi {
         const column = resourceColumns.find((c) => c.id === destination);
         if (!column) return fail(response, 422, 'INVALID_REQUEST', 'Destination column does not exist');
         if (input.expected_destination_column_revision != null && Number(column.revision) !== Number(input.expected_destination_column_revision)) return fail(response, 412, 'STALE_REVISION', 'Destination column changed in another session');
-        applyPlacement(resourceId, { column_id: destination, before_resource_id: input.before_resource_id ?? null });
+        if (!applyPlacement(resourceId, { column_id: destination, before_resource_id: input.before_resource_id ?? null })) return fail(response, 422, 'INVALID_REQUEST', 'The anchor must be in the destination column');
       } else if (destination === null) {
         applyPlacement(resourceId, { column_id: null });
       } else {
@@ -1493,14 +1564,19 @@ export function createMockApi(): MockApi {
       const edge = graphEdges.find((candidate) => candidate.id === edgeMatch[1]);
       if (!edge || edge.state === 'retracted') return fail(response, 404, 'NOT_FOUND', 'Edge does not exist');
       if (Number(edge.revision) !== Number(input.expected_revision)) return fail(response, 412, 'STALE_REVISION', 'Edge changed in another session');
+      if ('basis' in input && !edge.owner_authored) return fail(response, 422, 'INVALID_REQUEST', 'Only owner notes can be corrected here');
+      if (reservedDeliveryVerb(input.verb)) return fail(response, 422, 'INVALID_REQUEST', 'Use Mark sent to record deliveries');
+      if (input.reverse === true) [edge.from_id, edge.to_id] = [edge.to_id, edge.from_id];
       if (typeof input.verb === 'string' && input.verb.trim()) edge.verb = input.verb.trim();
-      if (typeof input.basis === 'string' && input.basis.trim()) edge.basis = input.basis.trim();
+      if (typeof input.basis === 'string' && input.basis.trim()) { edge.basis = input.basis.trim(); edge.quote = edge.basis; }
       edge.revision = Number(edge.revision) + 1;
       return json(response, 200, { edge, author_kind: edge.author_kind });
     }
     if (edgeMatch && request.method === 'DELETE') {
+      const input = await readBody(request);
       const edge = graphEdges.find((candidate) => candidate.id === edgeMatch[1]);
       if (!edge || edge.state === 'retracted') return fail(response, 404, 'NOT_FOUND', 'Edge does not exist');
+      if (edge.revision !== input.expected_revision) return fail(response, 412, 'STALE_REVISION', 'Edge changed in another session');
       edge.state = 'retracted';
       edge.revision = Number(edge.revision) + 1;
       pushEvent({ event_id: randomHex(), entity_type: 'edge', entity_id: edge.id as string, revision: Number(edge.revision), event_type: 'edge.detached', payload: {} });

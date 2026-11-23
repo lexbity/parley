@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import { parley, type AgentChat, type AgentChatSummary, type RoleJob } from '../../api/client';
+import { newOperationKey, parley, type ResourceColumn, type AgentChat, type AgentChatSummary, type RoleJob } from '../../api/client';
 
+defineProps<{ columns?: ResourceColumn[] }>();
+const selectedColumn = ref('');
+let confirmIntent: { signature: string; key: string } | null = null;
 const kind = ref<'proof' | 'gift' | 'artifact'>('proof');
 const chat = ref<AgentChat | null>(null);
 const chatId = ref('');
@@ -115,7 +118,13 @@ async function confirmCandidate() {
   busy.value = true; error.value = '';
   try {
     const fields = JSON.parse(fieldsJson.value) as Record<string, unknown>;
-    await parley.confirmInterviewerCandidate(candidate.value.id, { title: title.value.trim(), fields, expected_chat_revision: chat.value.revision });
+    const input = { title: title.value.trim(), fields, expected_chat_revision: chat.value.revision,
+      ...(selectedColumn.value ? { column_id: selectedColumn.value } : {}) };
+    const signature = JSON.stringify([candidate.value.id, input]);
+    if (confirmIntent?.signature !== signature) confirmIntent = { signature, key: newOperationKey() };
+    await parley.confirmInterviewerCandidate(candidate.value.id, input, confirmIntent.key);
+    confirmIntent = null;
+    selectedColumn.value = '';
     emit('saved');
     await refreshChat(); editing.value = false; status.value = 'Owner-confirmed resource saved. Its readiness follows the typed resource validator.';
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Candidate fields must be valid JSON.'; }
@@ -140,8 +149,8 @@ onMounted(async () => { try { bank.value = (await parley.getQuestionBank()).cont
   >
     <header class="pane-bar">
       <h2 id="interviewer-heading">
-        Resource chat
-      </h2><small>Interviewer</small>
+        Interviewer
+      </h2>
     </header>
     <p
       v-if="!chat"
@@ -248,6 +257,19 @@ onMounted(async () => { try { bank.value = (await parley.getQuestionBank()).cont
         spellcheck="false"
         @input="editing = true"
       /></label>
+      <label v-if="columns?.length">Resource board column
+        <select
+          v-model="selectedColumn"
+          :disabled="busy"
+        >
+          <option value="">Off board</option>
+          <option
+            v-for="column in columns"
+            :key="column.id"
+            :value="column.id"
+          >{{ column.title }}</option>
+        </select>
+      </label>
       <details><summary>Owner quote evidence</summary><pre>{{ JSON.stringify(candidate.owner_quotes, null, 2) }}</pre></details>
       <button
         type="button"

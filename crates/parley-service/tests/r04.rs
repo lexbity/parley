@@ -170,7 +170,7 @@ async fn r04_link_existing_party_preserves_its_record() {
         "POST",
         "/api/v1/resource-card-commits",
         Some(json!({
-            "edit": {"resource_id": root_id, "expected_revision": 2, "expected_notes_rev": 1},
+            "edit": {"resource_id": root_id, "expected_revision": 1, "expected_notes_rev": 1},
             "relation_add": {"verb": "shared with", "target_id": party_id, "basis": "owner-recorded send to Mira"}
         })),
         &[("Idempotency-Key", next_key().as_str())],

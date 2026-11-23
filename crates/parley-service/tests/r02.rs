@@ -194,7 +194,7 @@ async fn r02_board_summaries_report_typed_gaps_and_eligibility() {
 }
 
 #[tokio::test]
-async fn r02_deliveries_detail_lists_only_sent_versions() {
+async fn r02_drafting_dependencies_do_not_establish_delivery() {
     let db = path();
     let service = parley_service::start_workspace(&db).await.unwrap();
     let session = owner_session(&service).await;
@@ -260,11 +260,23 @@ async fn r02_deliveries_detail_lists_only_sent_versions() {
     .await;
     assert_eq!(status, 200, "{list}");
     let rows = list["data"].as_array().unwrap();
-    assert_eq!(rows.len(), 1, "{rows:?}");
-    assert_eq!(rows[0]["send_id"], "s1");
-    assert_eq!(rows[0]["recipient_name"], "Mira Chen");
-    assert_eq!(rows[0]["material_version"], 1);
-    // v2 was only drafted, so it never appears.
+    assert!(
+        rows.is_empty(),
+        "Drafting references are not deliveries: {rows:?}"
+    );
+    let (status, graph) = request(
+        &service,
+        &session,
+        "GET",
+        &format!("/api/v1/graph?center_id={resource_id}&view_scope=resources"),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200, "{graph}");
+    let edges = graph["edges"].as_array().unwrap();
+    assert!(edges.iter().any(|edge| edge["verb"] == "used to prepare"));
+    assert!(edges.iter().all(|edge| edge["verb"] != "shared with"));
 
     pool.close().await;
     service.shutdown().await;

@@ -1,0 +1,8 @@
+{
+  "$schema": "#/components/schemas/MoveResourceCardInput",
+  "body": {
+    "resource_id": "checklist",
+    "destination_column_id": "available",
+    "expected_placement_revision": 1
+  }
+}

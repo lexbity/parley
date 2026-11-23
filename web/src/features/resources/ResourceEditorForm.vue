@@ -1,9 +1,12 @@
 <script setup lang="ts">
-/* global Event, HTMLInputElement, Blob, URL, document, File, navigator */
-import { computed, reactive, ref, watch } from 'vue';
+/* global Event, HTMLInputElement, HTMLSelectElement, Blob, URL, document, File, navigator */
+import { computed, nextTick, reactive, ref, watch } from 'vue';
 import { ApiError, newOperationKey, parley, type EntityAttachment, type EntityCard, type PlacementView, type ResourceColumn, type ResourcePlacementInput } from '../../api/client';
+import type { components } from '../../api/generated';
 import MarkdownEditor from '../../shared/MarkdownEditor.vue';
 import MarkdownPreview from '../../shared/MarkdownPreview.vue';
+import ResourceTypedFields from './ResourceTypedFields.vue';
+import type { PendingRelationship } from './ResourceGraph.vue';
 
 /**
  * Shared content editor for board and graph cards (amendment §4). One draft
@@ -28,25 +31,35 @@ const props = defineProps<{
   cardSummary?: { resource_id: string; title: string; subtype: string; readiness: string; placement: PlacementView | null; etag: string } | null;
   initialColumnId?: string | null;
   graphMode?: boolean;
-  availableEndpoints?: Array<{ id: string; label: string; kind: string }>;
+  endpointSearchError?: string;
+  availableEndpoints?: Array<{ id: string; label: string; kind: string; revision?: number }>;
 }>();
 
 const emit = defineEmits<{
   saved: [result: { entity: EntityCard; placement: PlacementView | null; createdRelated: { edge_id: string; to_id: string } | null }];
   'update:dirty': [dirty: boolean];
   cancel: [];
-  navigate: [path: string];
+  'search-endpoints': [query: string];
+  'preview-relationship': [preview: PendingRelationship | null];
 }>();
 
 const title = ref('');
 const subtype = ref<ResourceSubtype>('artifact');
-const body = reactive<Record<string, unknown>>({});
+const body = ref<Record<string, unknown>>({});
+const relatedBody = ref<Record<string, unknown>>({});
 const notes = ref('');
 const placementColumn = ref<string>('__off__');
 const attachments = ref<EntityAttachment[]>([]);
-const stagedUploads = ref<Array<{ id: string; filename: string; size: number; ready: boolean; error: string; file?: File | null }>>([]);
+type StagedFile = { id: string; filename: string; size: number; ready: boolean; percent: number; error: string; file: File; related: boolean };
+const stagedUploads = ref<StagedFile[]>([]);
+const cardUploads = computed(() => stagedUploads.value.filter(file => !file.related));
+const relatedUploads = computed(() => stagedUploads.value.filter(file => file.related));
 const markedRemovals = ref<string[]>([]);
 const saving = ref(false);
+const unknownOutcome = ref(false);
+const draftEpoch = parley.workspaceEpoch;
+let initializing = false;
+let attachmentGeneration = 0;
 const error = ref('');
 const status = ref('');
 type ConflictView = {
@@ -68,25 +81,25 @@ const relation = reactive<{
   mode: 'none' | 'link' | 'create';
   targetId: string;
   targetQuery: string;
-  createSubtype: ResourceSubtype;
+  createSubtype: ResourceSubtype | 'person' | 'org';
+  focus: string;
   createTitle: string;
   createNotes: string;
+  placement: string;
+  incoming: boolean;
 }>({
   enabled: false, verb: 'includes', basis: '', mode: 'none', targetId: '', targetQuery: '',
-  createSubtype: 'artifact', createTitle: '', createNotes: '',
+  createSubtype: 'artifact', createTitle: '', createNotes: '', focus: '', placement: '', incoming: false,
 });
 
 const dirty = ref(false);
-watch([title, subtype, notes, placementColumn], () => { dirty.value = true; });
-watch(body, () => { dirty.value = true; }, { deep: true });
-watch([stagedUploads, markedRemovals], () => { dirty.value = true; }, { deep: true });
-watch(() => relation.enabled, () => { dirty.value = true; });
-// The workspace owns the dirty-draft switch (Save / Discard / Stay), so the
-// draft reports its dirty state upward.
-watch(dirty, (value) => emit('update:dirty', value));
+watch([title, subtype, notes, placementColumn, body, relatedBody, stagedUploads, markedRemovals, () => relation.mode, () => relation.verb, () => relation.basis, () => relation.targetId, () => relation.createTitle, () => relation.createSubtype, () => relation.createNotes, () => relation.focus, () => relation.incoming, () => relation.placement], () => {
+  if (!initializing) dirty.value = true;
+}, { deep: true, flush: 'sync' });
+watch(dirty, (value) => emit('update:dirty', value), { flush: 'sync' });
 
 const KIND_LABELS: Record<string, string> = {
-  gift: 'Gift or offer', proof: 'Proof or result', artifact: 'Artifact',
+  gift: 'Gift or offer', proof: 'Proof or result', artifact: 'Artifact', person: 'Person', org: 'Organization',
   skill: 'Skill', interest: 'Interest', note: 'Note',
 };
 
@@ -97,23 +110,28 @@ function subtypeLabel(kind: string): string {
 const typedGaps = computed<string[]>(() => {
   const gaps: string[] = [];
   if (subtype.value === 'proof') {
-    if (!String(body.result ?? '').trim()) gaps.push('Result');
-    if (!String(body.context ?? '').trim()) gaps.push('Context');
-    if (!String(body.time ?? '').trim()) gaps.push('Time');
-    if (!String(body.owner_role ?? '').trim()) gaps.push('Owner role');
+    if (!String(body.value.result ?? '').trim()) gaps.push('Result');
+    if (!String(body.value.context ?? '').trim()) gaps.push('Context');
+    if (!String(body.value.time ?? '').trim()) gaps.push('Time');
+    if (!String(body.value.owner_role ?? '').trim()) gaps.push('Owner role');
   } else if (subtype.value === 'gift') {
-    if (!String(body.effort ?? '').trim()) gaps.push('Effort estimate');
+    if (!String(body.value.effort ?? '').trim()) gaps.push('Effort estimate');
   } else if (subtype.value === 'artifact') {
-    if (!String(body.reference ?? '').trim()) gaps.push('Available reference');
-    if (body.share_permission !== true) gaps.push('Permission to share');
+    if (!String(body.value.reference ?? '').trim()) gaps.push('Available reference');
+    if (body.value.share_permission !== true) gaps.push('Permission to share');
   }
   return gaps;
 });
 
 const filteredEndpoints = computed(() => {
   const query = relation.targetQuery.trim().toLocaleLowerCase();
-  const items = (props.availableEndpoints ?? []).filter((item) => !query || item.label.toLocaleLowerCase().includes(query));
+  const items = (props.availableEndpoints ?? []).filter(item => item.id !== props.card?.id && (!query || `${item.label} ${item.kind}`.toLocaleLowerCase().includes(query) || item.id === relation.targetId));
   return items.slice(0, 50);
+});
+
+watch(() => relation.targetQuery, (value, _old, clear) => {
+  const timer = globalThis.setTimeout(() => emit('search-endpoints', value), 180);
+  clear(() => globalThis.clearTimeout(timer));
 });
 
 const placementIntent = computed<ResourcePlacementInput | null>(() => {
@@ -128,11 +146,13 @@ let lastIntent = '';
 let intentKey = '';
 
 function refreshModel() {
-  const card = props.card;
+  const card = liveCard.value;
+  initializing = true;
+  const ownGeneration = ++attachmentGeneration;
   title.value = card?.title ?? '';
   subtype.value = (card?.subtype as ResourceSubtype) ?? 'artifact';
-  Object.keys(body).forEach((key) => delete body[key]);
-  if (card?.body) Object.assign(body, card.body);
+  body.value = { ...card?.body };
+  relatedBody.value = {};
   notes.value = card?.notes?.markdown ?? '';
   const summary = props.cardSummary;
   placementColumn.value = summary?.placement?.column_id ?? (props.mode === 'create' && props.initialColumnId ? props.initialColumnId : '__off__');
@@ -151,7 +171,12 @@ function refreshModel() {
   relation.createTitle = '';
   relation.createNotes = '';
   relation.createSubtype = 'artifact';
+  relation.focus = '';
+  relation.placement = '';
+  relation.incoming = false;
   dirty.value = false;
+  unknownOutcome.value = false;
+  initializing = false;
   lastIntent = '';
   intentKey = '';
   if (props.mode === 'edit' && card) {
@@ -159,10 +184,10 @@ function refreshModel() {
     // response for a previous card never populates this draft.
     const cardId = card.id;
     void parley.listAttachments(cardId).then((rows) => {
-      if (liveCard.value?.id !== cardId) return;
+      if (ownGeneration !== attachmentGeneration) return;
       attachments.value = rows;
     }).catch((reason: unknown) => {
-      if (liveCard.value?.id === cardId) status.value = reason instanceof Error ? reason.message : 'Could not load the bound files; retry by reopening the card.';
+      if (ownGeneration === attachmentGeneration) status.value = reason instanceof Error ? reason.message : 'Could not load the bound files; retry by reopening the card.';
     });
   }
 }
@@ -175,30 +200,29 @@ watch(() => props.card, () => {
 }, { immediate: true });
 watch(() => props.mode, () => { if (props.mode === 'create') refreshModel(); }, { immediate: true });
 
-async function uploadEntry(entry: { id: string; filename: string; size: number; ready: boolean; error: string; file?: File | null }) {
-  if (!entry.file) { entry.error = 'The file is no longer available; choose it again.'; return; }
+async function uploadEntry(entry: StagedFile) {
   entry.error = '';
+  entry.percent = 0;
   try {
-    const upload = await parley.stageUpload(entry.file, entry.file.name);
-    entry.id = upload.id;
+    entry.id = await parley.stageEntityAttachment(entry.file, percent => { entry.percent = percent; });
     entry.ready = true;
-    entry.size = Number(upload.size);
   } catch (reason) {
     entry.error = reason instanceof Error ? reason.message : 'Upload failed.';
   }
 }
 
-async function addFiles(event: Event) {
+async function addFiles(event: Event, related = false) {
   const input = event.target as HTMLInputElement;
-  for (const file of Array.from(input.files ?? [])) {
-    const entry = { id: `staging-${Math.random().toString(36).slice(2)}`, filename: file.name, size: file.size, ready: false, error: '', file };
+  const entries = Array.from(input.files ?? [], file => {
+    const entry = reactive({ id: newOperationKey(), filename: file.name, size: file.size, ready: false, percent: 0, error: '', file, related });
     stagedUploads.value.push(entry);
-    await uploadEntry(entry);
-  }
+    return entry;
+  });
   input.value = '';
+  await Promise.all(entries.map(uploadEntry));
 }
 
-function retryUpload(staged: { id: string; filename: string; size: number; ready: boolean; error: string; file?: File | null }) {
+function retryUpload(staged: StagedFile) {
   void uploadEntry(staged);
 }
 
@@ -230,33 +254,53 @@ async function downloadAttachment(attachment: EntityAttachment) {
   }
 }
 
-function relationIntent() {
-  if (!relation.enabled) return undefined;
-  const base = { verb: relation.verb.trim(), basis: relation.basis.trim() };
-  if (relation.mode === 'link') return { ...base, target_id: relation.targetId || null };
-  if (relation.mode === 'create') {
+function relationIntent(): components['schemas']['RelationAdd'] | undefined {
+  if (!relation.enabled) return;
+  const base = { verb: relation.verb.trim(), basis: relation.basis.trim(), incoming: relation.incoming };
+  if (!base.basis) throw new Error('Enter the basis for this relationship.');
+  if (relation.mode === 'link') {
+    const target = props.availableEndpoints?.find(item => item.id === relation.targetId);
+    if (!target) throw new Error('Choose a card to link.');
+    return { ...base, target_id: target.id, expected_target_revision: target.revision };
+  }
+  if (relation.mode === 'create' && relation.createTitle.trim()) {
+    if (relation.createSubtype === 'person' || relation.createSubtype === 'org') {
+      return { ...base, create_party: { kind: relation.createSubtype, name: relation.createTitle.trim(), focus: relation.focus.trim(), notes_md: relation.createNotes } };
+    }
     return {
       ...base,
-      create: { title: relation.createTitle.trim(), subtype: relation.createSubtype, body: {}, notes_md: relation.createNotes },
+      create: {
+        title: relation.createTitle.trim(), subtype: relation.createSubtype, body: { ...relatedBody.value }, notes_md: relation.createNotes,
+        staged_uploads: relatedUploads.value.map(item => item.id),
+        placement: relation.placement ? { column_id: relation.placement } : null,
+      },
     };
   }
-  return undefined;
+  throw new Error('Enter a title for the related card or choose an existing card.');
 }
 
-function freezeTitle(): string {
-  return title.value.trim();
+function quarantine() {
+  epochQuarantined.value = { title: title.value, notes: notes.value };
+  status.value = 'The workspace changed. Copy or discard this draft before editing the restored workspace.';
 }
 
 /** Commits the whole draft atomically. Resolves true only on a server
  * acknowledgement so the Save/Discard/Stay switch can react to failures. */
 async function save(): Promise<boolean> {
   if (saving.value || epochQuarantined.value) return false;
-  const trimmedTitle = freezeTitle();
+  if (draftEpoch !== parley.workspaceEpoch) { quarantine(); return false; }
+  const trimmedTitle = title.value.trim();
   if (!trimmedTitle) { error.value = 'A card needs a title.'; return false; }
-  const payload: Record<string, unknown> = {};
-  const notesMd = notes.value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const includesRelatedFiles = relation.enabled && relation.mode === 'create' && relation.createSubtype !== 'person' && relation.createSubtype !== 'org';
+  if (stagedUploads.value.some(file => (!file.related || includesRelatedFiles) && !file.ready)) {
+    error.value = 'Wait for files to finish uploading. Retry or remove failed files before saving.';
+    return false;
+  }
+  const staged = cardUploads.value.map(item => item.id);
+  const payload: components['schemas']['ResourceCardCommitInput'] = {};
+  const notesMd = notes.value.replace(/\r\n?/g, '\n');
   if (props.mode === 'create') {
-    payload.create = { title: trimmedTitle, subtype: subtype.value, body: { ...body }, notes_md: notesMd, placement: placementIntent.value };
+    payload.create = { title: trimmedTitle, subtype: subtype.value, body: { ...body.value }, notes_md: notesMd, placement: placementIntent.value, staged_uploads: staged };
   } else {
     const target = liveCard.value;
     if (!target) return false;
@@ -264,17 +308,29 @@ async function save(): Promise<boolean> {
       resource_id: target.id,
       expected_revision: target.revision,
       expected_notes_rev: target.notes.revision,
-      title: trimmedTitle,
-      subtype: subtype.value,
-      body: { ...body },
-      notes_md: notesMd,
-      staged_uploads: stagedUploads.value.filter((item) => item.ready).map((item) => item.id),
-      unbind_ids: markedRemovals.value,
+      ...(trimmedTitle !== target.title ? { title: trimmedTitle } : {}),
+      ...(subtype.value !== target.subtype ? { subtype: subtype.value } : {}),
+      ...(JSON.stringify(body.value) !== JSON.stringify(target.body) ? { body: { ...body.value } } : {}),
+      ...(notesMd !== target.notes.markdown ? { notes_md: notesMd } : {}),
+      staged_uploads: staged,
+      unbind_ids: [...markedRemovals.value],
     };
-    if (placementIntent.value) payload.placement = placementIntent.value;
+    const original = props.cardSummary?.placement;
+    const destination = placementIntent.value?.column_id ?? null;
+    if (destination !== (original?.column_id ?? null)) {
+      payload.placement = placementIntent.value;
+      payload.expected_placement_revision = original?.revision ?? 0;
+      payload.expected_source_column_revision = props.columns.find(item => item.id === original?.column_id)?.revision ?? null;
+      payload.expected_destination_column_revision = props.columns.find(item => item.id === destination)?.revision ?? null;
+    }
   }
-  const relation = relationIntent();
-  if (relation) payload.relation_add = relation;
+  try {
+    const relationship = relationIntent();
+    if (relationship) payload.relation_add = relationship;
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : 'Check the relationship details.';
+    return false;
+  }
   const serialized = JSON.stringify(payload);
   if (serialized !== lastIntent) { lastIntent = serialized; intentKey = newOperationKey(); }
   const key = intentKey;
@@ -282,18 +338,18 @@ async function save(): Promise<boolean> {
   error.value = '';
   status.value = 'Saving card…';
   try {
-    const result = await parley.commitResourceCard(payload as never, key);
+    const result = await parley.commitResourceCard(payload, key);
     conflict.value = null;
     dirty.value = false;
+    unknownOutcome.value = false;
     status.value = 'Card saved.';
     emit('saved', { entity: result.entity, placement: result.placement, createdRelated: result.created_related });
     return true;
   } catch (reason) {
     if (reason instanceof ApiError && reason.status === 409 && reason.code === 'WORKSPACE_REPLACED') {
-      epochQuarantined.value = { title: trimmedTitle, notes: notesMd };
-      status.value = 'The workspace epoch changed while saving; this draft is quarantined and cannot be saved into the restored workspace.';
+      quarantine();
     } else if (reason instanceof ApiError && reason.status === 412) {
-      const base = { title: props.card?.title ?? '', notes: props.card?.notes?.markdown ?? '' };
+      const base = { title: liveCard.value?.title ?? '', notes: liveCard.value?.notes.markdown ?? '' };
       const mine = { title: trimmedTitle, notes: notesMd };
       conflict.value = { base, mine, current: null, currentCard: null };
       status.value = 'This card changed in another session. Compare base, yours and current before retrying.';
@@ -304,7 +360,8 @@ async function save(): Promise<boolean> {
           conflict.value.currentCard = latest;
         } catch { /* keep partial conflict view */ }
       }
-    } else if (reason instanceof TypeError) {
+    } else if (reason instanceof TypeError || reason instanceof Error && reason.message.startsWith('Invalid response:')) {
+      unknownOutcome.value = true;
       status.value = 'Save status unknown. Your edits are still here; retry the same save to reconcile.';
     } else {
       error.value = reason instanceof Error ? reason.message : 'Save failed. Your edits are still here.';
@@ -315,7 +372,9 @@ async function save(): Promise<boolean> {
   }
 }
 
-defineExpose({ save });
+function focusTitle() { void nextTick(() => titleInput.value?.focus()); }
+const titleInput = ref<HTMLInputElement | null>(null);
+defineExpose({ save, saving, focusTitle, quarantine });
 
 function useCurrentVersion() {
   const current = conflict.value?.currentCard;
@@ -329,11 +388,36 @@ function useCurrentVersion() {
 
 function keepMineAndRetry() {
   const current = conflict.value?.currentCard;
-  if (!current) return;
-  // Adopt the current revisions but keep this draft's fields.
+  const previous = liveCard.value;
+  if (!current || !previous) return;
+  if (title.value.trim() === previous.title) title.value = current.title;
+  if (notes.value === previous.notes.markdown) notes.value = current.notes.markdown;
+  if (subtype.value === previous.subtype) subtype.value = current.subtype as ResourceSubtype;
+  const changedFields = Object.fromEntries(Object.entries(body.value).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(previous.body[key])));
+  body.value = { ...current.body, ...changedFields };
   liveCard.value = current;
   conflict.value = null;
-  status.value = 'Your edits are kept against the latest revision. Save again to submit.';
+  status.value = 'Your changed fields are kept against the latest revision. Save again to submit.';
+}
+
+watch(() => [relation.enabled, relation.mode, relation.createTitle, relation.createSubtype, relation.verb, relation.incoming] as const,
+  ([enabled, mode, child, kind, verb, incoming]) => {
+    const parentId = props.card?.id;
+    emit('preview-relationship', enabled && mode === 'create' && parentId && child.trim()
+      ? { parentId, title: child.trim(), kind: subtypeLabel(kind), verb, incoming }
+      : null);
+  });
+function changeType(event: Event, related = false) {
+  const select = event.target as HTMLSelectElement;
+  const fields = related ? relatedBody : body;
+  const previous = related ? relation.createSubtype : subtype.value;
+  if (Object.keys(fields.value).length && !globalThis.confirm('Changing type clears the typed details entered for this card. Continue?')) {
+    select.value = previous;
+    return;
+  }
+  fields.value = {};
+  if (related) relation.createSubtype = select.value as typeof relation.createSubtype;
+  else subtype.value = select.value as ResourceSubtype;
 }
 
 function cancel() {
@@ -443,10 +527,14 @@ function discardQuarantined() {
       </div>
     </div>
 
-    <div class="editor-fields">
+    <div
+      class="editor-fields"
+      :inert="saving || unknownOutcome"
+    >
       <label>
         Title
         <input
+          ref="titleInput"
           v-model="title"
           required
           maxlength="240"
@@ -457,8 +545,9 @@ function discardQuarantined() {
       <label>
         Type
         <select
-          v-model="subtype"
-          :disabled="saving"
+          :value="subtype"
+          :disabled="saving || (mode === 'edit' && (Object.keys(card?.body ?? {}).length > 0 || card?.readiness === 'ready'))"
+          @change="changeType($event)"
         >
           <option
             v-for="kind in SUBTYPES"
@@ -468,51 +557,11 @@ function discardQuarantined() {
         </select>
       </label>
 
-      <template v-if="subtype === 'proof'">
-        <label>Result<input
-          v-model="body.result"
-          :disabled="saving"
-          autocomplete="off"
-        ></label>
-        <label>Context<input
-          v-model="body.context"
-          :disabled="saving"
-          autocomplete="off"
-        ></label>
-        <label>Time<input
-          v-model="body.time"
-          :disabled="saving"
-          autocomplete="off"
-        ></label>
-        <label>Owner role<input
-          v-model="body.owner_role"
-          :disabled="saving"
-          autocomplete="off"
-        ></label>
-      </template>
-      <template v-else-if="subtype === 'gift'">
-        <label>Effort estimate<input
-          v-model="body.effort"
-          :disabled="saving"
-          autocomplete="off"
-        ></label>
-        <label>Availability<select
-          v-model="body.delivery"
-          :disabled="saving"
-        ><option value="on_request">I can make this on request</option><option value="exists">It already exists</option></select></label>
-      </template>
-      <template v-else-if="subtype === 'artifact'">
-        <label>Available reference<input
-          v-model="body.reference"
-          :disabled="saving"
-          autocomplete="off"
-        ></label>
-        <label class="check-row"><input
-          v-model="body.share_permission"
-          type="checkbox"
-          :disabled="saving"
-        > Permission to share</label>
-      </template>
+      <ResourceTypedFields
+        v-model="body"
+        :subtype="subtype"
+        :disabled="saving"
+      />
       <p
         v-if="typedGaps.length"
         class="gap-note"
@@ -572,21 +621,21 @@ function discardQuarantined() {
           </li>
         </ul>
         <ul
-          v-if="stagedUploads.length"
+          v-if="cardUploads.length"
           class="file-list"
           aria-label="Staged uploads"
         >
           <li
-            v-for="staged in stagedUploads"
+            v-for="staged in cardUploads"
             :key="staged.id"
           >
-            <span>{{ staged.filename }} · {{ Math.ceil(staged.size / 1024) }} KB · {{ staged.ready ? 'staged' : 'uploading…' }}</span>
+            <span>{{ staged.filename }} · {{ Math.ceil(staged.size / 1024) }} KB · {{ staged.ready ? 'Ready to attach' : staged.error ? 'Upload failed' : `Uploading ${staged.percent}%` }}</span>
             <button
               type="button"
-              :disabled="saving || staged.ready"
+              :disabled="saving"
               @click="removeStaged(staged.id)"
             >
-              Drop
+              Remove
             </button>
             <button
               v-if="staged.error"
@@ -606,10 +655,10 @@ function discardQuarantined() {
           type="file"
           multiple
           :disabled="saving"
-          @change="addFiles"
+          @change="addFiles($event)"
         ></label>
         <p class="file-note">
-          An upload alone binds nothing; Save commits the bindings. Cancel leaves no visible binding.
+          Files attach when you save the card.
         </p>
       </div>
 
@@ -632,14 +681,25 @@ function discardQuarantined() {
         v-if="graphMode"
         class="relation-box"
       >
-        <summary>Add relationship …</summary>
+        <summary>Add relationship</summary>
         <label class="check-row"><input
           v-model="relation.enabled"
           type="checkbox"
           :disabled="saving"
         > Include a relationship in this save</label>
         <template v-if="relation.enabled">
-          <label>From this card<output class="verb-preview">{{ card?.title ?? 'New card' }} → {{ relation.verb || '…' }} → {{ relation.mode === 'link' ? (availableEndpoints?.find((item) => item.id === relation.targetId)?.label ?? 'choose target') : relation.mode === 'create' ? (relation.createTitle || 'new card') : '…' }}</output></label>
+          <label>Direction<select
+            v-model="relation.incoming"
+            :disabled="saving"
+          >
+            <option :value="false">From this card</option>
+            <option :value="true">To this card</option>
+          </select></label>
+          <p class="verb-preview">
+            {{ relation.incoming
+              ? [relation.mode === 'link' ? availableEndpoints?.find(item => item.id === relation.targetId)?.label : relation.createTitle, relation.verb, title].map(part => part || '…').join(' ')
+              : [title, relation.verb, relation.mode === 'link' ? availableEndpoints?.find(item => item.id === relation.targetId)?.label : relation.createTitle].map(part => part || '…').join(' ') }}
+          </p>
           <label>Relationship verb<select
             v-model="relation.verb"
             :disabled="saving"
@@ -654,10 +714,13 @@ function discardQuarantined() {
             :disabled="saving"
             autocomplete="off"
           ></label>
-          <label>Link existing<select
+          <label>Relationship target<select
             v-model="relation.mode"
             :disabled="saving"
-          ><option value="link">Link an existing card</option><option value="create">Create a related card</option></select></label>
+          ><option
+            value="none"
+            disabled
+          >Choose how to connect</option><option value="link">Link an existing card</option><option value="create">Create a related card</option></select></label>
           <template v-if="relation.mode === 'link'">
             <label>Search cards<input
               v-model="relation.targetQuery"
@@ -665,7 +728,13 @@ function discardQuarantined() {
               autocomplete="off"
               placeholder="Search resources and parties…"
             ></label>
-            <select
+            <p
+              v-if="endpointSearchError"
+              role="alert"
+            >
+              {{ endpointSearchError }}
+            </p>
+            <label>Existing card<select
               v-model="relation.targetId"
               :disabled="saving"
             >
@@ -679,9 +748,9 @@ function discardQuarantined() {
               >
                 {{ item.label }} · {{ item.kind }}
               </option>
-            </select>
+            </select></label>
           </template>
-          <template v-else>
+          <template v-else-if="relation.mode === 'create'">
             <label>New card title<input
               v-model="relation.createTitle"
               maxlength="240"
@@ -689,21 +758,77 @@ function discardQuarantined() {
               autocomplete="off"
             ></label>
             <label>New card type<select
-              v-model="relation.createSubtype"
+              :value="relation.createSubtype"
               :disabled="saving"
+              @change="changeType($event, true)"
             ><option
-              v-for="kind in SUBTYPES"
-              :key="kind"
-              :value="kind"
-            >{{ subtypeLabel(kind) }}</option></select></label>
+               v-for="kind in SUBTYPES"
+               :key="kind"
+               :value="kind"
+             >{{ subtypeLabel(kind) }}</option>
+              <option value="person">Person</option>
+              <option value="org">Organization</option>
+            </select></label>
+            <label v-if="relation.createSubtype === 'person' || relation.createSubtype === 'org'">Focus<input
+              v-model="relation.focus"
+              maxlength="2000"
+            ></label>
+            <ResourceTypedFields
+              v-model="relatedBody"
+              :subtype="relation.createSubtype"
+              :disabled="saving"
+            />
             <label>Notes<textarea
               v-model="relation.createNotes"
               rows="2"
               :disabled="saving"
             /></label>
-            <p class="file-note">
-              The related card is created off board. You can place it later from the picker.
-            </p>
+            <div v-if="relation.createSubtype !== 'person' && relation.createSubtype !== 'org'">
+              <label>Add files to related card<input
+                type="file"
+                multiple
+                :disabled="saving"
+                @change="addFiles($event, true)"
+              ></label>
+              <ul
+                v-if="relatedUploads.length"
+                class="file-list"
+                aria-label="Related card files"
+              >
+                <li
+                  v-for="file in relatedUploads"
+                  :key="file.id"
+                >
+                  <span>{{ file.filename }} · {{ file.ready ? 'Ready to attach' : file.error || `Uploading ${file.percent}%` }}</span>
+                  <button
+                    v-if="file.error"
+                    type="button"
+                    :disabled="saving"
+                    @click="retryUpload(file)"
+                  >
+                    Retry
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="saving"
+                    @click="removeStaged(file.id)"
+                  >
+                    Remove
+                  </button>
+                </li>
+              </ul>
+            </div>
+            <label v-if="relation.createSubtype !== 'person' && relation.createSubtype !== 'org'">Related card column<select
+              v-model="relation.placement"
+              :disabled="saving"
+            >
+              <option value="">Off board</option>
+              <option
+                v-for="column in columns"
+                :key="column.id"
+                :value="column.id"
+              >{{ column.title }}</option>
+            </select></label>
           </template>
         </template>
       </details>
@@ -715,7 +840,7 @@ function discardQuarantined() {
         class="primary"
         :disabled="saving || !!conflict"
       >
-        Save card
+        {{ unknownOutcome ? 'Retry save' : 'Save card' }}
       </button>
       <button
         type="button"

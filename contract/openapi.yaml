@@ -342,6 +342,23 @@ paths:
         '422':
           $ref: '#/components/responses/Error'
   /entities/{id}/attachments:
+    get:
+      operationId: listAttachments
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}]
+      responses:
+        '200':
+          description: Private file bindings for the addressed card.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {type: array, items: {$ref: '#/components/schemas/EntityAttachment'}}
+                additionalProperties: false
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
     post:
       operationId: bindEntityAttachment
       security:
@@ -989,7 +1006,9 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/EdgeCorrection'
+              oneOf:
+              - $ref: '#/components/schemas/EdgeCorrection'
+              - $ref: '#/components/schemas/OwnerEdgeCorrection'
       responses:
         '200':
           description: Relationship command acknowledged.
@@ -2462,6 +2481,7 @@ paths:
                 title: {type: string}
                 fields: {type: object}
                 expected_chat_revision: {type: integer, minimum: 1}
+                column_id: {type: string, nullable: true}
       responses: {'201': {description: Owner confirmed resource candidate}}
   /agent/candidates/{id}/dismiss:
     post:
@@ -2889,6 +2909,31 @@ paths:
                 additionalProperties: false
         '404': {$ref: '#/components/responses/Error'}
         '412': {$ref: '#/components/responses/Error'}
+  /resource-cards/{id}/deliveries/{send_id}/{material_id}/{version}:
+    get:
+      operationId: getDeliveredResourceVersion
+      security: [{sessionCookie: []}]
+      parameters:
+      - {name: id, in: path, required: true, schema: {type: string}}
+      - {name: send_id, in: path, required: true, schema: {type: string}}
+      - {name: material_id, in: path, required: true, schema: {type: string}}
+      - {name: version, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          description: Exact material version recorded as delivered with this resource.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [resource_title, resource_revision, body, filename]
+                properties:
+                  resource_title: {type: string}
+                  resource_revision: {type: integer}
+                  body: {type: string}
+                  filename: {type: string, nullable: true}
+                additionalProperties: false
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
   /resource-card-commits:
     post:
       operationId: commitResourceCard
@@ -3116,6 +3161,15 @@ components:
           type: integer
           minimum: 1
       additionalProperties: false
+    OwnerEdgeCorrection:
+      type: object
+      required: [expected_revision, verb, basis]
+      properties:
+        expected_revision: {type: integer, minimum: 1}
+        verb: {type: string, minLength: 1, maxLength: 120}
+        basis: {type: string, minLength: 1, maxLength: 2000}
+        reverse: {type: boolean, default: false}
+      additionalProperties: false
     EdgeRemoval:
       type: object
       required:
@@ -3169,6 +3223,8 @@ components:
           - source
           - interest
           - artifact
+          - opportunity
+          - material
         name:
           type: string
         focus:
@@ -3367,16 +3423,28 @@ components:
         to_id: {type: string}
         verb: {type: string}
         revision: {type: integer, minimum: 1}
-        occurrence_id: {type: string}
+        occurrence_id: {type: string, nullable: true}
+        owner_authored: {type: boolean}
         quote: {type: string}
         tier: {type: integer, enum: [1, 2, 3]}
         speaker_kind: {type: string, enum: [owner, party, unknown]}
         captured_at: {type: string, format: date-time}
         source_title: {type: string, nullable: true}
-        claim_id: {type: string}
-        claim_revision: {type: integer, minimum: 1}
+        claim_id: {type: string, nullable: true}
+        claim_revision: {type: integer, minimum: 1, nullable: true}
         speaker_entity_id: {type: string, nullable: true}
         source_url: {type: string, nullable: true}
+        record:
+          type: object
+          required: [kind, opportunity_id, opportunity_title, material_id, material_version, send_id]
+          properties:
+            kind: {type: string, enum: [delivery, drafting, opportunity]}
+            opportunity_id: {type: string}
+            opportunity_title: {type: string}
+            material_id: {type: string}
+            material_version: {type: integer}
+            send_id: {type: string, nullable: true}
+          additionalProperties: false
       additionalProperties: false
     GraphSnapshot:
       type: object
@@ -5632,6 +5700,7 @@ components:
       type: object
       required: [title, subtype]
       properties:
+        staged_uploads: {type: array, items: {type: string}}
         title: {type: string}
         subtype: {type: string}
         body:
@@ -5678,6 +5747,7 @@ components:
       type: object
       required: [title, subtype]
       properties:
+        staged_uploads: {type: array, items: {type: string}}
         title: {type: string}
         subtype: {type: string}
         body:
@@ -5693,6 +5763,8 @@ components:
       type: object
       required: [verb, basis]
       properties:
+        incoming: {type: boolean}
+        expected_target_revision: {type: integer, nullable: true, minimum: 1}
         verb: {type: string}
         target_id:
           anyOf:
@@ -5702,6 +5774,16 @@ components:
           anyOf:
           - $ref: '#/components/schemas/CreateRelatedCard'
           - type: "null"
+        create_party:
+          type: object
+          nullable: true
+          required: [kind, name]
+          properties:
+            kind: {type: string, enum: [person, org]}
+            name: {type: string}
+            focus: {type: string}
+            notes_md: {type: string}
+          additionalProperties: false
         basis: {type: string}
       additionalProperties: false
     ResourceCardCommitInput:
@@ -5719,6 +5801,9 @@ components:
           anyOf:
           - $ref: '#/components/schemas/ResourcePlacementInput'
           - type: "null"
+        expected_placement_revision: {type: integer, nullable: true, minimum: 0, description: "Use 0 when the resource is off board."}
+        expected_source_column_revision: {type: integer, nullable: true, minimum: 1}
+        expected_destination_column_revision: {type: integer, nullable: true, minimum: 1}
         relation_add:
           anyOf:
           - $ref: '#/components/schemas/RelationAdd'

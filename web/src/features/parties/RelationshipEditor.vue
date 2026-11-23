@@ -11,12 +11,13 @@ const parentId = ref('');
 const mode = ref<'create'|'link'>('create');
 const parent = computed(() => props.nodes.find(n => n.id === parentId.value));
 const correcting = computed(() => !!props.correction);
-const options = computed(() => relationshipTypes.flatMap<{ kind: GraphEntity['kind']; direction: 'outgoing' | 'incoming'; verb: string }>(type => {
+type EditableKind = Exclude<GraphEntity['kind'], 'material' | 'opportunity'>;
+const options = computed(() => relationshipTypes.flatMap<{ kind: EditableKind; direction: 'outgoing' | 'incoming'; verb: string }>(type => {
   if (type.from === parent.value?.kind) return [{ kind: type.to, direction:'outgoing' as const, verb:type.verb }];
   if (type.to === parent.value?.kind) return [{ kind: type.from, direction:'incoming' as const, verb:type.verb }];
   return [];
 }));
-const kind = ref<GraphEntity['kind']>('person');
+const kind = ref<EditableKind>('person');
 const kinds = computed(() => [...new Set(options.value.map(o => o.kind))]);
 const verb = ref('');
 const assertions = computed(() => options.value.filter(o => o.kind === kind.value));
@@ -46,8 +47,8 @@ watch(() => props.correction, edge => {
   parentId.value = edge.from_id;
   mode.value = 'link';
   const other = props.nodes.find(n => n.id === edge.to_id);
-  if (other) kind.value = other.kind;
-  targetId.value = edge.to_id; verb.value = edge.verb; sourceId.value = edge.occurrence_id; quote.value = edge.quote;
+  if (other && other.kind !== 'material' && other.kind !== 'opportunity') kind.value = other.kind;
+  targetId.value = edge.to_id; verb.value = edge.verb; sourceId.value = edge.occurrence_id ?? ''; quote.value = edge.quote;
 }, {immediate:true});
 watch(kinds, values => { if (values[0] && !values.some(v => v === kind.value)) kind.value = values[0]; }, {immediate:true});
 watch(assertions, values => { if (!values.some(v => v.verb === verb.value)) verb.value = values[0]?.verb ?? ''; }, {immediate:true});

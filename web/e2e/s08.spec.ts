@@ -3,11 +3,14 @@ import { test } from './fixtures';
 
 test('s08_owner_interviewer_bank_chat_history_and_prompt_versions', async ({ page }) => {
   await page.goto('/');
+  await page.getByRole('button', { name: 'Interviewer', exact: true }).click();
   const resources = page.getByRole('region', { name: 'Interviewer' });
+  await resources.getByText('Chat options').click();
   await resources.getByRole('button', { name: 'Start Interviewer' }).click();
-  await resources.getByRole('button', { name: 'Ask' }).click();
+  await resources.getByText('Question bank').click();
+  await resources.getByRole('button', { name: 'Ask' }).first().click();
   await expect(resources.getByRole('list').first()).toContainText('What changed, and how did you measure the result?');
-  await resources.getByRole('button', { name: 'Unknown' }).click();
+  await resources.getByRole('button', { name: 'Unknown' }).first().click();
   await page.getByRole('link', { name: 'Settings' }).click();
   const prompt = page.getByLabel('Prompt');
   await prompt.fill('Owner customized interviewer policy.');

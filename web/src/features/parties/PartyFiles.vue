@@ -24,7 +24,7 @@ async function stage(item: Staged) {
   item.error = ''; item.state = 'uploading'; item.percent = 0; update();
   try {
     checkContext();
-    item.uploadId = await parley.stagePartyFile(item.file, percent => { item.percent = percent; });
+    item.uploadId = await parley.stageEntityAttachment(item.file, percent => { item.percent = percent; });
     if (!active) return;
     item.state = 'staged';
   } catch (reason) { item.state = 'failed'; item.error = reason instanceof Error ? reason.message : 'Upload failed.'; }

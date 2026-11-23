@@ -527,6 +527,20 @@ async fn r01_related_card_offboard_duplicate_and_detach() {
     assert_eq!(cards.len(), 1);
     assert_eq!(cards[0]["counts"]["connections"], 1);
 
+    let graph = request(
+        &service,
+        &session,
+        "GET",
+        &format!("/api/v1/graph?center_id={root_id}&view_scope=resources"),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(graph.status, 200, "{graph:?}");
+    assert_eq!(graph.body["edges"][0]["id"], edge_id);
+    assert_eq!(graph.body["edges"][0]["owner_authored"], true);
+    assert_eq!(graph.body["edges"][0]["quote"], "Owner typo the checklist");
+
     // Duplicate link is rejected; a second distinct edge is allowed.
     let dup = request(
         &service,
@@ -534,7 +548,7 @@ async fn r01_related_card_offboard_duplicate_and_detach() {
         "POST",
         "/api/v1/resource-card-commits",
         Some(json!({
-            "edit": {"resource_id": root_id, "expected_revision": 2, "expected_notes_rev": 1},
+            "edit": {"resource_id": root_id, "expected_revision": 1, "expected_notes_rev": 1},
             "relation_add": {"verb": "includes", "target_id": child_id, "basis": "again"}
         })),
         &[("Idempotency-Key", next_key().as_str())],
@@ -675,13 +689,14 @@ async fn r01_delivery_projection_counts_only_sent_versions() {
     let db = path();
     let service = parley_service::start_workspace(&db).await.unwrap();
     let session = owner_session(&service).await;
+    let upload_id = stage_upload(&service, &session, b"Included checklist").await;
     let commit = request(
         &service,
         &session,
         "POST",
         "/api/v1/resource-card-commits",
         Some(json!({
-            "create": {"title": "Checklist v1", "subtype": "artifact", "body": {}, "placement": {"column_id": "available"}}
+            "create": {"title": "Checklist v1", "subtype": "artifact", "body": {}, "placement": {"column_id": "available"}, "staged_uploads": [upload_id]}
         })),
         &[("Idempotency-Key", next_key().as_str())],
     )
@@ -719,12 +734,13 @@ async fn r01_delivery_projection_counts_only_sent_versions() {
         .await
         .unwrap();
     for (version, body) in [(1, "v1 body"), (2, "v2 body")] {
-        sqlx::query("INSERT INTO material_version(material_id,version_no,opportunity_id,recipient_id,template_version_id,exchange_version,body,slot_fills_json,sentence_bindings_json,content_sha256,created_at) VALUES('m1',?, 'o1',?, 't1',1,?, '{}','{}',? ,?)")
+        sqlx::query("INSERT INTO material_version(material_id,version_no,opportunity_id,recipient_id,template_version_id,exchange_version,body,slot_fills_json,sentence_bindings_json,content_sha256,created_at,blob_upload_id) VALUES('m1',?, 'o1',?, 't1',1,?, '{}','{}',?,?,?)")
             .bind(version)
             .bind(&party_id)
             .bind(body)
             .bind(format!("sha{version}{}", "0".repeat(62)))
             .bind(now)
+            .bind((version == 1).then_some(&upload_id))
             .execute(&pool)
             .await
             .unwrap();
@@ -762,8 +778,88 @@ async fn r01_delivery_projection_counts_only_sent_versions() {
         .find(|card| card["resource_id"] == resource_id)
         .unwrap();
     assert_eq!(card["counts"]["deliveries"], 1);
+    assert_eq!(card["counts"]["files"], 1);
+
+    let binding_id: String =
+        sqlx::query_scalar("SELECT id FROM entity_attachment WHERE entity_id=?")
+            .bind(&resource_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let edit = request(
+        &service,
+        &session,
+        "POST",
+        "/api/v1/resource-card-commits",
+        Some(json!({
+            "edit":{"resource_id":resource_id,"expected_revision":1,"expected_notes_rev":1,
+                    "title":"Checklist v2", "unbind_ids":[binding_id]}
+        })),
+        &[("Idempotency-Key", next_key().as_str())],
+    )
+    .await;
+    assert_eq!(edit.status, 200, "{edit:?}");
+
+    let historical = request(
+        &service,
+        &session,
+        "GET",
+        &format!("/api/v1/resource-cards/{resource_id}/deliveries/s1/m1/1"),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(historical.status, 200, "{historical:?}");
+    assert_eq!(historical.body["resource_title"], "Checklist v1");
+    assert_eq!(historical.body["body"], "v1 body");
+    let unsent = request(
+        &service,
+        &session,
+        "GET",
+        &format!("/api/v1/resource-cards/{resource_id}/deliveries/s1/m1/2"),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(unsent.status, 404);
 
     pool.close().await;
+    service.shutdown().await;
+    let _ = fs::remove_file(&db);
+}
+
+#[tokio::test]
+async fn r01_pagination_and_failed_create_preserve_board_membership() {
+    let db = path();
+    let service = parley_service::start_workspace(&db).await.unwrap();
+    let session = owner_session(&service).await;
+    let upload_id = stage_upload(&service, &session, b"Retry this attachment").await;
+    let failing = request(&service,&session,"POST","/api/v1/resource-card-commits",Some(json!({
+        "create":{"title":"Rolled back","subtype":"note","staged_uploads":[upload_id],"placement":{"column_id":"missing"}}
+    })),&[("Idempotency-Key",next_key().as_str())]).await;
+    assert_ne!(failing.status, 201);
+    for title in ["First", "Second", "Third"] {
+        let created = request(&service,&session,"POST","/api/v1/resource-card-commits",Some(json!({
+            "create":{"title":title,"subtype":"note","staged_uploads":if title == "First" { vec![&upload_id] } else { vec![] },"placement":{"column_id":"inbox"}}
+        })),&[("Idempotency-Key",next_key().as_str())]).await;
+        assert_eq!(created.status, 201, "{created:?}");
+    }
+    let mut url = "/api/v1/resource-board?limit=1&include_offboard=true".to_owned();
+    for title in ["First", "Second", "Third"] {
+        let page = request(&service, &session, "GET", &url, None, &[]).await;
+        assert_eq!(page.status, 200, "{page:?}");
+        assert_eq!(page.body["cards"][0]["title"], title);
+        assert_eq!(page.body["off_board"], json!([]));
+        if title != "Third" {
+            let cursor = page.body["next_cursor"]
+                .as_str()
+                .unwrap()
+                .replace('|', "%7C");
+            url = format!("/api/v1/resource-board?limit=1&cursor={cursor}");
+        } else {
+            assert!(page.body["next_cursor"].is_null());
+        }
+    }
     service.shutdown().await;
     let _ = fs::remove_file(&db);
 }

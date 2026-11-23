@@ -37,6 +37,7 @@ function stubBoard(board: ResourceBoardSnapshot = emptyBoard, graph = { nodes: [
   vi.spyOn(parley, 'getGraph').mockResolvedValue(graph);
   vi.spyOn(parley, 'getEntityCard').mockRejectedValue(new Error('not opened'));
   vi.spyOn(parley, 'getEntityCardDeliveries').mockResolvedValue([]);
+  vi.spyOn(parley, 'listAttachments').mockResolvedValue([]);
   vi.spyOn(parley, 'moveResourceCard').mockRejectedValue(new Error('not moved'));
   vi.spyOn(parley, 'commitResourceCard').mockRejectedValue(new Error('not committed'));
 }
@@ -53,8 +54,8 @@ describe('ResourcesWorkspace', () => {
     expect(lanes[2]!.text()).toContain('Available');
     expect(wrapper.findAll('button.add-card').length).toBe(3);
     // The column-local entry is the board's only creation entry (spec §1).
-    const boardHeader = wrapper.get('section[aria-label="Resource board"] header.pane-bar');
-    expect(boardHeader.findAll('button').length).toBe(0);
+    const boardHeader = wrapper.get('section[aria-label="Resource board"] header.panel-header');
+    expect(boardHeader.findAll('button').map(button => button.text())).toEqual(['Find resource']);
     wrapper.unmount();
   });
 
@@ -111,11 +112,11 @@ describe('ResourcesWorkspace', () => {
     const tile = wrapper.get('button.tile-body');
     await tile.trigger('click');
     await flushPromises();
-    expect(wrapper.get('.tile.active')).toBeTruthy();
+    expect(wrapper.get('.tile.selected')).toBeTruthy();
     const moveSelect = wrapper.get('select[aria-label^="Move"]');
     await moveSelect.setValue('available');
     await flushPromises();
-    expect(move).toHaveBeenCalledWith(expect.objectContaining({ resource_id: 'card-1', destination_column_id: 'available' }));
+    expect(move).toHaveBeenCalledWith(expect.objectContaining({ resource_id: 'card-1', destination_column_id: 'available' }), expect.any(String));
     wrapper.unmount();
   });
 
@@ -153,10 +154,10 @@ describe('ResourcesWorkspace', () => {
     expect(commit).toHaveBeenCalledWith(
       expect.objectContaining({
         edit: expect.objectContaining({ resource_id: 'card-1' }),
-        placement: { column_id: 'developing', before_resource_id: null },
       }),
       expect.any(String),
     );
+    expect(commit.mock.calls[0]?.[0]).not.toHaveProperty('placement');
     wrapper.unmount();
   });
 
@@ -189,7 +190,7 @@ describe('ResourcesWorkspace', () => {
     expect(inspector.text()).toContain('Available, but still ineligible');
     expect(inspector.text()).toContain('Missing typed fields: Result, Context, Time, Owner role');
     expect(inspector.text()).toContain('Mira Chen');
-    const record = wrapper.findAll('button').find((button) => button.text() === 'Record delivery…');
+    const record = wrapper.findAll('button').find((button) => button.text() === 'View sent version');
     expect(record).toBeTruthy();
     wrapper.unmount();
   });
@@ -206,7 +207,7 @@ describe('ResourcesWorkspace', () => {
       body: {}, readiness: 'draft', revision: 2,
       notes: { markdown: 'theirs', revision: 2 }, etag: '"p1.e.card-1.2"',
     };
-    vi.spyOn(parley, 'getEntityCard').mockResolvedValueOnce(initialCard).mockResolvedValueOnce(currentCard);
+    vi.spyOn(parley, 'getEntityCard').mockResolvedValueOnce(initialCard).mockResolvedValueOnce(initialCard).mockResolvedValue(currentCard);
     let commits = 0;
     vi.spyOn(parley, 'commitResourceCard').mockImplementation(async () => {
       commits += 1;
@@ -288,11 +289,12 @@ describe('ResourcesWorkspace', () => {
     });
     const wrapper = mount(ResourcesWorkspace);
     await flushPromises();
-    const picker = wrapper.get('details.picker');
+    await wrapper.get('header.panel-header button').trigger('click');
+    const picker = wrapper.get('dialog[aria-labelledby="resource-picker-title"]');
     expect(picker.text()).toContain('Fixture walkthrough');
-    expect(picker.text()).toContain('off board');
+    expect(picker.text()).toContain('Off board');
     const legacyRow = picker.findAll('li').find((item) => item.text().includes('Legacy checklist idea'))!;
-    expect(legacyRow.text()).toContain('legacy (off board)');
+    expect(legacyRow.text()).toContain('Off board');
     expect(legacyRow.find('select').exists()).toBe(true);
     wrapper.unmount();
   });
@@ -314,17 +316,17 @@ describe('ResourcesWorkspace', () => {
     await form.get('input[maxlength="240"]').setValue('Uncommitted local edit');
 
     // Opening another card keeps the draft and offers the three-way switch.
-    await wrapper.findAll('section[aria-label="Resource board"] button').find((button) => button.text() === 'Edit')!.trigger('click');
+    await wrapper.get('button.add-card').trigger('click');
     const prompt = wrapper.get('[role="alertdialog"]');
     expect(prompt.text()).toContain('Unsaved card draft');
     await prompt.findAll('button').find((button) => button.text() === 'Stay')!.trigger('click');
     expect((wrapper.get('input[maxlength="240"]').element as HTMLInputElement).value).toBe('Uncommitted local edit');
 
     // Discard clears the draft and completes the pending switch.
-    await wrapper.findAll('section[aria-label="Resource board"] button').find((button) => button.text() === 'Edit')!.trigger('click');
+    await wrapper.get('button.add-card').trigger('click');
     await wrapper.get('[role="alertdialog"]').findAll('button').find((button) => button.text() === 'Discard unsaved changes')!.trigger('click');
     await flushPromises();
-    expect((wrapper.get('input[maxlength="240"]').element as HTMLInputElement).value).toBe('Importer checklist');
+    expect((wrapper.get('input[maxlength="240"]').element as HTMLInputElement).value).toBe('');
     wrapper.unmount();
   });
 
@@ -346,7 +348,7 @@ describe('ResourcesWorkspace', () => {
         { id: 'card-1', kind: 'resource', name: 'Importer checklist', focus: '', revision: 1, x: 0, y: 0, position_revision: 0 },
         { id: 'card-2', kind: 'resource', name: 'Workshop outline', focus: '', revision: 1, x: 10, y: 0, position_revision: 0 },
       ],
-      edges: [{ id: 'e1', from_id: 'card-1', to_id: 'card-2', verb: 'includes', revision: 1, quote: '', tier: 3, speaker_kind: 'owner', captured_at: '2026-11-22T00:00:00Z', occurrence_id: null, source_title: null, source_url: null, claim_id: null, state: 'active' }],
+      edges: [{ id: 'e1', from_id: 'card-1', to_id: 'card-2', verb: 'includes', revision: 1, quote: '', tier: 3, speaker_kind: 'owner', captured_at: '2026-11-22T00:00:00Z', occurrence_id: null, source_title: null, source_url: null, claim_id: null, owner_authored: true }],
       omitted_nodes: 0, omitted_edges: 0,
     });
     vi.spyOn(parley, 'getEntityCard').mockImplementation(async (id: string) => ({
@@ -365,13 +367,11 @@ describe('ResourcesWorkspace', () => {
     const tileFor = (title: string) => wrapper.findAll('button.tile-body').find((tile) => tile.text().includes(title))!;
     await tileFor('Importer checklist').trigger('click');
     await flushPromises();
-    expect(wrapper.get('section[aria-label="Connections graph"] header.pane-bar h3').text()).toBe('Importer checklist · connections');
+    expect(wrapper.get('section[aria-label="Connections graph"] header.panel-header h2').text()).toBe('Importer checklist · connections');
 
-    // Edit the outline card via its tile Edit button; root stays on the selection.
-    await tileFor('Importer checklist').trigger('click');
-    await flushPromises();
-    const outlineTile = wrapper.findAll('.tile').find((tile) => tile.text().includes('Workshop outline'))!;
-    await outlineTile.findAll('button').find((button) => button.text() === 'Edit')!.trigger('click');
+    // Editing a neighboring graph node keeps the board selection and graph root.
+    const neighbor = wrapper.get('ul[aria-label="Graph cards"] li:nth-child(2) button');
+    await neighbor.trigger('click');
     await flushPromises();
     const form = wrapper.get('form[aria-label="Resource card editor"]');
     await form.get('input[maxlength="240"]').setValue('Workshop outline v2');
@@ -381,7 +381,7 @@ describe('ResourcesWorkspace', () => {
       expect.objectContaining({ edit: expect.objectContaining({ resource_id: 'card-2' }) }),
       expect.any(String),
     );
-    expect(wrapper.get('section[aria-label="Connections graph"] header.pane-bar h3').text()).toBe('Importer checklist · connections');
+    expect(wrapper.get('section[aria-label="Connections graph"] header.panel-header h2').text()).toBe('Importer checklist · connections');
     wrapper.unmount();
   });
 });
