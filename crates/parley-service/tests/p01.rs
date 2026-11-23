@@ -1,144 +1,9 @@
 // P01: Party sheet rename, typed focus edits, entity notes and the inspector
 // dossier (amendment 2026-11-22; RFC-0004 wire conventions).
-use parley_service::RunningService;
-use serde_json::{Value, json};
-use std::{
-    fs,
-    path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
-};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-};
-
-static NEXT: AtomicU64 = AtomicU64::new(0);
-fn path() -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "parley-p01-http-{}-{}.sqlite",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ))
-}
-
-type Session = (String, String, String);
-
-async fn owner_session(service: &RunningService) -> Session {
-    let address = service.address;
-    let body = json!({"secret": service.bootstrap_secret}).to_string();
-    let mut stream = TcpStream::connect(address).await.unwrap();
-    stream
-        .write_all(format!("POST /api/v1/session/bootstrap HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes())
-        .await
-        .unwrap();
-    let mut response = String::new();
-    stream.read_to_string(&mut response).await.unwrap();
-    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-    let cookie = response
-        .lines()
-        .find(|line| line.to_ascii_lowercase().starts_with("set-cookie:"))
-        .and_then(|line| {
-            line.split_once(':').map(|(_, value)| {
-                value
-                    .trim()
-                    .split(';')
-                    .next()
-                    .unwrap_or_default()
-                    .to_owned()
-            })
-        })
-        .expect("session cookie");
-    let mut stream = TcpStream::connect(address).await.unwrap();
-    stream
-        .write_all(format!("GET /api/v1/session HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nCookie: {cookie}\r\nContent-Length: 0\r\n\r\n").as_bytes())
-        .await
-        .unwrap();
-    let mut response = String::new();
-    stream.read_to_string(&mut response).await.unwrap();
-    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-    let payload: Value = serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
-    (
-        cookie,
-        payload["mutation_token"].as_str().unwrap().to_owned(),
-        payload["epoch"].as_str().unwrap().to_owned(),
-    )
-}
-
-#[derive(Debug)]
-struct RawResponse {
-    status: u16,
-    body: Value,
-}
-
-async fn request(
-    service: &RunningService,
-    session: &Session,
-    method: &str,
-    path: &str,
-    body: Option<Value>,
-    extra: &[(&str, &str)],
-) -> RawResponse {
-    let address = service.address;
-    let body_text = body.map(|value| value.to_string()).unwrap_or_default();
-    let mut headers = format!(
-        "Cookie: {}\r\nX-Parley-Token: {}\r\nX-Parley-Epoch: {}",
-        session.0, session.1, session.2
-    );
-    for (name, value) in extra {
-        headers.push_str(&format!("\r\n{name}: {value}"));
-    }
-    if !body_text.is_empty() {
-        headers.push_str("\r\nContent-Type: application/json");
-    }
-    let mut stream = TcpStream::connect(address).await.unwrap();
-    stream
-        .write_all(format!("{method} {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n{headers}\r\nContent-Length: {}\r\n\r\n{body_text}", body_text.len()).as_bytes())
-        .await
-        .unwrap();
-    let mut response = String::new();
-    stream.read_to_string(&mut response).await.unwrap();
-    let status: u16 = response
-        .split_whitespace()
-        .nth(1)
-        .unwrap()
-        .parse()
-        .unwrap();
-    let body: Value = if response.contains("\r\n\r\n") {
-        serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap_or(Value::Null)
-    } else {
-        Value::Null
-    };
-    RawResponse { status, body }
-}
-
-fn next_key() -> String {
-    format!("p01-{}", NEXT.fetch_add(1, Ordering::Relaxed))
-}
-
-/// Create a person/org entity and return (id, etag).
-async fn create_party(
-    service: &RunningService,
-    session: &Session,
-    kind: &str,
-    name: &str,
-    focus: &str,
-) -> (String, String) {
-    let response = request(
-        service,
-        session,
-        "POST",
-        "/api/v1/entities",
-        Some(json!({"kind": kind, "name": name, "focus": focus})),
-        &[("Idempotency-Key", next_key().as_str())],
-    )
-    .await;
-    assert_eq!(response.status, 201, "{response:?}");
-    let data = &response.body["data"];
-    (
-        data["id"].as_str().unwrap().to_owned(),
-        data["etag"].as_str().unwrap().to_owned(),
-    )
-}
+mod party_http;
+use party_http::*;
+use serde_json::json;
+use std::fs;
 
 #[tokio::test]
 async fn p01_session_advertises_party_capabilities() {
@@ -150,7 +15,9 @@ async fn p01_session_advertises_party_capabilities() {
     let capabilities = response.body["capabilities"].as_array().unwrap();
     for expected in ["party.sheet", "party.notes", "party.dossier"] {
         assert!(
-            capabilities.iter().any(|item| item.as_str() == Some(expected)),
+            capabilities
+                .iter()
+                .any(|item| item.as_str() == Some(expected)),
             "missing capability {expected}: {capabilities:?}"
         );
     }
@@ -163,7 +30,21 @@ async fn p01_party_sheet_focus_edit_discards_stale_and_blank_writes() {
     let db = path();
     let service = parley_service::start_workspace(&db).await.unwrap();
     let session = owner_session(&service).await;
-    let (id, first_etag) = create_party(&service, &session, "person", "Dana Lee", "Maintenance").await;
+    let (id, first_etag) =
+        create_party(&service, &session, "person", "Dana Lee", "Maintenance").await;
+
+    let graph = request(
+        &service,
+        &session,
+        "GET",
+        &format!("/api/v1/graph?center_id={id}"),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(graph.status, 200);
+    assert_eq!(graph.body["omitted_nodes"], 0);
+    assert_eq!(graph.body["omitted_edges"], 0);
 
     // Directory rows carry the editable focus and the strong entity ETag.
     let list = request(

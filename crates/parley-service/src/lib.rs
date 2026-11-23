@@ -239,6 +239,7 @@ mod board;
 mod generation;
 mod jobs;
 mod maintenance;
+mod parties;
 pub use maintenance::{MaintenanceSettings, MaintenanceSettingsInput};
 #[doc(hidden)]
 pub use maintenance::{create_backup_for_test, prune_backups_for_test};
@@ -961,13 +962,9 @@ impl Workspace {
             None => None,
         };
         if name.is_none() && focus.is_none() {
-            return Err(WorkspaceError::Invalid(
-                "no entity fields to update".into(),
-            ));
+            return Err(WorkspaceError::Invalid("no entity fields to update".into()));
         }
-        let canonical = digest(
-            format!("{id}\0{if_match}\0{name:?}\0{focus:?}").as_bytes(),
-        );
+        let canonical = digest(format!("{id}\0{if_match}\0{name:?}\0{focus:?}").as_bytes());
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         if let Some((old_digest, result)) = sqlx::query_as::<_, (String, String)>(
             "SELECT canonical_digest,result_json FROM idempotency_receipt WHERE owner_id=1 AND epoch=? AND key=?",
@@ -1035,16 +1032,12 @@ impl Workspace {
     /// Canonical entity notes (UTF-8, LF line endings) with their independent
     /// revision. Returns `{entity_id, markdown, revision}` when the entity
     /// exists (notes default to empty at revision 1).
-    pub async fn get_entity_notes(
-        &self,
-        id: &str,
-    ) -> Result<Option<EntityNotes>, WorkspaceError> {
-        let row = sqlx::query_as::<_, (String, i64)>(
-            "SELECT notes_md,notes_rev FROM entity WHERE id=?",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
+    pub async fn get_entity_notes(&self, id: &str) -> Result<Option<EntityNotes>, WorkspaceError> {
+        let row =
+            sqlx::query_as::<_, (String, i64)>("SELECT notes_md,notes_rev FROM entity WHERE id=?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(row.map(|(markdown, revision)| EntityNotes {
             entity_id: id.to_owned(),
             markdown,
@@ -1074,9 +1067,7 @@ impl Workspace {
             ));
         }
         if markdown.len() > 512 * 1024 {
-            return Err(WorkspaceError::Invalid(
-                "notes exceed 512 KiB".into(),
-            ));
+            return Err(WorkspaceError::Invalid("notes exceed 512 KiB".into()));
         }
         let canonical_markdown = canonical_markdown(markdown);
         let canonical = digest(
@@ -1143,15 +1134,23 @@ impl Workspace {
     /// Inspector dossier for one party: direct attributed links, files bound
     /// to the card, open opportunities involving the party, and resources used
     /// by visible opportunities, each bounded and deduplicated by ID.
-    pub async fn entity_dossier(
-        &self,
-        id: &str,
-    ) -> Result<Option<EntityDossier>, WorkspaceError> {
+    pub async fn entity_dossier(&self, id: &str) -> Result<Option<EntityDossier>, WorkspaceError> {
         let entity = match self.get_entity(id).await? {
             Some(entity) => entity,
             None => return Ok(None),
         };
-        let links = sqlx::query_as::<_, (String, String, String, String, i64, Option<i64>, Option<String>)>(
+        let links = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                String,
+                i64,
+                Option<i64>,
+                Option<String>,
+            ),
+        >(
             "SELECT eg.id,eg.from_id,eg.to_id,eg.verb,eg.revision,cr.tier,cr.wording \
              FROM edge eg \
              LEFT JOIN edge_evidence ee ON ee.edge_id=eg.id \
@@ -1168,15 +1167,17 @@ impl Workspace {
         let direct_links = links
             .into_iter()
             .filter(|link| seen.insert(link.0.clone()))
-            .map(|(link_id, from_id, to_id, verb, revision, tier, wording)| DossierLink {
-                id: link_id,
-                from_id,
-                to_id,
-                verb,
-                revision,
-                tier,
-                wording,
-            })
+            .map(
+                |(link_id, from_id, to_id, verb, revision, tier, wording)| DossierLink {
+                    id: link_id,
+                    from_id,
+                    to_id,
+                    verb,
+                    revision,
+                    tier,
+                    wording,
+                },
+            )
             .collect();
         let files = sqlx::query_as::<_, (String, String, String, i64, String, i64, i64, String)>(
             "SELECT a.id,a.filename,a.content_type,a.size,a.sha256,u.share_permission,u.reviewed_by_owner,a.created_at \
@@ -1188,18 +1189,29 @@ impl Workspace {
         .await?;
         let files = files
             .into_iter()
-            .map(|(file_id, filename, content_type, size, sha256, share_permission, reviewed_by_owner, created_at)| {
-                DossierFile {
-                    id: file_id,
+            .map(
+                |(
+                    file_id,
                     filename,
                     content_type,
                     size,
                     sha256,
-                    share_permission: share_permission != 0,
-                    reviewed_by_owner: reviewed_by_owner != 0,
+                    share_permission,
+                    reviewed_by_owner,
                     created_at,
-                }
-            })
+                )| {
+                    DossierFile {
+                        id: file_id,
+                        filename,
+                        content_type,
+                        size,
+                        sha256,
+                        share_permission: share_permission != 0,
+                        reviewed_by_owner: reviewed_by_owner != 0,
+                        created_at,
+                    }
+                },
+            )
             .collect();
         let opportunities = sqlx::query_as::<_, (String, String, String)>(
             "SELECT o.id,o.title,op.role FROM opportunity o \
@@ -1234,13 +1246,15 @@ impl Workspace {
         .await?;
         let associated_resources = resources
             .into_iter()
-            .map(|(resource_id, title, kind, opportunity_id, opportunity_title)| DossierResource {
-                id: resource_id,
-                title,
-                kind,
-                opportunity_id,
-                opportunity_title,
-            })
+            .map(
+                |(resource_id, title, kind, opportunity_id, opportunity_title)| DossierResource {
+                    id: resource_id,
+                    title,
+                    kind,
+                    opportunity_id,
+                    opportunity_title,
+                },
+            )
             .collect();
         Ok(Some(EntityDossier {
             entity,
@@ -1276,7 +1290,7 @@ impl Workspace {
             )
             .bind(view_scope).bind(view_id).fetch_all(&self.pool).await?
         };
-        let omitted_nodes = total_nodes.saturating_sub(200);
+        let omitted_nodes = (total_nodes - 200).max(0);
         rows.truncate(200);
         let visible: std::collections::HashSet<String> =
             rows.iter().map(|row| row.0.clone()).collect();
@@ -1373,7 +1387,7 @@ impl Workspace {
                 },
             )
             .collect::<Vec<_>>();
-        let omitted_edges = total_edges.saturating_sub(400);
+        let omitted_edges = (total_edges - 400).max(0);
         edges.truncate(400);
         Ok(GraphSnapshot {
             nodes,
@@ -1751,7 +1765,7 @@ impl Workspace {
                 "focus exceeds 250 characters".into(),
             ));
         }
-        let canonical = digest(format!("entity\0{kind}\0{name}").as_bytes());
+        let canonical = digest(format!("entity\0{kind}\0{name}\0{focus}").as_bytes());
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         if let Some((old_digest, result)) = sqlx::query_as::<_, (String, String)>(
             "SELECT canonical_digest,result_json FROM idempotency_receipt WHERE owner_id=1 AND epoch=? AND key=?",
@@ -2068,6 +2082,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         .merge(materials::routes())
         .merge(release::routes())
         .merge(blob::routes())
+        .merge(parties::routes())
         .merge(thread::routes())
         .merge(jobs::routes())
         .merge(assistant::routes())
@@ -2500,7 +2515,7 @@ async fn session(State(state): State<AppState>, headers: HeaderMap) -> Response 
         "epoch": state.workspace.epoch(),
         "wire_major": 1,
         "wire_minor": 0,
-        "capabilities": ["resources.read", "resources.write", "party.sheet", "party.notes", "party.dossier"],
+        "capabilities": ["resources.read", "resources.write", "party.sheet", "party.notes", "party.dossier", "party.imports", "party.attachments"],
         "mutation_token": record.token,
         "cursor": cursor.to_string(),
     }))
@@ -2705,7 +2720,12 @@ async fn create_entity(
         };
         match state
             .workspace
-            .create_entity(&key, &input.kind, &input.name, input.focus.as_deref().unwrap_or(""))
+            .create_entity(
+                &key,
+                &input.kind,
+                &input.name,
+                input.focus.as_deref().unwrap_or(""),
+            )
             .await
         {
             Ok(entity) => {
@@ -3030,7 +3050,13 @@ async fn update_entity_notes(
     };
     match state
         .workspace
-        .update_entity_notes(&key, &id, if_match, input.expected_notes_rev, &input.markdown)
+        .update_entity_notes(
+            &key,
+            &id,
+            if_match,
+            input.expected_notes_rev,
+            &input.markdown,
+        )
         .await
     {
         Ok(notes) => {

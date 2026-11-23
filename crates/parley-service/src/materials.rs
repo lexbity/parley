@@ -30,7 +30,7 @@ fn materials_canonical(route: &str, input: &impl Serialize) -> String {
     digest(&bytes)
 }
 
-async fn material_receipt_replay(
+pub(super) async fn material_receipt_replay(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     epoch: &str,
     key: &str,
@@ -54,7 +54,7 @@ async fn material_receipt_replay(
     })?))
 }
 
-async fn material_receipt_store(
+pub(super) async fn material_receipt_store(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     epoch: &str,
     key: &str,
