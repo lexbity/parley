@@ -361,6 +361,7 @@ pub struct EntityDossier {
     pub entity: EntityRecord,
     pub direct_links: Vec<DossierLink>,
     pub import_origin: Option<Value>,
+    pub retired_at: Option<String>,
     pub files: Vec<DossierFile>,
     pub opportunities: Vec<DossierOpportunity>,
     pub associated_resources: Vec<DossierResource>,
@@ -899,7 +900,7 @@ impl Workspace {
     /// kind entity). None when the ID is unknown or belongs to a resource.
     pub async fn get_entity(&self, id: &str) -> Result<Option<EntityRecord>, WorkspaceError> {
         let row = sqlx::query_as::<_, (String, String, String, String, i64)>(
-            "SELECT id,kind,name,focus,revision FROM graph_card WHERE id=?",
+            "SELECT e.id,e.kind,coalesce(r.title,e.name),e.focus,e.revision FROM entity e LEFT JOIN resource r ON r.id=e.id WHERE e.id=?",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -1099,10 +1100,12 @@ impl Workspace {
             tx.commit().await?;
             return Ok(notes);
         }
-        let row = sqlx::query_as::<_, (i64,)>("SELECT notes_rev FROM entity WHERE id=?")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
+        let row = sqlx::query_as::<_, (i64,)>(
+            "SELECT notes_rev FROM entity WHERE id=? AND retired_at IS NULL",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
         let Some((current_rev,)) = row else {
             return Err(WorkspaceError::NotFound);
         };
@@ -1245,7 +1248,12 @@ impl Workspace {
         .fetch_optional(&self.pool)
         .await?
         .map(|(batch, record)| json!({"batch_id":batch,"source_record":record}));
+        let retired_at = sqlx::query_scalar("SELECT retired_at FROM entity WHERE id=?")
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await?;
         Ok(Some(EntityDossier {
+            retired_at,
             entity,
             import_origin,
             direct_links,

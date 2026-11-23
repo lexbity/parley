@@ -26,6 +26,8 @@ fn invalid(reason: impl Into<String>) -> WorkspaceError {
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/directory", get(directory))
+        .route("/api/v1/entities/{id}/usage", get(usage))
+        .route("/api/v1/entities/{id}/retire", post(retire))
         .route("/api/v1/party-imports", post(stage))
         .route("/api/v1/party-imports/{id}/preview", post(preview))
         .route("/api/v1/party-imports/{id}/commit", post(commit))
@@ -249,6 +251,7 @@ enum Command {
     Commit(String, Approval),
     Attach(String, String),
     Unlink(String, String),
+    Retire(String, i64, String),
 }
 
 async fn execute(
@@ -262,6 +265,7 @@ async fn execute(
         Ok(k) => k,
         Err((s, c, m)) => return error(s, c, m),
     };
+    let csv_command = matches!(cmd, Command::Preview(..) | Command::Commit(..));
     let run=async {
         let ws=&state.workspace;
         let mut tx=ws.pool().begin_with("BEGIN IMMEDIATE").await?;
@@ -286,6 +290,7 @@ async fn execute(
                 json!({"preview_id":preview_id,"digest":hash,"rows":rows,"create_count":count("create"),"skip_count":count("skip"),"error_count":count("review")+count("error")})
             },
             Command::Commit(id,approval)=>commit_rows(&mut tx,ws,&id,approval).await?,
+            Command::Retire(id,revision,etag)=>retire_card(&mut tx,ws,&id,revision,&etag).await?,
             Command::Attach(id,upload)=>bind_upload(&mut tx,&id,&upload).await?,
             Command::Unlink(id,reference)=>{
                 let result=sqlx::query("DELETE FROM entity_attachment WHERE id=? AND entity_id=?").bind(reference).bind(&id).execute(&mut *tx).await?;
@@ -311,7 +316,7 @@ async fn execute(
             private_headers(&mut r, state.workspace.epoch());
             r
         }
-        Err(WorkspaceError::StaleRevision) => error(
+        Err(WorkspaceError::StaleRevision) if csv_command => error(
             StatusCode::PRECONDITION_FAILED,
             "PREVIEW_STALE",
             "CSV preview expired or changed. Stage again and review the rows.",
@@ -406,7 +411,7 @@ pub(super) async fn bind_upload(
     id: &str,
     upload: &str,
 ) -> Result<Value, WorkspaceError> {
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM entity WHERE id=?)")
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM graph_card WHERE id=?)")
         .bind(id)
         .fetch_one(&mut **tx)
         .await?;
@@ -676,4 +681,120 @@ async fn directory(
         }
         Err(e) => command_error(e),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Retirement {
+    expected_revision: i64,
+}
+
+async fn usage(State(s): State<AppState>, Path(id): Path<String>, h: HeaderMap) -> Response {
+    if let Err(e) = authenticate(&h, &s).await {
+        return e.into_response();
+    }
+    match card_usage(&s.workspace, &id).await {
+        Ok(value) => {
+            let mut r = Json(json!({"data":value})).into_response();
+            private_headers(&mut r, s.workspace.epoch());
+            r
+        }
+        Err(e) => command_error(e),
+    }
+}
+
+async fn card_usage(ws: &Workspace, id: &str) -> Result<Value, WorkspaceError> {
+    let mut tx = ws.pool().begin().await?;
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM entity WHERE id=?)")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    if !exists {
+        return Err(WorkspaceError::NotFound);
+    }
+    let links:Vec<(String,String,String,String,i64)>=sqlx::query_as("SELECT id,verb,from_id,to_id,count(*) OVER() FROM edge WHERE state='active' AND (from_id=? OR to_id=?) ORDER BY id LIMIT 60").bind(id).bind(id).fetch_all(&mut *tx).await?;
+    let opportunities:Vec<(String,String,i64)>=sqlx::query_as("SELECT o.id,o.title,count(*) OVER() FROM opportunity_party p JOIN opportunity o ON o.id=p.opportunity_id WHERE party_id=? ORDER BY o.id LIMIT 60").bind(id).fetch_all(&mut *tx).await?;
+    let materials:Vec<(String,String,i64)>=sqlx::query_as("SELECT id,kind,count(*) OVER() FROM material WHERE recipient_id=? OR id IN (SELECT material_id FROM resource_use WHERE resource_id=?) ORDER BY id LIMIT 60").bind(id).bind(id).fetch_all(&mut *tx).await?;
+    let recommendations:i64=sqlx::query_scalar("SELECT count(*) FROM match_run WHERE recipient_id=? OR EXISTS(SELECT 1 FROM json_tree(shortlist_json) WHERE type='text' AND atom=?)").bind(id).bind(id).fetch_one(&mut *tx).await?;
+    tx.commit().await?;
+    let counts = json!({"links":links.first().map_or(0,|v|v.4),"opportunities":opportunities.first().map_or(0,|v|v.2),"materials":materials.first().map_or(0,|v|v.2),"recommendations":recommendations});
+    Ok(
+        json!({"links":links.into_iter().map(|(id,verb,from,to,_)|json!({"id":id,"verb":verb,"from_id":from,"to_id":to})).collect::<Vec<_>>(),"opportunities":opportunities.into_iter().map(|(id,title,_)|json!({"id":id,"title":title})).collect::<Vec<_>>(),"materials":materials.into_iter().map(|(id,kind,_)|json!({"id":id,"kind":kind})).collect::<Vec<_>>(),"counts":counts}),
+    )
+}
+
+async fn retire(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    h: HeaderMap,
+    Json(i): Json<Retirement>,
+) -> Response {
+    if let Err(e) = authenticate(&h, &s).await {
+        return e.into_response();
+    }
+    let Some(tag) = h
+        .get(header::IF_MATCH)
+        .and_then(|h| h.to_str().ok())
+        .filter(|v| super::is_strong_etag(v))
+    else {
+        return error(
+            StatusCode::PRECONDITION_REQUIRED,
+            "IF_MATCH_REQUIRED",
+            "A current entity ETag is required.",
+        );
+    };
+    let hash = digest(
+        json!(["retire", id, tag, i.expected_revision])
+            .to_string()
+            .as_bytes(),
+    );
+    execute(
+        &s,
+        &h,
+        Command::Retire(id, i.expected_revision, tag.to_owned()),
+        hash,
+        StatusCode::OK,
+    )
+    .await
+}
+
+async fn retire_card(
+    tx: &mut Tx<'_>,
+    ws: &Workspace,
+    id: &str,
+    expected: i64,
+    tag: &str,
+) -> Result<Value, WorkspaceError> {
+    let (kind, revision): (String, i64) =
+        sqlx::query_as("SELECT kind,revision FROM graph_card WHERE id=?")
+            .bind(id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or(WorkspaceError::NotFound)?;
+    if revision != expected || tag != super::entity_etag(ws.epoch(), id, revision) {
+        return Err(WorkspaceError::StaleRevision);
+    }
+    let now = now_utc();
+    sqlx::query(
+        "UPDATE resource SET readiness='retired',revision=revision+1,updated_at=? WHERE id=?",
+    )
+    .bind(&now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query("UPDATE entity SET retired_at=?,updated_at=?,revision=? WHERE id=?")
+        .bind(&now)
+        .bind(&now)
+        .bind(revision + 1)
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    if matches!(kind.as_str(), "person" | "org") {
+        sqlx::query("INSERT INTO party_policy(party_id,state) VALUES(?,'closed') ON CONFLICT(party_id) DO UPDATE SET state='closed',revision=revision+1").bind(id).execute(&mut **tx).await?;
+    }
+    emit_event(tx, id, "entity.retired").await?;
+    sqlx::query("UPDATE workspace_meta SET revision=revision+1 WHERE singleton=1")
+        .execute(&mut **tx)
+        .await?;
+    Ok(json!({"id":id,"revision":revision+1,"retired_at":now}))
 }

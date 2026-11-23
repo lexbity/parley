@@ -250,3 +250,60 @@ async fn p02_related_and_existing_edges() {
     assert_eq!(graph.body["edges"][0]["claim_revision"], 2);
     s.shutdown().await;
 }
+
+#[tokio::test]
+async fn p02_retirement_preserves_historical_links() {
+    let db = path();
+    let s = parley_service::start_workspace(&db).await.unwrap();
+    let sess = owner_session(&s).await;
+    let (id, etag) = create_party(&s, &sess, "person", "Mira", "").await;
+    let path = format!("/api/v1/entities/{id}");
+    let opportunity = request(
+        &s,
+        &sess,
+        "POST",
+        "/api/v1/opportunities",
+        Some(json!({"title":"Fixture contribution","primary_party_id":id})),
+        &[("Idempotency-Key", &next_key())],
+    )
+    .await;
+    assert_eq!(opportunity.status, 201, "{opportunity:?}");
+    let usage = request(&s, &sess, "GET", &format!("{path}/usage"), None, &[]).await;
+    assert_eq!(
+        usage.body["data"]["counts"]["opportunities"], 1,
+        "{usage:?}"
+    );
+    let key = next_key();
+    for _ in 0..2 {
+        let result = request(
+            &s,
+            &sess,
+            "POST",
+            &format!("{path}/retire"),
+            Some(json!({"expected_revision":1})),
+            &[("Idempotency-Key", &key), ("If-Match", &etag)],
+        )
+        .await;
+        assert_eq!(result.status, 200, "{result:?}");
+        assert_eq!(result.body["data"]["revision"], 2);
+    }
+    let directory = request(&s, &sess, "GET", "/api/v1/directory", None, &[]).await;
+    assert_eq!(directory.body["data"], json!([]));
+    let dossier = request(&s, &sess, "GET", &format!("{path}/dossier"), None, &[]).await;
+    assert_eq!(
+        dossier.body["data"]["opportunities"][0]["title"],
+        "Fixture contribution"
+    );
+    assert!(dossier.body["data"]["retired_at"].is_string());
+    let denied = request(
+        &s,
+        &sess,
+        "POST",
+        "/api/v1/opportunities",
+        Some(json!({"title":"Second proposal","primary_party_id":id})),
+        &[("Idempotency-Key", &next_key())],
+    )
+    .await;
+    assert_ne!(denied.status, 201);
+    s.shutdown().await;
+}
