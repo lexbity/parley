@@ -19,6 +19,12 @@ use tokio::sync::watch;
 #[serde(deny_unknown_fields)]
 struct Input {
     week: Week,
+    #[serde(default)]
+    scope: Option<crate::application::inference_context::ContextRequest>,
+    #[serde(default)]
+    context_projection: Option<Value>,
+    #[serde(default)]
+    dependency_json: Option<Value>,
     seeds: Vec<Seed>,
     coverage: Coverage,
     event_cursor: i64,
@@ -274,9 +280,12 @@ async fn execute(
     }
     let tokenizer = tokenizer_path(state, &lease.profile)?;
     let execution = new_id("coach-worker");
-    let input = json!({"seeds":lease.input.seeds.iter().map(|seed| json!({
-        "question_key":seed.key,"reason":seed.reason
-    })).collect::<Vec<_>>()});
+    let input = json!({
+        "seeds":lease.input.seeds.iter().map(|seed| json!({
+            "question_key":seed.key,"reason":seed.reason,"target":seed.target
+        })).collect::<Vec<_>>(),
+        "context":lease.input.context_projection
+    });
     let request = Execute::StructuredRole {
         profile: lease.profile.clone(),
         deadline_ms: lease.remaining_ms,
@@ -352,13 +361,14 @@ async fn publish(
     if !bound {
         return Err(WorkspaceError::StaleRevision);
     }
-    let plan = tokio::time::timeout(
-        Duration::from_millis(500),
-        coach::plan(&mut tx, &lease.input.week),
-    )
-    .await
-    .map_err(|_| WorkspaceError::StaleRevision)??;
-    if plan.dependencies != lease.dependencies {
+    let dependencies = tokio::time::timeout(Duration::from_millis(500), async {
+        if let Some(scope) = &lease.input.scope {
+            coach::plan_context(&mut tx, scope).await.map(|plan| plan.dependencies)
+        } else {
+            coach::plan(&mut tx, &lease.input.week).await.map(|plan| plan.dependencies)
+        }
+    }).await.map_err(|_| WorkspaceError::StaleRevision)??;
+    if dependencies != lease.dependencies {
         return Err(WorkspaceError::StaleRevision);
     }
     let held: Vec<String> = sqlx::query_scalar(
@@ -384,13 +394,20 @@ async fn publish(
         .bind(&report_id).bind(period).bind(&lease.input_sha256).bind(cursor).bind(id)
         .bind(report.to_string()).bind(&now).execute(&mut *tx).await?;
     for (rank, (seed, text)) in lease.input.seeds.iter().zip(questions).enumerate() {
+        let selector = if let Some(scope) = &lease.input.scope {
+            serde_json::to_value(scope).map_err(|_| WorkspaceError::Invalid("Invalid Coach selector".into()))?
+        } else {
+            json!({"kind":"weekly","period":period})
+        };
         sqlx::query(
             "INSERT INTO coach_question(id,job_id,question_key,kind,target_json,answer_schema_json,priority,impact,
-                 text,status,created_at,updated_at,semantic_key)
-             VALUES(?,?,?,?,?,?,?,?,?,'open',?,?,?)",
+                 text,status,created_at,updated_at,semantic_key,selector_json,dependency_json,dependency_digest)
+             VALUES(?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?)",
         ).bind(new_id(id)).bind(id).bind(&seed.key).bind(seed.reason.kind()).bind(seed.target.wire().to_string())
             .bind(seed.answer_schema().to_string()).bind(rank as i64).bind(seed.impact).bind(text)
-            .bind(&now).bind(&now).bind(&seed.key).execute(&mut *tx).await?;
+            .bind(&now).bind(&now).bind(&seed.key).bind(selector.to_string())
+            .bind(lease.input.dependency_json.as_ref().unwrap_or(&json!([])).to_string())
+            .bind(&lease.dependencies).execute(&mut *tx).await?;
     }
     sqlx::query("UPDATE inference_record SET model_digest=?,metadata_class='observed' WHERE id=?")
         .bind(&lease.profile.model_digest)
