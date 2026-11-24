@@ -9,14 +9,16 @@ use std::{
     time::Duration,
 };
 
+use futures_util::future::BoxFuture;
 use serde::Deserialize;
+use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use tokio::{io::BufReader, process::Command, sync::watch, time};
 
 use super::{
     protocol::{
-        self, Ack, Capability, Completion, Empty, Execute, Failure, HostFrame, Namespaces,
-        ProtocolError, WorkerFrame,
+        self, Ack, AssistantTurn, Capability, Completion, Empty, Execute, Failure, HostFrame,
+        Namespaces, ProtocolError, Suspend, ToolRequest, ToolResult, TurnAccepted, WorkerFrame,
     },
     relay::Relay,
 };
@@ -46,6 +48,31 @@ const LIBRARIES: [&str; 7] = [
     "libpthread.so.0",
     "libc.so.6",
 ];
+
+/// The host side of a delegated lease. Every decision is made by Rust under
+/// the workspace writer before a frame reaches the worker; the worker never
+/// sees a principal, receipt, approval identity or business result that the
+/// host has not committed.
+pub trait DelegatedHost {
+    /// Journal the complete assistant turn and its ordered intents, then
+    /// return the accepted ordinals or a durable wait/suspend.
+    fn accept_turn(&self, turn: AssistantTurn) -> BoxFuture<'_, Result<HostDecision, RunError>>;
+    /// Dispatch one accepted ordinal through the command registry, or park
+    /// the run on its originating intent.
+    fn resolve_tool(&self, request: ToolRequest) -> BoxFuture<'_, Result<ToolDecision, RunError>>;
+}
+
+#[derive(Debug)]
+pub enum HostDecision {
+    TurnAccepted { turn_no: u32, ordinals: Vec<u32> },
+    Suspend(&'static str),
+}
+
+#[derive(Debug)]
+pub enum ToolDecision {
+    Result(Value),
+    Suspend(&'static str),
+}
 
 #[derive(Debug, Clone, Copy, thiserror::Error)]
 pub enum RunError {
@@ -240,7 +267,18 @@ impl Supervisor {
         if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
             return Err(RunError::Isolation);
         }
-        let expected = option_env!("PARLEY_RUNTIME_MANIFEST_SHA256").ok_or(RunError::Install)?;
+        let expected = option_env!("PARLEY_RUNTIME_MANIFEST_SHA256")
+            .map(str::to_owned)
+            .or_else(|| {
+                // Debug-only test affordance: an explicitly built bundle and
+                // its digest. Release binaries keep the build-time pin only.
+                if cfg!(debug_assertions) {
+                    std::env::var("PARLEY_TEST_MANIFEST_SHA256").ok()
+                } else {
+                    None
+                }
+            })
+            .ok_or(RunError::Install)?;
         let uid = effective_uid().map_err(|_| RunError::Install)?;
         secure_ancestry(bundle, uid, explicit)?;
         let manifest_bytes = bounded_read(&bundle.join(MANIFEST), MAX_MANIFEST, uid)?;
@@ -300,7 +338,7 @@ impl Supervisor {
         Ok(Self {
             bundle: bundle.to_owned(),
             manifest,
-            digest: expected.into(),
+            digest: expected,
         })
     }
 
@@ -349,7 +387,7 @@ impl Supervisor {
             };
             if body.build != self.manifest.worker_build
                 || body.schema_digest != self.manifest.schema_digest
-                || body.capabilities != [Capability::StructuredRole]
+                || body.capabilities != vec![Capability::StructuredRole, Capability::Delegated]
             {
                 return Err(RunError::ProtocolMismatch);
             }
@@ -443,6 +481,273 @@ impl Supervisor {
         result.and(Err(RunError::Timeout))
     }
 
+    /// Run one bounded delegated step. Unlike a role execution, a delegated
+    /// step is an interactive exchange: the host journals each assistant turn
+    /// and each tool ordinal before the worker is allowed to continue. A
+    /// durable wait ends the lease and reaps the process; a fresh claim starts
+    /// a new execution with canonical reconstructed history.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn execute_delegated(
+        &self,
+        endpoint: SocketAddr,
+        execution_id: &str,
+        lease_id: &str,
+        tokenizer: &Path,
+        request: Execute,
+        mut cancel: watch::Receiver<bool>,
+        host: &(impl DelegatedHost + Sync),
+    ) -> Result<Completion, RunError> {
+        if !matches!(request, Execute::Delegated { .. }) || *cancel.borrow_and_update() {
+            return Err(RunError::Cancelled);
+        }
+        let uid = effective_uid().map_err(|_| RunError::Isolation)?;
+        secure_ancestry(tokenizer.parent().ok_or(RunError::Install)?, uid, true)?;
+        if digest(&bounded_read(tokenizer, MAX_TOKENIZER, uid)?)
+            != request.profile().tokenizer_digest
+        {
+            return Err(RunError::Worker(Failure::ProfileChanged));
+        }
+        let host_namespaces = read_host_namespaces().map_err(|_| RunError::Isolation)?;
+        let relay = Relay::bind_delegated(
+            endpoint,
+            request.profile().model_tag.clone(),
+            request.profile().max_output_tokens,
+        )
+        .map_err(|_| RunError::Provider)?;
+        let mut command = self.command(relay.directory(), tokenizer)?;
+        let mut child = command.spawn().map_err(|_| RunError::Isolation)?;
+        let mut stdin = child.stdin.take().ok_or(RunError::Isolation)?;
+        let mut stdout =
+            BufReader::with_capacity(8192, child.stdout.take().ok_or(RunError::Isolation)?);
+        let end = time::Instant::now() + Duration::from_millis(u64::from(request.deadline_ms()));
+        let host_seq = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(3));
+        let cancel_seq = host_seq.clone();
+        let exchange = async {
+            let hello = time::timeout(
+                Duration::from_secs(2),
+                protocol::read_worker_frame(&mut stdout),
+            )
+            .await
+            .map_err(|_| RunError::Isolation)?
+            .map_err(|_| RunError::ProtocolMismatch)?;
+            let Some(WorkerFrame::Hello { seq: 1, body }) = hello else {
+                return Err(RunError::Isolation);
+            };
+            if body.build != self.manifest.worker_build
+                || body.schema_digest != self.manifest.schema_digest
+                || body.capabilities != vec![Capability::StructuredRole, Capability::Delegated]
+            {
+                return Err(RunError::ProtocolMismatch);
+            }
+            if !namespace_separation(&host_namespaces, &body.namespaces) {
+                return Err(RunError::Isolation);
+            }
+            let capabilities = body.capabilities;
+            protocol::write_host_frame(
+                &mut stdin,
+                HostFrame::HelloAck {
+                    v: 1,
+                    seq: 1,
+                    body: Ack {
+                        capabilities,
+                        max_frame_bytes: protocol::MAX_FRAME,
+                    },
+                },
+            )
+            .await?;
+            protocol::write_host_frame(
+                &mut stdin,
+                HostFrame::Execute {
+                    v: 1,
+                    seq: 2,
+                    execution_id,
+                    lease_id,
+                    body: &request,
+                },
+            )
+            .await?;
+
+            let mut worker_seq = 3u32;
+            let host_seq = host_seq.clone();
+            let mut suspended = false;
+            let completion = loop {
+                let frame = protocol::read_worker_frame(&mut stdout).await?;
+                let Some(frame) = frame else {
+                    return Err(RunError::Protocol);
+                };
+                match frame {
+                    WorkerFrame::AssistantTurn {
+                        seq,
+                        execution_id: execution,
+                        lease_id: lease,
+                        body,
+                    } if seq == worker_seq && execution == execution_id && lease == lease_id => {
+                        match host.accept_turn(body).await? {
+                            HostDecision::TurnAccepted { turn_no, ordinals } => {
+                                protocol::write_host_frame(
+                                    &mut stdin,
+                                    HostFrame::TurnAccepted {
+                                        v: 1,
+                                        seq: host_seq
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                                        execution_id,
+                                        lease_id,
+                                        body: &TurnAccepted { turn_no, ordinals },
+                                    },
+                                )
+                                .await?;
+                            }
+                            HostDecision::Suspend(reason) => {
+                                protocol::write_host_frame(
+                                    &mut stdin,
+                                    HostFrame::Suspend {
+                                        v: 1,
+                                        seq: host_seq
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                                        execution_id,
+                                        lease_id,
+                                        body: &Suspend { reason },
+                                    },
+                                )
+                                .await?;
+                                suspended = true;
+                                break None;
+                            }
+                        }
+                    }
+                    WorkerFrame::ToolRequest {
+                        seq,
+                        execution_id: execution,
+                        lease_id: lease,
+                        body,
+                    } if seq == worker_seq && execution == execution_id && lease == lease_id => {
+                        let (turn_no, ordinal) = (body.turn_no, body.ordinal);
+                        match host.resolve_tool(body).await? {
+                            ToolDecision::Result(result) => {
+                                let body = ToolResult {
+                                    turn_no,
+                                    ordinal,
+                                    result,
+                                };
+                                protocol::write_host_frame(
+                                    &mut stdin,
+                                    HostFrame::ToolResult {
+                                        v: 1,
+                                        seq: host_seq
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                                        execution_id,
+                                        lease_id,
+                                        body: &body,
+                                    },
+                                )
+                                .await?;
+                            }
+                            ToolDecision::Suspend(reason) => {
+                                protocol::write_host_frame(
+                                    &mut stdin,
+                                    HostFrame::Suspend {
+                                        v: 1,
+                                        seq: host_seq
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                                        execution_id,
+                                        lease_id,
+                                        body: &Suspend { reason },
+                                    },
+                                )
+                                .await?;
+                                suspended = true;
+                                break None;
+                            }
+                        }
+                    }
+                    WorkerFrame::Complete {
+                        seq,
+                        execution_id: execution,
+                        lease_id: lease,
+                        body,
+                    } if seq == worker_seq
+                        && execution == execution_id
+                        && lease == lease_id
+                        && request.matches(&body) =>
+                    {
+                        break Some(body);
+                    }
+                    WorkerFrame::Failed {
+                        seq,
+                        execution_id: execution,
+                        lease_id: lease,
+                        body,
+                    } if seq == worker_seq && execution == execution_id && lease == lease_id => {
+                        return Err(RunError::Worker(body.code));
+                    }
+                    _ => return Err(RunError::Protocol),
+                }
+                worker_seq += 1;
+            };
+            if protocol::read_worker_frame(&mut stdout).await?.is_some() {
+                return Err(RunError::Protocol);
+            }
+            match completion {
+                Some(completion) => {
+                    validate_completion(&request, &completion)?;
+                    Ok(completion)
+                }
+                None if suspended => Ok(Completion::Delegated {
+                    observed: protocol::ObservedModel {
+                        provider_version: request.profile().provider_version.clone(),
+                        model_tag: request.profile().model_tag.clone(),
+                        model_digest: request.profile().model_digest.clone(),
+                    },
+                    usage: protocol::Usage {
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    },
+                    text: String::new(),
+                }),
+                None => Err(RunError::Protocol),
+            }
+        };
+
+        let result = tokio::select! {
+            biased;
+            _ = cancel.wait_for(|requested| *requested) => Err(RunError::Cancelled),
+            result = time::timeout_at(end, exchange) => result.unwrap_or(Err(RunError::Timeout)),
+        };
+
+        if matches!(result, Err(RunError::Cancelled | RunError::Timeout)) {
+            let _ = time::timeout(
+                Duration::from_millis(30),
+                protocol::write_host_frame(
+                    &mut stdin,
+                    HostFrame::Cancel {
+                        v: 1,
+                        seq: cancel_seq.load(std::sync::atomic::Ordering::Relaxed),
+                        execution_id,
+                        lease_id,
+                        body: Empty {},
+                    },
+                ),
+            )
+            .await;
+        }
+        drop(stdin);
+        drop(stdout);
+        if result.is_ok()
+            && let Ok(Ok(status)) = time::timeout_at(end, child.wait()).await
+        {
+            return if status.success() {
+                result
+            } else {
+                Err(RunError::Protocol)
+            };
+        }
+        let _ = child.start_kill();
+        let _ = time::timeout(Duration::from_secs(1), child.wait()).await;
+        let outcome = result.and(Err(RunError::Timeout));
+        relay.close().await;
+        outcome
+    }
+
     fn command(&self, relay: &Path, tokenizer: &Path) -> Result<Command, RunError> {
         let bwrap = fs::symlink_metadata(BWRAP).map_err(|_| RunError::Isolation)?;
         if !bwrap.is_file() || bwrap.uid() != 0 || bwrap.mode() & 0o6022 != 0 {
@@ -454,7 +759,15 @@ impl Supervisor {
             .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(
+                if cfg!(debug_assertions)
+                    && std::env::var_os("PARLEY_TEST_MANIFEST_SHA256").is_some()
+                {
+                    Stdio::inherit()
+                } else {
+                    Stdio::null()
+                },
+            );
         command.args([
             "--unshare-user",
             "--unshare-net",
@@ -493,8 +806,10 @@ impl Supervisor {
         let loader = Path::new("/lib64/ld-linux-x86-64.so.2");
         mount_library(&mut command, loader, loader)?;
         let distro_paths = [
+            Path::new("/lib/x86_64-linux-gnu"),
             Path::new("/usr/lib/x86_64-linux-gnu"),
             Path::new("/usr/lib"),
+            Path::new("/lib64"),
         ];
         for library in LIBRARIES {
             let source = distro_paths
@@ -502,7 +817,10 @@ impl Supervisor {
                 .map(|path| path.join(library))
                 .find(|path| path.is_file())
                 .ok_or(RunError::Isolation)?;
-            let destination = distro_paths[0].join(library);
+            // Mount each loader dependency at its real path so the sandbox
+            // works on the qualified Ubuntu host and on development hosts
+            // whose libraries live in /usr/lib rather than the multiarch dir.
+            let destination = source.parent().ok_or(RunError::Isolation)?.join(library);
             mount_library(&mut command, &source, &destination)?;
         }
         command.args([
@@ -726,7 +1044,7 @@ mod tests {
                 system,
                 input,
             },
-            Execute::Probe { .. } => unreachable!(),
+            Execute::Delegated { .. } | Execute::Probe { .. } => unreachable!(),
         };
         assert!(matches!(
             validate_completion(&bad_digest, &result),

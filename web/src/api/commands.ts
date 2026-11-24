@@ -532,6 +532,9 @@ export interface RunStatus {
   turn_count: number;
   transcript_bytes: number;
   wake_condition: string | null;
+  profile_revision: number | null;
+  transcript_major: number;
+  wait_intent: string | null;
   review: RunReview | null;
 }
 export interface TranscriptTurn { turn_no: number; speaker: 'owner' | 'assistant' | 'tool' | 'system'; ordinal: number; text: string }
@@ -631,6 +634,19 @@ function decodeRunStatus(value: unknown): RunStatus {
     turn_count: Number(status.turn_count),
     transcript_bytes: Number(status.transcript_bytes),
     wake_condition: decodeNullableText(status.wake_condition, 'wake_condition'),
+    profile_revision: status.profile_revision === null || status.profile_revision === undefined
+      ? null
+      : (() => {
+          const value = status.profile_revision;
+          if (!Number.isSafeInteger(value) || Number(value) < 1) throw new Error('Invalid run response: profile_revision is malformed');
+          return Number(value);
+        })(),
+    transcript_major: (() => {
+      const value = status.transcript_major ?? 1;
+      if (!Number.isSafeInteger(value) || Number(value) < 1) throw new Error('Invalid run response: transcript_major is malformed');
+      return Number(value);
+    })(),
+    wait_intent: decodeNullableText(status.wait_intent, 'wait_intent'),
     review,
   };
 }

@@ -674,15 +674,14 @@ fn interview_answer_error(error: crate::application::interview::InterviewError) 
                 "INFERENCE_BUSY",
                 "The local inference queue is full",
             );
-            response.headers_mut().insert(
-                "retry-after",
-                axum::http::HeaderValue::from_static("2"),
-            );
+            response
+                .headers_mut()
+                .insert("retry-after", axum::http::HeaderValue::from_static("2"));
             response.into_response()
         }
-        crate::application::interview::InterviewError::Database => {
-            super::command_error(crate::WorkspaceError::Invalid("interview intake failed".into()))
-        }
+        crate::application::interview::InterviewError::Database => super::command_error(
+            crate::WorkspaceError::Invalid("interview intake failed".into()),
+        ),
     }
 }
 

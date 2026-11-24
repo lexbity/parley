@@ -5,6 +5,9 @@
 
 #![allow(dead_code)]
 
+#[path = "model_server.rs"]
+pub mod model_server;
+
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::{
@@ -70,6 +73,10 @@ impl ScriptedProvider {
 
     pub fn url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
+    }
+
+    pub fn endpoint(&self) -> std::net::SocketAddr {
+        format!("127.0.0.1:{}", self.port).parse().unwrap()
     }
 
     pub fn recorded(&self) -> Vec<String> {

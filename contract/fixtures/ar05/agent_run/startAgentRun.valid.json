@@ -1,0 +1,13 @@
+{
+  "task": "Summarise the granted party",
+  "targets": [
+    {
+      "kind": "party",
+      "id": "p_1"
+    }
+  ],
+  "permissions": [
+    "party.read"
+  ],
+  "allow_created_opportunities": false
+}

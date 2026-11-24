@@ -157,6 +157,39 @@ pub(crate) async fn replace_settings(
         .ok_or(ProfileError::Inconsistent)
 }
 
+/// Resolve the one immutable, active and independently qualified profile for
+/// a delegated lease. A structured-output qualification never grants tool
+/// capability; each mode is proven by its own synthetic probe.
+pub(crate) async fn qualified_delegated(
+    connection: &mut SqliteConnection,
+    revision: i64,
+) -> Result<Option<(SocketAddr, super::protocol::Profile, String)>, ProfileError> {
+    let ready: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM inference_active_profile a
+           JOIN inference_qualification q ON q.profile_revision=a.profile_revision
+          WHERE a.profile_revision=? AND q.mode='delegated' AND q.status='ready'
+            AND q.checked_at >= ?
+            AND NOT EXISTS(SELECT 1 FROM inference_profile_revocation r
+                            WHERE r.profile_revision=a.profile_revision))",
+    )
+    .bind(revision)
+    .bind(crate::now_utc_offset(-300))
+    .fetch_one(&mut *connection)
+    .await?;
+    if !ready {
+        return Ok(None);
+    }
+    let row: Option<super::coach::ProfileRow> = sqlx::query_as(
+        "SELECT endpoint,runner_build_digest,provider_version,chat_model,chat_model_digest,
+                tokenizer_digest,recipe_json,context_tokens,output_tokens
+           FROM inference_profile WHERE revision=?",
+    )
+    .bind(revision)
+    .fetch_optional(&mut *connection)
+    .await?;
+    Ok(row.and_then(|row| super::coach::profile_fields(revision, row)))
+}
+
 /// Parse the one configured upstream authority accepted by a profile.
 pub(crate) fn loopback_authority(endpoint: &str) -> Result<SocketAddr, ProfileError> {
     endpoint

@@ -2,10 +2,10 @@ pub(crate) mod coach;
 pub(crate) mod dispatch;
 pub(crate) mod probe;
 pub(crate) mod profile;
-mod protocol;
+pub(crate) mod protocol;
 mod relay;
 pub(crate) mod roles;
-mod supervisor;
+pub(crate) mod supervisor;
 pub(crate) mod template_builder;
 
 pub(crate) fn coach_schema() -> &'static [u8] {

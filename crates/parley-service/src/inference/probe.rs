@@ -165,6 +165,7 @@ async fn execute(
     }.map_err(|error| error.code())?;
     match result {
         Completion::Probe { .. } => Ok(()),
+        Completion::Delegated { .. } => Err("WORKER_PROTOCOL"),
         Completion::StructuredRole { .. } => Err("WORKER_PROTOCOL"),
     }
 }

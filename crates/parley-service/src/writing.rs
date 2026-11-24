@@ -973,11 +973,11 @@ async fn create_template_version(
                     "TEMPLATE_VALIDATION_FAILED",
                     "Candidate edits failed template validation.",
                 ),
-                super::application::template_build::CandidateSaveError::Database => command_error(
-                    super::WorkspaceError::Database(sqlx::Error::Protocol(
+                super::application::template_build::CandidateSaveError::Database => {
+                    command_error(super::WorkspaceError::Database(sqlx::Error::Protocol(
                         "storage failure".into(),
-                    )),
-                ),
+                    )))
+                }
             })?;
             tx.commit()
                 .await
@@ -1065,8 +1065,8 @@ async fn create_template_version(
     };
     let name = prepared["name"].as_str().unwrap_or_default().to_owned();
     let body = prepared["body"].as_str().unwrap_or_default().to_owned();
-    let sentence_rules: Vec<Vec<String>> = serde_json::from_value(prepared["sentence_rules"].clone())
-        .unwrap_or_default();
+    let sentence_rules: Vec<Vec<String>> =
+        serde_json::from_value(prepared["sentence_rules"].clone()).unwrap_or_default();
     let proof_fallback = prepared["proof_fallback"].as_str().map(str::to_owned);
     let family_head_id = prepared["family_head_id"].as_str().map(str::to_owned);
     let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {

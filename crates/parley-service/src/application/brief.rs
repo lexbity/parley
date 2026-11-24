@@ -335,9 +335,7 @@ pub(crate) async fn start_owner(
             .await
             .map_err(|_| BriefError::Database)?
             .into_iter()
-            .map(|(id, speaker, text)| {
-                serde_json::json!({"id":id,"speaker":speaker,"text":text})
-            })
+            .map(|(id, speaker, text)| serde_json::json!({"id":id,"speaker":speaker,"text":text}))
             .collect();
             let evidence = collect_brief_evidence(tx, &scope_kind, &scope_id).await?;
             let prompt_version_id = active_prompt_version(tx).await?;

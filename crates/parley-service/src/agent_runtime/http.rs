@@ -154,8 +154,25 @@ async fn start(
                 } else {
                     let run_id = crate::new_id("agent-run");
                     let now = crate::now_utc();
+                    // Freeze the qualified delegated profile at admission. A
+                    // later activation or revocation cannot change what this
+                    // run is allowed to execute under.
+                    let profile_revision: Option<i64> = sqlx::query_scalar(
+                        "SELECT a.profile_revision FROM inference_active_profile a
+                          JOIN inference_qualification q ON q.profile_revision=a.profile_revision
+                          WHERE a.singleton=1 AND q.mode='delegated' AND q.status='ready'
+                            AND q.checked_at >= ?
+                            AND NOT EXISTS(SELECT 1 FROM inference_profile_revocation r
+                                             WHERE r.profile_revision=a.profile_revision)
+                          ORDER BY q.checked_at DESC LIMIT 1",
+                    )
+                    .bind(crate::now_utc_offset(-300))
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .ok()
+                    .flatten();
                     if sqlx::query(
-                        "INSERT INTO agent_run(run_id,epoch,owner_pseudonym,task,key_digest,state,state_revision,grant_json,scope_digest,created_at,updated_at,deadline_at) VALUES(?,?,?,?,?,'queued',1,?,?,?,?,?)",
+                        "INSERT INTO agent_run(run_id,epoch,owner_pseudonym,task,key_digest,state,state_revision,grant_json,scope_digest,created_at,updated_at,deadline_at,profile_revision,transcript_major) VALUES(?,?,?,?,?,'queued',1,?,?,?,?,?,?,1)",
                     )
                     .bind(&run_id)
                     .bind(&epoch)
@@ -167,6 +184,7 @@ async fn start(
                     .bind(&now)
                     .bind(&now)
                     .bind(&deadline_at)
+                    .bind(profile_revision)
                     .execute(&mut *tx)
                     .await
                     .is_err()
@@ -305,6 +323,7 @@ async fn list(
     response
 }
 
+#[allow(clippy::type_complexity)]
 async fn status(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -314,8 +333,20 @@ async fn status(
         Ok(value) => value,
         Err(response) => return response,
     };
-    let row: Option<(String, i64, String, i64, i64, String)> = sqlx::query_as(
-        "SELECT state,state_revision,deadline_at,turn_count,transcript_bytes,wake_condition FROM agent_run WHERE run_id=? AND epoch=? AND owner_pseudonym=?",
+    let row: Option<(
+        String,
+        i64,
+        String,
+        i64,
+        i64,
+        String,
+        Option<i64>,
+        i64,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT state,state_revision,deadline_at,turn_count,transcript_bytes,wake_condition,
+                profile_revision,transcript_major,wait_intent
+           FROM agent_run WHERE run_id=? AND epoch=? AND owner_pseudonym=?",
     )
     .bind(&id)
     .bind(state.workspace.epoch())
@@ -323,7 +354,18 @@ async fn status(
     .fetch_optional(state.workspace.pool())
     .await
     .unwrap_or(None);
-    let Some((state_name, revision, deadline_at, turn_count, transcript_bytes, wake)) = row else {
+    let Some((
+        state_name,
+        revision,
+        deadline_at,
+        turn_count,
+        transcript_bytes,
+        wake,
+        profile_revision,
+        transcript_major,
+        wait_intent,
+    )) = row
+    else {
         return failure(
             &state,
             StatusCode::NOT_FOUND,
@@ -365,6 +407,9 @@ async fn status(
         "turn_count": turn_count,
         "transcript_bytes": transcript_bytes,
         "wake_condition": wake,
+        "profile_revision": profile_revision,
+        "transcript_major": transcript_major,
+        "wait_intent": wait_intent,
         "review": review,
     }))
     .into_response();

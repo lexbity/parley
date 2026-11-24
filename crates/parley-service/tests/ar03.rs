@@ -87,7 +87,12 @@ fn hex_digest(text: &str) -> String {
 
 /// Seed a succeeded builder job whose frozen dependency vector is the empty
 /// canonical vector. The candidate save re-derives the same digest.
-async fn seed_job(workspace: &Workspace, job_id: &str, context_projection: Value, input_extra: Value) {
+async fn seed_job(
+    workspace: &Workspace,
+    job_id: &str,
+    context_projection: Value,
+    input_extra: Value,
+) {
     let input = json!({
         "dependency_json": [],
         "context_projection": context_projection,
@@ -169,7 +174,7 @@ async fn ar03_candidate_save_is_one_version_and_fences_changes() {
         &head,
         body,
         sentences.clone(),
-        json!(["R1","R2"]),
+        json!(["R1", "R2"]),
     )
     .await;
 
@@ -189,11 +194,12 @@ async fn ar03_candidate_save_is_one_version_and_fences_changes() {
     assert_eq!(status, 201, "{saved:?}");
     let version_id = saved["id"].as_str().unwrap().to_owned();
 
-    let versions: i64 = sqlx::query_scalar("SELECT count(*) FROM template_version WHERE family_id=?")
-        .bind(&family_id)
-        .fetch_one(workspace.pool())
-        .await
-        .unwrap();
+    let versions: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM template_version WHERE family_id=?")
+            .bind(&family_id)
+            .fetch_one(workspace.pool())
+            .await
+            .unwrap();
     assert_eq!(versions, 2, "one immutable draft");
 
     let candidate: (String, Option<String>, i64) = sqlx::query_as(
@@ -211,7 +217,10 @@ async fn ar03_candidate_save_is_one_version_and_fences_changes() {
         .fetch_one(workspace.pool())
         .await
         .unwrap();
-    assert_eq!(saved_body, body, "preview/party values are never stored in the skeleton");
+    assert_eq!(
+        saved_body, body,
+        "preview/party values are never stored in the skeleton"
+    );
 
     // Replaying the same intent returns the same receipt; no second draft.
     let (status, replay) = request(
@@ -229,11 +238,12 @@ async fn ar03_candidate_save_is_one_version_and_fences_changes() {
     .await;
     assert_eq!(status, 201, "{replay:?}");
     assert_eq!(replay["id"].as_str().unwrap(), version_id);
-    let versions: i64 = sqlx::query_scalar("SELECT count(*) FROM template_version WHERE family_id=?")
-        .bind(&family_id)
-        .fetch_one(workspace.pool())
-        .await
-        .unwrap();
+    let versions: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM template_version WHERE family_id=?")
+            .bind(&family_id)
+            .fetch_one(workspace.pool())
+            .await
+            .unwrap();
     assert_eq!(versions, 2);
 
     // A stale candidate revision is refused even with a fresh intent.
@@ -275,7 +285,13 @@ async fn ar03_candidate_save_rejects_party_specific_text() {
         "voice_samples":[],
         "recipient_name":"Casey Canary"
     });
-    seed_job(&workspace, "job-ar03-canary", context.clone(), json!({"scope":context["scope"]})).await;
+    seed_job(
+        &workspace,
+        "job-ar03-canary",
+        context.clone(),
+        json!({"scope":context["scope"]}),
+    )
+    .await;
     let body = "Hi Casey Canary, see {{gift:guide}}.";
     let sentences = json!([{"rules":["R1"]}]);
     seed_candidate(

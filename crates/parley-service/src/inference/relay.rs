@@ -50,8 +50,17 @@ struct Policy {
     endpoint: SocketAddr,
     model: String,
     max_output_tokens: u32,
+    /// Structured executions keep the exact five-step path order. Delegated
+    /// leases are bounded per path instead: one chat POST per planned step,
+    /// at most two catalog observations, and never more than 16 chat calls.
+    delegated: bool,
     stage: AtomicU8,
+    versions: AtomicU8,
+    tags: AtomicU8,
+    chats: AtomicU8,
 }
+
+const MAX_DELEGATED_CHAT: u8 = 16;
 
 pub struct Relay {
     directory: PathBuf,
@@ -60,6 +69,23 @@ pub struct Relay {
 
 impl Relay {
     pub fn bind(endpoint: SocketAddr, model: String, max_output_tokens: u32) -> io::Result<Self> {
+        Self::bind_mode(endpoint, model, max_output_tokens, false)
+    }
+
+    pub fn bind_delegated(
+        endpoint: SocketAddr,
+        model: String,
+        max_output_tokens: u32,
+    ) -> io::Result<Self> {
+        Self::bind_mode(endpoint, model, max_output_tokens, true)
+    }
+
+    fn bind_mode(
+        endpoint: SocketAddr,
+        model: String,
+        max_output_tokens: u32,
+        delegated: bool,
+    ) -> io::Result<Self> {
         if !is_allowed_endpoint(endpoint) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -80,7 +106,11 @@ impl Relay {
             endpoint,
             model,
             max_output_tokens,
+            delegated,
             stage: AtomicU8::new(0),
+            versions: AtomicU8::new(0),
+            tags: AtomicU8::new(0),
+            chats: AtomicU8::new(0),
         });
         let task = tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
@@ -194,7 +224,21 @@ fn valid_chat(body: &[u8], policy: &Policy) -> bool {
     let Ok(serde_json::Value::Object(request)) = parse_json(body) else {
         return false;
     };
-    let fields = [
+    if request.get("model").and_then(serde_json::Value::as_str) != Some(&policy.model)
+        || request.get("stream").and_then(serde_json::Value::as_bool) != Some(true)
+        || request
+            .get("temperature")
+            .and_then(serde_json::Value::as_f64)
+            != Some(0.0)
+        || request
+            .get("max_tokens")
+            .and_then(serde_json::Value::as_u64)
+            != Some(u64::from(policy.max_output_tokens))
+        || request.get("stream_options") != Some(&serde_json::json!({"include_usage":true}))
+    {
+        return false;
+    }
+    let structured_fields = [
         "model",
         "messages",
         "stream",
@@ -203,28 +247,104 @@ fn valid_chat(body: &[u8], policy: &Policy) -> bool {
         "temperature",
         "response_format",
     ];
+    let delegated_fields = [
+        "model",
+        "messages",
+        "stream",
+        "stream_options",
+        "max_tokens",
+        "temperature",
+        "tools",
+    ];
     let messages = request
         .get("messages")
         .and_then(serde_json::Value::as_array);
-    request.len() == fields.len()
-        && fields.iter().all(|field| request.contains_key(*field))
-        && request["model"].as_str() == Some(&policy.model)
-        && request["stream"].as_bool() == Some(true)
-        && request["temperature"].as_f64() == Some(0.0)
-        && request["max_tokens"].as_u64() == Some(u64::from(policy.max_output_tokens))
-        && request["stream_options"] == serde_json::json!({"include_usage":true})
-        && request["response_format"]["type"].as_str() == Some("json_schema")
-        && messages.is_some_and(|messages| {
-            messages.len() == 2
-                && ["system", "user"]
-                    .into_iter()
-                    .zip(messages)
-                    .all(|(role, message)| {
-                        message.as_object().is_some_and(|fields| fields.len() == 2)
-                            && message["role"].as_str() == Some(role)
-                            && message["content"].is_string()
-                    })
-        })
+    let Some(messages) = messages else {
+        return false;
+    };
+    if policy.delegated {
+        if request.len() != delegated_fields.len()
+            || !delegated_fields
+                .iter()
+                .all(|field| request.contains_key(*field))
+            || messages.is_empty()
+            || messages.len() > 64
+        {
+            return false;
+        }
+        let Some(tools) = request["tools"].as_array() else {
+            return false;
+        };
+        if tools.is_empty() || tools.len() > 20 || !tools.iter().all(|tool| {
+            let Some(object) = tool.as_object() else { return false };
+            object.len() == 2
+                && tool["type"].as_str() == Some("function")
+                && tool["function"].as_object().is_some_and(|function| {
+                    function.len() == 3
+                        && matches!(function.get("name"), Some(serde_json::Value::String(name)) if !name.is_empty() && name.len() <= 128)
+                        && matches!(function.get("description"), Some(serde_json::Value::String(value)) if value.len() <= 512)
+                        && matches!(function.get("parameters"), Some(serde_json::Value::Object(_)))
+                })
+        }) {
+            return false;
+        }
+        return messages.iter().all(|message| {
+            let Some(object) = message.as_object() else { return false };
+            match message.get("role").and_then(serde_json::Value::as_str) {
+                Some("system" | "user") => {
+                    object.len() == 2 && message.get("content").is_some_and(serde_json::Value::is_string)
+                }
+                Some("tool") => {
+                    (object.len() == 2
+                        || (object.len() == 3
+                            && message.get("tool_call_id").and_then(serde_json::Value::as_str).is_some_and(|id| {
+                                !id.is_empty() && id.len() <= 128
+                            })))
+                        && message.get("content").is_some_and(serde_json::Value::is_string)
+                }
+                Some("assistant") => {
+                    object.len() == 3
+                        && message.get("content").is_some_and(serde_json::Value::is_string)
+                        && message["tool_calls"].as_array().is_some_and(|calls| {
+                            !calls.is_empty()
+                                && calls.len() <= 4
+                                && calls.iter().all(|call| {
+                                    let Some(call) = call.as_object() else { return false };
+                                    call.len() == 3
+                                        && call.get("id").and_then(serde_json::Value::as_str).is_some_and(|id| !id.is_empty() && id.len() <= 128)
+                                        && call.get("type").and_then(serde_json::Value::as_str) == Some("function")
+                                        && call.get("function").and_then(serde_json::Value::as_object).is_some_and(|function| {
+                                            function.len() == 2
+                                                && matches!(function.get("name"), Some(serde_json::Value::String(name)) if !name.is_empty() && name.len() <= 128)
+                                                && matches!(function.get("arguments"), Some(serde_json::Value::String(value)) if value.len() <= 16 * 1024)
+                                        })
+                                })
+                        })
+                }
+                _ => false,
+            }
+        });
+    }
+    request.len() == structured_fields.len()
+        && structured_fields
+            .iter()
+            .all(|field| request.contains_key(*field))
+        && request
+            .get("response_format")
+            .and_then(|v| v.get("type"))
+            .and_then(serde_json::Value::as_str)
+            == Some("json_schema")
+        && messages.len() == 2
+        && ["system", "user"]
+            .into_iter()
+            .zip(messages)
+            .all(|(role, message)| {
+                message.as_object().is_some_and(|fields| fields.len() == 2)
+                    && message.get("role").and_then(serde_json::Value::as_str) == Some(role)
+                    && message
+                        .get("content")
+                        .is_some_and(serde_json::Value::is_string)
+            })
 }
 
 struct AbortConnection(JoinHandle<Result<(), hyper::Error>>);
@@ -249,20 +369,44 @@ async fn forward(
         return Err(StatusCode::BAD_REQUEST);
     }
     let bytes = body.to_bytes();
-    let stage = policy.stage.load(Ordering::Relaxed);
-    let expected_path = match stage {
-        0 | 3 => "/api/version",
-        1 | 4 => "/api/tags",
-        2 => "/v1/chat/completions",
-        _ => return Err(StatusCode::FORBIDDEN),
-    };
-    if path != expected_path
-        || (path == "/v1/chat/completions" && !valid_chat(&bytes, &policy))
+    if policy.delegated {
+        let counter = match (&parts.method, path) {
+            (&Method::GET, "/api/version") => &policy.versions,
+            (&Method::GET, "/api/tags") => &policy.tags,
+            (&Method::POST, "/v1/chat/completions") => &policy.chats,
+            _ => return Err(StatusCode::FORBIDDEN),
+        };
+        let limit = if std::ptr::eq(counter, &policy.chats) {
+            MAX_DELEGATED_CHAT
+        } else {
+            2
+        };
+        if counter
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                (used < limit).then_some(used + 1)
+            })
+            .is_err()
+        {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    } else {
+        let stage = policy.stage.load(Ordering::Relaxed);
+        let expected_path = match stage {
+            0 | 3 => "/api/version",
+            1 | 4 => "/api/tags",
+            2 => "/v1/chat/completions",
+            _ => return Err(StatusCode::FORBIDDEN),
+        };
+        if path != expected_path {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        policy.stage.store(stage + 1, Ordering::Relaxed);
+    }
+    if (path == "/v1/chat/completions" && !valid_chat(&bytes, &policy))
         || (parts.method == Method::GET && !bytes.is_empty())
     {
         return Err(StatusCode::FORBIDDEN);
     }
-    policy.stage.store(stage + 1, Ordering::Relaxed);
 
     let stream = TcpStream::connect(policy.endpoint)
         .await
@@ -345,7 +489,11 @@ mod tests {
             endpoint: "127.0.0.1:11434".parse().unwrap(),
             model: "local:approved".into(),
             max_output_tokens: 512,
+            delegated: false,
             stage: AtomicU8::new(2),
+            versions: AtomicU8::new(2),
+            tags: AtomicU8::new(2),
+            chats: AtomicU8::new(1),
         }
     }
 

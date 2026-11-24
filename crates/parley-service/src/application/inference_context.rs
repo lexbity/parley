@@ -158,49 +158,54 @@ pub(crate) async fn snapshot(
             "DUPLICATE_CONTEXT_REFERENCE".into(),
         ));
     }
-    let (party_id, party_revision, scope_projection, opportunity_ref, recipient_name) = match &request.scope {
-        ScopeSelection::Party { id, revision } => {
-            let current: Option<(String, i64, String, String)> = sqlx::query_as(
+    let (party_id, party_revision, scope_projection, opportunity_ref, recipient_name) =
+        match &request.scope {
+            ScopeSelection::Party { id, revision } => {
+                let current: Option<(String, i64, String, String)> = sqlx::query_as(
                 "SELECT id,revision,kind,name FROM entity WHERE id=? AND kind IN ('person','org') AND retired_at IS NULL",
             ).bind(id).fetch_optional(&mut *conn).await?;
-            let Some((found, current_revision, _kind, name)) = current.filter(|row| row.1 == *revision)
-            else {
-                return Err(WorkspaceError::StaleRevision);
-            };
-            (
-                found.clone(),
-                current_revision,
-                json!({"kind":"party","id":found,"revision":current_revision}),
-                None,
-                name,
-            )
-        }
-        ScopeSelection::Opportunity {
-            id,
-            revision,
-            recipient_id,
-            recipient_revision,
-        } => {
-            let current: Option<(i64, i64, String, String)> = sqlx::query_as(
+                let Some((found, current_revision, _kind, name)) =
+                    current.filter(|row| row.1 == *revision)
+                else {
+                    return Err(WorkspaceError::StaleRevision);
+                };
+                (
+                    found.clone(),
+                    current_revision,
+                    json!({"kind":"party","id":found,"revision":current_revision}),
+                    None,
+                    name,
+                )
+            }
+            ScopeSelection::Opportunity {
+                id,
+                revision,
+                recipient_id,
+                recipient_revision,
+            } => {
+                let current: Option<(i64, i64, String, String)> = sqlx::query_as(
                 "SELECT o.revision,e.revision,o.state,e.name FROM opportunity o
                  JOIN opportunity_party op ON op.opportunity_id=o.id AND op.party_id=?
                  JOIN entity e ON e.id=op.party_id WHERE o.id=? AND e.kind IN ('person','org') AND e.retired_at IS NULL",
             ).bind(recipient_id).bind(id).fetch_optional(&mut *conn).await?;
-            let Some((op_revision, recipient_rev, state, name)) = current else {
-                return Err(WorkspaceError::NotFound);
-            };
-            if op_revision != *revision || recipient_rev != *recipient_revision || state != "open" {
-                return Err(WorkspaceError::StaleRevision);
+                let Some((op_revision, recipient_rev, state, name)) = current else {
+                    return Err(WorkspaceError::NotFound);
+                };
+                if op_revision != *revision
+                    || recipient_rev != *recipient_revision
+                    || state != "open"
+                {
+                    return Err(WorkspaceError::StaleRevision);
+                }
+                (
+                    recipient_id.clone(),
+                    recipient_rev,
+                    json!({"kind":"opportunity","id":id,"revision":op_revision,"recipient_id":recipient_id,"recipient_revision":recipient_rev}),
+                    Some((id.clone(), op_revision)),
+                    name,
+                )
             }
-            (
-                recipient_id.clone(),
-                recipient_rev,
-                json!({"kind":"opportunity","id":id,"revision":op_revision,"recipient_id":recipient_id,"recipient_revision":recipient_rev}),
-                Some((id.clone(), op_revision)),
-                name,
-            )
-        }
-    };
+        };
     let segment = if let Some(segment_id) = request.segment_id.as_deref() {
         let revision: Option<i64> = sqlx::query_scalar(
             "SELECT s.revision FROM segment s JOIN segment_party sp ON sp.segment_id=s.id
@@ -349,9 +354,7 @@ pub(crate) async fn snapshot(
             .iter()
             .collect::<std::collections::BTreeSet<_>>();
         if unique.len() != request.voice_sample_ids.len() {
-            return Err(WorkspaceError::Invalid(
-                "DUPLICATE_VOICE_SAMPLE".into(),
-            ));
+            return Err(WorkspaceError::Invalid("DUPLICATE_VOICE_SAMPLE".into()));
         }
         let ids_json = serde_json::to_string(&request.voice_sample_ids)
             .map_err(|_| WorkspaceError::Invalid("VOICE_SAMPLE_INVALID".into()))?;

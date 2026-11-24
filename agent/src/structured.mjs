@@ -19,7 +19,7 @@ function reject(code) {
   throw new WorkerFailure(code)
 }
 
-async function observe(fetch, profile) {
+export async function observe(fetch, profile) {
   const version = await (await fetch(RELAY_ORIGIN + "/api/version")).json()
   if (version?.version !== profile.provider_version) reject("PROFILE_CHANGED")
   const catalog = await (await fetch(RELAY_ORIGIN + "/api/tags")).json()

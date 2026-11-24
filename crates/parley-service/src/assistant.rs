@@ -725,11 +725,11 @@ async fn add_turn(
                 asset_kind: None,
                 coach_question_id: None,
             };
-            let outcome = match crate::application::interview::start_owner_turn(&mut tx, &input).await
-            {
-                Ok(outcome) => outcome,
-                Err(error) => return interview_error(error),
-            };
+            let outcome =
+                match crate::application::interview::start_owner_turn(&mut tx, &input).await {
+                    Ok(outcome) => outcome,
+                    Err(error) => return interview_error(error),
+                };
             let cursor = match append_event(
                 &mut tx,
                 &id,
@@ -834,10 +834,9 @@ fn interview_error(error: crate::application::interview::InterviewError) -> Resp
                 "INFERENCE_BUSY",
                 "The local inference queue is full",
             );
-            response.headers_mut().insert(
-                "retry-after",
-                axum::http::HeaderValue::from_static("2"),
-            );
+            response
+                .headers_mut()
+                .insert("retry-after", axum::http::HeaderValue::from_static("2"));
             response
         }
         crate::application::interview::InterviewError::Database => super::command_error(
@@ -848,7 +847,8 @@ fn interview_error(error: crate::application::interview::InterviewError) -> Resp
 
 fn brief_error(error: crate::application::brief::BriefError) -> Response {
     match error {
-        crate::application::brief::BriefError::NotFound | crate::application::brief::BriefError::TargetNotGranted => super::error(
+        crate::application::brief::BriefError::NotFound
+        | crate::application::brief::BriefError::TargetNotGranted => super::error(
             StatusCode::NOT_FOUND,
             "BRIEF_SCOPE_NOT_FOUND",
             "Briefer scope no longer exists",
@@ -869,10 +869,9 @@ fn brief_error(error: crate::application::brief::BriefError) -> Response {
                 "INFERENCE_BUSY",
                 "The local inference queue is full",
             );
-            response.headers_mut().insert(
-                "retry-after",
-                axum::http::HeaderValue::from_static("2"),
-            );
+            response
+                .headers_mut()
+                .insert("retry-after", axum::http::HeaderValue::from_static("2"));
             response
         }
         crate::application::brief::BriefError::Database => {

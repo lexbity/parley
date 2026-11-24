@@ -175,10 +175,9 @@ impl BuildContext {
             }
         }
         for item in projection["hooks"].as_array().into_iter().flatten() {
-            if let (Some(claim_id), Some(revision)) = (
-                item["claim_id"].as_str(),
-                item["revision"].as_i64(),
-            ) {
+            if let (Some(claim_id), Some(revision)) =
+                (item["claim_id"].as_str(), item["revision"].as_i64())
+            {
                 context.ref_ids.insert(claim_id.to_owned());
                 context.hooks.push(HookItem {
                     claim_id: claim_id.to_owned(),
@@ -239,16 +238,15 @@ pub(crate) async fn validate_candidates(
     requested_rules: &BTreeSet<String>,
     optional_rules: &BTreeSet<String>,
 ) -> Result<Vec<ValidatedCandidate>, String> {
-    let output: Output = serde_json::from_value(raw.clone())
-        .map_err(|_| "RESULT_INVALID".to_owned())?;
+    let output: Output =
+        serde_json::from_value(raw.clone()).map_err(|_| "RESULT_INVALID".to_owned())?;
     if !(MIN_VARIANTS..=MAX_VARIANTS).contains(&output.variants.len()) {
         return Err("template builder must return two or three candidates".into());
     }
     let mut validated = Vec::with_capacity(output.variants.len());
     for variant in output.variants {
-        validated.push(
-            validate_variant(conn, variant, context, requested_rules, optional_rules).await?,
-        );
+        validated
+            .push(validate_variant(conn, variant, context, requested_rules, optional_rules).await?);
     }
     Ok(validated)
 }
@@ -274,11 +272,7 @@ async fn validate_variant(
         .iter()
         .map(|sentence| sentence.rules.clone())
         .collect::<Vec<_>>();
-    let detailed = parley_domain::template::validate_detailed(
-        &variant.body,
-        proof_fallback,
-        &tags,
-    );
+    let detailed = parley_domain::template::validate_detailed(&variant.body, proof_fallback, &tags);
     if !detailed.errors.is_empty() {
         return Err(detailed.errors.join("; "));
     }
@@ -305,12 +299,7 @@ async fn validate_variant(
             return Err("R3 optional omission requires the omit_sentence fallback".into());
         }
         let mut kept_sentences = Vec::new();
-        for (index, (sentence, rules)) in variant
-            .sentences
-            .iter()
-            .zip(&tags)
-            .enumerate()
-        {
+        for (index, (sentence, rules)) in variant.sentences.iter().zip(&tags).enumerate() {
             if rules.iter().any(|rule| rule == "R3") {
                 omitted.push(index);
                 continue;
@@ -620,7 +609,10 @@ pub(crate) async fn dependency_digest_for(
         if let Some(segment) = input.get("segment_scope") {
             deps.push(segment.clone());
         }
-        if let Some(revisions) = input.get("voice_sample_revisions").and_then(Value::as_object) {
+        if let Some(revisions) = input
+            .get("voice_sample_revisions")
+            .and_then(Value::as_object)
+        {
             for (id, revision) in revisions {
                 deps.push(json!({"kind":"voice_sample","id":id,"revision":revision}));
             }
@@ -679,8 +671,7 @@ pub(crate) async fn build_templates(
             return Err(receipt);
         }
         let snapshot = prepare_snapshot(&mut read, &input).await?;
-        read
-            .commit()
+        read.commit()
             .await
             .map_err(|error| crate::command_error(error.into()))?;
         Ok::<_, Response>(snapshot)
@@ -954,8 +945,7 @@ async fn prepare_snapshot(
                     "Choose at most five active voice samples",
                 ),
                 WorkspaceError::Invalid(code)
-                    if code == "DUPLICATE_VOICE_SAMPLE"
-                        || code == "VOICE_SAMPLE_INVALID" =>
+                    if code == "DUPLICATE_VOICE_SAMPLE" || code == "VOICE_SAMPLE_INVALID" =>
                 {
                     crate::error(
                         StatusCode::UNPROCESSABLE_ENTITY,
@@ -987,8 +977,7 @@ async fn prepare_snapshot(
                 scope["revision"].as_i64().unwrap_or_default(),
             ),
         };
-        let dependencies = fingerprint(&snapshot.dependency_json)
-            .map_err(crate::command_error)?;
+        let dependencies = fingerprint(&snapshot.dependency_json).map_err(crate::command_error)?;
         return Ok(Snapshot {
             dependencies,
             dependency_json: snapshot.dependency_json.clone(),
@@ -1001,31 +990,33 @@ async fn prepare_snapshot(
     }
     // General owner/segment authoring shares the same role and validator
     // without requiring a real preview.
-    let (scope_kind, scope_id, scope_revision, segment_scope) =
-        if let Some(segment) = input.segment_id.as_deref() {
-            let row: Option<(String, Option<String>, i64)> = sqlx::query_as(
-                "SELECT name,description,revision FROM segment WHERE id=?",
-            )
-            .bind(segment)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(|error| crate::command_error(error.into()))?;
-            let Some((name, description, revision)) = row else {
-                return Err(crate::error(
-                    StatusCode::NOT_FOUND,
-                    "SEGMENT_NOT_FOUND",
-                    "Template segment does not exist",
-                ));
-            };
-            (
-                "segment".to_owned(),
-                segment.to_owned(),
-                revision,
-                Some(json!({"kind":"segment","id":segment,"revision":revision,"name":name,"description":description})),
-            )
-        } else {
-            ("owner".to_owned(), "owner".to_owned(), 1, None)
+    let (scope_kind, scope_id, scope_revision, segment_scope) = if let Some(segment) =
+        input.segment_id.as_deref()
+    {
+        let row: Option<(String, Option<String>, i64)> =
+            sqlx::query_as("SELECT name,description,revision FROM segment WHERE id=?")
+                .bind(segment)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(|error| crate::command_error(error.into()))?;
+        let Some((name, description, revision)) = row else {
+            return Err(crate::error(
+                StatusCode::NOT_FOUND,
+                "SEGMENT_NOT_FOUND",
+                "Template segment does not exist",
+            ));
         };
+        (
+            "segment".to_owned(),
+            segment.to_owned(),
+            revision,
+            Some(
+                json!({"kind":"segment","id":segment,"revision":revision,"name":name,"description":description}),
+            ),
+        )
+    } else {
+        ("owner".to_owned(), "owner".to_owned(), 1, None)
+    };
     let voice_samples = resolve_voice_samples(tx, &input.voice_sample_ids).await?;
     let mut dependency_json = Vec::new();
     if let Some(segment) = &segment_scope {
@@ -1083,12 +1074,13 @@ async fn resolve_voice_samples(
             "Voice sample IDs must be unique",
         ));
     }
-    let ids_json = serde_json::to_string(voice_sample_ids)
-        .map_err(|_| crate::error(
+    let ids_json = serde_json::to_string(voice_sample_ids).map_err(|_| {
+        crate::error(
             StatusCode::BAD_REQUEST,
             "VOICE_SAMPLE_INVALID",
             "Voice sample selection is invalid",
-        ))?;
+        )
+    })?;
     let samples: Vec<(String, String, i64)> = sqlx::query_as(
         "SELECT id,text,revision FROM voice_sample WHERE id IN (SELECT value FROM json_each(?)) AND status='active' ORDER BY id",
     )
@@ -1124,31 +1116,35 @@ pub(crate) async fn list_candidates(
     if let Err(response) = crate::authenticate(&headers, &state).await {
         return response.into_response();
     }
-    let row: Result<Option<(String, String, String)>, sqlx::Error> = sqlx::query_as(
-        "SELECT role,status,epoch FROM durable_job WHERE id=?",
-    )
-    .bind(&job_id)
-    .fetch_optional(state.workspace.pool())
-    .await;
+    let row: Result<Option<(String, String, String)>, sqlx::Error> =
+        sqlx::query_as("SELECT role,status,epoch FROM durable_job WHERE id=?")
+            .bind(&job_id)
+            .fetch_optional(state.workspace.pool())
+            .await;
     let row = match row {
         Ok(row) => row,
         Err(error) => return crate::command_error(error.into()),
     };
     let Some((role, status, epoch)) = row else {
-        return crate::error(
-            StatusCode::NOT_FOUND,
-            "JOB_NOT_FOUND",
-            "Job does not exist",
-        );
+        return crate::error(StatusCode::NOT_FOUND, "JOB_NOT_FOUND", "Job does not exist");
     };
     if role != "template_builder" || epoch != state.workspace.epoch() {
-        return crate::error(
-            StatusCode::NOT_FOUND,
-            "JOB_NOT_FOUND",
-            "Job does not exist",
-        );
+        return crate::error(StatusCode::NOT_FOUND, "JOB_NOT_FOUND", "Job does not exist");
     }
-    type CandidateRow = (String, i64, String, String, String, String, String, String, i64, Option<String>, Option<String>, String);
+    type CandidateRow = (
+        String,
+        i64,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        Option<String>,
+        Option<String>,
+        String,
+    );
     let rows: Result<Vec<CandidateRow>, sqlx::Error> = sqlx::query_as(
             "SELECT id,variant_no,name,body,sentences_json,fallbacks_json,notes,preview_json,revision,saved_version_id,family_head_id,status
              FROM template_build_candidate WHERE job_id=? ORDER BY variant_no",
@@ -1162,22 +1158,37 @@ pub(crate) async fn list_candidates(
     };
     let items = rows
         .into_iter()
-        .map(|(id, variant_no, name, body, sentences, fallbacks, notes, preview, revision, saved, family_head, candidate_status)| {
-            json!({
-                "id":id,
-                "variant_no":variant_no,
-                "name":name,
-                "body":body,
-                "sentences":serde_json::from_str::<Value>(&sentences).unwrap_or_default(),
-                "fallbacks":serde_json::from_str::<Value>(&fallbacks).unwrap_or_default(),
-                "notes":notes,
-                "preview":serde_json::from_str::<Value>(&preview).unwrap_or_default(),
-                "revision":revision,
-                "status":candidate_status,
-                "saved_version_id":saved,
-                "family_head_id":family_head,
-            })
-        })
+        .map(
+            |(
+                id,
+                variant_no,
+                name,
+                body,
+                sentences,
+                fallbacks,
+                notes,
+                preview,
+                revision,
+                saved,
+                family_head,
+                candidate_status,
+            )| {
+                json!({
+                    "id":id,
+                    "variant_no":variant_no,
+                    "name":name,
+                    "body":body,
+                    "sentences":serde_json::from_str::<Value>(&sentences).unwrap_or_default(),
+                    "fallbacks":serde_json::from_str::<Value>(&fallbacks).unwrap_or_default(),
+                    "notes":notes,
+                    "preview":serde_json::from_str::<Value>(&preview).unwrap_or_default(),
+                    "revision":revision,
+                    "status":candidate_status,
+                    "saved_version_id":saved,
+                    "family_head_id":family_head,
+                })
+            },
+        )
         .collect::<Vec<_>>();
     let body = json!({
         "job_id":job_id,
@@ -1209,7 +1220,19 @@ pub(crate) async fn prepare_candidate_save(
     expected_family_head: Option<&str>,
     edits: Option<&Value>,
 ) -> Result<Value, CandidateSaveError> {
-    type CandidateSaveRow = (String, String, String, String, String, String, String, Option<String>, String, String, i64);
+    type CandidateSaveRow = (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+        i64,
+    );
     let row: Option<CandidateSaveRow> = sqlx::query_as(
             "SELECT body,sentences_json,fallbacks_json,name,notes,requested_rules_json,optional_rules_json,family_head_id,status,job_id,revision
              FROM template_build_candidate WHERE id=?",
@@ -1218,7 +1241,20 @@ pub(crate) async fn prepare_candidate_save(
         .fetch_optional(&mut **tx)
         .await
         .map_err(|_| CandidateSaveError::Database)?;
-    let Some((body, sentences, fallbacks, name, notes, requested_rules, optional_rules, family_head_id, status, job_id, revision)) = row else {
+    let Some((
+        body,
+        sentences,
+        fallbacks,
+        name,
+        notes,
+        requested_rules,
+        optional_rules,
+        family_head_id,
+        status,
+        job_id,
+        revision,
+    )) = row
+    else {
         return Err(CandidateSaveError::NotFound);
     };
     if status != "owner_review_required" {
@@ -1232,30 +1268,26 @@ pub(crate) async fn prepare_candidate_save(
     {
         return Err(CandidateSaveError::FamilyHeadChanged);
     }
-    let job: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT input_json,status,epoch FROM durable_job WHERE id=?",
-    )
-    .bind(&job_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(|_| CandidateSaveError::Database)?;
+    let job: Option<(String, String, String)> =
+        sqlx::query_as("SELECT input_json,status,epoch FROM durable_job WHERE id=?")
+            .bind(&job_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|_| CandidateSaveError::Database)?;
     let Some((job_input, job_status, _epoch)) = job else {
         return Err(CandidateSaveError::NotFound);
     };
     if job_status != "succeeded" {
         return Err(CandidateSaveError::Stale);
     }
-    let input: Value = serde_json::from_str(&job_input)
-        .map_err(|_| CandidateSaveError::Database)?;
+    let input: Value =
+        serde_json::from_str(&job_input).map_err(|_| CandidateSaveError::Database)?;
     let current_dependencies = dependency_digest_for(tx, &input)
         .await
         .map_err(|_| CandidateSaveError::DependencyStale)?;
     let frozen = input["dependency_json"]
         .as_array()
-        .map(|items| {
-            fingerprint(&Value::Array(items.clone()))
-                .unwrap_or_default()
-        })
+        .map(|items| fingerprint(&Value::Array(items.clone())).unwrap_or_default())
         .unwrap_or_default();
     if current_dependencies != frozen {
         return Err(CandidateSaveError::DependencyStale);
@@ -1266,24 +1298,36 @@ pub(crate) async fn prepare_candidate_save(
     let mut final_sentences: Value = serde_json::from_str(&sentences).unwrap_or_default();
     let mut final_fallbacks: Value = serde_json::from_str(&fallbacks).unwrap_or_default();
     if let Some(edits) = edits {
-        if let Some(name) = edits.get("edits").and_then(|value| value.get("name")).and_then(Value::as_str) {
+        if let Some(name) = edits
+            .get("edits")
+            .and_then(|value| value.get("name"))
+            .and_then(Value::as_str)
+        {
             final_name = name.to_owned();
         }
-        if let Some(body) = edits.get("edits").and_then(|value| value.get("body")).and_then(Value::as_str) {
+        if let Some(body) = edits
+            .get("edits")
+            .and_then(|value| value.get("body"))
+            .and_then(Value::as_str)
+        {
             final_body = body.to_owned();
         }
-        if let Some(sentences) = edits.get("edits").and_then(|value| value.get("sentence_rules")) {
+        if let Some(sentences) = edits
+            .get("edits")
+            .and_then(|value| value.get("sentence_rules"))
+        {
             final_sentences = sentences.clone();
         }
-        if let Some(proof) = edits.get("edits").and_then(|value| value.get("proof_fallback")).and_then(Value::as_str)
+        if let Some(proof) = edits
+            .get("edits")
+            .and_then(|value| value.get("proof_fallback"))
+            .and_then(Value::as_str)
             && let Some(object) = final_fallbacks.as_object_mut()
         {
             object.insert("proof".into(), Value::String(proof.to_owned()));
         }
     }
-    let proof_fallback = final_fallbacks
-        .get("proof")
-        .and_then(Value::as_str);
+    let proof_fallback = final_fallbacks.get("proof").and_then(Value::as_str);
     let tags: Vec<Vec<String>> = final_sentences
         .as_array()
         .ok_or(CandidateSaveError::InvalidEdits)?
@@ -1308,11 +1352,7 @@ pub(crate) async fn prepare_candidate_save(
     {
         return Err(CandidateSaveError::InvalidEdits);
     }
-    let detailed = parley_domain::template::validate_detailed(
-        &final_body,
-        proof_fallback,
-        &tags,
-    );
+    let detailed = parley_domain::template::validate_detailed(&final_body, proof_fallback, &tags);
     if !detailed.errors.is_empty() {
         return Err(CandidateSaveError::InvalidEdits);
     }
@@ -1324,15 +1364,17 @@ pub(crate) async fn prepare_candidate_save(
         .collect::<BTreeSet<_>>();
     let requested: BTreeSet<String> = serde_json::from_str(&requested_rules).unwrap_or_default();
     let optional: BTreeSet<String> = serde_json::from_str(&optional_rules).unwrap_or_default();
-    let allowed = requested.difference(&optional).cloned().collect::<BTreeSet<_>>();
+    let allowed = requested
+        .difference(&optional)
+        .cloned()
+        .collect::<BTreeSet<_>>();
     if derived != allowed {
         return Err(CandidateSaveError::InvalidEdits);
     }
     // Party facts and private identifiers must not become reusable skeleton
     // text even when an owner edits a candidate before saving it.
-    let context = BuildContext::from_projection(
-        input.get("context_projection").unwrap_or(&Value::Null),
-    );
+    let context =
+        BuildContext::from_projection(input.get("context_projection").unwrap_or(&Value::Null));
     reject_canaries(&fixed_text(&final_body), &context)
         .map_err(|_| CandidateSaveError::InvalidEdits)?;
     let _ = notes;
@@ -1406,11 +1448,7 @@ mod tests {
         json!({"variants":variants})
     }
 
-    fn variant(
-        body: &str,
-        rules: &[&str],
-        fallbacks: Value,
-    ) -> Value {
+    fn variant(body: &str, rules: &[&str], fallbacks: Value) -> Value {
         json!({
             "name":"Variant",
             "body":body,
@@ -1433,21 +1471,43 @@ mod tests {
     #[tokio::test]
     async fn ar03_candidate_validation_rejects_injected_canaries() {
         let mut db = memory_db().await;
-        let rules = ["R1"].into_iter().map(str::to_owned).collect::<BTreeSet<_>>();
+        let rules = ["R1"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
         let optional = BTreeSet::new();
         // Party name must never become reusable skeleton text.
         let raw = raw_variants(json!([
-            variant("Hi Casey Example, I can share {{gift:guide}}.", &["R1"], json!({})),
-            variant("Hi Casey Example, I can share {{gift:guide}} too.", &["R1"], json!({})),
+            variant(
+                "Hi Casey Example, I can share {{gift:guide}}.",
+                &["R1"],
+                json!({})
+            ),
+            variant(
+                "Hi Casey Example, I can share {{gift:guide}} too.",
+                &["R1"],
+                json!({})
+            ),
         ]));
         let error = validate_candidates(&mut db, &raw, &party_context(), &rules, &optional)
             .await
             .unwrap_err();
-        assert!(error.contains("Casey") || error.contains("party name"), "{error}");
+        assert!(
+            error.contains("Casey") || error.contains("party name"),
+            "{error}"
+        );
         // Private record identifiers are rejected.
         let raw = raw_variants(json!([
-            variant("See p_42 for details and {{gift:guide}}.", &["R1"], json!({})),
-            variant("See p_42 for details and {{gift:guide}} too.", &["R1"], json!({})),
+            variant(
+                "See p_42 for details and {{gift:guide}}.",
+                &["R1"],
+                json!({})
+            ),
+            variant(
+                "See p_42 for details and {{gift:guide}} too.",
+                &["R1"],
+                json!({})
+            ),
         ]));
         let error = validate_candidates(&mut db, &raw, &party_context(), &rules, &optional)
             .await
@@ -1458,8 +1518,16 @@ mod tests {
         );
         // Distinctive evidence spans are rejected.
         let raw = raw_variants(json!([
-            variant("The team reduced onboarding time from nine days to three at {{gift:guide}}.", &["R1"], json!({})),
-            variant("The team reduced onboarding time from nine days to three at {{gift:guide}} too.", &["R1"], json!({})),
+            variant(
+                "The team reduced onboarding time from nine days to three at {{gift:guide}}.",
+                &["R1"],
+                json!({})
+            ),
+            variant(
+                "The team reduced onboarding time from nine days to three at {{gift:guide}} too.",
+                &["R1"],
+                json!({})
+            ),
         ]));
         let error = validate_candidates(&mut db, &raw, &party_context(), &rules, &optional)
             .await
@@ -1467,8 +1535,16 @@ mod tests {
         assert!(error.contains("evidence span"), "{error}");
         // URLs are rejected as fixed text.
         let raw = raw_variants(json!([
-            variant("Learn more at https://example.com and {{gift:guide}}.", &["R1"], json!({})),
-            variant("Learn more at https://example.com and {{gift:guide}} too.", &["R1"], json!({})),
+            variant(
+                "Learn more at https://example.com and {{gift:guide}}.",
+                &["R1"],
+                json!({})
+            ),
+            variant(
+                "Learn more at https://example.com and {{gift:guide}} too.",
+                &["R1"],
+                json!({})
+            ),
         ]));
         let error = validate_candidates(&mut db, &raw, &party_context(), &rules, &optional)
             .await
@@ -1495,7 +1571,10 @@ mod tests {
             .into_iter()
             .map(str::to_owned)
             .collect::<BTreeSet<_>>();
-        let optional = ["R3"].into_iter().map(str::to_owned).collect::<BTreeSet<_>>();
+        let optional = ["R3"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
         let mut context = party_context();
         context.resources.push(ResourceItem {
             id: "r_9".into(),
@@ -1535,10 +1614,21 @@ mod tests {
         assert_eq!(fills[0]["ref"]["kind"], "resource");
         // Without the omit_sentence fallback the omission is invalid.
         let raw = raw_variants(json!([
-            variant("I can share {{proof:p}} with you.", &["R3"], json!({"proof":"use_alternative_template"})),
-            variant("I can share {{proof:p}} with you too.", &["R3"], json!({"proof":"use_alternative_template"})),
+            variant(
+                "I can share {{proof:p}} with you.",
+                &["R3"],
+                json!({"proof":"use_alternative_template"})
+            ),
+            variant(
+                "I can share {{proof:p}} with you too.",
+                &["R3"],
+                json!({"proof":"use_alternative_template"})
+            ),
         ]));
-        let rules_r3 = ["R3"].into_iter().map(str::to_owned).collect::<BTreeSet<_>>();
+        let rules_r3 = ["R3"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
         let error = validate_candidates(&mut db, &raw, &context, &rules_r3, &optional)
             .await
             .unwrap_err();
@@ -1548,15 +1638,22 @@ mod tests {
     #[tokio::test]
     async fn ar03_malformed_variants_are_rejected() {
         let mut db = memory_db().await;
-        let rules = ["R1"].into_iter().map(str::to_owned).collect::<BTreeSet<_>>();
+        let rules = ["R1"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
         let optional = BTreeSet::new();
         // One variant is not enough.
-        let raw = raw_variants(json!([
-            variant("I can share {{gift:guide}}.", &["R1"], json!({}))
-        ]));
-        assert!(validate_candidates(&mut db, &raw, &party_context(), &rules, &optional)
-            .await
-            .is_err());
+        let raw = raw_variants(json!([variant(
+            "I can share {{gift:guide}}.",
+            &["R1"],
+            json!({})
+        )]));
+        assert!(
+            validate_candidates(&mut db, &raw, &party_context(), &rules, &optional)
+                .await
+                .is_err()
+        );
         // Four variants exceed the bound.
         let raw = raw_variants(json!([
             variant("A {{gift:guide}}.", &["R1"], json!({})),
@@ -1564,9 +1661,11 @@ mod tests {
             variant("C {{gift:guide}}.", &["R1"], json!({})),
             variant("D {{gift:guide}}.", &["R1"], json!({})),
         ]));
-        assert!(validate_candidates(&mut db, &raw, &party_context(), &rules, &optional)
-            .await
-            .is_err());
+        assert!(
+            validate_candidates(&mut db, &raw, &party_context(), &rules, &optional)
+                .await
+                .is_err()
+        );
         // Rule tags must equal the requested set.
         let raw = raw_variants(json!([
             variant("I can share {{gift:guide}}.", &["R2"], json!({})),
@@ -1581,9 +1680,11 @@ mod tests {
             variant("I can share {{gift:guide}}.", &["R1"], json!({})),
             variant("I can share {{their_org:x}}.", &["R1"], json!({})),
         ]));
-        assert!(validate_candidates(&mut db, &raw, &party_context(), &rules, &optional)
-            .await
-            .is_err());
+        assert!(
+            validate_candidates(&mut db, &raw, &party_context(), &rules, &optional)
+                .await
+                .is_err()
+        );
     }
 
     async fn seed_hook(db: &mut SqliteConnection, party: &str, opportunity: Option<&str>) {
@@ -1651,7 +1752,10 @@ mod tests {
     async fn ar03_hook_fill_resolves_only_accepted_current_scoped_claims() {
         let mut db = memory_db().await;
         seed_hook(&mut db, "p_42", Some("o_7")).await;
-        let rules = ["R5"].into_iter().map(str::to_owned).collect::<BTreeSet<_>>();
+        let rules = ["R5"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
         let optional = BTreeSet::new();
         let mut context = BuildContext {
             party_id: Some("p_42".into()),
@@ -1687,6 +1791,9 @@ mod tests {
             .unwrap();
         let preview = &validated[0].preview;
         assert!(!preview["complete"].as_bool().unwrap(), "{preview}");
-        assert_eq!(preview["missing_slots"].as_array().unwrap()[0]["kind"], "hook");
+        assert_eq!(
+            preview["missing_slots"].as_array().unwrap()[0]["kind"],
+            "hook"
+        );
     }
 }

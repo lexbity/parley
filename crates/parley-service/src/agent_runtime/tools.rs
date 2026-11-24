@@ -143,6 +143,29 @@ pub(crate) async fn record_intent(
     Ok(())
 }
 
+/// Bind the SDK correlation id to a journaled intent when the host accepts a
+/// complete assistant turn. No tool may execute before this update commits.
+pub(crate) async fn accept_intent(
+    tx: &mut Transaction<'_, Sqlite>,
+    run_id: &str,
+    turn_no: i64,
+    ordinal: i64,
+    call_ref: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE agent_tool_intent SET call_ref=?, accepted_at=?
+          WHERE run_id=? AND turn_no=? AND ordinal=? AND state='pending'",
+    )
+    .bind(call_ref)
+    .bind(crate::now_utc())
+    .bind(run_id)
+    .bind(turn_no)
+    .bind(ordinal)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 /// The deterministic operation key for a tool intent (U08).
 pub(crate) fn tool_key(run_id: &str, turn_no: i64, ordinal: i64) -> String {
     format!("tool-{run_id}-{turn_no}-{ordinal}")
@@ -157,7 +180,7 @@ pub(crate) async fn mark_state(
     result_ref: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE agent_tool_intent SET state=?, result_ref=? WHERE run_id=? AND turn_no=? AND ordinal=? AND state IN ('pending','dispatched')",
+        "UPDATE agent_tool_intent SET state=?, result_ref=? WHERE run_id=? AND turn_no=? AND ordinal=? AND state IN ('pending','accepted','dispatched')",
     )
     .bind(state)
     .bind(result_ref)

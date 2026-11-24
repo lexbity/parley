@@ -351,8 +351,7 @@ mod tests {
     fn optional_omission_removes_only_the_dependent_sentence() {
         let body = "I can share {{proof:p}} with you. Would {{ask:question}} help?";
         let rules: Vec<Vec<String>> = vec![vec!["R3".into()], vec!["R2".into()]];
-        let (omitted, tags) =
-            apply_optional_omission(body, &rules, "R3", "omit_sentence").unwrap();
+        let (omitted, tags) = apply_optional_omission(body, &rules, "R3", "omit_sentence").unwrap();
         assert_eq!(omitted, "Would {{ask:question}} help?");
         assert_eq!(tags, vec![vec!["R2".to_owned()]]);
         assert!(apply_optional_omission(body, &rules, "R3", "use_alternative_template").is_none());

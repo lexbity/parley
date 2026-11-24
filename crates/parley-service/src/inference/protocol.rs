@@ -1,3 +1,9 @@
+//! Closed JSON Lines codec for the private Parley ↔ worker contract (AR-001).
+//!
+//! Every frame is schema-checked and additionally checked with Rust type
+//! rules that JSON Schema cannot express (safe integers, duplicate keys,
+//! depth, monotonic sequence, execution/lease binding in the supervisor).
+
 use std::{collections::BTreeSet, fmt, sync::LazyLock};
 
 use serde::{
@@ -38,6 +44,49 @@ pub enum Role {
     Briefer,
 }
 
+/// One server correlation id bound to a named, frozen tool descriptor. The
+/// SDK id never becomes business idempotency; the host assigns ordinal keys.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CallRef {
+    pub call_ref: String,
+    pub name: String,
+    pub args: Value,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DelegatedMessage {
+    pub role: String,
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<CallRef>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorizedTool {
+    pub name: String,
+    pub description: String,
+    pub parameters: Value,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolResultEntry {
+    pub ordinal: u32,
+    pub result: Value,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Continuation {
+    pub turn_no: u32,
+    pub results: Vec<ToolResultEntry>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Execute {
@@ -54,20 +103,33 @@ pub enum Execute {
         system: String,
         input: Value,
     },
+    /// One bounded Pi Agent Core step over a canonical host transcript. The
+    /// worker gets frozen descriptors only; every tool result comes from the
+    /// host journal, never from the model or an ambient tool registry.
+    Delegated {
+        profile: Profile,
+        deadline_ms: u32,
+        task: String,
+        transcript: Vec<DelegatedMessage>,
+        tools: Vec<AuthorizedTool>,
+        continuation: Option<Continuation>,
+    },
 }
 
 impl Execute {
     pub fn profile(&self) -> &Profile {
         match self {
-            Self::Probe { profile, .. } | Self::StructuredRole { profile, .. } => profile,
+            Self::Probe { profile, .. }
+            | Self::StructuredRole { profile, .. }
+            | Self::Delegated { profile, .. } => profile,
         }
     }
 
     pub fn deadline_ms(&self) -> u32 {
         match self {
-            Self::Probe { deadline_ms, .. } | Self::StructuredRole { deadline_ms, .. } => {
-                *deadline_ms
-            }
+            Self::Probe { deadline_ms, .. }
+            | Self::StructuredRole { deadline_ms, .. }
+            | Self::Delegated { deadline_ms, .. } => *deadline_ms,
         }
     }
 
@@ -79,6 +141,7 @@ impl Execute {
                     Self::StructuredRole { .. },
                     Completion::StructuredRole { .. }
                 )
+                | (Self::Delegated { .. }, Completion::Delegated { .. })
         )
     }
 }
@@ -110,6 +173,11 @@ pub enum Completion {
         usage: Usage,
         candidate: Value,
     },
+    Delegated {
+        observed: ObservedModel,
+        usage: Usage,
+        text: String,
+    },
 }
 
 impl Completion {
@@ -117,6 +185,9 @@ impl Completion {
         match self {
             Self::Probe { observed, usage }
             | Self::StructuredRole {
+                observed, usage, ..
+            }
+            | Self::Delegated {
                 observed, usage, ..
             } => (observed, usage),
         }
@@ -151,7 +222,7 @@ pub struct Namespaces {
 pub struct Hello {
     pub build: String,
     pub schema_digest: String,
-    pub capabilities: [Capability; 1],
+    pub capabilities: Vec<Capability>,
     pub namespaces: Namespaces,
 }
 
@@ -159,6 +230,7 @@ pub struct Hello {
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
     StructuredRole,
+    Delegated,
 }
 
 #[derive(Debug, Deserialize)]
@@ -167,6 +239,20 @@ pub enum WorkerFrame {
     Hello {
         seq: u32,
         body: Hello,
+    },
+    /// A complete assistant message with its ordered, correlation-bound call
+    /// list. No tool may run before the host journals and accepts this turn.
+    AssistantTurn {
+        seq: u32,
+        execution_id: String,
+        lease_id: String,
+        body: AssistantTurn,
+    },
+    ToolRequest {
+        seq: u32,
+        execution_id: String,
+        lease_id: String,
+        body: ToolRequest,
     },
     Complete {
         seq: u32,
@@ -180,6 +266,22 @@ pub enum WorkerFrame {
         lease_id: String,
         body: Failed,
     },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantTurn {
+    pub text: String,
+    pub calls: Vec<CallRef>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolRequest {
+    pub turn_no: u32,
+    pub ordinal: u32,
+    pub name: String,
+    pub args: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -203,6 +305,27 @@ pub enum HostFrame<'a> {
         lease_id: &'a str,
         body: &'a Execute,
     },
+    TurnAccepted {
+        v: u8,
+        seq: u32,
+        execution_id: &'a str,
+        lease_id: &'a str,
+        body: &'a TurnAccepted,
+    },
+    ToolResult {
+        v: u8,
+        seq: u32,
+        execution_id: &'a str,
+        lease_id: &'a str,
+        body: &'a ToolResult,
+    },
+    Suspend {
+        v: u8,
+        seq: u32,
+        execution_id: &'a str,
+        lease_id: &'a str,
+        body: &'a Suspend,
+    },
     Cancel {
         v: u8,
         seq: u32,
@@ -212,9 +335,30 @@ pub enum HostFrame<'a> {
     },
 }
 
+#[derive(Debug, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TurnAccepted {
+    pub turn_no: u32,
+    pub ordinals: Vec<u32>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolResult {
+    pub turn_no: u32,
+    pub ordinal: u32,
+    pub result: Value,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Suspend {
+    pub reason: &'static str,
+}
+
 #[derive(Serialize)]
 pub struct Ack {
-    pub capabilities: [Capability; 1],
+    pub capabilities: Vec<Capability>,
     pub max_frame_bytes: usize,
 }
 
@@ -364,6 +508,7 @@ pub async fn write_host_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use tokio::io::BufReader;
 
     fn hello() -> Vec<u8> {
@@ -374,7 +519,7 @@ mod tests {
             "body": {
                 "build": "a".repeat(64),
                 "schema_digest": "b".repeat(64),
-                "capabilities": ["structured_role"],
+                "capabilities": ["structured_role", "delegated"],
                 "namespaces": {
                     "user": "user:[1]", "net": "net:[2]", "pid": "pid:[3]",
                     "ipc": "ipc:[4]", "uts": "uts:[5]"
@@ -428,6 +573,34 @@ mod tests {
         }
     }
 
+    #[test]
+    fn ar05_delegated_frames_are_closed_and_lease_bound() {
+        let ids = ("exec_1".to_owned(), "lease_1".to_owned());
+        let turn = serde_json::json!({
+            "v":1,"kind":"assistant_turn","seq":3,
+            "execution_id":ids.0,"lease_id":ids.1,
+            "body":{"text":"","calls":[{"call_ref":"sdk_1","name":"commands__run","args":{"id":"brief.start"}}]}
+        });
+        assert!(matches!(
+            decode_worker_frame(&serde_json::to_vec(&turn).unwrap()),
+            Ok(WorkerFrame::AssistantTurn { seq: 3, .. })
+        ));
+        let mut bad = turn.clone();
+        bad["body"]["calls"][0]["call_id"] = json!("extra");
+        assert!(decode_worker_frame(&serde_json::to_vec(&bad).unwrap()).is_err());
+        let mut requests = serde_json::json!({
+            "v":1,"kind":"tool_request","seq":4,
+            "execution_id":ids.0,"lease_id":ids.1,
+            "body":{"turn_no":1,"ordinal":1,"name":"commands__run","args":{"id":"brief.start"}}
+        });
+        assert!(matches!(
+            decode_worker_frame(&serde_json::to_vec(&requests).unwrap()),
+            Ok(WorkerFrame::ToolRequest { .. })
+        ));
+        requests["body"]["ordinal"] = json!(5);
+        assert!(decode_worker_frame(&serde_json::to_vec(&requests).unwrap()).is_err());
+    }
+
     #[tokio::test]
     async fn ar01_frame_stream_handles_eof_and_truncation() {
         let mut reader = BufReader::new(&b""[..]);
@@ -454,7 +627,7 @@ mod tests {
                 v: 1,
                 seq: 1,
                 body: Ack {
-                    capabilities: [Capability::StructuredRole],
+                    capabilities: vec![Capability::StructuredRole, Capability::Delegated],
                     max_frame_bytes: MAX_FRAME,
                 },
             },

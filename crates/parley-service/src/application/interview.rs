@@ -94,7 +94,10 @@ pub(crate) async fn start_owner_turn(
             (asset_kind, revision)
         }
         None if input.create_chat_if_missing => {
-            let asset_kind = input.asset_kind.clone().ok_or(InterviewError::InvalidKind)?;
+            let asset_kind = input
+                .asset_kind
+                .clone()
+                .ok_or(InterviewError::InvalidKind)?;
             if !matches!(asset_kind.as_str(), "gift" | "proof" | "artifact") {
                 return Err(InterviewError::InvalidKind);
             }
@@ -121,13 +124,12 @@ pub(crate) async fn start_owner_turn(
         return Err(InterviewError::InvalidKind);
     }
 
-    let turn_no: i64 = sqlx::query_scalar(
-        "SELECT coalesce(max(turn_no),0)+1 FROM agent_turn WHERE chat_id=?",
-    )
-    .bind(&input.chat_id)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(|_| InterviewError::Database)?;
+    let turn_no: i64 =
+        sqlx::query_scalar("SELECT coalesce(max(turn_no),0)+1 FROM agent_turn WHERE chat_id=?")
+            .bind(&input.chat_id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|_| InterviewError::Database)?;
     let now = now_utc();
     let turn_id = new_id(&format!("{}:{turn_no}", input.chat_id));
     sqlx::query(
@@ -142,17 +144,16 @@ pub(crate) async fn start_owner_turn(
     .await
     .map_err(|_| InterviewError::Database)?;
     let next_revision = revision + 1;
-    let changed = sqlx::query(
-        "UPDATE agent_chat SET revision=?,updated_at=? WHERE id=? AND revision=?",
-    )
-    .bind(next_revision)
-    .bind(&now)
-    .bind(&input.chat_id)
-    .bind(revision)
-    .execute(&mut **tx)
-    .await
-    .map_err(|_| InterviewError::Database)?
-    .rows_affected();
+    let changed =
+        sqlx::query("UPDATE agent_chat SET revision=?,updated_at=? WHERE id=? AND revision=?")
+            .bind(next_revision)
+            .bind(&now)
+            .bind(&input.chat_id)
+            .bind(revision)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| InterviewError::Database)?
+            .rows_affected();
     if changed != 1 {
         return Err(InterviewError::StaleRevision);
     }
@@ -209,7 +210,10 @@ pub(crate) async fn start_owner_turn(
     .map_err(|_| InterviewError::Database)?;
     let (prompt_version_id, _prompt) = match active_prompt {
         Some((version_id, text)) => (version_id, text),
-        None => ("interviewer@1".to_owned(), crate::jobs::interviewer_prompt().to_owned()),
+        None => (
+            "interviewer@1".to_owned(),
+            crate::jobs::interviewer_prompt().to_owned(),
+        ),
     };
 
     let profile = active_profile_revision(tx)
@@ -248,7 +252,9 @@ pub(crate) async fn start_owner_turn(
         3,
         &input.epoch,
         None,
-        Some(&digest(format!("parley-owner:1:{}", input.epoch).as_bytes())),
+        Some(&digest(
+            format!("parley-owner:1:{}", input.epoch).as_bytes(),
+        )),
     )
     .await
     .map_err(|error| match error {

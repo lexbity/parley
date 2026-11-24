@@ -7,9 +7,8 @@ use super::{
     supervisor::Supervisor,
 };
 use crate::{
-    AppState, WorkspaceError,
-    application::template_build,
-    digest, jobs, new_id, now_utc, now_utc_offset, random_hex,
+    AppState, WorkspaceError, application::template_build, digest, jobs, new_id, now_utc,
+    now_utc_offset, random_hex,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -210,12 +209,11 @@ pub(super) fn installed_supervisor() -> Result<Supervisor, &'static str> {
 }
 
 pub(super) fn tokenizer_path(state: &AppState, profile: &Profile) -> Result<PathBuf, &'static str> {
-    Ok(
-        crate::Workspace::control_directory(state.workspace.database_path())
-            .map_err(|_| "RUNNER_INSTALL_INVALID")?
-            .join("tokenizers")
-            .join(format!("{}.json", profile.tokenizer_digest)),
-    )
+    Ok(state
+        .workspace
+        .control_path()
+        .join("tokenizers")
+        .join(format!("{}.json", profile.tokenizer_digest)))
 }
 
 async fn execute(
@@ -282,6 +280,7 @@ async fn execute(
             candidate, usage, ..
         } => Ok((candidate, usage)),
         Completion::Probe { .. } => Err("WORKER_PROTOCOL"),
+        Completion::Delegated { .. } => Err("WORKER_PROTOCOL"),
     }
 }
 
@@ -329,19 +328,13 @@ async fn publish(
     let context = template_build::BuildContext::from_projection(
         input.get("context_projection").unwrap_or(&Value::Null),
     );
-    let requested: std::collections::BTreeSet<String> =
-        lease.input.rules.iter().cloned().collect();
+    let requested: std::collections::BTreeSet<String> = lease.input.rules.iter().cloned().collect();
     let optional: std::collections::BTreeSet<String> =
         lease.input.optional_rules.iter().cloned().collect();
-    let valid = template_build::validate_candidates(
-        &mut tx,
-        &candidate,
-        &context,
-        &requested,
-        &optional,
-    )
-    .await
-    .map_err(|_| WorkspaceError::Invalid("RESULT_INVALID".into()))?;
+    let valid =
+        template_build::validate_candidates(&mut tx, &candidate, &context, &requested, &optional)
+            .await
+            .map_err(|_| WorkspaceError::Invalid("RESULT_INVALID".into()))?;
     let now = now_utc();
     let expires = now_utc_offset(30 * 24 * 60 * 60);
     let mut candidate_rows = Vec::with_capacity(valid.len());
@@ -386,7 +379,8 @@ async fn publish(
         .bind(&now)
         .execute(&mut *tx)
         .await?;
-        candidate_rows.push(json!({"id":candidate_id,"variant_no":variant_no,"name":candidate.name}));
+        candidate_rows
+            .push(json!({"id":candidate_id,"variant_no":variant_no,"name":candidate.name}));
     }
     sqlx::query("UPDATE inference_record SET model_digest=?,metadata_class='observed' WHERE id=?")
         .bind(&lease.profile.model_digest)
@@ -411,4 +405,3 @@ async fn publish(
     tx.commit().await?;
     Ok(())
 }
-
