@@ -681,13 +681,24 @@ async function pollChanges() {
   try {
     const result = await parley.getEvents(eventCursor);
     eventCursor = result.next_cursor;
-    const types = new Set(result.items.map(item => item.entity_type));
-    if (['entity', 'edge', 'claim', 'opportunity', 'resource', 'attachment'].some(type => types.has(type))) {
-      directoryRevision.value++;
+    const items = result.items;
+    const selected = selectedRecordId.value;
+    const relatedOpportunities = new Set(props.opportunities
+      .filter(opportunity => opportunity.participants.some(party => party.id === selected))
+      .map(opportunity => opportunity.id));
+    // The directory only changes on entity events. Relationship and
+    // opportunity events refresh just the selected record's slices instead of
+    // re-reading every collection on any activity in the workspace.
+    if (items.some(item => item.entity_type === 'entity')) directoryRevision.value++;
+    if (items.some(item =>
+      item.entity_id === selected
+      || (item.entity_type === 'opportunity' && relatedOpportunities.has(item.entity_id))
+      || item.entity_type === 'edge'
+      || item.entity_type === 'claim')) {
       graphRevision.value++;
       void loadDossier();
     }
-    if (!cardOpen.value && result.items.some(item => item.entity_id === selectedRecordId.value && item.event_type === 'entity.notes_updated')) void loadNotes();
+    if (!cardOpen.value && items.some(item => item.entity_id === selected && item.event_type === 'entity.notes_updated')) void loadNotes();
   } catch (reason) {
     if (reason instanceof ApiError && reason.status === 410) {
       eventCursor = '0';

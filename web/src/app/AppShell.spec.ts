@@ -19,6 +19,7 @@ function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [],
 }): void {
   vi.spyOn(parley, 'connect').mockResolvedValue();
   vi.spyOn(commands, 'query').mockResolvedValue({ contract_major: 1, manifest_version: 'sha256:test', truncated: false, commands: [] });
+  vi.spyOn(parley, 'getEvents').mockResolvedValue({ items: [], next_cursor: '0', observed_cursor: '0' });
   vi.spyOn(parley, 'listResources').mockResolvedValue([]);
   vi.spyOn(parley, 'listParties').mockResolvedValue(parties);
   vi.spyOn(parley, 'listSources').mockResolvedValue(sources);
@@ -478,6 +479,41 @@ describe('AppShell', () => {
     // microtask cycle behind the other work flushed above; wait for it.
     await vi.waitFor(() => expect(acknowledge).toHaveBeenCalledWith('r2', false));
     expect(wrapper.text()).toContain('clipboard unavailable');
+    wrapper.unmount();
+  });
+
+  it('skips large collection refetches on tab switches when no events occurred', async () => {
+    stubWorkspace();
+    const listParties = vi.spyOn(parley, 'listParties');
+    const listOpportunities = vi.spyOn(parley, 'listOpportunities');
+    const getEvents = vi.spyOn(parley, 'getEvents');
+    const wrapper = mount(AppShell);
+    await flushPromises();
+
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
+    await flushPromises();
+    expect(listParties).toHaveBeenCalledTimes(1);
+    expect(listOpportunities).toHaveBeenCalledTimes(1);
+
+    // Queue shares the parties collection, so it reads it once; returning to
+    // Parties with no new events must not re-read either unbounded collection.
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(3)').trigger('click');
+    await flushPromises();
+    expect(listParties).toHaveBeenCalledTimes(2);
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
+    await flushPromises();
+    expect(listParties).toHaveBeenCalledTimes(2);
+    expect(listOpportunities).toHaveBeenCalledTimes(1);
+    expect(getEvents).toHaveBeenCalled();
+
+    // A new event invalidates the cached collections on the next activation.
+    getEvents.mockResolvedValueOnce({
+      items: [{ cursor: '9', event_id: 'e9', entity_type: 'entity', entity_id: 'p1', revision: 2, event_type: 'entity.created', occurred_at: '2026-11-24T00:00:00Z', payload: {} }],
+      next_cursor: '9', observed_cursor: '9',
+    });
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(3)').trigger('click');
+    await flushPromises();
+    expect(listParties).toHaveBeenCalledTimes(3);
     wrapper.unmount();
   });
 

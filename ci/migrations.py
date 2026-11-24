@@ -57,6 +57,7 @@ SLICE_MIGRATIONS: dict[str, list[str]] = {
         "0015_resource_cards.sql",
         "0016_party_private_staging.sql",
         "0017_card_retirement.sql",
+        "0031_opportunity_updated_index.sql",
     ],
     "r01": ["0018_resource_board.sql", "0023_resource_board_controls.sql"],
     "r02": [],

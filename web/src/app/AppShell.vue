@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /* global MouseEvent, HTMLElement, EventTarget, KeyboardEvent */
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { ApiError, parley, type AdminOperation, type GraphEntity, type Material, type OpportunitySummary, type ProviderConfig, type ProviderPairing, type ProviderSettings, type StructuredReadiness, type Resource, type SavedSource } from '../api/client';
 import type { CommandDescriptor, CommandManifest, CommandSuccess } from '../api/commands';
 import { tabs } from './tabs';
@@ -30,7 +30,10 @@ import OutputWorkspace from '../features/output/OutputWorkspace.vue';
 const qualifiedTabs = tabs;
 const route = ref(resolveRoute(globalThis.location.pathname));
 const active = computed(() => route.value.tab);
-const parties = ref<GraphEntity[]>([]);
+// These collections are replaced wholesale after a read, never mutated in
+// place. shallowRef keeps Vue from deep-proxying tens of thousands of records
+// on every tab activation; children receive new array identities on refresh.
+const parties = shallowRef<GraphEntity[]>([]);
 const openedTabs = ref(new Set([route.value.tab]));
 const interviewerOpen = ref(false);
 const interviewerMounted = ref(false);
@@ -44,11 +47,11 @@ function toggleInterviewer() {
 const resourcesWorkspace = ref<InstanceType<typeof ResourcesWorkspace> | null>(null);
 const partyDesk = ref<InstanceType<typeof PartyDesk> | null>(null);
 const lastTabPaths = new Map<string, string>();
-const sources = ref<SavedSource[]>([]);
-const opportunities = ref<OpportunitySummary[]>([]);
-const outputs = ref<Material[]>([]);
+const sources = shallowRef<SavedSource[]>([]);
+const opportunities = shallowRef<OpportunitySummary[]>([]);
+const outputs = shallowRef<Material[]>([]);
 const outputError = ref('');
-const resources = ref<Resource[]>([]);
+const resources = shallowRef<Resource[]>([]);
 const status = ref('');
 const error = ref('');
 const busy = ref(false);
@@ -185,7 +188,7 @@ async function revalidatePalette(): Promise<void> {
 
 function onPaletteCommitted(result: CommandSuccess) {
   status.value = result.dry_run ? 'Command dry run completed.' : 'Command committed and visible records refreshed.';
-  void refreshTab();
+  void refreshTab(active.value, true);
   sessionEventReader.hint();
   globalThis.dispatchEvent(new globalThis.CustomEvent('parley:command-committed', { detail: result }));
 }
@@ -239,11 +242,29 @@ function onGlobalKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape' && interviewerOpen.value && !paletteOpen.value) toggleInterviewer();
 }
 
+// A tab switch is the synchronization point for changes made outside this
+// shell (delegated runs, API clients, another browser tab). One bounded event
+// read decides whether the large collections are stale; when nothing changed
+// we keep the current arrays instead of re-reading two multi-megabyte
+// endpoints on every activation.
+let lastObservedCursor = '0';
+const loadedTabs = new Set<string>();
+async function workspaceChanged(): Promise<boolean> {
+  try {
+    const page = await parley.getEvents(lastObservedCursor);
+    lastObservedCursor = page.observed_cursor || page.next_cursor || lastObservedCursor;
+    return page.items.length > 0;
+  } catch {
+    return true; // fail open: an unreadable event stream must not hide records
+  }
+}
+
 let tabRequest = 0;
-async function refreshTab(tab = active.value) {
+async function refreshTab(tab = active.value, force = false) {
   const request = ++tabRequest;
   if (tab === 'Output') outputError.value = '';
   try {
+    if (!force && loadedTabs.has(tab) && !(await workspaceChanged())) return;
     if (tab === 'Parties') {
       const result = await Promise.all([parley.listParties(), parley.listSources(), parley.listOpportunities()]);
       if (request === tabRequest) [parties.value, sources.value, opportunities.value] = result;
@@ -257,6 +278,7 @@ async function refreshTab(tab = active.value) {
       const [directory] = await Promise.all([parley.listParties(), loadProvider()]);
       if (request === tabRequest) parties.value = directory;
     }
+    if (request === tabRequest) loadedTabs.add(tab);
   } catch (reason) {
     if (request === tabRequest) {
       const message = reason instanceof Error ? reason.message : `Could not load ${tab}.`;
@@ -264,6 +286,13 @@ async function refreshTab(tab = active.value) {
       else error.value = message;
     }
   }
+}
+
+function onCollectionChanged() {
+  void refreshTab(active.value, true);
+}
+function onOutputChanged() {
+  void refreshTab('Output', true);
 }
 
 let historyIndex = Number(globalThis.history.state?.parleyIndex ?? 0);
@@ -415,7 +444,7 @@ async function applyWorkspaceChange(operation: AdminOperation, epoch: string, an
   try {
     if (operation === 'restore' || operation === 'erase_workspace') await parley.refreshSession();
     globalThis.dispatchEvent(new globalThis.CustomEvent('parley:workspace-changed', { detail: { operation, epoch } }));
-    await refreshTab();
+    await refreshTab(active.value, true);
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Workspace records changed; reload the current workspace before continuing.'; }
 }
 
@@ -574,7 +603,7 @@ watch(route, () => {
         :active="active === 'Parties'"
         :inbox="route.tab === 'Parties' && route.location === 'inbox'"
         :party-id="route.tab === 'Parties' ? route.recordId ?? undefined : undefined"
-        @changed="refreshTab"
+        @changed="onCollectionChanged"
         @navigate="navigate"
       />
       <section
@@ -735,7 +764,7 @@ watch(route, () => {
             id="settings-data"
             tabindex="-1"
             :parties="parties"
-            @erased="refreshTab"
+            @erased="onCollectionChanged"
           />
         </div>
       </section>
@@ -765,7 +794,7 @@ watch(route, () => {
           {{ outputError }}
           <button
             type="button"
-            @click="refreshTab('Output')"
+            @click="refreshTab('Output', true)"
           >
             Retry
           </button>
@@ -779,7 +808,7 @@ watch(route, () => {
           :active="active === 'Output'"
           :record-id="route.tab === 'Output' ? route.recordId : null"
           :location="route.tab === 'Output' ? route.location : null"
-          @changed="refreshTab('Output')"
+          @changed="onOutputChanged"
           @navigate="navigate"
         />
       </div>

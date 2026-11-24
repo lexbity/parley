@@ -525,11 +525,20 @@ async function pollChanges() {
   try {
     const page = await parley.getEvents(eventCursor);
     eventCursor = page.next_cursor;
-    const changed = page.items.some(item =>
-      ['resource', 'resource_column', 'entity', 'entity_attachment', 'edge', 'claim', 'send', 'material', 'opportunity'].includes(item.entity_type));
-    if (!changed) return;
-    if (editorDirty.value) pendingRefresh = true;
-    else await refresh();
+    // A board read walks every page, so only re-run it for board-structure
+    // events. Relationship and inspected-record events refresh their own slice.
+    const boardChanged = page.items.some(item =>
+      ['resource', 'resource_column', 'entity_attachment', 'send', 'material'].includes(item.entity_type));
+    const graphChanged = page.items.some(item =>
+      ['edge', 'claim'].includes(item.entity_type));
+    const detailsChanged = page.items.some(item =>
+      ['entity', 'resource'].includes(item.entity_type)
+      && (!inspectedId.value || item.entity_id === inspectedId.value));
+    if (!boardChanged && !graphChanged && !detailsChanged) return;
+    if (editorDirty.value) { pendingRefresh = true; return; }
+    if (boardChanged) await refreshBoard();
+    else if (graphChanged && rootId.value) await loadGraph();
+    if (boardChanged || detailsChanged) await loadDetails();
   } catch (reason) {
     if (reason instanceof ApiError && [409, 410].includes(reason.status)) {
       if (editorDirty.value) pendingRefresh = true;
