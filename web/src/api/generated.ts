@@ -1271,6 +1271,106 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List owner-authorized approvals with an opaque cursor.
+         * @description Owner session, mutation token and epoch are required. The status filter accepts the closed approval status set. Active rows carry the exact normalized args and the observational preview; terminal rows omit them.
+         */
+        get: operations["listApprovals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one approval detail (owner-only).
+         * @description Active records include the exact private args and the preview; any terminal status omits both. Unknown, foreign or epoch-stale ids return the same 404 as a missing record.
+         */
+        get: operations["getApproval"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/{id}/grant": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve one frozen destructive intent.
+         * @description Posts the expected approval revision and the preview digest seen by the owner. A decision on a changed revision returns 409 approval_stale; an exact replay with the same Idempotency-Key returns the original outcome. A deny at the current revision revokes a previously granted approval.
+         */
+        post: operations["grantApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/{id}/deny": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Deny one frozen destructive intent (revoking a grant if granted).
+         * @description Same decision envelope as grant. A deny at the current revision of a granted approval revokes it; terminal denials replay exactly.
+         */
+        post: operations["denyApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/command-notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Owner-only fetch-based SSE stream for command signals.
+         * @description Same-origin fetch-based SSE with owner headers. Emits only approvals_changed, run_changed and epoch_changed signals plus a 15 s heartbeat; clients re-read authoritative state after each signal and after reconnect. HTTP polling is the fallback when the stream is unavailable.
+         */
+        get: operations["commandNotifications"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/insights": {
         parameters: {
             query?: never;
@@ -1319,6 +1419,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/coach/context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["generateContextCoachQuestions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/coach/questions/{id}/answer": {
         parameters: {
             query?: never;
@@ -1345,6 +1461,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["dismissCoachQuestion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/coach/questions/{id}/defer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["deferCoachQuestion"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2535,19 +2667,44 @@ export interface components {
             job_id?: string | null;
             job_status?: string | null;
         };
-        ProviderConfig: {
+        ProviderSettings: {
             endpoint: string;
             model: string;
             num_ctx: number;
             num_predict: number;
             locale: string;
         };
+        ProviderConfig: components["schemas"]["ProviderSettings"] & {
+            profile_revision: number;
+            pairing: components["schemas"]["ProviderPairing"] | null;
+            structured: components["schemas"]["StructuredReadiness"];
+        };
+        ProviderUpdate: components["schemas"]["ProviderSettings"] & {
+            expected_profile_revision: number;
+            pairing?: components["schemas"]["ProviderPairing"];
+        };
+        ProviderPairing: {
+            provider_version: string;
+            model_digest: string;
+            tokenizer_digest: string;
+            template_tokens: number;
+        };
+        StructuredReadiness: {
+            /** @enum {unknown} */
+            status: "unqualified" | "queued" | "running" | "probe_succeeded" | "failed" | "ready";
+            diagnostic: string | null;
+            /** Format: date-time */
+            checked_at: string | null;
+            probe_id: string | null;
+        };
         ProviderHealth: {
             available: boolean;
             model: string;
             models: string[];
             message: string;
+            structured?: components["schemas"]["StructuredReadiness"];
         };
+        ProviderProbeReceipt: components["schemas"]["ProviderHealth"] & Record<string, never>;
         ExtractorProposal: {
             id: string;
             kind: string;
@@ -2556,9 +2713,54 @@ export interface components {
             };
             status: string;
         };
-        ExtractorJob: {
+        OwnerJob: components["schemas"]["ExtractorJob"] | components["schemas"]["CoachJob"] | components["schemas"]["OtherRoleJob"];
+        CoachJob: {
             id: string;
-            role: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            role: "coach";
+            /** @enum {unknown} */
+            status: "queued" | "running" | "succeeded" | "invalid" | "failed" | "cancelled";
+            state_revision: number;
+            attempt_count: number;
+            scope: {
+                /** @constant */
+                kind: "weekly";
+                period: components["schemas"]["CoachPeriod"];
+            };
+            progress: null;
+            error_code: string | null;
+            review_ref: null | {
+                /** @constant */
+                kind: "coach_report";
+                id: string;
+            };
+        };
+        OtherRoleJob: components["schemas"]["JobFields"] & {
+            /** @enum {unknown} */
+            role: "interviewer" | "briefer" | "template_builder" | "matcher" | "composer" | "linter";
+        } & {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            role: "interviewer" | "briefer" | "template_builder" | "matcher" | "composer" | "linter";
+        };
+        ExtractorJob: components["schemas"]["JobFields"] & {
+            /** @constant */
+            role: "extractor";
+            source_occurrence_id: string;
+        } & {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            role: "extractor";
+        };
+        JobFields: {
+            id: string;
             status: string;
             current_attempt: number;
             max_attempts: number;
@@ -2567,9 +2769,14 @@ export interface components {
             injection_suspected: boolean;
             last_error_code?: string | null;
             last_error?: string | null;
-            source_occurrence_id: string;
+            source_occurrence_id: string | null;
+            scope_kind?: string;
+            scope_id?: string;
             proposal_batch_id?: string | null;
             proposals: components["schemas"]["ExtractorProposal"][];
+            result?: {
+                [key: string]: unknown;
+            } | null;
         };
         ProposalResolution: {
             decisions: {
@@ -3236,13 +3443,91 @@ export interface components {
         };
         CoachQuestion: {
             id: string;
+            question_key: string;
+            revision: number;
             kind: string;
-            target: Record<string, never>;
+            target: {
+                [key: string]: unknown;
+            };
+            selector: components["schemas"]["CoachSelector"];
             text: string;
             priority: number;
-            impact?: number;
+            impact: number;
             /** @enum {string} */
-            status?: "open" | "answered" | "dismissed" | "expired";
+            status: "open" | "answer_pending" | "answered" | "dismissed" | "deferred" | "superseded";
+            /** @enum {string} */
+            action: "research" | "interviewer";
+            /** Format: date-time */
+            deferred_until?: string | null;
+            dependency_digest?: string | null;
+            suggested_resource_ref?: string | null;
+        };
+        CoachSelector: {
+            /** @constant */
+            kind: "weekly";
+            period: components["schemas"]["CoachPeriod"];
+        } | {
+            /** @constant */
+            kind: "party";
+            id: string;
+            revision: number;
+        } | {
+            /** @constant */
+            kind: "opportunity";
+            id: string;
+            revision: number;
+            recipient_id: string;
+            recipient_revision: number;
+        };
+        CoachContextRequest: {
+            scope: {
+                /** @constant */
+                kind: "party";
+                id: string;
+                revision: number;
+            } | {
+                /** @constant */
+                kind: "opportunity";
+                id: string;
+                revision: number;
+                recipient_id: string;
+                recipient_revision: number;
+            };
+            segment_id?: string;
+            evidence?: {
+                claim_id: string;
+                revision: number;
+            }[];
+            resource_ids?: string[];
+        };
+        CoachContextSnapshot: {
+            /** @constant */
+            status: "current";
+            scope: components["schemas"]["CoachSelector"];
+            coverage: {
+                current: number;
+                missing: number;
+                stale: number;
+                no_match: number;
+            };
+            questions: components["schemas"]["CoachQuestion"][];
+        };
+        CoachQuestionRevision: {
+            expected_revision: number;
+            question_key: string;
+        };
+        CoachQuestionDefer: {
+            expected_revision: number;
+            question_key: string;
+            defer_days?: number;
+        };
+        CoachQuestionDisposition: {
+            id: string;
+            /** @constant */
+            status: "deferred";
+            revision: number;
+            /** Format: date-time */
+            deferred_until: string;
         };
         CoachQuestionList: {
             items: components["schemas"]["CoachQuestion"][];
@@ -3251,15 +3536,41 @@ export interface components {
             max_open?: 5;
         };
         CoachAnswerInput: {
-            answer: string;
-            interviewer_chat_id: string;
+            answer: string | {
+                [key: string]: unknown;
+            };
+            interviewer_chat_id?: string;
+            expected_revision: number;
+            question_key: string;
         };
-        CoachReport: {
-            report: Record<string, never> | null;
-            questions: string[];
-            period: string | null;
+        CoachPeriod: string;
+        CoachSnapshot: {
+            report: {
+                [key: string]: unknown;
+            } | null;
+            period: components["schemas"]["CoachPeriod"];
+            /** Format: date-time */
+            as_of: string;
             input_digest: string | null;
+            active_job_id: string | null;
+            latest_job_id: string | null;
+            coverage: {
+                current: number;
+                missing: number;
+                stale: number;
+                no_match: number;
+            };
+            observations: components["schemas"]["CoachObservation"][];
         };
+        CoachObservation: {
+            reason: components["schemas"]["CoachReason"];
+            target: {
+                [key: string]: unknown;
+            };
+            impact: number;
+        };
+        /** @enum {unknown} */
+        CoachReason: "assessment_check" | "missing_proof" | "missing_gift" | "missing_artifact" | "jargon_check" | "template_review" | "capacity_update" | "missing_identity" | "insight";
         RateEstimate: {
             numerator: number;
             denominator: number;
@@ -3269,8 +3580,32 @@ export interface components {
             /** @enum {string} */
             status: "measured" | "insufficient_observations";
         };
+        InsightsInterval: {
+            lower_95: number;
+            upper_95: number;
+        };
+        InsightsMeasure: {
+            k: number;
+            n: number;
+            interval_95: components["schemas"]["InsightsInterval"] | null;
+        };
         InsightsReport: {
-            [key: string]: unknown;
+            /** Format: date-time */
+            as_of: string;
+            event_cursor: string;
+            effective_outcomes: {
+                class: string;
+                count: number;
+            }[];
+            rates: (components["schemas"]["InsightsMeasure"] & {
+                /** @enum {unknown} */
+                metric: "reply_rate" | "advance_rate";
+            })[];
+            strata: {
+                segment_id: string;
+                reply_rate: components["schemas"]["InsightsMeasure"];
+            }[];
+            comparisons: unknown[];
         };
         OutcomeCorrectionInput: {
             expected_revision: number;
@@ -3758,6 +4093,38 @@ export interface components {
             run_id: string;
             /** @enum {string} */
             state: "cancelled" | "unchanged";
+        };
+        /** @description Owner-visible approval row. Active rows include args and preview; terminal rows omit them (FR-8). */
+        ApprovalListItem: {
+            id: string;
+            command_id: string;
+            command_version: number;
+            revision: number;
+            /** @enum {string} */
+            status: "pending" | "granted" | "consumed" | "denied" | "revoked" | "expired" | "stale";
+            /** Format: date-time */
+            expires_at: string;
+            preview_digest: string;
+            title?: string;
+            impacted_versions_count?: number;
+            run_id?: string;
+            args?: Record<string, never>;
+            preview?: Record<string, never>;
+        };
+        ApprovalList: {
+            items: components["schemas"]["ApprovalListItem"][];
+            next_cursor: string | null;
+        };
+        ApprovalDetail: components["schemas"]["ApprovalListItem"];
+        ApprovalDecisionInput: {
+            expected_revision: number;
+            preview_digest: string;
+        };
+        ApprovalDecisionResult: {
+            id: string;
+            revision: number;
+            /** @enum {string} */
+            status: "pending" | "granted" | "consumed" | "denied" | "revoked" | "expired" | "stale";
         };
         /** @description Stable delegated-run error envelope; details are typed path/problem pairs, never model text. */
         AgentErrorEnvelope: {
@@ -4475,7 +4842,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Local Extractor provider configuration. */
+            /** @description Saved local provider profile and cached structured-output readiness. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -4499,7 +4866,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ProviderConfig"];
+                "application/json": components["schemas"]["ProviderUpdate"];
             };
         };
         responses: {
@@ -4510,6 +4877,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            412: components["responses"]["Error"];
             422: components["responses"]["Error"];
         };
     };
@@ -4551,13 +4919,22 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Local model availability and installed tags. */
+            /** @description Local model connectivity and installed tags. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["ProviderHealth"];
+                };
+            };
+            /** @description Durable structured-output probe queued for the saved profile. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderProbeReceipt"];
                 };
             };
         };
@@ -4582,7 +4959,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ExtractorJob"];
+                    "application/json": components["schemas"]["OwnerJob"];
                 };
             };
             404: components["responses"]["Error"];
@@ -4594,6 +4971,7 @@ export interface operations {
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
                 "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 id: string;
@@ -4609,6 +4987,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            404: components["responses"]["Error"];
             409: components["responses"]["Error"];
         };
     };
@@ -6697,6 +7076,176 @@ export interface operations {
             503: components["responses"]["AgentError"];
         };
     };
+    listApprovals: {
+        parameters: {
+            query?: {
+                status?: "pending" | "granted" | "consumed" | "denied" | "revoked" | "expired" | "stale";
+                limit?: number;
+                cursor?: string;
+            };
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Paginated approval list; never cached or shared. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalList"];
+                };
+            };
+            400: components["responses"]["AgentError"];
+            401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
+        };
+    };
+    getApproval: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Approval detail with args and preview for active rows. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalDetail"];
+                };
+            };
+            401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
+            404: components["responses"]["AgentError"];
+        };
+    };
+    grantApproval: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                /** @description Bounded run/cancel key. A retry with the same key and epoch reuses the original run. */
+                "Idempotency-Key": components["parameters"]["AgentIdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalDecisionInput"];
+            };
+        };
+        responses: {
+            /** @description Decision committed; returns the new approval revision and status. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalDecisionResult"];
+                };
+            };
+            400: components["responses"]["AgentError"];
+            401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
+            404: components["responses"]["AgentError"];
+            409: components["responses"]["AgentError"];
+            422: components["responses"]["AgentError"];
+            503: components["responses"]["AgentError"];
+        };
+    };
+    denyApproval: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                /** @description Bounded run/cancel key. A retry with the same key and epoch reuses the original run. */
+                "Idempotency-Key": components["parameters"]["AgentIdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalDecisionInput"];
+            };
+        };
+        responses: {
+            /** @description Decision committed; returns the new approval revision and status. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalDecisionResult"];
+                };
+            };
+            400: components["responses"]["AgentError"];
+            401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
+            404: components["responses"]["AgentError"];
+            409: components["responses"]["AgentError"];
+            422: components["responses"]["AgentError"];
+            503: components["responses"]["AgentError"];
+        };
+    };
+    commandNotifications: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description text/event-stream with bounded signals and heartbeat. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
+            503: components["responses"]["AgentError"];
+        };
+    };
     getInsights: {
         parameters: {
             query?: {
@@ -6734,13 +7283,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Latest Coach report and pending questions. */
+            /** @description Current weekly assessment and discoverable Coach job. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CoachReport"];
+                    "application/json": components["schemas"]["CoachSnapshot"];
                 };
             };
         };
@@ -6759,11 +7308,20 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    period: string;
+                    period?: components["schemas"]["CoachPeriod"];
                 };
             };
         };
         responses: {
+            /** @description Current deterministic snapshot when no new wording is needed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoachSnapshot"];
+                };
+            };
             /** @description Bounded Coach job queued from deterministic evidence. */
             202: {
                 headers: {
@@ -6774,11 +7332,19 @@ export interface operations {
                 };
             };
             409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+            503: components["responses"]["Error"];
         };
     };
     listCoachQuestions: {
         parameters: {
-            query?: never;
+            query?: {
+                scope_kind?: "weekly" | "party" | "opportunity";
+                scope_id?: string;
+                scope_period?: components["schemas"]["CoachPeriod"];
+                recipient_id?: string;
+            };
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
                 "X-Parley-Epoch": components["parameters"]["Epoch"];
@@ -6797,6 +7363,48 @@ export interface operations {
                     "application/json": components["schemas"]["CoachQuestionList"];
                 };
             };
+        };
+    };
+    generateContextCoachQuestions: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoachContextRequest"];
+            };
+        };
+        responses: {
+            /** @description Current deterministic contextual assessment with no new wording required. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoachContextSnapshot"];
+                };
+            };
+            /** @description Context-bound Coach question job queued. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueuedJob"];
+                };
+            };
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+            503: components["responses"]["Error"];
         };
     };
     answerCoachQuestion: {
@@ -6818,7 +7426,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Owner answer routed into the relevant Interviewer context. */
+            /** @description Owner answer routed into an owner Interviewer context; when omitted */
             202: {
                 headers: {
                     [name: string]: unknown;
@@ -6843,7 +7451,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoachQuestionRevision"];
+            };
+        };
         responses: {
             /** @description Question disposition recorded. */
             200: {
@@ -6851,9 +7463,45 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CoachQuestion"];
+                    "application/json": {
+                        id: string;
+                        /** @constant */
+                        status: "dismissed";
+                        revision: number;
+                    };
                 };
             };
+        };
+    };
+    deferCoachQuestion: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoachQuestionDefer"];
+            };
+        };
+        responses: {
+            /** @description Question deferred for a bounded owner-timezone interval. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoachQuestionDisposition"];
+                };
+            };
+            409: components["responses"]["Error"];
         };
     };
     listSends: {

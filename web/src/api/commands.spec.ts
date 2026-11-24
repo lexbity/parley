@@ -210,3 +210,124 @@ describe('Agent run client (U02)', () => {
     await expect(commands.getRun('missing')).rejects.toMatchObject({ status: 404, code: 'target_unavailable' });
   });
 });
+
+function stubFetchWithHeaders(body: unknown, status: number, location: string | null) {
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (name: string) => (name.toLowerCase() === 'location' ? location : null) },
+    json: async () => body,
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  vi.spyOn(parley, 'connect').mockResolvedValue();
+  vi.spyOn(parley, 'authHeaders').mockImplementation((extra = {}) => ({
+    Accept: 'application/json', 'Content-Type': 'application/json',
+    'X-Parley-Token': 'token-1', 'X-Parley-Epoch': 'epoch-1', ...extra,
+  }));
+  return fetchMock;
+}
+
+describe('CommandClient approvals (U08)', () => {
+  const approvalRow = {
+    id: 'aprv-1', command_id: 'resource.retire', command_version: 1, revision: 1,
+    status: 'pending', expires_at: '2026-11-23T00:10:00Z',
+    preview_digest: 'a'.repeat(64), title: 'Gift A', impacted_versions_count: 2,
+    args: { resource_id: 'res-1' }, preview: { title: 'Gift A' },
+  };
+
+  it('lists approvals and decodes active rows', async () => {
+    stubFetch({ items: [approvalRow], next_cursor: null });
+    const result = await commands.listApprovals({ status: 'pending' });
+    expect(result.items[0]?.status).toBe('pending');
+    expect(result.items[0]?.args).toEqual({ resource_id: 'res-1' });
+  });
+
+  it('reads one approval detail', async () => {
+    stubFetch(approvalRow);
+    const detail = await commands.getApproval('aprv-1');
+    expect(detail.preview_digest).toHaveLength(64);
+    expect(detail.preview?.title).toBe('Gift A');
+  });
+
+  it('grants and denies with a decision envelope and operation key', async () => {
+    const grantFetch = stubFetch({ id: 'aprv-1', revision: 2, status: 'granted' });
+    const granted = await commands.grantApproval('aprv-1', { expected_revision: 1, preview_digest: 'a'.repeat(64) }, 'decision-1');
+    expect(granted.status).toBe('granted');
+    const [, init] = grantFetch.mock.calls[0]! as [string, RequestInit];
+    expect((init.headers as Record<string, string>)['Idempotency-Key']).toBe('decision-1');
+    expect(JSON.parse(String(init.body))).toEqual({ expected_revision: 1, preview_digest: 'a'.repeat(64) });
+    stubFetch({ id: 'aprv-1', revision: 2, status: 'denied' });
+    expect((await commands.denyApproval('aprv-1', { expected_revision: 1, preview_digest: 'a'.repeat(64) }, 'decision-2')).status).toBe('denied');
+  });
+
+  it('resumes an approved invocation with the frozen key and approval id', async () => {
+    stubFetch({ ok: true, command_version: 1, audit_id: 'aud_1', replayed: false, dry_run: false, result: { readiness: 'retired' } });
+    const receipt = await commands.invoke('resource.retire', {
+      version: 1,
+      args: { resource_id: 'res-1', expected_card_revision: 1, expected_content_revision: 1 },
+      dry_run: false,
+      approval_id: 'aprv-1',
+    }, 'frozen-key');
+    expect(receipt.result.readiness).toBe('retired');
+  });
+
+  it('surfaces approval_required with the owner-only location', async () => {
+    stubFetchWithHeaders(
+      { ok: false, command_version: 1, audit_id: 'aud_1', error: { code: 'approval_required', message: 'Review the requested retirement in Approvals.', details: [] } },
+      403,
+      '/api/v1/approvals/aprv-1',
+    );
+    await expect(commands.invoke('resource.retire', { version: 1, args: { resource_id: 'res-1' }, dry_run: false }, 'k'))
+      .rejects.toMatchObject({ status: 403, code: 'approval_required', approvalLocation: '/api/v1/approvals/aprv-1' });
+  });
+});
+
+describe('CommandClient approval decoding (U08)', () => {
+  it('rejects malformed approval lists and decisions', async () => {
+    stubFetch({ items: 'none', next_cursor: null });
+    await expect(commands.listApprovals()).rejects.toThrow(/approval list is malformed/);
+    stubFetch({ id: 'aprv-1', revision: 1, status: 'pending' });
+    await expect(commands.getApproval('aprv-1')).rejects.toThrow(/approval row is malformed/);
+    stubFetch({ id: 'aprv-1', command_id: 'resource.retire', command_version: 1, revision: 1, status: 'maybe', expires_at: 'x', preview_digest: 'a'.repeat(64) });
+    await expect(commands.getApproval('aprv-1')).rejects.toThrow(/unknown status/);
+    stubFetch({ id: 'aprv-1', status: 'granted' });
+    await expect(commands.grantApproval('aprv-1', { expected_revision: 1, preview_digest: 'a'.repeat(64) }, 'k'))
+      .rejects.toThrow(/decision receipt is malformed/);
+  });
+});
+
+describe('CommandClient notification stream (U08)', () => {
+  it('parses SSE signals and closes on cleanup', async () => {
+    let index = 0;
+    const chunks = [
+      'event: epoch_changed\ndata: {"epoch":"e1"}\n\n',
+      ': heartbeat\n\n',
+      'event: approvals_changed\ndata: {}\n\n',
+      'event: run_changed\ndata: {}\n\n',
+    ];
+    const reader = {
+      read: async () => {
+        if (index < chunks.length) return { done: false, value: new TextEncoder().encode(chunks[index++]) };
+        return { done: true, value: undefined };
+      },
+    };
+    const abort = vi.fn();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: { getReader: () => reader },
+      headers: { get: () => null },
+    }));
+    vi.spyOn(parley, 'connect').mockResolvedValue();
+    vi.spyOn(parley, 'authHeaders').mockImplementation((extra = {}) => ({
+      Accept: 'application/json', 'Content-Type': 'application/json',
+      'X-Parley-Token': 'token-1', 'X-Parley-Epoch': 'epoch-1', ...extra,
+    }));
+    const signals: string[] = [];
+    const stop = await commands.notify({ onSignal: (signal) => signals.push(signal) });
+    await vi.waitFor(() => expect(signals).toContain('approvals_changed'));
+    expect(signals).toEqual(['epoch_changed', 'approvals_changed', 'run_changed']);
+    stop();
+    expect(abort).not.toHaveBeenCalled(); // cleanup uses its own AbortController
+  });
+});

@@ -1,10 +1,11 @@
+import type { ProviderConfig, ProviderPairing } from '../src/api/client';
 import { allowedAssertion } from '../src/features/parties/relations.ts';
 import { parsePartyCsv, previewCsv, importDigest, maxImportRows, maxImportBytes } from '../mock/party-import.ts';
 import type { PartyImportMapping, PartyImportPreview } from '../src/api/client';
 import { createHash, randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
-import { buildDailyQueue, buildInsights, PACK_DOCUMENTS, validatePackDocument } from '../mock/coach.ts';
+import { buildDailyQueue, buildInsights, isWeekPeriod, PACK_DOCUMENTS, validatePackDocument, weekPeriod } from '../mock/coach.ts';
 import { adminImpact, adminOverview, adminPreview as encodeAdminPreview, type AdminBackupRecord, type AdminOperation } from '../mock/admin.ts';
 
 /**
@@ -101,7 +102,7 @@ export interface MockApi {
   issueBootstrap(): string;
 }
 
-export function createMockApi({ pauseExtractor = false } = {}): MockApi {
+export function createMockApi({ pauseExtractor = false, coachOnline = false } = {}): MockApi {
   let epoch = 'ffeeddccbbaa99887766554433221100';
   const bootstraps = new Map<string, number>();
   const sessions = new Map<string, string>();
@@ -153,6 +154,13 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
   const resolutions = new Map<string, RecordData>();
   const capacityLedger = new Map<string, RecordData>();
   const coachQuestions = new Map<string, RecordData>();
+  const coachJobs = new Map<string, RecordData>();
+  const coachReports = new Map<string, { report: RecordData; input_digest: string }>();
+  const coachTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  function clearCoachTimers() {
+    for (const timer of coachTimers.values()) clearTimeout(timer);
+    coachTimers.clear();
+  }
   const validatedPacks = new Map<string, RecordData>();
   let activePackId = PACK_DOCUMENTS[0]!.id;
   let activePackVersion = PACK_DOCUMENTS[0]!.version;
@@ -164,7 +172,12 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
   ];
   const placements = new Map<string, { list_id: string; position: number; placement_revision: number }>();
   const notesByOpportunity = new Map<string, { markdown: string; revision: number }>();
-  let provider = { endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' };
+  const defaultProvider = (): ProviderConfig => ({
+    endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en',
+    profile_revision: 1, pairing: null,
+    structured: { status: 'unqualified', diagnostic: null, checked_at: null, probe_id: null },
+  });
+  let provider = defaultProvider();
   const receipts = new Map<string, { digest: string; result: RecordData; status?: number }>();
   // U02 authoritative run and turn rows survive snapshots; worker timers,
   // replay keys and pending leases are transient and are scrubbed on restore.
@@ -232,10 +245,15 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       else if (Array.isArray(current) && Array.isArray(saved)) current.splice(0, current.length, ...deepClone(saved));
     }
     clearAgentTimers();
+    clearCoachTimers();
+    coachJobs.clear();
+    coachQuestions.clear();
+    coachReports.clear();
     agentStartKeys.clear();
     agentCancelKeys.clear();
     const owner = snapshot.owner as RecordData;
     provider = deepClone(owner.provider as typeof provider);
+    provider.structured = defaultProvider().structured;
     Object.assign(questionBank, deepClone(owner.questionBank as typeof questionBank));
     prompts.clear(); for (const [key, value] of owner.prompts as Map<string, RecordData>) prompts.set(key, deepClone(value));
     embeddingModel = String(owner.embeddingModel);
@@ -388,6 +406,7 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
   const COMMAND_TASK = 'opportunity.set_task_done';
   const COMMAND_CREATE_DRAFT = 'resource.create_draft';
   const COMMAND_MARK_READY = 'resource.mark_ready';
+  const COMMAND_RETIRE = 'resource.retire';
   const COMMAND_MATCH_START = 'match.start';
   const COMMAND_COMPOSE_DRAFT = 'material.compose_draft';
   const COMMAND_GATE_CHECK = 'material.check_gate';
@@ -400,6 +419,7 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     [COMMAND_TASK]: ['opportunity_id', 'expected_notes_revision', 'byte_start', 'byte_end', 'line_sha256', 'checked'],
     [COMMAND_CREATE_DRAFT]: ['title', 'subtype'],
     [COMMAND_MARK_READY]: ['resource_id', 'expected_content_revision'],
+    [COMMAND_RETIRE]: ['resource_id', 'expected_card_revision', 'expected_content_revision'],
     [COMMAND_MATCH_START]: ['opportunity_id', 'recipient_id', 'expected_opportunity_revision', 'expected_recipient_revision'],
     [COMMAND_COMPOSE_DRAFT]: ['opportunity_id', 'recipient_id', 'expected_opportunity_revision', 'expected_recipient_revision', 'template_version_id', 'exchange_version', 'kind', 'slot_fills', 'selected_match_ids'],
     [COMMAND_GATE_CHECK]: ['material_id', 'expected_version'],
@@ -494,6 +514,18 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       palette: { context_fields: ['route', 'selection.resource'], prompts: [] },
     },
     {
+      id: COMMAND_RETIRE, version: 1, title: 'Retire resource',
+      summary: 'Remove a resource from ordinary use after human approval',
+      description: 'Retires the selected resource after an exact approval of its preview. The card and content revisions must match the current record.',
+      keywords: ['resource', 'retire', 'remove', 'archive'], effect: 'destructive', requires_permission: 'resource.retire',
+      surfaces: ['palette', 'agent'], agent_tier: 2, supports_dry_run: true,
+      when: 'route == "resources" && selection.resource',
+      args_schema: { type: 'object', additionalProperties: false, required: COMMAND_ARG_FIELDS[COMMAND_RETIRE], properties: {} },
+      result_schema: { type: 'object', additionalProperties: false },
+      preview_schema: { type: 'object', additionalProperties: false },
+      palette: { context_fields: ['route', 'selection.resource'], prompts: [] },
+    },
+    {
       id: COMMAND_MATCH_START, version: 1, title: 'Start resource matching',
       summary: 'Queue a scoped match against the granted opportunity and resources',
       description: 'Starts a matcher job for the selected open opportunity and recipient using only ready resources inside the run grant.',
@@ -529,6 +561,22 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
   ];
   const commandManifestVersion = `sha256:${createHash('sha256').update(JSON.stringify(commandDescriptors)).digest('hex')}`;
   const commandReceipts = new Map<string, { digest: string; status: number; body: RecordData; audit_id: string }>();
+
+  // U08 approvals (mock): pending/granted approvals per frozen intent key.
+  interface MockApproval {
+    id: string;
+    epoch: string;
+    command_id: string;
+    receipt_key: string;
+    status: 'pending' | 'granted' | 'consumed' | 'denied' | 'revoked' | 'expired' | 'stale';
+    revision: number;
+    expires_at: string;
+    preview_digest: string;
+    args?: RecordData;
+    preview?: RecordData;
+  }
+  const approvals = new Map<string, MockApproval>();
+  const decisionReceipts = new Map<string, { digest: string; outcome: RecordData }>();
   const commandContextAllowed = (key: string) => key === 'route'
     || (/^selection\.[a-z0-9_]+$/.test(key) && !key.includes('__'));
 
@@ -867,7 +915,7 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
   // its worker, lease or provider state.
   const AGENT_STATES = ['queued', 'running', 'waiting_owner', 'waiting_job', 'succeeded', 'failed', 'cancelled', 'expired'];
   const AGENT_TARGET_KINDS = ['party', 'opportunity', 'resource', 'material', 'segment'];
-  const AGENT_PERMISSIONS = ['party.read', 'opportunity.read', 'opportunity.create', 'opportunity.phase.edit', 'party.edit', 'opportunity.task.edit', 'brief.start', 'job.read', 'match.start', 'material.compose', 'material.gate'];
+  const AGENT_PERMISSIONS = ['party.read', 'opportunity.read', 'opportunity.create', 'opportunity.phase.edit', 'party.edit', 'opportunity.task.edit', 'brief.start', 'job.read', 'resource.read', 'resource.write', 'resource.retire', 'match.start', 'material.compose', 'material.gate'];
 
   function agentTargetLabel(target: AgentRunTarget): string {
     if (target.kind === 'party') return directory.get(target.id)?.name ?? target.id;
@@ -1311,6 +1359,98 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
         }
         return json(response, existing.status, { ...existing.body, replayed: true, original_audit_id: existing.audit_id });
       }
+      if (id === COMMAND_RETIRE) {
+        // U08 destructive retirement with human approval (mock): the mock
+        // implements the same lifecycle as the service — pending approval,
+        // owner decision, and consumption only on the exact approved intent.
+        const resourceId = String(args.resource_id);
+        const entity = entityResources.get(resourceId);
+        if (!entity || entity.readiness === 'retired') {
+          return json(response, 404, { ok: false, error: { code: 'target_unavailable', message: 'Target record is not available', details: [] } });
+        }
+        if (Number(args.expected_card_revision) !== entity.revision
+          || Number(args.expected_content_revision) !== entity.contentRevision) {
+          return json(response, 409, { ok: false, error: { code: 'version_mismatch', message: 'Expected revision is stale; reload and create a new intent', details: [] } });
+        }
+        const sample = [{ material_id: 'mock-material', version_no: 1, dependency_revision: String(entity.contentRevision) }];
+        const preview: RecordData = {
+          resource_id: resourceId,
+          title: entity.name,
+          readiness: entity.readiness,
+          card_revision: entity.revision,
+          content_revision: entity.contentRevision,
+          placement_removed: placements.has(resourceId),
+          impacted_versions_count: 1,
+          impacted_versions_sample: sample,
+        };
+        const previewDigest = createHash('sha256').update(canonicalArgs(preview)).digest('hex');
+        if (input.dry_run === true) {
+          const body = {
+            ok: true, command_version: 1, audit_id: randomHex(12), replayed: false,
+            dry_run: true, result: preview,
+          };
+          commandReceipts.set(receiptKey, { digest, status: 200, body, audit_id: body.audit_id });
+          return json(response, 200, body);
+        }
+        const presentedId = String(input.approval_id ?? '');
+        let approval = presentedId ? approvals.get(presentedId) : undefined;
+        if (!approval) {
+          approval = [...approvals.values()].find((candidate) => candidate.receipt_key === receiptKey);
+        }
+        if (!approval) {
+          const approvalId = randomHex(12);
+          approval = {
+            id: approvalId, epoch, command_id: id, receipt_key: receiptKey,
+            status: 'pending', revision: 1,
+            expires_at: new Date(testClock + 10 * 60_000).toISOString(),
+            preview_digest: previewDigest, args: { ...args }, preview,
+          };
+          approvals.set(approvalId, approval);
+          response.statusCode = 403;
+          response.setHeader('location', `/api/v1/approvals/${approvalId}`);
+          return json(response, 403, {
+            ok: false, command_version: 1, audit_id: randomHex(12),
+            error: { code: 'approval_required', message: 'Review the requested retirement in Approvals.', details: [{ path: '', problem: 'approval_pending' }] },
+          });
+        }
+        if (approval.status === 'granted') {
+          if (approval.preview_digest !== previewDigest) {
+            approval.status = 'stale' as MockApproval['status'];
+            return json(response, 409, { ok: false, error: { code: 'approval_stale', message: 'The intent dependencies changed; request a fresh preview with a new key', details: [] } });
+          }
+          approval.status = 'consumed';
+          approval.revision += 1;
+          delete approval.args;
+          delete approval.preview;
+          entity.readiness = 'retired';
+          entity.revision += 1;
+          entity.contentRevision += 1;
+          entity.etag = entityTag(entity);
+          if (placements.has(resourceId)) placements.delete(resourceId);
+          pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: resourceId, revision: entity.revision, event_type: 'resource.retired', payload: { revision: entity.revision } });
+          const body = {
+            ok: true, command_version: 1, audit_id: randomHex(12), replayed: false,
+            dry_run: false,
+            result: {
+              resource_id: resourceId, title: entity.name, readiness: 'retired',
+              card_revision: entity.revision, content_revision: entity.contentRevision,
+              event_id: randomHex(), event_cursor: String(events.length),
+              impacted_versions_count: 1, placement_removed: true,
+            },
+          };
+          commandReceipts.set(receiptKey, { digest, status: 200, body, audit_id: body.audit_id });
+          return json(response, 200, body);
+        }
+        if (approval.status === 'denied' || approval.status === 'revoked' || approval.status === 'expired' || approval.status === 'stale') {
+          return json(response, 403, { ok: false, error: { code: 'approval_invalid', message: 'The approval is no longer valid', details: [] } });
+        }
+        response.statusCode = 403;
+        response.setHeader('location', `/api/v1/approvals/${approval.id}`);
+        return json(response, 403, {
+          ok: false, command_version: 1, audit_id: randomHex(12),
+          error: { code: 'approval_required', message: 'Review the requested retirement in Approvals.', details: [{ path: '', problem: 'approval_pending' }] },
+        });
+      }
       const outcome = commandResult(id, args);
       const auditId = randomHex(12);
       if (outcome.status === 200) {
@@ -1327,6 +1467,109 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       };
       commandReceipts.set(receiptKey, { digest, status: outcome.status, body: failure, audit_id: auditId });
       return json(response, outcome.status, failure);
+    }
+
+    if (url.pathname === '/api/v1/approvals' && request.method === 'GET') {
+      const statusFilter = url.searchParams.get('status') ?? '';
+      const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 50), 1), 100);
+      const rows = [...approvals.values()]
+        .filter((approval) => approval.epoch === epoch && (!statusFilter || approval.status === statusFilter))
+        .sort((left, right) => left.id.localeCompare(right.id))
+        .slice(0, limit);
+      const items = rows.map((approval) => {
+        const active = approval.status === 'pending' || approval.status === 'granted';
+        const item: RecordData = {
+          id: approval.id,
+          command_id: approval.command_id,
+          command_version: 1,
+          revision: approval.revision,
+          status: approval.status,
+          expires_at: approval.expires_at,
+          preview_digest: approval.preview_digest,
+        };
+        if (approval.preview) {
+          item.title = approval.preview.title;
+          item.impacted_versions_count = approval.preview.impacted_versions_count;
+        }
+        if (active) {
+          item.args = approval.args;
+          item.preview = approval.preview;
+        }
+        return item;
+      });
+      return json(response, 200, { items, next_cursor: null });
+    }
+    const approvalDetailRoute = /^\/api\/v1\/approvals\/([^/]+)$/.exec(url.pathname);
+    if (approvalDetailRoute && request.method === 'GET') {
+      const approval = approvals.get(approvalDetailRoute[1]!);
+      if (!approval || approval.epoch !== epoch) return fail(response, 404, 'target_unavailable', 'Approval is not available');
+      const active = approval.status === 'pending' || approval.status === 'granted';
+      const item: RecordData = {
+        id: approval.id,
+        command_id: approval.command_id,
+        command_version: 1,
+        revision: approval.revision,
+        status: approval.status,
+        expires_at: approval.expires_at,
+        preview_digest: approval.preview_digest,
+      };
+      if (active) {
+        item.args = approval.args;
+        item.preview = approval.preview;
+      }
+      return json(response, 200, item);
+    }
+    const approvalDecisionRoute = /^\/api\/v1\/approvals\/([^/]+)\/(grant|deny)$/.exec(url.pathname);
+    if (approvalDecisionRoute && request.method === 'POST') {
+      const approval = approvals.get(approvalDecisionRoute[1]!);
+      if (!approval || approval.epoch !== epoch) return fail(response, 404, 'target_unavailable', 'Approval is not available');
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key.trim()) return fail(response, 400, 'INVALID_KEY', 'An Idempotency-Key is required');
+      let decision: RecordData;
+      try { decision = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const expectedRevision = Number(decision.expected_revision);
+      const previewDigest = String(decision.preview_digest);
+      const decisionKey = `${epoch}|${approval.id}|${key}`;
+      const previous = decisionReceipts.get(decisionKey);
+      if (previous) {
+        if (previous.digest !== createHash('sha256').update(canonicalArgs({ expectedRevision, previewDigest })).digest('hex')) {
+          return json(response, 422, { ok: false, error: { code: 'idempotency_mismatch', message: 'Decision key was used for a different request', details: [] } });
+        }
+        return json(response, 200, previous.outcome);
+      }
+      if (expectedRevision !== approval.revision) {
+        return json(response, 409, { ok: false, error: { code: 'approval_stale', message: 'The approval changed; reload before deciding', details: [] } });
+      }
+      if (previewDigest !== approval.preview_digest) {
+        return json(response, 409, { ok: false, error: { code: 'approval_stale', message: 'The approval changed; reload before deciding', details: [] } });
+      }
+      const action = approvalDecisionRoute[2]!;
+      if (action === 'grant' && approval.status === 'granted') {
+        const outcome = { id: approval.id, revision: approval.revision, status: approval.status };
+        decisionReceipts.set(decisionKey, { digest: createHash('sha256').update(canonicalArgs({ expectedRevision, previewDigest })).digest('hex'), outcome });
+        return json(response, 200, outcome);
+      }
+      if (action === 'deny' && approval.status === 'denied') {
+        const outcome = { id: approval.id, revision: approval.revision, status: approval.status };
+        decisionReceipts.set(decisionKey, { digest: createHash('sha256').update(canonicalArgs({ expectedRevision, previewDigest })).digest('hex'), outcome });
+        return json(response, 200, outcome);
+      }
+      let nextStatus: MockApproval['status'];
+      if (action === 'grant' && approval.status === 'pending') nextStatus = 'granted';
+      else if (action === 'deny' && approval.status === 'pending') nextStatus = 'denied';
+      else if (action === 'deny' && approval.status === 'granted') nextStatus = 'revoked';
+      else {
+        return json(response, 409, { ok: false, error: { code: 'approval_stale', message: 'The approval is no longer actionable', details: [] } });
+      }
+      approval.status = nextStatus;
+      approval.revision += 1;
+      if (nextStatus !== 'granted') {
+        delete approval.args;
+        delete approval.preview;
+      }
+      const outcome = { id: approval.id, revision: approval.revision, status: approval.status };
+      decisionReceipts.set(decisionKey, { digest: createHash('sha256').update(canonicalArgs({ expectedRevision, previewDigest })).digest('hex'), outcome });
+      return json(response, 200, outcome);
     }
 
     if (url.pathname === '/api/v1/agent/runs' && request.method === 'POST') {
@@ -1603,8 +1846,9 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
           if (value instanceof Map) value.clear(); else if (Array.isArray(value)) value.splice(0, value.length);
         }
         directory.clear(); opportunities.clear(); sends.clear(); threads.clear(); outcomes.clear(); resolutions.clear(); adminBackups.splice(0, adminBackups.length);
+        clearCoachTimers(); coachJobs.clear(); coachReports.clear();
         partySuppression.clear(); receipts.clear(); adminPreviews.clear(); adminJobs.clear();
-        provider = { endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' };
+        provider = defaultProvider();
         Object.assign(questionBank, { version_id: 'question-bank-v1', content: { version: 1, questions: { proof: [{ id: 'result', text: 'What changed, and how did you measure the result?' }], gift: [{ id: 'offer', text: 'What useful thing could you offer?' }], artifact: [{ id: 'artifact', text: 'What have you made?' }] } } });
         prompts.clear();
         prompts.set('interviewer', { role: 'interviewer', version_id: 'interviewer-v1', version: 1, content: 'Bundled Interviewer policy', sha256: 'a'.repeat(64) });
@@ -2172,22 +2416,156 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       return json(response, 200, { ...result, items });
     }
     if (url.pathname === '/api/v1/insights' && request.method === 'GET') {
-      const end = new Date(testClock);
-      const start = new Date(end);
-      start.setUTCDate(start.getUTCDate() - ((start.getUTCDay() + 6) % 7));
-      const periodStart = start.toISOString().slice(0, 10);
-      const periodEndDate = new Date(start); periodEndDate.setUTCDate(periodEndDate.getUTCDate() + 6);
-      return json(response, 200, buildInsights([...sends.values()], outcomes, resolutions, periodStart, periodEndDate.toISOString().slice(0, 10), now(), activePackId, activePackVersion, [...coachQuestions.values()]));
+      return json(response, 200, buildInsights([...sends.values()], outcomes, now(), String(events.length)));
     }
-    if (url.pathname === '/api/v1/coach/run' && request.method === 'POST') {
-      const open = [...coachQuestions.values()].filter((question) => question.state === 'open');
-      if (!open.length && opportunities.size && [...materialRecords.values()].filter((material) => material.status === 'approved').length === 0) {
+    if (url.pathname === '/api/v1/coach/weekly') {
+      const currentPeriod = weekPeriod(new Date(testClock));
+      const snapshot = (period: string) => {
+        const jobs = [...coachJobs.values()].filter((job) => (job.scope as RecordData).period === period);
+        const report = coachReports.get(period);
+        return {
+          period,
+          as_of: new Date(testClock).toISOString(),
+          report: report?.report ?? null,
+          input_digest: report?.input_digest ?? null,
+          active_job_id: jobs.find((job) => job.status === 'queued' || job.status === 'running')?.id ?? null,
+          latest_job_id: jobs.at(-1)?.id ?? null,
+          coverage: { current: 0, missing: opportunities.size, stale: 0, no_match: 0 },
+          observations: [{ reason: 'missing_identity', target: { scope: 'owner' }, impact: 1 }],
+        };
+      };
+      if (request.method === 'GET') return json(response, 200, snapshot(currentPeriod));
+      if (request.method === 'POST') {
+        let input: RecordData;
+        try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+        const period = 'period' in input ? input.period : currentPeriod;
+        if (!isWeekPeriod(period) || period > currentPeriod || Object.keys(input).some((key) => key !== 'period')) {
+          return fail(response, 422, 'PERIOD_INVALID', 'Select a valid current or historical ISO week.');
+        }
+        const key = request.headers['idempotency-key'];
+        if (typeof key !== 'string' || !key || key.length > 200) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+        const digest = createHash('sha256').update(JSON.stringify([url.pathname, input])).digest('hex');
+        const prior = receipts.get(key);
+        if (prior) {
+          return prior.digest === digest ? json(response, prior.status ?? 200, prior.result)
+            : fail(response, 409, 'IDEMPOTENCY_MISMATCH', 'Use a fresh key for a different request.');
+        }
+        const current = snapshot(period);
+        const save = (status: number, result: RecordData) => {
+          receipts.set(key, { digest, result, status });
+          return json(response, status, result);
+        };
+        if (current.active_job_id) return save(202, { job_id: current.active_job_id, status: 'queued', period });
+        if (coachQuestions.size >= 5 || [...coachQuestions.values()].some((question) => question.kind === 'missing_identity')) return save(200, current);
+        if (!coachOnline) return fail(response, 503, 'CAPABILITY_UNQUALIFIED', 'A qualified local model is required.');
         const id = randomHex();
-        coachQuestions.set(id, { id, kind: 'missing_material', text: 'Which useful material could be prepared for an active opportunity?', target_kind: 'opportunity', target_id: String(opportunities.keys().next().value), impact: opportunities.size, state: 'open' });
+        const admittedEpoch = epoch;
+        const job = {
+          id, role: 'coach', status: 'queued', state_revision: 1, attempt_count: 0, scope: { kind: 'weekly', period },
+          progress: null, error_code: null as string | null, review_ref: null as RecordData | null,
+        };
+        coachJobs.set(id, job);
+        job.status = 'running';
+        job.state_revision += 1;
+        job.attempt_count += 1;
+        const timer = setTimeout(() => {
+          coachTimers.delete(id);
+          if (epoch !== admittedEpoch || job.status !== 'running') return;
+          const questionId = randomHex();
+          const reportId = randomHex();
+          const questionKey = createHash('sha256').update(JSON.stringify(['missing_identity', { scope: 'owner' }])).digest('hex');
+          coachQuestions.set(questionId, {
+            id: questionId, kind: 'missing_identity', text: 'Which professional interests do you share with the people you work with?',
+            question_key: questionKey, revision: 1, selector: { kind: 'weekly', period },
+            target: { scope: 'owner' }, impact: 1, priority: 0, status: 'open', action: 'research',
+            deferred_until: null, dependency_digest: digest, suggested_resource_ref: null,
+          });
+          coachReports.set(period, { report: { question_count: 1 }, input_digest: digest });
+          job.state_revision += 1;
+          job.status = 'succeeded';
+          job.review_ref = { kind: 'coach_report', id: reportId };
+          pushEvent({ event_id: randomHex(), entity_type: 'coach_report', entity_id: reportId, revision: 1, event_type: 'coach.report_generated', payload: {} });
+        }, 6_000);
+        timer.unref();
+        coachTimers.set(id, timer);
+        return save(202, { job_id: id, status: 'queued', period });
       }
-      const jobId = randomHex();
-      roleJobs.set(jobId, { id: jobId, role: 'coach', status: 'succeeded', result: { snapshot: now() }, last_error: null });
-      return json(response, 202, { job_id: jobId, status: 'queued' });
+    }
+    if (url.pathname === '/api/v1/coach/context' && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const scope = input.scope as RecordData | undefined;
+      if (!scope || (scope.kind !== 'party' && scope.kind !== 'opportunity') || typeof scope.id !== 'string' || !Number.isSafeInteger(scope.revision)
+        || Object.keys(input).some(key => !['scope', 'segment_id', 'evidence', 'resource_ids'].includes(key))) return fail(response, 422, 'SCOPE_INVALID', 'Select a current party or opportunity.');
+      if (scope.kind === 'party') {
+        const party = directory.get(scope.id);
+        if (!party) return fail(response, 404, 'TARGET_UNAVAILABLE', 'The selected party is unavailable.');
+        if (party.revision !== scope.revision) return fail(response, 409, 'STALE_INPUT', 'Refresh the selected party.');
+      } else {
+        const opportunity = opportunities.get(scope.id);
+        if (!opportunity || !Array.isArray(opportunity.participant_ids) || !opportunity.participant_ids.includes(scope.recipient_id)) return fail(response, 404, 'TARGET_UNAVAILABLE', 'The selected recipient is unavailable for this opportunity.');
+        if (opportunity.revision !== scope.revision || directory.get(String(scope.recipient_id))?.revision !== scope.recipient_revision) return fail(response, 409, 'STALE_INPUT', 'Refresh the selected opportunity.');
+      }
+      const evidence = Array.isArray(input.evidence) ? input.evidence : [];
+      const resources = Array.isArray(input.resource_ids) ? input.resource_ids : [];
+      if (evidence.length > 8 || resources.length > 8 || new Set(resources).size !== resources.length) return fail(response, 422, 'CONTEXT_BUDGET', 'Choose up to eight unique evidence and resource references.');
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key || key.length > 200) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+      const digest = createHash('sha256').update(JSON.stringify([url.pathname, input])).digest('hex');
+      const prior = receipts.get(key);
+      if (prior) return prior.digest === digest ? json(response, prior.status ?? 200, prior.result) : fail(response, 409, 'IDEMPOTENCY_MISMATCH', 'Use a fresh key for a different request.');
+      const selector = scope.kind === 'party' ? { kind: 'party', id: scope.id, revision: scope.revision }
+        : { kind: 'opportunity', id: scope.id, revision: scope.revision, recipient_id: scope.recipient_id, recipient_revision: scope.recipient_revision };
+      const result = { status: 'current', scope: selector, coverage: { current: 0, missing: 1, stale: 0, no_match: 0 }, questions: [] };
+      if (!coachOnline) return fail(response, 503, 'CAPABILITY_UNQUALIFIED', 'A qualified local model is required.');
+      const questionKey = createHash('sha256').update(JSON.stringify([selector, 'context_review'])).digest('hex');
+      const existing = [...coachQuestions.values()].find(question => question.question_key === questionKey && ['open', 'answer_pending', 'deferred'].includes(String(question.status)));
+      if (existing) return json(response, 200, { ...result, questions: [existing] });
+      if ([...coachQuestions.values()].filter(question => question.status === 'open' || question.status === 'answer_pending').length >= 5) return fail(response, 429, 'INFERENCE_BUSY', 'The Coach question limit is full.');
+      const questionId = randomHex();
+      const target = scope.kind === 'party' ? { party_id: scope.id } : { opportunity_id: scope.id, recipient_id: scope.recipient_id };
+      const question: RecordData = {
+        id: questionId, question_key: questionKey, revision: 1, kind: 'context_review',
+        target, selector, text: 'Which part of this selected context would be most useful to clarify next?',
+        priority: 0, impact: 1, status: 'open', action: 'research', deferred_until: null,
+        dependency_digest: createHash('sha256').update(JSON.stringify(input)).digest('hex'), suggested_resource_ref: null,
+      };
+      coachQuestions.set(questionId, question);
+      const queued = { job_id: randomHex(), status: 'queued' };
+      receipts.set(key, { digest, result: queued, status: 202 });
+      return json(response, 202, queued);
+    }
+    if (url.pathname === '/api/v1/coach/questions' && request.method === 'GET') {
+      const scopeKind = url.searchParams.get('scope_kind');
+      const scopeId = url.searchParams.get('scope_id');
+      const scopePeriod = url.searchParams.get('scope_period');
+      const recipientId = url.searchParams.get('recipient_id');
+      const items = [...coachQuestions.values()].filter((question) => ['open', 'answer_pending', 'deferred'].includes(String(question.status))
+        && (!scopeKind || (question.selector as RecordData | undefined)?.kind === scopeKind)
+        && (!scopeId || (question.selector as RecordData | undefined)?.id === scopeId)
+        && (!scopePeriod || (question.selector as RecordData | undefined)?.period === scopePeriod)
+        && (!recipientId || (question.selector as RecordData | undefined)?.recipient_id === recipientId))
+        .sort((a, b) => Number(a.priority) - Number(b.priority) || Number(b.impact) - Number(a.impact));
+      return json(response, 200, { items, open_count: items.filter(item => item.status === 'open' || item.status === 'answer_pending').length, max_open: 5 });
+    }
+    const questionAnswerMatch = /^\/api\/v1\/coach\/questions\/([^/]+)\/answer$/.exec(url.pathname);
+    if (questionAnswerMatch && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const id = questionAnswerMatch[1]!;
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+      const digest = createHash('sha256').update(JSON.stringify([url.pathname, input])).digest('hex');
+      const prior = receipts.get(key);
+      if (prior) return prior.digest === digest ? json(response, prior.status ?? 200, prior.result) : fail(response, 409, 'IDEMPOTENCY_MISMATCH', 'Use a fresh key.');
+      const question = coachQuestions.get(id);
+      if (!question || question.status !== 'open') return fail(response, 409, 'QUESTION_CLOSED', 'Question is absent or already closed');
+      if (input.expected_revision !== question.revision || input.question_key !== question.question_key) return fail(response, 409, 'QUESTION_STALE', 'Refresh this question before answering.');
+      if (!input.answer || typeof input.answer !== 'object' || Array.isArray(input.answer)) return fail(response, 422, 'ANSWER_SCHEMA_INVALID', 'Use the declared answer shape.');
+      question.status = 'answered'; question.revision = Number(question.revision) + 1; question.disposition = input.answer;
+      const result = { id, status: 'answered', revision: question.revision };
+      receipts.set(key, { digest, result, status: 200 });
+      return json(response, 200, result);
     }
     if (url.pathname === '/api/v1/settings' && request.method === 'GET') {
       const available = PACK_DOCUMENTS.map((pack) => ({ ...pack }));
@@ -2213,12 +2591,31 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       activePackId = String(input.pack_id); activePackVersion = String(input.version); activePackDocument = validated.normalized_document as string; packSettingsRevision += 1;
       return json(response, 200, { revision: packSettingsRevision, active_pack_id: activePackId, active_pack_version: activePackVersion, active_document: activePackDocument, available_packs: [...PACK_DOCUMENTS.map((pack) => ({ ...pack })), ...(PACK_DOCUMENTS.some((pack) => pack.id === activePackId && pack.version === activePackVersion) ? [] : [{ id: activePackId, name: activePackId, version: activePackVersion, document: activePackDocument }])] });
     }
-    const questionDismissMatch = /^\/api\/v1\/questions\/([^/]+)\/dismiss$/.exec(url.pathname);
-    if (questionDismissMatch && request.method === 'POST') {
-      const question = coachQuestions.get(questionDismissMatch[1]!);
-      if (!question) return fail(response, 404, 'QUESTION_NOT_FOUND', 'Coach question does not exist');
-      question.state = 'dismissed';
-      return json(response, 200, { id: question.id, state: question.state });
+    const questionDismissMatch = /^\/api\/v1\/coach\/questions\/([^/]+)\/dismiss$/.exec(url.pathname);
+    const questionDeferMatch = /^\/api\/v1\/coach\/questions\/([^/]+)\/defer$/.exec(url.pathname);
+    if ((questionDismissMatch || questionDeferMatch) && request.method === 'POST') {
+      const id = (questionDismissMatch ?? questionDeferMatch)![1]!;
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const digest = createHash('sha256').update(JSON.stringify([url.pathname, input])).digest('hex');
+      const prior = receipts.get(key);
+      if (prior) return prior.digest === digest ? json(response, 200, prior.result) : fail(response, 409, 'IDEMPOTENCY_MISMATCH', 'Use a fresh key.');
+      const question = coachQuestions.get(id);
+      if (question?.status !== 'open') return fail(response, 409, 'QUESTION_CLOSED', 'Question is absent or already closed');
+      if (input.expected_revision !== question.revision || input.question_key !== question.question_key) return fail(response, 409, 'QUESTION_STALE', 'Refresh this question before choosing an action.');
+      if (questionDeferMatch) {
+        const days = Number(input.defer_days ?? 7);
+        if (!Number.isInteger(days) || days < 1 || days > 30) return fail(response, 422, 'DEFER_RANGE_INVALID', 'Choose a defer interval from one to thirty days.');
+        question.status = 'deferred'; question.revision = Number(question.revision) + 1;
+        question.deferred_until = new Date(testClock + days * 86_400_000).toISOString();
+      } else {
+        question.status = 'dismissed'; question.revision = Number(question.revision) + 1;
+      }
+      const result = { id, status: question.status, revision: question.revision, deferred_until: question.deferred_until ?? null };
+      receipts.set(key, { digest, result });
+      return json(response, 200, result);
     }
     // --- Resource board (R01) ---
     if (url.pathname === '/api/v1/resource-board' && request.method === 'GET') {
@@ -3142,15 +3539,29 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
 
     const jobMatch = /^\/api\/v1\/jobs\/([^/]+)$/.exec(url.pathname);
     if (jobMatch && request.method === 'GET') {
-      const job = extractorJobs.get(jobMatch[1]!);
-      return job ? json(response, 200, job) : fail(response, 404, 'NOT_FOUND', 'Extractor job does not exist');
+      const job = extractorJobs.get(jobMatch[1]!) ?? coachJobs.get(jobMatch[1]!);
+      return job ? json(response, 200, job) : fail(response, 404, 'JOB_NOT_FOUND', 'Job does not exist');
     }
     if (jobMatch && request.method === 'POST') {
-      const job = extractorJobs.get(jobMatch[1]!);
-      if (!job) return fail(response, 404, 'NOT_FOUND', 'Extractor job does not exist');
+      const id = jobMatch[1]!;
+      const job = extractorJobs.get(id) ?? coachJobs.get(id);
+      if (!job) return fail(response, 404, 'JOB_NOT_FOUND', 'Job does not exist');
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key || key.length > 200) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+      const digest = createHash('sha256').update(url.pathname).digest('hex');
+      const prior = receipts.get(key);
+      if (prior) return prior.digest === digest ? json(response, 204, null) : fail(response, 409, 'IDEMPOTENCY_MISMATCH', 'Use a fresh key.');
       if (!['queued', 'running'].includes(String(job.status))) return fail(response, 409, 'JOB_TERMINAL', 'Terminal jobs cannot be cancelled');
       job.status = 'cancelled';
-      job.last_error = 'Cancelled by owner';
+      if (job.role === 'coach') {
+        clearTimeout(coachTimers.get(id));
+        coachTimers.delete(id);
+        job.state_revision = Number(job.state_revision) + 1;
+        job.error_code = 'CANCELLED';
+      } else {
+        job.last_error = 'Cancelled by owner';
+      }
+      receipts.set(key, { digest, result: {}, status: 204 });
       return json(response, 204, null);
     }
     const resolveMatch = /^\/api\/v1\/proposals\/([^/]+)\/resolve$/.exec(url.pathname);
@@ -3170,11 +3581,59 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
 
     if (url.pathname === '/api/v1/agent/provider' && request.method === 'GET') return json(response, 200, provider);
     if (url.pathname === '/api/v1/agent/provider' && request.method === 'PUT') {
-      provider = await readBody(request) as typeof provider;
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      if (input.expected_profile_revision !== provider.profile_revision) return fail(response, 412, 'PROFILE_CHANGED', 'The saved model profile changed.');
+      const fields = ['endpoint', 'model', 'num_ctx', 'num_predict', 'locale', 'pairing', 'expected_profile_revision'];
+      if (Object.keys(input).some((key) => !fields.includes(key))
+        || typeof input.endpoint !== 'string' || !/^http:\/\/(?:127\.0\.0\.1|\[::1\]):[1-9][0-9]{0,4}$/.test(input.endpoint)
+        || typeof input.model !== 'string' || typeof input.num_ctx !== 'number' || !Number.isInteger(input.num_ctx)
+        || input.num_ctx < 1024 || input.num_ctx > 131072
+        || typeof input.num_predict !== 'number' || !Number.isInteger(input.num_predict)
+        || input.num_predict < 64 || input.num_predict > 8192 || typeof input.locale !== 'string') {
+        return fail(response, 422, 'PROFILE_INVALID', 'Review the local endpoint and context settings.');
+      }
+      let pairing: ProviderPairing | null = null;
+      if (input.pairing !== undefined) {
+        const details = input.pairing as RecordData | null;
+        const digest = /^[0-9a-f]{64}$/;
+        const maxTokens = input.num_ctx - Math.ceil(input.num_ctx / 10) - input.num_predict;
+        if (!details || typeof details !== 'object' || Object.keys(details).length !== 4
+          || typeof details.provider_version !== 'string' || !details.provider_version.trim()
+          || typeof details.model_digest !== 'string' || !digest.test(details.model_digest)
+          || typeof details.tokenizer_digest !== 'string' || !digest.test(details.tokenizer_digest)
+          || typeof details.template_tokens !== 'number' || !Number.isInteger(details.template_tokens)
+          || details.template_tokens < 0 || details.template_tokens >= maxTokens) {
+          return fail(response, 422, 'PROFILE_INVALID', 'Review the provisioned pairing identity and token allowance.');
+        }
+        pairing = {
+          provider_version: details.provider_version, model_digest: details.model_digest,
+          tokenizer_digest: details.tokenizer_digest, template_tokens: details.template_tokens,
+        };
+      }
+      provider = {
+        endpoint: input.endpoint, model: input.model, num_ctx: input.num_ctx, num_predict: input.num_predict, locale: input.locale,
+        profile_revision: provider.profile_revision + 1, pairing, structured: defaultProvider().structured,
+      };
       return json(response, 204, null);
     }
     if (url.pathname === '/api/v1/agent/provider/health' && request.method === 'POST') {
-      return json(response, 200, { available: false, model: provider.model, models: [], message: 'Local provider is unavailable in the mock workspace.' });
+      if (!provider.pairing) {
+        return json(response, 200, { available: false, model: provider.model, models: [], message: 'Local provider is unavailable in the mock workspace.' });
+      }
+      if (provider.structured.status !== 'queued' && provider.structured.status !== 'running') {
+        const profile = provider;
+        const admittedEpoch = epoch;
+        profile.structured = { status: 'queued', diagnostic: null, checked_at: null, probe_id: randomHex() };
+        const timer = setTimeout(() => {
+          if (epoch !== admittedEpoch || provider !== profile) return;
+          const status = coachOnline ? 'probe_succeeded' : 'failed';
+          const diagnostic = coachOnline ? null : 'MODEL_UNAVAILABLE';
+          profile.structured = { ...profile.structured, status, diagnostic, checked_at: now() };
+        }, 150);
+        timer.unref();
+      }
+      return json(response, 202, { available: false, model: provider.model, models: [], message: 'Structured-output check in progress.', structured: provider.structured });
     }
     return fail(response, 404, 'NOT_FOUND', 'Endpoint does not exist');
   }

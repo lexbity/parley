@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:http';
 import { expect, type Locator, type Page } from '@playwright/test';
 import { test } from './fixtures';
 import { addParty, openParties } from './parties';
-import { signIn, type OwnerSession } from './sheet';
+import { readProviderRevision, signIn, type OwnerSession } from './sheet';
 
 /** A loopback tool-capable provider for the real Rust runtime; the mock
  * fixture drives its own deterministic run state machine. */
@@ -50,7 +50,7 @@ async function configureProvider(page: Page, session: OwnerSession, endpoint: st
       'X-Parley-Epoch': session.epoch,
       'Idempotency-Key': randomUUID(),
     },
-    data: { endpoint, model: 'fixture', num_ctx: 8192, num_predict: 256, locale: 'en' },
+    data: { endpoint, model: 'fixture', num_ctx: 8192, num_predict: 256, locale: 'en', expected_profile_revision: await readProviderRevision(page, session) },
   });
   expect(response.ok()).toBe(true);
 }

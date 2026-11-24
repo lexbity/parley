@@ -246,19 +246,17 @@ async fn s10_weekly_coach_enqueues_versioned_job_and_reports_event_fence() {
         port,
         "POST",
         "/api/v1/coach/weekly",
-        Some(json!({"period":"2026-W47"})),
+        Some(json!({})),
         "s10-coach-weekly",
     )
     .await;
-    assert_eq!(status, 202, "{job:?}");
-    assert!(job["job_id"].as_str().is_some());
-    assert!(job["event_cursor"].as_str().is_some());
-    let role: String = sqlx::query_scalar("SELECT role FROM durable_job WHERE id=?")
-        .bind(job["job_id"].as_str().unwrap())
+    assert_eq!(status, 503, "{job:?}");
+    assert_eq!(job["error"]["code"], "CAPABILITY_UNQUALIFIED");
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM durable_job WHERE role='coach'")
         .fetch_one(workspace.pool())
         .await
         .unwrap();
-    assert_eq!(role, "coach");
+    assert_eq!(count, 0);
     let (status, report) =
         request(port, "GET", "/api/v1/coach/weekly", None, "s10-coach-get").await;
     assert_eq!(status, 200, "{report:?}");
@@ -274,7 +272,7 @@ async fn s10_answer_routes_through_interviewer_without_direct_promotion() {
     sqlx::query("INSERT INTO durable_job(id,role,status,input_json,input_sha256,scope_kind,scope_id,scope_revision,current_attempt,max_attempts,created_at,updated_at) VALUES('coach-seed','coach','succeeded','{}','hash','owner','weekly',1,1,3,?,?)").bind(now).bind(now).execute(workspace.pool()).await.unwrap();
     sqlx::query("INSERT INTO coach_question(id,job_id,question_key,kind,target_json,answer_schema_json,priority,impact,text,status,created_at,updated_at) VALUES('q-proof','coach-seed','missing_proof:segment','missing_proof','{}','{\"type\":\"object\"}',0,1,'What result did you achieve?','open',?,?)").bind(now).bind(now).execute(workspace.pool()).await.unwrap();
     sqlx::query("INSERT INTO agent_chat(id,role,scope_kind,asset_kind,revision,created_at,updated_at) VALUES('chat-proof','interviewer','owner','proof',1,?,?)").bind(now).bind(now).execute(workspace.pool()).await.unwrap();
-    let (status,result)=request(port,"POST","/api/v1/coach/questions/q-proof/answer",Some(json!({"answer":"I reduced onboarding time from 9 days to 3.","interviewer_chat_id":"chat-proof"})),"s10-proof-answer").await;
+    let (status,result)=request(port,"POST","/api/v1/coach/questions/q-proof/answer",Some(json!({"answer":"I reduced onboarding time from 9 days to 3.","interviewer_chat_id":"chat-proof","expected_revision":1,"question_key":"missing_proof:segment"})),"s10-proof-answer").await;
     assert_eq!(status, 202, "{result:?}");
     assert!(result["job_id"].as_str().is_some());
     let turns: i64 = sqlx::query_scalar(
@@ -294,7 +292,7 @@ async fn s10_answer_routes_through_interviewer_without_direct_promotion() {
             .fetch_one(workspace.pool())
             .await
             .unwrap();
-    assert_eq!(question, "answered");
+    assert_eq!(question, "answer_pending");
     service.shutdown().await;
     drop(workspace);
     let _ = fs::remove_file(path);
@@ -337,25 +335,17 @@ async fn s10_coach_gap_candidates_use_per_segment_calibrated_coverage() {
             sqlx::query("INSERT INTO board_placement(opportunity_id,list_id,position,revision) VALUES(?,'inbox',?,1)").bind(&op).bind((i+1+if sid == "segment-high" { 0 } else { 3 })*1024).execute(workspace.pool()).await.unwrap();
         }
     }
-    let (status, job) = request(
-        port,
-        "POST",
-        "/api/v1/coach/weekly",
-        Some(json!({"period":"2026-W47"})),
-        "s10-gap-order",
-    )
-    .await;
-    assert_eq!(status, 202, "{job:?}");
-    let input: String = sqlx::query_scalar("SELECT input_json FROM durable_job WHERE id=?")
-        .bind(job["job_id"].as_str().unwrap())
-        .fetch_one(workspace.pool())
-        .await
-        .unwrap();
-    let input: Value = serde_json::from_str(&input).unwrap();
-    let candidates = input["candidates"].as_array().unwrap();
-    assert!(!candidates.is_empty());
+    let (status, snapshot) =
+        request(port, "GET", "/api/v1/coach/weekly", None, "s10-gap-order").await;
+    assert_eq!(status, 200, "{snapshot:?}");
+    assert_eq!(
+        snapshot["coverage"],
+        json!({"current":0,"missing":4,"stale":0,"no_match":0})
+    );
+    let candidates = snapshot["observations"].as_array().unwrap();
     assert_eq!(candidates[0]["impact"], 3);
-    assert_eq!(candidates[0]["target_ref"]["segment_id"], "segment-high");
+    assert_eq!(candidates[0]["target"]["segment_id"], "segment-high");
+    assert_eq!(candidates[0]["reason"], "assessment_check");
     service.shutdown().await;
     drop(workspace);
     let _ = fs::remove_file(path);
@@ -385,11 +375,17 @@ async fn s10_coach_question_cap_and_priority_are_code_owned() {
         port,
         "POST",
         "/api/v1/coach/weekly",
-        Some(json!({"period":"2026-W47"})),
+        Some(json!({})),
         "s10-coach-cap-generate",
     )
     .await;
-    assert_eq!(status, 409, "{error:?}");
+    assert_eq!(status, 200, "{error:?}");
+    assert!(error["active_job_id"].is_null());
+    let holds: i64 = sqlx::query_scalar("SELECT count(*) FROM coach_question_hold")
+        .fetch_one(workspace.pool())
+        .await
+        .unwrap();
+    assert_eq!(holds, 0);
     service.shutdown().await;
     drop(workspace);
     let _ = fs::remove_file(path);
@@ -403,7 +399,7 @@ async fn s10_question_disposition_is_idempotent_and_scoped() {
     for id in ["q-disposition", "q-unrelated"] {
         sqlx::query("INSERT INTO coach_question(id,job_id,question_key,kind,target_json,answer_schema_json,priority,impact,text,status,created_at,updated_at) VALUES(?,? ,?,'insight','{}',?,0,1,'Question?','open',?,?)").bind(id).bind("coach-disposition").bind(id).bind("{\"type\":\"object\",\"required\":[\"note\"],\"properties\":{\"note\":{\"type\":\"string\"}}}").bind(now).bind(now).execute(workspace.pool()).await.unwrap();
     }
-    let body = json!({"answer":{"note":"The comparison remains inconclusive."}});
+    let body = json!({"answer":{"note":"The comparison remains inconclusive."},"expected_revision":1,"question_key":"q-disposition"});
     let (status, first) = request(
         port,
         "POST",
@@ -417,7 +413,7 @@ async fn s10_question_disposition_is_idempotent_and_scoped() {
         port,
         "POST",
         "/api/v1/coach/questions/q-disposition/answer",
-        Some(json!({"answer":{"note":"The comparison remains inconclusive."}})),
+        Some(json!({"answer":{"note":"The comparison remains inconclusive."},"expected_revision":1,"question_key":"q-disposition"})),
         "s10-question-answer",
     )
     .await;
@@ -427,7 +423,7 @@ async fn s10_question_disposition_is_idempotent_and_scoped() {
         port,
         "POST",
         "/api/v1/coach/questions/q-unrelated/dismiss",
-        None,
+        Some(json!({"expected_revision":1,"question_key":"q-unrelated"})),
         "s10-question-dismiss",
     )
     .await;

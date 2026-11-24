@@ -36,10 +36,15 @@ export type DailyQueueItem = {
   remediation_target: { kind: 'opportunity' | 'question' | 'material'; id: string } | null;
 };
 export type DailyQueueSnapshot = { as_of: string; pack_id: string; pack_version: string; daily_cap: number; actionable_count: number; deferred_count: number; items: DailyQueueItem[] };
-export type InsightMetric = { id: string; label: string; numerator: number; denominator: number; rate: number | null; lower: number | null; upper: number | null; state: 'measured' | 'insufficient_observations' };
-export type InsightComparison = { label: string; left: InsightMetric; right: InsightMetric; state: 'distinguishable' | 'inconclusive' | 'exploratory' };
-export type CoachQuestion = { id: string; kind: string; text: string; target_kind: string; target_id: string; impact: number; state: 'open' | 'answered' | 'dismissed' };
-export type InsightsReport = { as_of: string; period_start: string; period_end: string; pack_id: string; pack_version: string; sample_size: number; metrics: InsightMetric[]; comparisons: InsightComparison[]; gaps: Array<{ id: string; label: string; covered: number; total: number; blocked_count: number; suggested_kind: string }>; questions: CoachQuestion[] };
+export type InsightsReport = components['schemas']['InsightsReport'];
+export type CoachQuestion = components['schemas']['CoachQuestion'];
+export type CoachSelector = components['schemas']['CoachSelector'];
+export type CoachContextRequest = components['schemas']['CoachContextRequest'];
+export type CoachSnapshot = components['schemas']['CoachSnapshot'];
+export type CoachJob = components['schemas']['CoachJob'];
+export type CoachReason = components['schemas']['CoachReason'];
+export type WeeklyCoachStart = { kind: 'queued'; jobId: string } | { kind: 'snapshot'; snapshot: CoachSnapshot };
+export type ContextCoachStart = { kind: 'queued'; jobId: string } | { kind: 'current'; snapshot: components['schemas']['CoachContextSnapshot'] };
 export type PackSettings = { revision: number; active_pack_id: string; active_pack_version: string; active_document: string; available_packs: Array<{ id: string; name: string; version: string; document: string }> };
 export type PackValidation = { valid: boolean; pack_id: string | null; version: string | null; normalized_document: string | null; errors: Array<{ line: number | null; field: string | null; message: string }> };
 export type AdminBackup = { id: string; created_at: string; schema_version: number; workspace_epoch: string; size_bytes: number; integrity: 'verified' | 'unknown' };
@@ -80,7 +85,12 @@ export type MovePlacementInput = components['schemas']['MoveOpportunityPlacement
 type Session = components['schemas']['Session'];
 type EventPage = components['schemas']['EventPage'];
 
-export type ProviderConfig = { endpoint: string; model: string; num_ctx: number; num_predict: number; locale: string };
+export type ProviderSettings = components['schemas']['ProviderSettings'];
+export type ProviderPairing = components['schemas']['ProviderPairing'];
+export type ProviderConfig = components['schemas']['ProviderConfig'];
+export type ProviderUpdate = components['schemas']['ProviderUpdate'];
+export type ProviderHealth = components['schemas']['ProviderHealth'];
+export type StructuredReadiness = components['schemas']['StructuredReadiness'];
 export type ExtractorProposal = { id: string; kind: string; candidate: { statement: string; quote: string; mention_name: string | null; mention_kind: string | null }; status: string };
 export type ExtractorJob = { id: string; role: string; status: string; current_attempt: number; max_attempts: number; progress_current: number; progress_total: number; injection_suspected: boolean; last_error_code: string | null; last_error: string | null; source_occurrence_id: string; proposal_batch_id: string | null; proposals: ExtractorProposal[] };
 export type ProposalDecision = { item_id: string; action: 'confirm' | 'correct' | 'dismiss' | 'source_only' | 'unresolved'; target_entity_id?: string; corrected_statement?: string };
@@ -410,20 +420,161 @@ function decodeSetPhaseResult(value: unknown): SetPhaseResult {
   return { row: decodeQueueSheetRow(result.row), event_id: result.event_id, phase_revision: Number(result.phase_revision), reverted: result.reverted };
 }
 
-function decodeInsightMetric(value: unknown): InsightMetric {
-  const metric = object(value);
-  if (!metric || !['measured', 'insufficient_observations'].includes(String(metric.state)) || !Number.isSafeInteger(metric.numerator) || !Number.isSafeInteger(metric.denominator)) throw new Error('Invalid response: insight metric is malformed');
-  for (const field of ['rate', 'lower', 'upper'] as const) if (metric[field] !== null && (typeof metric[field] !== 'number' || !Number.isFinite(metric[field]))) throw new Error(`Invalid response: insight ${field} is malformed`);
-  return { id: requiredString(metric.id, 'metric.id'), label: requiredString(metric.label, 'metric.label'), numerator: Number(metric.numerator), denominator: Number(metric.denominator), rate: typeof metric.rate === 'number' ? metric.rate : null, lower: typeof metric.lower === 'number' ? metric.lower : null, upper: typeof metric.upper === 'number' ? metric.upper : null, state: metric.state as InsightMetric['state'] };
+function nonnegativeInteger(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`Invalid response: ${field} must be a nonnegative integer`);
+  }
+  return value;
+}
+
+function decodeInsightsMeasure(value: unknown): components['schemas']['InsightsMeasure'] {
+  const measure = object(value);
+  if (!measure) throw new Error('Invalid response: insight rate is malformed');
+  const k = nonnegativeInteger(measure.k, 'insight numerator');
+  const n = nonnegativeInteger(measure.n, 'insight denominator');
+  if (k > n) throw new Error('Invalid response: insight rate is malformed');
+  if (n === 0 && measure.interval_95 === null) return { k, n, interval_95: null };
+  const interval = object(measure.interval_95);
+  const lower = interval?.lower_95;
+  const upper = interval?.upper_95;
+  if (n === 0 || typeof lower !== 'number' || typeof upper !== 'number'
+    || !Number.isFinite(lower) || !Number.isFinite(upper) || lower < 0 || upper > 1 || lower > upper) {
+    throw new Error('Invalid response: insight rate is malformed');
+  }
+  return { k, n, interval_95: { lower_95: lower, upper_95: upper } };
 }
 
 function decodeInsights(value: unknown): InsightsReport {
   const report = object(value);
-  if (!report || !Array.isArray(report.metrics) || !Array.isArray(report.comparisons) || !Array.isArray(report.gaps) || !Array.isArray(report.questions) || !Number.isSafeInteger(report.sample_size)) throw new Error('Invalid response: insights report is malformed');
-  const comparisons = report.comparisons.map((raw) => { const item = object(raw); if (!item || !['distinguishable', 'inconclusive', 'exploratory'].includes(String(item.state))) throw new Error('Invalid response: insight comparison is malformed'); return { label: requiredString(item.label, 'comparison.label'), left: decodeInsightMetric(item.left), right: decodeInsightMetric(item.right), state: item.state as InsightComparison['state'] }; });
-  const gaps = report.gaps.map((raw) => { const item = object(raw); if (!item || !Number.isSafeInteger(item.covered) || !Number.isSafeInteger(item.total) || !Number.isSafeInteger(item.blocked_count)) throw new Error('Invalid response: Coach gap is malformed'); return { id: requiredString(item.id, 'gap.id'), label: requiredString(item.label, 'gap.label'), covered: Number(item.covered), total: Number(item.total), blocked_count: Number(item.blocked_count), suggested_kind: requiredString(item.suggested_kind, 'gap.suggested_kind') }; });
-  const questions = report.questions.map((raw): CoachQuestion => { const item = object(raw); if (!item || !['open', 'answered', 'dismissed'].includes(String(item.state))) throw new Error('Invalid response: Coach question is malformed'); return { id: requiredString(item.id, 'question.id'), kind: requiredString(item.kind, 'question.kind'), text: requiredString(item.text, 'question.text'), target_kind: requiredString(item.target_kind, 'question.target_kind'), target_id: requiredString(item.target_id, 'question.target_id'), impact: Number(item.impact), state: item.state as CoachQuestion['state'] }; });
-  return { as_of: requiredString(report.as_of, 'insights.as_of'), period_start: requiredString(report.period_start, 'insights.period_start'), period_end: requiredString(report.period_end, 'insights.period_end'), pack_id: requiredString(report.pack_id, 'insights.pack_id'), pack_version: requiredString(report.pack_version, 'insights.pack_version'), sample_size: Number(report.sample_size), metrics: report.metrics.map(decodeInsightMetric), comparisons, gaps, questions };
+  if (!report || !Array.isArray(report.rates) || !Array.isArray(report.strata)
+    || !Array.isArray(report.effective_outcomes) || !Array.isArray(report.comparisons) || report.comparisons.length) {
+    throw new Error('Invalid response: insights report is malformed');
+  }
+  return {
+    as_of: requiredString(report.as_of, 'insights.as_of'),
+    event_cursor: requiredString(report.event_cursor, 'insights.event_cursor'),
+    rates: report.rates.map((raw) => {
+      const metric = object(raw)?.metric;
+      if (metric !== 'reply_rate' && metric !== 'advance_rate') throw new Error('Invalid response: insight metric is malformed');
+      return { metric, ...decodeInsightsMeasure(raw) };
+    }),
+    strata: report.strata.map((raw) => {
+      const item = object(raw);
+      return { segment_id: requiredString(item?.segment_id, 'insights.segment_id'), reply_rate: decodeInsightsMeasure(item?.reply_rate) };
+    }),
+    effective_outcomes: report.effective_outcomes.map((raw) => {
+      const item = object(raw);
+      return { class: requiredString(item?.class, 'outcome.class'), count: nonnegativeInteger(item?.count, 'outcome count') };
+    }),
+    comparisons: [],
+  };
+}
+
+function decodeCoachPeriod(value: unknown): string {
+  if (typeof value !== 'string' || !/^\d{4}-W(?:0[1-9]|[1-4][0-9]|5[0-3])$/.test(value)) {
+    throw new Error('Invalid response: Coach period is malformed');
+  }
+  return value;
+}
+
+const coachReasons: ReadonlySet<string> = new Set<CoachReason>([
+  'assessment_check', 'missing_proof', 'missing_gift', 'missing_artifact', 'jargon_check',
+  'template_review', 'capacity_update', 'missing_identity', 'insight',
+]);
+
+function isCoachReason(value: unknown): value is CoachReason {
+  return typeof value === 'string' && coachReasons.has(value);
+}
+
+function decodeCoachSnapshot(value: unknown): CoachSnapshot {
+  const snapshot = object(value);
+  const coverage = object(snapshot?.coverage);
+  if (!snapshot || !coverage || !Array.isArray(snapshot.observations) || snapshot.observations.length > 5
+    || (snapshot.report !== null && !object(snapshot.report))) {
+    throw new Error('Invalid response: Coach snapshot is malformed');
+  }
+  const optionalText = (field: 'input_digest' | 'active_job_id' | 'latest_job_id') =>
+    snapshot[field] === null ? null : requiredString(snapshot[field], `Coach ${field}`);
+  return {
+    report: object(snapshot.report),
+    period: decodeCoachPeriod(snapshot.period),
+    as_of: requiredString(snapshot.as_of, 'Coach as_of'),
+    input_digest: optionalText('input_digest'),
+    active_job_id: optionalText('active_job_id'),
+    latest_job_id: optionalText('latest_job_id'),
+    observations: snapshot.observations.map((value) => {
+      const observation = object(value);
+      const target = object(observation?.target);
+      if (!observation || !target || !isCoachReason(observation.reason)) throw new Error('Invalid response: Coach observation is malformed');
+      return { reason: observation.reason, target, impact: nonnegativeInteger(observation.impact, 'observation impact') };
+    }),
+    coverage: {
+      current: nonnegativeInteger(coverage.current, 'current assessments'),
+      missing: nonnegativeInteger(coverage.missing, 'missing assessments'),
+      stale: nonnegativeInteger(coverage.stale, 'stale assessments'),
+      no_match: nonnegativeInteger(coverage.no_match, 'no-match assessments'),
+    },
+  };
+}
+
+function decodeCoachJob(value: unknown): CoachJob {
+  const job = object(value);
+  const scope = object(job?.scope);
+  const review = object(job?.review_ref);
+  const state = job?.status;
+  if (job?.role !== 'coach' || scope?.kind !== 'weekly' || job.progress !== null
+    || (state !== 'queued' && state !== 'running' && state !== 'succeeded' && state !== 'invalid' && state !== 'failed' && state !== 'cancelled')
+    || (job.review_ref !== null && review?.kind !== 'coach_report')) {
+    throw new Error('Invalid response: Coach job is malformed');
+  }
+  return {
+    id: requiredString(job.id, 'job.id'),
+    role: 'coach',
+    status: state,
+    state_revision: nonnegativeInteger(job.state_revision, 'job state revision'),
+    attempt_count: nonnegativeInteger(job.attempt_count, 'job attempt count'),
+    scope: { kind: 'weekly', period: decodeCoachPeriod(scope.period) },
+    progress: null,
+    error_code: job.error_code === null ? null : requiredString(job.error_code, 'job.error_code'),
+    review_ref: review ? { kind: 'coach_report', id: requiredString(review.id, 'job.review_ref.id') } : null,
+  };
+}
+
+function decodeCoachQuestions(value: unknown): CoachQuestion[] {
+  const list = object(value);
+  if (!Array.isArray(list?.items)) throw new Error('Invalid response: Coach questions are malformed');
+  return list.items.map((value) => {
+    const item = object(value);
+    const target = object(item?.target);
+    const selector = object(item?.selector);
+    if (!item || !target || !selector) throw new Error('Invalid response: Coach question is malformed');
+    const kind = selector.kind;
+    let decodedSelector: CoachSelector;
+    if (kind === 'weekly') decodedSelector = { kind, period: decodeCoachPeriod(selector.period) };
+    else if (kind === 'party' && Number.isSafeInteger(selector.revision)) decodedSelector = { kind, id: requiredString(selector.id, 'question.selector.id'), revision: Number(selector.revision) };
+    else if (kind === 'opportunity' && Number.isSafeInteger(selector.revision) && Number.isSafeInteger(selector.recipient_revision)) decodedSelector = { kind, id: requiredString(selector.id, 'question.selector.id'), revision: Number(selector.revision), recipient_id: requiredString(selector.recipient_id, 'question.selector.recipient_id'), recipient_revision: Number(selector.recipient_revision) };
+    else throw new Error('Invalid response: Coach question selector is malformed');
+    const status = item.status;
+    if (!['open','answer_pending','answered','dismissed','deferred','superseded'].includes(String(status))) throw new Error('Invalid response: Coach question status is malformed');
+    const action = item.action;
+    if (action !== 'research' && action !== 'interviewer') throw new Error('Invalid response: Coach question action is malformed');
+    return {
+      id: requiredString(item.id, 'question.id'),
+      question_key: requiredString(item.question_key, 'question.question_key'),
+      revision: nonnegativeInteger(item.revision, 'question.revision'),
+      kind: requiredString(item.kind, 'question.kind'),
+      text: requiredString(item.text, 'question.text'),
+      impact: nonnegativeInteger(item.impact, 'question impact'),
+      priority: nonnegativeInteger(item.priority, 'question priority'),
+      target,
+      selector: decodedSelector,
+      status: status as CoachQuestion['status'],
+      action,
+      deferred_until: typeof item.deferred_until === 'string' ? item.deferred_until : null,
+      dependency_digest: typeof item.dependency_digest === 'string' ? item.dependency_digest : null,
+      suggested_resource_ref: typeof item.suggested_resource_ref === 'string' ? item.suggested_resource_ref : null,
+    };
+  });
 }
 
 function decodeAdminBackup(value: unknown): AdminBackup {
@@ -605,8 +756,40 @@ function decodeSavedSource(value: unknown): SavedSource {
 
 function decodeProvider(value: unknown): ProviderConfig {
   const row = object(value);
-  if (!row || !Number.isSafeInteger(row.num_ctx) || !Number.isSafeInteger(row.num_predict)) throw new Error('Invalid response: provider settings are malformed');
-  return { endpoint: requiredString(row.endpoint, 'provider.endpoint'), model: requiredString(row.model, 'provider.model'), num_ctx: Number(row.num_ctx), num_predict: Number(row.num_predict), locale: requiredString(row.locale, 'provider.locale') };
+  if (!row || !Number.isSafeInteger(row.num_ctx) || !Number.isSafeInteger(row.num_predict)
+    || (row.pairing !== null && !object(row.pairing))) {
+    throw new Error('Invalid response: provider settings are malformed');
+  }
+  const paired = object(row.pairing);
+  return {
+    endpoint: requiredString(row.endpoint, 'provider.endpoint'),
+    model: requiredString(row.model, 'provider.model'),
+    num_ctx: Number(row.num_ctx),
+    num_predict: Number(row.num_predict),
+    locale: requiredString(row.locale, 'provider.locale'),
+    profile_revision: nonnegativeInteger(row.profile_revision, 'provider profile revision'),
+    pairing: paired ? {
+      provider_version: requiredString(paired.provider_version, 'pairing provider version'),
+      model_digest: requiredString(paired.model_digest, 'pairing model digest'),
+      tokenizer_digest: requiredString(paired.tokenizer_digest, 'pairing tokenizer digest'),
+      template_tokens: nonnegativeInteger(paired.template_tokens, 'pairing template tokens'),
+    } : null,
+    structured: decodeStructuredReadiness(row.structured),
+  };
+}
+
+function decodeStructuredReadiness(value: unknown): StructuredReadiness {
+  const row = object(value);
+  const status = row?.status;
+  if (status !== 'unqualified' && status !== 'queued' && status !== 'running'
+    && status !== 'probe_succeeded' && status !== 'failed' && status !== 'ready') {
+    throw new Error('Invalid response: structured-output readiness is malformed');
+  }
+  const text = (field: 'diagnostic' | 'checked_at' | 'probe_id') => {
+    const raw = row?.[field];
+    return raw === null ? null : requiredString(raw, `provider structured ${field}`);
+  };
+  return { status, diagnostic: text('diagnostic'), checked_at: text('checked_at'), probe_id: text('probe_id') };
 }
 
 function decodeExtractorJob(value: unknown): ExtractorJob {
@@ -620,10 +803,16 @@ function decodeExtractorJob(value: unknown): ExtractorJob {
   return { id: requiredString(row.id, 'job.id'), role: requiredString(row.role, 'job.role'), status: requiredString(row.status, 'job.status'), current_attempt: Number(row.current_attempt), max_attempts: Number(row.max_attempts), progress_current: Number(row.progress_current), progress_total: Number(row.progress_total), injection_suspected: row.injection_suspected === true, last_error_code: typeof row.last_error_code === 'string' ? row.last_error_code : null, last_error: typeof row.last_error === 'string' ? row.last_error : null, source_occurrence_id: requiredString(row.source_occurrence_id, 'job.source_occurrence_id'), proposal_batch_id: typeof row.proposal_batch_id === 'string' ? row.proposal_batch_id : null, proposals };
 }
 
-function decodeProviderHealth(value: unknown): { available: boolean; model: string; models: string[]; message: string } {
+function decodeProviderHealth(value: unknown): ProviderHealth {
   const row = object(value);
   if (!row || typeof row.available !== 'boolean') throw new Error('Invalid response: provider health is malformed');
-  return { available: row.available, model: requiredString(row.model, 'health.model'), models: stringArray(row.models, 'health.models'), message: requiredString(row.message, 'health.message') };
+  return {
+    available: row.available,
+    model: requiredString(row.model, 'health.model'),
+    models: stringArray(row.models, 'health.models'),
+    message: requiredString(row.message, 'health.message'),
+    ...(row.structured === undefined ? {} : { structured: decodeStructuredReadiness(row.structured) }),
+  };
 }
 
 function decodeSavedSourceList(value: unknown): SavedSource[] {
@@ -1110,8 +1299,8 @@ export class ParleyClient {
     return decodeExtractorJob(await this.request(`/jobs/${encodeURIComponent(id)}`));
   }
 
-  async cancelExtractorJob(id: string): Promise<void> {
-    await this.request(`/jobs/${encodeURIComponent(id)}`, { method: 'POST', body: '{}' });
+  async cancelJob(id: string, key = newOperationKey()): Promise<void> {
+    await this.request(`/jobs/${encodeURIComponent(id)}`, { method: 'POST', headers: { 'Idempotency-Key': key } });
   }
 
   async getCaptureProposals(occurrenceId: string): Promise<ExtractorJob> {
@@ -1127,15 +1316,15 @@ export class ParleyClient {
     return { status: value.status };
   }
 
-  async getProvider(): Promise<ProviderConfig> {
-    return decodeProvider(await this.request('/agent/provider'));
+  async getProvider(signal?: AbortSignal): Promise<ProviderConfig> {
+    return decodeProvider(await this.request('/agent/provider', { signal }));
   }
 
-  async updateProvider(config: ProviderConfig): Promise<void> {
+  async updateProvider(config: ProviderUpdate): Promise<void> {
     await this.mutate('/agent/provider', 'PUT', config, { 'Idempotency-Key': newOperationKey() });
   }
 
-  async checkProvider(): Promise<{ available: boolean; model: string; models: string[]; message: string }> {
+  async checkProvider(): Promise<ProviderHealth> {
     return decodeProviderHealth(await this.request('/agent/provider/health', { method: 'POST', body: '{}' }));
   }
 
@@ -1250,8 +1439,8 @@ export class ParleyClient {
     return decodeSetPhaseResult(await this.mutate(`/opportunities/${encodeURIComponent(id)}/phase`, 'PATCH', input, { 'Idempotency-Key': key }));
   }
 
-  async getInsights(): Promise<InsightsReport> {
-    return decodeInsights(await this.request('/insights'));
+  async getInsights(signal?: AbortSignal): Promise<InsightsReport> {
+    return decodeInsights(await this.request('/insights', { signal }));
   }
 
   async getMaintenanceSettings(): Promise<MaintenanceSettings> {
@@ -1309,10 +1498,37 @@ export class ParleyClient {
     return await this.request(`/maintenance/operations/${encodeURIComponent(id)}`) as MaintenanceOperation;
   }
 
-  async runCoach(input: { period_start?: string; period_end?: string } = {}, key = newOperationKey()): Promise<{ job_id: string }> {
-    const result = object(await this.mutate('/coach/run', 'POST', input, { 'Idempotency-Key': key }));
-    if (!result) throw new Error('Invalid response: Coach run receipt is malformed');
-    return { job_id: requiredString(result.job_id, 'coach.job_id') };
+  async startWeeklyCoach(input: { period?: string } = {}, key = newOperationKey()): Promise<WeeklyCoachStart> {
+    const result = object(await this.mutate('/coach/weekly', 'POST', input, { 'Idempotency-Key': key }));
+    if (result?.status === 'queued') {
+      return { kind: 'queued', jobId: requiredString(result.job_id, 'coach.job_id') };
+    }
+    return { kind: 'snapshot', snapshot: decodeCoachSnapshot(result) };
+  }
+
+  async startContextCoach(input: CoachContextRequest, key = newOperationKey()): Promise<ContextCoachStart> {
+    const result = object(await this.mutate('/coach/context', 'POST', input, { 'Idempotency-Key': key }));
+    if (result?.status === 'queued') return { kind: 'queued', jobId: requiredString(result.job_id, 'coach.job_id') };
+    if (result?.status !== 'current' || !Array.isArray(result.questions) || !object(result.coverage) || !object(result.scope)) {
+      throw new Error('Invalid response: contextual Coach result is malformed');
+    }
+    return { kind: 'current', snapshot: result as unknown as components['schemas']['CoachContextSnapshot'] };
+  }
+
+  async getWeeklyCoach(signal?: AbortSignal): Promise<CoachSnapshot> {
+    return decodeCoachSnapshot(await this.request('/coach/weekly', { signal }));
+  }
+
+  async getCoachJob(id: string, signal?: AbortSignal): Promise<CoachJob> {
+    const job = decodeCoachJob(await this.request(`/jobs/${encodeURIComponent(id)}`, { signal }));
+    if (job.id !== id) throw new Error('Invalid response: Coach job identity changed');
+    return job;
+  }
+
+  async listCoachQuestions(filter: { scope_kind?: CoachSelector['kind']; scope_id?: string; scope_period?: string; recipient_id?: string } = {}, signal?: AbortSignal): Promise<CoachQuestion[]> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filter)) if (value) params.set(key, value);
+    return decodeCoachQuestions(await this.request(`/coach/questions${params.size ? `?${params.toString()}` : ''}`, { signal }));
   }
 
   async getPackSettings(): Promise<PackSettings> {
@@ -1359,8 +1575,16 @@ export class ParleyClient {
     return this.getPackSettings();
   }
 
-  async decideCoachQuestion(id: string, key = newOperationKey()): Promise<void> {
-    await this.mutate(`/questions/${encodeURIComponent(id)}/dismiss`, 'POST', {}, { 'Idempotency-Key': key });
+  async answerCoachQuestion(id: string, input: components['schemas']['CoachAnswerInput'], key = newOperationKey()): Promise<Record<string, unknown>> {
+    return object(await this.mutate(`/coach/questions/${encodeURIComponent(id)}/answer`, 'POST', input, { 'Idempotency-Key': key })) ?? {};
+  }
+
+  async dismissCoachQuestion(question: Pick<CoachQuestion, 'id' | 'question_key' | 'revision'>, key = newOperationKey()): Promise<void> {
+    await this.mutate(`/coach/questions/${encodeURIComponent(question.id)}/dismiss`, 'POST', { expected_revision: question.revision, question_key: question.question_key }, { 'Idempotency-Key': key });
+  }
+
+  async deferCoachQuestion(question: Pick<CoachQuestion, 'id' | 'question_key' | 'revision'>, defer_days = 7, key = newOperationKey()): Promise<void> {
+    await this.mutate(`/coach/questions/${encodeURIComponent(question.id)}/defer`, 'POST', { expected_revision: question.revision, question_key: question.question_key, defer_days }, { 'Idempotency-Key': key });
   }
 
   async createBoardList(input: components['schemas']['CreateBoardList'], key = newOperationKey()): Promise<components['schemas']['CreatedBoardList']> {

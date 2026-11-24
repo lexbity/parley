@@ -758,6 +758,11 @@ impl Workspace {
             tx.commit().await?;
             return Ok(json!({"_replay_status": replay.status, "result": replay.body}));
         }
+        // The REST owner route keeps its direct, owner-authenticated entry and
+        // its wire envelope; the retirement facts are owned by the shared
+        // application operation (UCR-001 U08), so both callers mutate one set
+        // of revisions and events. The route reads the current revisions and
+        // passes them as the expected preconditions (UCR-001 §5.3).
         let row: Option<(i64, i64)> = sqlx::query_as(
             "SELECT revision,resource_content_revision FROM entity WHERE id=? AND subtype<>'' AND readiness <> 'retired' AND retired_at IS NULL",
         )
@@ -767,69 +772,38 @@ impl Workspace {
         let Some((revision, content_revision)) = row else {
             return Err(WorkspaceError::NotFound);
         };
-        let next_revision = revision + 1;
-        let next_content_revision = content_revision + 1;
-        let updated = sqlx::query(
-            "UPDATE entity SET readiness='retired',revision=?,resource_content_revision=?,updated_at=? WHERE id=? AND revision=?",
-        )
-        .bind(next_revision)
-        .bind(next_content_revision)
-        .bind(now_utc())
-        .bind(id)
-        .bind(revision)
-        .execute(&mut *tx)
-        .await?;
-        if updated.rows_affected() != 1 {
-            return Err(WorkspaceError::StaleRevision);
-        }
-        self.apply_placement(
-            &mut tx,
-            id,
-            &ResourcePlacementInput {
-                column_id: None,
-                before_resource_id: None,
-            },
-            None,
-            None,
-            None,
-        )
-        .await?;
-        write_event(
-            &mut tx,
-            "resource",
-            id,
-            next_revision,
-            "resource.retired",
-            json!({"revision": next_revision}),
-        )
-        .await?;
-        let affected: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT DISTINCT d.material_id,d.version_no FROM version_dependency d \
-             WHERE d.kind='resource' AND d.source_id=? AND d.source_revision <> ?",
-        )
-        .bind(id)
-        .bind(next_content_revision.to_string())
-        .fetch_all(&mut *tx)
-        .await?;
-        let affected_json: Vec<Value> = affected
+        let input = crate::application::resource_retirement::RetirementInput {
+            id: id.to_owned(),
+            expected_card_revision: revision,
+            expected_content_revision: content_revision,
+            operation_key_digest: super::digest(key.as_bytes()),
+        };
+        let outcome = match crate::application::resource_retirement::retire(&mut tx, &input).await {
+            Ok(outcome) => outcome,
+            Err(crate::application::resource_retirement::RetirementError::NotFound) => {
+                return Err(WorkspaceError::NotFound);
+            }
+            Err(crate::application::resource_retirement::RetirementError::StaleRevision) => {
+                return Err(WorkspaceError::StaleRevision);
+            }
+            Err(crate::application::resource_retirement::RetirementError::TooManyVersions) => {
+                return Err(WorkspaceError::Invalid(
+                    "retirement impact exceeds 256 material versions".into(),
+                ));
+            }
+            Err(crate::application::resource_retirement::RetirementError::Database) => {
+                return Err(WorkspaceError::Invalid("database error".into()));
+            }
+        };
+        let affected_json: Vec<Value> = outcome
+            .impacted_versions
             .iter()
-            .map(|(material_id, version_no)| {
-                json!({"material_id": material_id, "version_no": version_no})
+            .map(|dependency| {
+                json!({"material_id": dependency.material_id, "version_no": dependency.version_no})
             })
             .collect();
-        for (material_id, version_no) in &affected {
-            write_event(
-                &mut tx,
-                "material",
-                material_id,
-                *version_no,
-                "material.release_recheck_required",
-                json!({"resource_id": id, "version_no": version_no}),
-            )
-            .await?;
-        }
         let result = json!({
-            "entity": {"id": id, "kind": "resource", "readiness": "retired", "revision": next_revision},
+            "entity": {"id": id, "kind": "resource", "readiness": "retired", "revision": outcome.card_revision},
             "affected_versions": affected_json
         });
         receipt_store(&mut tx, key, &canonical, 200, &result).await?;

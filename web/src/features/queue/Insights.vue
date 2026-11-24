@@ -1,94 +1,267 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
-import { parley, type InsightsReport } from '../../api/client';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import {
+  ApiError, newOperationKey, parley, type CoachJob, type CoachQuestion, type CoachReason, type CoachSelector, type CoachSnapshot, type InsightsReport,
+} from '../../api/client';
+import { inferenceActivity, jobIsActive } from '../../app/inference/activity';
+import CoachQuestions from '../coach/CoachQuestions.vue';
 
 defineOptions({ name: 'QueueInsightsView' });
 
 const emit = defineEmits<{ navigate: [path: string] }>();
 const report = ref<InsightsReport | null>(null);
+const snapshot = ref<CoachSnapshot | null>(null);
+const job = ref<CoachJob | null>(null);
 const loading = ref(false);
-const running = ref(false);
+const starting = ref(false);
+const cancelling = ref(false);
 const error = ref('');
+const readError = ref('');
 const status = ref('');
-const activeJobId = ref('');
-let pollTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
-let generation = 0;
-const openQuestions = computed(() => (report.value?.questions ?? []).filter((item) => item.state === 'open'));
+const startButton = ref<InstanceType<typeof globalThis.HTMLButtonElement> | null>(null);
+const cancelButton = ref<InstanceType<typeof globalThis.HTMLButtonElement> | null>(null);
+const active = computed(() => jobIsActive(job.value));
+const pendingAdmission = ref<string | null>(null);
+let unsubscribe: (() => void) | undefined;
+let reportRequest: InstanceType<typeof globalThis.AbortController> | undefined;
+const weeklyChoices = computed(() => [{ selector: { kind: 'weekly', period: snapshot.value?.period ?? currentWeek() } as CoachSelector, label: 'Weekly questions' }]);
+let mounted = false;
+let epoch: string | undefined;
+let startKey: string | undefined;
+let cancelKey: { id: string; key: string } | undefined;
 
-async function load() {
-  const current = ++generation;
-  loading.value = true; error.value = '';
-  try { await parley.connect(); const next = await parley.getInsights(); if (current === generation) report.value = next; }
-  catch (reason) { if (current === generation) error.value = reason instanceof Error ? reason.message : 'Could not load server-computed insights.'; }
-  finally { if (current === generation) loading.value = false; }
+function currentWeek(): string {
+  const date = new Date();
+  const day = (date.getUTCDay() + 6) % 7;
+  date.setUTCDate(date.getUTCDate() - day + 3);
+  const year = date.getUTCFullYear();
+  const firstThursday = new Date(Date.UTC(year, 0, 4));
+  const firstDay = (firstThursday.getUTCDay() + 6) % 7;
+  firstThursday.setUTCDate(firstThursday.getUTCDate() - firstDay + 3);
+  const week = 1 + Math.round((date.getTime() - firstThursday.getTime()) / 604800000);
+  return `${year}-W${String(week).padStart(2, '0')}`;
+}
+
+function currentSession(): boolean {
+  return mounted && epoch === parley.workspaceEpoch;
+}
+
+const coachRemedies: Readonly<Record<string, string>> = {
+  RUNNER_INSTALL_INVALID: 'The installed Coach runtime is unavailable. Check runtime readiness in Settings.',
+  ISOLATION_UNAVAILABLE: 'The local runner could not start in isolation. Check runtime readiness in Settings.',
+  PROTOCOL_MISMATCH: 'The installed runner and service versions differ. Check runtime readiness in Settings.',
+  MODEL_UNAVAILABLE: 'The configured model is unavailable. Check the local model in Settings.',
+  PROFILE_CHANGED: 'The local model identity changed. Requalify the profile in Settings.',
+  CAPABILITY_UNQUALIFIED: 'Coach requires a qualified local model. Check the profile in Settings.',
+  INFERENCE_BUSY: 'The inference queue is full. Try again after existing work finishes.',
+  CONTEXT_BUDGET: 'The weekly scope exceeds the local model budget. Review the deterministic report.',
+  QUEUE_EXPIRED: 'The Coach job expired while queued. Start a fresh job when ready.',
+  STALE_INPUT: 'The evidence changed while Coach was running. Refresh the report and start again.',
+  RESULT_INVALID: 'The model returned an invalid proposal. Review the deterministic report.',
+  INTERRUPTED_UPGRADE: 'A workspace upgrade interrupted this job. Start a fresh job when ready.',
+};
+
+const reasons: Readonly<Record<CoachReason, string>> = {
+  assessment_check: 'Check unassessed or outdated resource eligibility',
+  missing_proof: 'Find verified proof for recipients without a match',
+  missing_gift: 'Find a useful gift for recipients without a match',
+  missing_artifact: 'Find a relevant artifact for recipients without a match',
+  jargon_check: 'Review an unfamiliar term',
+  template_review: 'Review flagged templates',
+  capacity_update: 'Review outdated capacity',
+  missing_identity: 'Add a professional identity tag',
+  insight: 'Review the available first-touch observations',
+};
+
+function problem(reason: unknown, fallback: string): string {
+  return reason instanceof ApiError ? (coachRemedies[reason.code] ?? fallback) : fallback;
+}
+
+async function loadReport() {
+  reportRequest?.abort();
+  const request = new globalThis.AbortController();
+  reportRequest = request;
+  loading.value = true;
+  readError.value = '';
+  try {
+    const next = await parley.getInsights(request.signal);
+    if (!request.signal.aborted && currentSession()) report.value = next;
+  } catch {
+    if (!request.signal.aborted && currentSession()) readError.value = 'Could not load server-computed insights. Refresh the report to retry.';
+  } finally {
+    if (reportRequest === request) loading.value = false;
+  }
+}
+
+function refresh() {
+  inferenceActivity.refresh();
+  void loadReport();
+}
+
+function observe() {
+  unsubscribe = inferenceActivity.watchWeekly({
+    update(value) {
+      if (!currentSession()) return;
+      const previous = job.value;
+      snapshot.value = value.snapshot;
+      job.value = value.job;
+      pendingAdmission.value = null;
+      if (!value.job || (value.job.id === previous?.id && value.job.state_revision === previous.state_revision)) return;
+      const restoreFocus = globalThis.document.activeElement === cancelButton.value;
+      const period = value.job.scope.period;
+      switch (value.job.status) {
+        case 'queued':
+          status.value = `Coach queued for ${period}.`;
+          break;
+        case 'running':
+          status.value = `Coach is wording questions for ${period}.`;
+          break;
+        case 'succeeded':
+          status.value = `Coach questions for ${period} are ready for review.`;
+          void loadReport();
+          break;
+        case 'cancelled':
+          status.value = `Coach job for ${period} cancelled.`;
+          break;
+        case 'failed':
+        case 'invalid':
+          status.value = '';
+          error.value = coachRemedies[value.job.error_code ?? ''] ?? 'Coach could not finish. Review the deterministic report or try again.';
+          break;
+      }
+      if (!active.value && restoreFocus) void nextTick(() => startButton.value?.focus());
+    },
+    error(reason) {
+      if (currentSession()) error.value = problem(reason, 'Coach status is temporarily unavailable. Refresh the report to retry.');
+    },
+  });
 }
 
 async function runCoach() {
-  running.value = true; error.value = ''; status.value = '';
+  if (!currentSession()) return;
+  starting.value = true;
+  error.value = '';
+  status.value = '';
+  startKey ??= newOperationKey();
+  const actionEpoch = epoch;
   try {
-    const job = await parley.runCoach();
-    activeJobId.value = job.job_id;
-    status.value = 'Coach run queued. Its proposed wording is not saved as a fact until owner review.';
-    await pollCoach(job.job_id, ++generation);
+    const result = await parley.startWeeklyCoach({}, startKey);
+    if (!currentSession() || actionEpoch !== epoch) return;
+    startKey = undefined;
+    if (result.kind === 'queued') {
+      pendingAdmission.value = result.jobId;
+      status.value = 'Coach queued for this week.';
+      inferenceActivity.observeAdmission(result.jobId);
+    } else {
+      snapshot.value = result.snapshot;
+      status.value = 'There are no new Coach questions to generate for this week.';
+    }
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : 'Coach is unavailable. Existing reports and manual work remain available.';
-    running.value = false;
+    if (!currentSession() || actionEpoch !== epoch) return;
+    if (reason instanceof ApiError) startKey = undefined;
+    error.value = problem(reason, 'Coach is unavailable. You can continue with the deterministic report.');
+  } finally {
+    if (actionEpoch === epoch) starting.value = false;
   }
 }
 
-async function pollCoach(jobId: string, runGeneration: number) {
+async function cancel() {
+  const id = job.value?.id;
+  if (!id || !active.value || !currentSession()) return;
+  cancelling.value = true;
+  error.value = '';
+  const actionEpoch = epoch;
+  if (cancelKey?.id !== id) cancelKey = { id, key: newOperationKey() };
   try {
-    const job = await parley.getRoleJob(jobId);
-    if (runGeneration !== generation || activeJobId.value !== jobId) return;
-    if (job.status === 'succeeded' || job.status === 'ok') {
-      await load();
-      status.value = 'Coach report refreshed from the committed run.';
-      activeJobId.value = ''; running.value = false;
-      return;
-    }
-    if (!['queued', 'running'].includes(job.status)) {
-      error.value = job.last_error ?? `Coach run ended as ${job.status}. The existing report remains available.`;
-      activeJobId.value = ''; running.value = false;
-      return;
-    }
-    pollTimer = globalThis.setTimeout(() => { void pollCoach(jobId, runGeneration); }, 1000);
+    await parley.cancelJob(id, cancelKey.key);
+    if (!currentSession() || actionEpoch !== epoch) return;
+    cancelKey = undefined;
+    inferenceActivity.refresh();
   } catch (reason) {
-    if (runGeneration !== generation) return;
-    error.value = reason instanceof Error ? reason.message : 'Coach status is temporarily unavailable. Reopen this view to reconcile the durable job.';
-    activeJobId.value = ''; running.value = false;
+    if (!currentSession() || actionEpoch !== epoch) return;
+    if (reason instanceof ApiError) cancelKey = undefined;
+    error.value = reason instanceof ApiError && reason.status === 409
+      ? 'This Coach job already finished. The latest state will refresh.'
+      : 'Could not confirm cancellation. Check the job state and retry if it is still active.';
+    inferenceActivity.refresh();
+  } finally {
+    if (actionEpoch === epoch) cancelling.value = false;
   }
 }
 
-async function dismiss(questionId: string) {
-  error.value = ''; status.value = '';
+function targetPath(question: CoachQuestion): string | null {
+  const target = question.target;
+  if (typeof target.opportunity_id === 'string') return `/queue/${encodeURIComponent(target.opportunity_id)}`;
+  if (typeof target.party_id === 'string') return `/parties/${encodeURIComponent(target.party_id)}`;
+  if (typeof target.segment_id === 'string' || question.kind === 'jargon_check') return '/resources';
+  if (question.kind === 'template_review') return '/output/templates';
+  if (question.kind === 'capacity_update' || question.kind === 'missing_identity') return '/settings';
+  return null;
+}
+
+async function openTarget(question: CoachQuestion) {
+  const path = targetPath(question);
+  if (!path || !currentSession()) return;
+  const actionEpoch = epoch;
   try {
-    await parley.decideCoachQuestion(questionId);
-    await load();
-    status.value = 'Question dismissed. It will not be proposed again for this scope.';
-  } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not record this question disposition.'; }
+    if (typeof question.target.opportunity_id === 'string') await parley.getOpportunity(question.target.opportunity_id);
+    if (typeof question.target.party_id === 'string') await parley.getDossier(question.target.party_id);
+    if (typeof question.target.segment_id === 'string') {
+      const segments = await parley.listSegments();
+      if (!segments.some((segment) => segment.id === question.target.segment_id)) throw new Error('Segment unavailable');
+    }
+    if (currentSession() && actionEpoch === epoch) emit('navigate', path);
+  } catch {
+    if (currentSession() && actionEpoch === epoch) error.value = 'The related record is unavailable. Refresh the report.';
+  }
 }
 
-function openTarget(kind: string, id: string) {
-  const path = kind === 'opportunity' ? `/queue/${encodeURIComponent(id)}` : kind === 'party' ? `/leads/${encodeURIComponent(id)}` : '/resources';
-  emit('navigate', path);
+function metricRate(metric: InsightsReport['rates'][number]): string {
+  if (!metric.n || !metric.interval_95) return 'Insufficient observations';
+  const rate = `${((metric.k / metric.n) * 100).toFixed(1)}%`;
+  const percent = (value: number) => `${(value * 100).toFixed(1)}%`;
+  return `${rate} · 95% Wilson interval ${percent(metric.interval_95.lower_95)}–${percent(metric.interval_95.upper_95)}`;
 }
 
-function metricRate(metric: InsightsReport['metrics'][number]): string {
-  if (metric.denominator === 0 || metric.state === 'insufficient_observations') return 'Insufficient observations';
-  const rate = `${(metric.rate! * 100).toFixed(1)}%`;
-  if (metric.lower === null || metric.upper === null) return rate;
-  return `${rate} · 95% Wilson interval ${(metric.lower * 100).toFixed(1)}–${(metric.upper * 100).toFixed(1)}%`;
+async function initialize() {
+  try {
+    await parley.connect();
+    if (!mounted) return;
+    epoch = parley.workspaceEpoch;
+    observe();
+    void loadReport();
+  } catch {
+    if (mounted) readError.value = 'Could not connect to the workspace. Reload to try again.';
+  }
 }
 
-function cancelWait() {
-  generation += 1;
-  if (pollTimer) globalThis.clearTimeout(pollTimer);
-  pollTimer = undefined; running.value = false;
-  status.value = 'Stopped waiting for the Coach result. The server job continues; refresh to reconcile it.';
+function workspaceChanged() {
+  unsubscribe?.();
+  reportRequest?.abort();
+  report.value = null;
+  snapshot.value = null;
+  job.value = null;
+  pendingAdmission.value = null;
+  startKey = undefined;
+  cancelKey = undefined;
+  starting.value = false;
+  cancelling.value = false;
+  status.value = '';
+  error.value = '';
+  void initialize();
 }
 
-onMounted(() => { void load(); });
-onBeforeUnmount(() => { generation += 1; if (pollTimer) globalThis.clearTimeout(pollTimer); });
+onMounted(() => {
+  mounted = true;
+  globalThis.addEventListener('parley:workspace-changed', workspaceChanged);
+  void initialize();
+});
+onBeforeUnmount(() => {
+  mounted = false;
+  unsubscribe?.();
+  reportRequest?.abort();
+  globalThis.removeEventListener('parley:workspace-changed', workspaceChanged);
+});
 </script>
 
 <template>
@@ -97,29 +270,35 @@ onBeforeUnmount(() => { generation += 1; if (pollTimer) globalThis.clearTimeout(
       Weekly Coach and insights
     </h3>
     <p v-if="report">
-      Week {{ report.period_start }}–{{ report.period_end }} · pack {{ report.pack_id }} v{{ report.pack_version }} · {{ report.sample_size }} sends in this report · data as of {{ report.as_of }}
+      Historical first touches · data as of {{ report.as_of }}
+    </p>
+    <p v-if="snapshot?.period">
+      Coach uses the weekly assessment for {{ snapshot.period }}.
     </p>
     <div class="actions">
       <button
         type="button"
-        :disabled="loading || running"
-        @click="load"
+        :disabled="loading"
+        @click="refresh"
       >
         Refresh report
       </button>
       <button
+        ref="startButton"
         type="button"
-        :disabled="loading || running"
+        :disabled="starting || active || pendingAdmission !== null"
         @click="runCoach"
       >
         Run Coach for this week
       </button>
       <button
-        v-if="running"
+        v-if="active"
+        ref="cancelButton"
         type="button"
-        @click="cancelWait"
+        :aria-disabled="cancelling"
+        @click="!cancelling && cancel()"
       >
-        Stop waiting
+        Cancel Coach job
       </button>
     </div>
     <p
@@ -129,12 +308,6 @@ onBeforeUnmount(() => { generation += 1; if (pollTimer) globalThis.clearTimeout(
       Loading read-only report…
     </p>
     <p
-      v-if="running"
-      role="status"
-    >
-      Coach is {{ activeJobId ? 'running as a durable job' : 'being queued' }}. Queue and report reads do not start additional model work.
-    </p>
-    <p
       v-if="status"
       role="status"
       aria-live="polite"
@@ -142,14 +315,14 @@ onBeforeUnmount(() => { generation += 1; if (pollTimer) globalThis.clearTimeout(
       {{ status }}
     </p>
     <p
-      v-if="error"
+      v-if="error || readError"
       role="alert"
     >
-      {{ error }}
+      {{ error || readError }}
     </p>
     <template v-if="report">
       <h4>Rates</h4>
-      <p v-if="!report.metrics.length">
+      <p v-if="!report.rates.length">
         No rate metrics are available for this period.
       </p>
       <table v-else>
@@ -166,65 +339,39 @@ onBeforeUnmount(() => { generation += 1; if (pollTimer) globalThis.clearTimeout(
         </thead>
         <tbody>
           <tr
-            v-for="metric in report.metrics"
-            :key="metric.id"
+            v-for="metric in report.rates"
+            :key="metric.metric"
           >
             <th scope="row">
-              {{ metric.label }}
-            </th><td>{{ metric.numerator }}/{{ metric.denominator }}</td><td>{{ metricRate(metric) }}</td>
+              {{ metric.metric === 'reply_rate' ? 'Reply rate' : 'Advance rate' }}
+            </th><td>{{ metric.k }}/{{ metric.n }}</td><td>{{ metricRate(metric) }}</td>
           </tr>
         </tbody>
       </table>
-      <h4>Comparisons</h4>
-      <ul v-if="report.comparisons.length">
-        <li
-          v-for="comparison in report.comparisons"
-          :key="comparison.label"
-        >
-          {{ comparison.label }} · {{ comparison.state }} · {{ comparison.left.numerator }}/{{ comparison.left.denominator }} vs {{ comparison.right.numerator }}/{{ comparison.right.denominator }}
-        </li>
-      </ul>
-      <p v-else>
-        No eligible comparisons yet; small samples remain inconclusive.
-      </p>
-      <h4>Coverage gaps</h4>
-      <ul v-if="report.gaps.length">
-        <li
-          v-for="gap in report.gaps"
-          :key="gap.id"
-        >
-          {{ gap.label }} · {{ gap.covered }}/{{ gap.total }} covered · {{ gap.blocked_count }} blocked · consider {{ gap.suggested_kind }}
-        </li>
-      </ul>
-      <p v-else>
-        No coverage gaps are reported for this snapshot.
-      </p>
-      <h4>Open coaching questions</h4>
-      <p v-if="!openQuestions.length">
-        No open coaching questions.
-      </p>
-      <article
-        v-for="question in openQuestions"
-        :key="question.id"
-        class="question"
-      >
-        <p>{{ question.text }}</p>
-        <small>{{ question.kind }} · impact {{ question.impact }} · owner review required</small>
-        <div class="actions">
-          <button
-            type="button"
-            @click="openTarget(question.target_kind, question.target_id)"
-          >
-            Open related work
-          </button><button
-            type="button"
-            @click="dismiss(question.id)"
-          >
-            Dismiss question
-          </button>
-        </div>
-      </article>
     </template>
+    <template v-if="snapshot">
+      <h4>Assessment coverage</h4>
+      <dl>
+        <dt>Current assessments</dt><dd>{{ snapshot.coverage.current }}</dd>
+        <dt>Missing assessments</dt><dd>{{ snapshot.coverage.missing }}</dd>
+        <dt>Stale assessments</dt><dd>{{ snapshot.coverage.stale }}</dd>
+        <dt>Calibrated no-match</dt><dd>{{ snapshot.coverage.no_match }}</dd>
+      </dl>
+      <ul v-if="snapshot.observations.length">
+        <li
+          v-for="observation in snapshot.observations"
+          :key="JSON.stringify([observation.reason, observation.target])"
+        >
+          {{ reasons[observation.reason] }} · impact {{ observation.impact }}
+        </li>
+      </ul>
+    </template>
+    <CoachQuestions
+      :choices="weeklyChoices"
+      :active="true"
+      :refresh-key="job?.state_revision ?? snapshot?.input_digest ?? ''"
+      @open="openTarget"
+    />
   </section>
 </template>
 

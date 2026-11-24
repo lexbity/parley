@@ -240,6 +240,7 @@ mod blob;
 mod board;
 mod commands;
 mod generation;
+mod inference;
 mod jobs;
 mod maintenance;
 mod parties;
@@ -527,8 +528,6 @@ pub struct Workspace {
     /// Adopted-operation generation token. A generation publisher holds the
     /// exclusive lock; writer jobs hold the shared lock.
     generation: Arc<tokio::sync::RwLock<u64>>,
-    /// One active local inference across fixed roles and delegated runs.
-    inference: Arc<tokio::sync::Semaphore>,
 }
 
 impl Workspace {
@@ -627,7 +626,6 @@ impl Workspace {
             database_path: path.to_path_buf(),
             command_secret,
             generation,
-            inference: Arc::new(tokio::sync::Semaphore::new(1)),
         };
         maintenance::initialize_settings(&workspace).await?;
         maintenance::complete_startup_operations(&workspace, removed_generation_bytes).await?;
@@ -698,12 +696,6 @@ impl Workspace {
 
     pub async fn generation_token(&self) -> u64 {
         *self.generation.read().await
-    }
-
-    /// The single local inference lane. Fixed-role jobs and delegated runs
-    /// share this permit; waiting runs release it while awaiting owner input.
-    pub(crate) fn inference(&self) -> Arc<tokio::sync::Semaphore> {
-        self.inference.clone()
     }
 
     pub async fn bump_generation(&self) {
@@ -2019,9 +2011,9 @@ pub(crate) fn new_id(seed: &str) -> String {
     digest(format!("{seed}:{nanos}:{nonce}").as_bytes())[..32].to_owned()
 }
 
-/// UTC RFC 3339 timestamp offset from trusted wall time, used for leases and
-/// run deadlines.
-fn now_utc_offset(seconds: i64) -> String {
+/// UTC RFC 3339 timestamp offset from trusted wall time, used for leases,
+/// run deadlines and approval expiry.
+pub(crate) fn now_utc_offset(seconds: i64) -> String {
     let value = chrono::Utc::now() + chrono::Duration::seconds(seconds);
     value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -2141,10 +2133,27 @@ pub(crate) struct AppState {
     authority: String,
     bootstrap: Arc<Mutex<HashMap<String, Instant>>>,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
-    pub(crate) jobs: jobs::Queue,
+    pub(crate) jobs: Arc<tokio::sync::Notify>,
     pub(crate) restart: tokio::sync::watch::Sender<bool>,
     pub(crate) registry: Arc<commands::Registry>,
     pub(crate) writer: Arc<application::writer::Writer>,
+    /// Post-commit command signals for the fetch-based SSE notification
+    /// stream (UCR-001 U08 / §4.1): approvals_changed, run_changed and
+    /// epoch_changed. Bounded; a slow client drops older signals and must
+    /// poll authoritative state after reconnect.
+    pub(crate) notify: tokio::sync::broadcast::Sender<CommandSignal>,
+    /// Bounded concurrent notification connections (U08 §4.1).
+    pub(crate) sse_connections: Arc<tokio::sync::Semaphore>,
+}
+
+/// One post-commit command notification signal (U08 §4.1). The stream emits
+/// only these signal kinds plus a 15 s heartbeat; clients re-read
+/// authoritative state after each signal. `epoch_changed` is emitted at
+/// stream open and after reconnect so clients rebase their page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CommandSignal {
+    ApprovalsChanged,
+    RunChanged,
 }
 
 /// Initialize (or open) a private SQLite workspace and bind only to IPv4
@@ -2166,7 +2175,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
     let _ = workspace.reconcile_deadlines(&now_utc()).await;
     let (restart_sender, restart_receiver) = tokio::sync::watch::channel(false);
     let restart_wait = restart_receiver.clone();
-    let (jobs, job_task) = jobs::start(workspace.clone(), 32);
+    let jobs = Arc::new(tokio::sync::Notify::new());
     // One owner session polls the same writer; the delegated runtime starts
     // after AppState construction below so it can dispatch through the
     // registry with a server-derived actor.
@@ -2205,6 +2214,8 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         })
     };
     let backup_task = maintenance::start_scheduler(workspace.clone(), restart_receiver.clone());
+    let (notify, _notify_rx) = tokio::sync::broadcast::channel(64);
+    let sse_connections = Arc::new(tokio::sync::Semaphore::new(8));
     let state = AppState {
         workspace,
         authority: address.to_string(),
@@ -2217,8 +2228,10 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         restart: restart_sender.clone(),
         registry,
         writer,
+        notify,
+        sse_connections,
     };
-    let agent_task = agent_runtime::start(Arc::new(state.clone()));
+    let inference_task = inference::dispatch::start(Arc::new(state.clone()));
     let bootstrap_shared = state.bootstrap.clone();
     let mut shell = Router::new().route("/", get(index));
     for tab in [
@@ -2290,13 +2303,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         task,
         restart: restart_wait,
         restart_sender,
-        background: vec![
-            job_task,
-            writer_task,
-            reconcile_task,
-            backup_task,
-            agent_task,
-        ],
+        background: vec![inference_task, writer_task, reconcile_task, backup_task],
     })
 }
 
@@ -3663,8 +3670,8 @@ async fn save_capture(
         .await
     {
         Ok((job_id, full)) => {
-            if let Some(job_id) = &job_id {
-                jobs::wake(&state.jobs, job_id);
+            if job_id.is_some() {
+                state.jobs.notify_one();
             }
             let mut response = (StatusCode::CREATED, Json(full)).into_response();
             private_headers(&mut response, state.workspace.epoch());

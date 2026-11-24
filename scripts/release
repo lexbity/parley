@@ -69,21 +69,83 @@ def prior_tag():
     raise ReleaseError("Could not determine the previous version tag. Fetch full history and tags.")
 
 
-def extract_launcher(archive, destination, prefix):
+def archive_json(bundle, member):
+    if not member.isfile() or not 0 < member.size <= 1024 * 1024:
+        raise ReleaseError("Invalid archive manifest member.")
+    with bundle.extractfile(member) as handle:
+        return json.load(handle)
+
+
+def verified_members(archive, prefix, *, predecessor=False):
     with tarfile.open(archive, "r:gz") as bundle:
-        manifest_member = bundle.getmember(prefix + "/release-manifest.json")
-        binary_member = bundle.getmember(prefix + "/parley")
-        if not (manifest_member.isfile() and binary_member.isfile() and manifest_member.size <= 1024 * 1024
-                and binary_member.mode & 0o111 and binary_member.size > 0):
-            raise ReleaseError(f"{archive.name} does not contain a valid installer manifest and executable.")
-        with bundle.extractfile(manifest_member) as handle:
-            manifest = json.load(handle)
-        with bundle.extractfile(binary_member) as source, destination.open("xb") as output:
-            shutil.copyfileobj(source, output)
-    destination.chmod(0o755)
-    if manifest.get("target") != TARGET or sha256(destination) != manifest.get("launcher_sha256"):
-        raise ReleaseError(f"The target or launcher digest in {archive.name} does not match.")
-    return manifest
+        members = {}
+        bytes_seen = 0
+        for member in bundle:
+            if len(members) >= 1024 or member.name in members or not member.isfile():
+                raise ReleaseError("Unexpected package entry.")
+            if member.size < 0 or member.mode & 0o6022:
+                raise ReleaseError("Invalid package file size or permissions.")
+            bytes_seen += member.size
+            if bytes_seen > 256 * 1024 * 1024:
+                raise ReleaseError("Package exceeds the installed byte budget.")
+            parts = member.name.split("/")
+            if parts[0] != prefix or any(part in ("", ".", "..") for part in parts):
+                raise ReleaseError("Invalid package member path.")
+            members[member.name] = member
+
+        manifest = archive_json(bundle, members[f"{prefix}/release-manifest.json"])
+        if manifest.get("target") != TARGET:
+            raise ReleaseError("Package target mismatch.")
+        runtime_prefix = "libexec/parley-agent"
+        expected = {"release-manifest.json", "LICENSE", "INSTALL.md"}
+        match manifest["format"]:
+            case 1 if predecessor:
+                executable = "parley"
+                digests = {}
+            case 2:
+                executable = "bin/parley"
+                path = f"{runtime_prefix}/runtime-manifest.json"
+                runtime = archive_json(bundle, members[f"{prefix}/{path}"])
+                if runtime.get("platform") != TARGET:
+                    raise ReleaseError("Runtime target mismatch.")
+                digests = {path: manifest["runtime_manifest_sha256"]}
+                for name, entry in runtime["members"].items():
+                    relative = f"{runtime_prefix}/{name}"
+                    if members[f"{prefix}/{relative}"].size != entry["bytes"]:
+                        raise ReleaseError("Runtime file size mismatch.")
+                    digests[relative] = entry["sha256"]
+                expected.update(digests)
+            case _:
+                raise ReleaseError("Unsupported launcher archive format.")
+        expected.add(executable)
+        digests[executable] = manifest["launcher_sha256"]
+        if set(members) != {f"{prefix}/{name}" for name in expected}:
+            raise ReleaseError("Archive membership differs from the verified manifest.")
+        for name, member in members.items():
+            relative = name.removeprefix(prefix + "/")
+            if relative not in digests:
+                continue
+            with bundle.extractfile(member) as handle:
+                if hashlib.file_digest(handle, "sha256").hexdigest() != digests[relative]:
+                    raise ReleaseError("Release or runtime member digest mismatch.")
+        for name in (executable, f"{runtime_prefix}/node") if manifest["format"] == 2 else (executable,):
+            if not members[f"{prefix}/{name}"].mode & 0o111:
+                raise ReleaseError("Launcher or runtime executable is missing execute permission.")
+        return manifest, executable, members
+
+
+def extract_launcher(archive, destination, prefix, *, predecessor=False):
+    manifest, executable, members = verified_members(archive, prefix, predecessor=predecessor)
+    destination.mkdir(mode=0o755)
+    with tarfile.open(archive, "r:gz") as bundle:
+        for name, member in members.items():
+            relative = name.removeprefix(prefix + "/")
+            path = destination / relative
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+            with bundle.extractfile(member) as source, path.open("xb") as output:
+                shutil.copyfileobj(source, output)
+            path.chmod(0o755 if member.mode & 0o111 else 0o644)
+    return destination / executable, manifest
 
 
 def previous_package(archive, checksums, expected_tag, scratch):
@@ -96,8 +158,8 @@ def previous_package(archive, checksums, expected_tag, scratch):
                 if line.endswith("  " + archive.name)]
     if expected != [checksum]:
         raise ReleaseError(f"{archive.name} does not match a unique entry in {checksums.name}.")
-    binary = scratch / "previous-parley"
-    manifest = extract_launcher(archive, binary, archive.name.removesuffix(".tar.gz"))
+    binary, manifest = extract_launcher(archive, scratch / "previous-install",
+                                        archive.name.removesuffix(".tar.gz"), predecessor=True)
     if expected_tag and manifest.get("tag") != expected_tag:
         raise ReleaseError(f"The predecessor package must be from {expected_tag}.")
     if expected_tag and manifest.get("commit") != run("git", "rev-parse", f"refs/tags/{expected_tag}^{{commit}}", capture=True):
@@ -123,19 +185,23 @@ def web_hashes():
     return {name: sha256(dist / name) for name in sorted(assets | {"index.html"})}
 
 
-def package(output, prefix, binary, metadata, timestamp):
+def package(output, prefix, binary, metadata, runtime, timestamp):
     paths = {
-        "parley": binary,
+        "bin/parley": binary,
         "release-manifest.json": metadata,
         "LICENSE": ROOT / "LICENSE",
         "INSTALL.md": ROOT / "packaging/launcher/INSTALL.md",
     }
+    paths.update({
+        f"libexec/parley-agent/{file.relative_to(runtime).as_posix()}": file
+        for file in sorted(runtime.rglob("*")) if file.is_file()
+    })
     with output.open("xb") as handle, gzip.GzipFile(fileobj=handle, mode="wb", filename="", mtime=timestamp) as zipped:
         with tarfile.open(fileobj=zipped, mode="w") as archive:
             for name, source in paths.items():
                 member = tarfile.TarInfo(f"{prefix}/{name}")
                 member.size = source.stat().st_size
-                member.mode = 0o755 if name == "parley" else 0o644
+                member.mode = 0o755 if name in ("bin/parley", "libexec/parley-agent/node") else 0o644
                 member.mtime = timestamp
                 with source.open("rb") as entry:
                     archive.addfile(member, entry)
@@ -145,9 +211,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag", help="Require this exact version tag at clean HEAD. Omit for a local build.")
     parser.add_argument("--output", type=Path, help="New directory for the qualified artifacts.")
+    parser.add_argument("--node-archive", type=Path, default=os.environ.get("PARLEY_NODE_ARCHIVE"),
+                        help="The verified Node 26.12.0 Linux x64 archive, or PARLEY_NODE_ARCHIVE.")
     parser.add_argument("--previous", type=Path, help="Previous same-platform launcher archive.")
     parser.add_argument("--previous-checksums", type=Path, help="Trusted SHA256SUMS for the previous archive.")
     args = parser.parse_args()
+    if args.node_archive is None:
+        parser.error("provide --node-archive or PARLEY_NODE_ARCHIVE")
     if bool(args.previous) != bool(args.previous_checksums):
         parser.error("--previous and --previous-checksums must be supplied together")
     if platform.system() != "Linux" or platform.machine() != "x86_64":
@@ -184,13 +254,21 @@ def main():
         stage = scratch / "artifacts"
         stage.mkdir()
         run("scripts/check-toolchain", env=env)
+        runtime = scratch / "parley-agent"
+        runtime_digest = run("scripts/build-agent", "--node-archive", str(args.node_archive.resolve()),
+                             "--output", str(runtime), env=env, capture=True)
+        if runtime_digest != sha256(runtime / "runtime-manifest.json"):
+            raise ReleaseError("Worker builder returned an inconsistent manifest digest.")
+        env["PARLEY_RUNTIME_MANIFEST_SHA256"] = runtime_digest
+        for script in ("lint", "test"):
+            run("pnpm", "--dir", "agent", "run", script, env=env)
         run("cargo", "fmt", "--all", "--", "--check", env=env)
         run("cargo", "clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings", env=env)
         run("cargo", "test", "--locked", "--workspace", env=env)
         for script in ("typecheck", "lint", "test", "build"):
             run("pnpm", "--dir", "web", "run", script, env=env)
         for verifier, flag in (("contract", "--check-generated"), ("migrations", None), ("trace", "--check-manifest")):
-            command = [str(python), f"ci/{verifier}.py", "--through", "r04"]
+            command = [str(python), f"ci/{verifier}.py", "--through", "ar01"]
             if flag:
                 command.append(flag)
             run(*command, env=env)
@@ -204,18 +282,20 @@ def main():
 
         manifest = stage / "release-manifest.json"
         write_json(manifest, {
-            "format": 1, "distribution": "internal-launcher", "target": TARGET,
+            "format": 2, "distribution": "internal-launcher", "target": TARGET,
             "version": version, "tag": args.tag, "commit": commit, "dirty": dirty,
             "build_host": platform.platform(), "launcher_sha256": sha256(binary), "web_assets": digests,
+            "runtime_manifest_sha256": runtime_digest,
             "toolchain_manifest_sha256": sha256(ROOT / "ci/toolchain-versions.yaml"),
             "input_sha256": {path: sha256(ROOT / path) for path in ("Cargo.lock", "pnpm-lock.yaml", "contract/openapi.yaml")},
             "migrations": {path.name: sha256(path) for path in sorted((ROOT / "migrations").glob("*.sql"))},
             "predecessor": previous_info,
         })
         archive = stage / f"{prefix}.tar.gz"
-        package(archive, prefix, binary, manifest, timestamp)
-        extracted = scratch / "parley"
-        extract_launcher(archive, extracted, prefix)
+        package(archive, prefix, binary, manifest, runtime, timestamp)
+        if archive.stat().st_size > 200 * 1024 * 1024:
+            raise ReleaseError("Compressed launcher and worker exceed the 200 MiB release budget.")
+        extracted, _ = extract_launcher(archive, scratch / "installed", prefix)
         smoke = ["pnpm", "--dir", "web", "exec", "node", "e2e/release-smoke.ts", str(extracted), str(manifest)]
         if previous_launcher:
             smoke.append(str(previous_launcher))

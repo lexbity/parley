@@ -63,6 +63,8 @@ export interface CommandInvocation {
   version: number;
   args: CommandArgs;
   dry_run: boolean;
+  /** Opaque approval id when resuming a frozen destructive invocation. */
+  approval_id?: string;
 }
 
 export interface CommandSuccess {
@@ -97,6 +99,7 @@ export class CommandApiError extends Error {
     readonly code: string,
     readonly details: CommandErrorDetail[] = [],
     readonly response: CommandFailure | null = null,
+    readonly approvalLocation: string | null = null,
   ) {
     super(message);
   }
@@ -270,6 +273,8 @@ export class CommandClient {
   /**
    * Invoke a command with an immutable operation key. Every distinct intent
    * (selection, revision, args or command version) must get a fresh key.
+   * A `403 approval_required` outcome throws a `CommandApiError` whose
+   * `approvalLocation` carries the owner-only approval URL (U08 / FR-8).
    */
   async invoke(
     id: string,
@@ -277,7 +282,7 @@ export class CommandClient {
     operationKey: string,
     signal?: AbortSignal,
   ): Promise<CommandSuccess> {
-    const value = await this.request(`/${encodeURIComponent(id)}`, {
+    const { value, location } = await this.requestWithLocation(`/commands/${encodeURIComponent(id)}`, {
       method: 'POST',
       body: JSON.stringify(invocation),
       headers: { 'Idempotency-Key': operationKey },
@@ -292,9 +297,98 @@ export class CommandClient {
         failure.error.code,
         failure.error.details,
         failure,
+        location,
       );
     }
     return decodeSuccess(value);
+  }
+
+  /** List owner-authorized approvals. Active rows carry args + preview. */
+  async listApprovals(options: { status?: ApprovalStatus; limit?: number; cursor?: string } = {}): Promise<ApprovalList> {
+    const query = new URLSearchParams();
+    if (options.status) query.set('status', options.status);
+    if (options.limit !== undefined) query.set('limit', String(options.limit));
+    if (options.cursor) query.set('cursor', options.cursor);
+    const text = query.toString();
+    return decodeApprovalList(await this.requestApi(`/approvals${text ? `?${text}` : ''}`, { method: 'GET' }));
+  }
+
+  /** Read one approval detail (owner-only; terminal rows omit args/preview). */
+  async getApproval(approvalId: string): Promise<ApprovalDetail> {
+    return decodeApprovalDetail(await this.requestApi(`/approvals/${encodeURIComponent(approvalId)}`, { method: 'GET' }));
+  }
+
+  /**
+   * Decide one approval. Every decision uses its own idempotency key; an
+   * exact replay with the same key returns the original outcome.
+   */
+  private async decide(approvalId: string, action: 'grant' | 'deny', input: ApprovalDecisionInput, operationKey: string): Promise<ApprovalDecisionResult> {
+    return decodeApprovalDecision(await this.requestApi(`/approvals/${encodeURIComponent(approvalId)}/${action}`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+      headers: { 'Idempotency-Key': operationKey },
+    }));
+  }
+
+  async grantApproval(approvalId: string, input: ApprovalDecisionInput, operationKey: string): Promise<ApprovalDecisionResult> {
+    return this.decide(approvalId, 'grant', input, operationKey);
+  }
+
+  async denyApproval(approvalId: string, input: ApprovalDecisionInput, operationKey: string): Promise<ApprovalDecisionResult> {
+    return this.decide(approvalId, 'deny', input, operationKey);
+  }
+
+  /**
+   * Same-origin fetch-based SSE notification stream (U08 §4.1). Emits
+   * `approvals_changed`, `run_changed` and `epoch_changed` signals plus a
+   * heartbeat every 15 s; the `onError`/`onClose` callbacks let callers
+   * fall back to authoritative polling.
+   */
+  async notify(
+    handlers: { onSignal: (signal: 'approvals_changed' | 'run_changed' | 'epoch_changed') => void },
+    signal?: AbortSignal,
+  ): Promise<() => void> {
+    await parley.connect();
+    const headers = parley.authHeaders({ Accept: 'text/event-stream' });
+    const controller = new AbortController();
+    const abort = signal ?? controller.signal;
+    const response = await fetch('/api/v1/command-notifications', {
+      method: 'GET',
+      headers,
+      credentials: 'same-origin',
+      cache: 'no-store',
+      signal: abort,
+    });
+    if (!response.ok || !response.body) {
+      throw new CommandApiError('Notification stream is unavailable', response.status, 'unavailable');
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let active = true;
+    const pump = async (): Promise<void> => {
+      while (active) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let index: number;
+        while ((index = buffer.indexOf('\n\n')) !== -1) {
+          const frame = buffer.slice(0, index);
+          buffer = buffer.slice(index + 2);
+          const eventLine = frame.split('\n').find((line) => line.startsWith('event:'));
+          const name = eventLine?.slice('event:'.length).trim();
+          if (name === 'approvals_changed' || name === 'run_changed' || name === 'epoch_changed') {
+            handlers.onSignal(name);
+          }
+        }
+      }
+    };
+    const task = pump().catch(() => undefined);
+    return () => {
+      active = false;
+      controller.abort();
+      void task;
+    };
   }
 
   /** Start one scoped run. Every distinct intent needs a fresh operation key. */
@@ -334,6 +428,38 @@ export class CommandClient {
   }
 
   private async requestApi(path: string, init: RequestInit = {}): Promise<unknown> {
+    const { payload, status } = await this.rawRequest(path, init);
+    if (status < 200 || status >= 300) {
+      const failure = decodeFailure(payload, status);
+      throw new CommandApiError(
+        failure.error.message,
+        status,
+        failure.error.code,
+        failure.error.details,
+        failure,
+      );
+    }
+    return payload;
+  }
+
+  /** Like `requestApi` but also surfaces the `Location` header (approvals). */
+  private async requestWithLocation(path: string, init: RequestInit = {}): Promise<{ value: unknown; location: string | null }> {
+    const { payload, status, location } = await this.rawRequest(path, init);
+    if (status < 200 || status >= 300) {
+      const failure = decodeFailure(payload, status);
+      throw new CommandApiError(
+        failure.error.message,
+        status,
+        failure.error.code,
+        failure.error.details,
+        failure,
+        location,
+      );
+    }
+    return { value: payload, location };
+  }
+
+  private async rawRequest(path: string, init: RequestInit = {}): Promise<{ payload: unknown; status: number; location: string | null }> {
     await parley.connect();
     const headers = parley.authHeaders(
       init.headers instanceof Headers
@@ -357,17 +483,8 @@ export class CommandClient {
     } catch {
       throw new CommandApiError('The local service returned an unreadable response.', response.status, 'INVALID_RESPONSE');
     }
-    if (!response.ok) {
-      const failure = decodeFailure(payload, response.status);
-      throw new CommandApiError(
-        failure.error.message,
-        response.status,
-        failure.error.code,
-        failure.error.details,
-        failure,
-      );
-    }
-    return payload;
+    const location = typeof response.headers?.get === 'function' ? response.headers.get('location') : null;
+    return { payload, status: response.status, location };
   }
 }
 
@@ -379,7 +496,7 @@ export const RUN_STATES = ['queued', 'running', 'waiting_owner', 'waiting_job', 
 export type RunState = typeof RUN_STATES[number];
 export const RUN_TARGET_KINDS = ['party', 'opportunity', 'resource', 'material', 'segment'] as const;
 export type RunTargetKind = typeof RUN_TARGET_KINDS[number];
-export const RUN_PERMISSIONS = ['party.read', 'opportunity.read', 'opportunity.create', 'opportunity.phase.edit', 'party.edit', 'opportunity.task.edit', 'brief.start', 'job.read', 'match.start', 'material.compose', 'material.gate'] as const;
+export const RUN_PERMISSIONS = ['party.read', 'opportunity.read', 'opportunity.create', 'opportunity.phase.edit', 'party.edit', 'opportunity.task.edit', 'brief.start', 'job.read', 'resource.read', 'resource.write', 'resource.retire', 'match.start', 'material.compose', 'material.gate'] as const;
 export type RunPermission = typeof RUN_PERMISSIONS[number];
 export const RUN_TRANSCRIPT_SPEAKERS = ['owner', 'assistant', 'tool', 'system'] as const;
 
@@ -560,4 +677,97 @@ function runQuery(params: { status?: string; limit?: number; cursor?: string }):
   if (params.cursor) query.set('cursor', params.cursor);
   const text = query.toString();
   return text ? `?${text}` : '';
+}
+
+// --- Approvals (UCR-001 U08 / FR-8). Owner-authorized list and decision
+// surfaces; active rows carry the exact normalized args and the structured
+// preview, terminal rows omit them.
+
+export const APPROVAL_STATES = ['pending', 'granted', 'consumed', 'denied', 'revoked', 'expired', 'stale'] as const;
+export type ApprovalStatus = typeof APPROVAL_STATES[number];
+export const APPROVAL_TERMINAL: ReadonlySet<ApprovalStatus> = new Set(['consumed', 'denied', 'revoked', 'expired', 'stale']);
+
+export interface ApprovalListItem {
+  id: string;
+  command_id: string;
+  command_version: number;
+  revision: number;
+  status: ApprovalStatus;
+  expires_at: string;
+  preview_digest: string;
+  title?: string;
+  impacted_versions_count?: number;
+  run_id?: string;
+  args?: Record<string, unknown>;
+  preview?: Record<string, unknown>;
+}
+
+export interface ApprovalList {
+  items: ApprovalListItem[];
+  next_cursor: string | null;
+}
+
+export type ApprovalDetail = ApprovalListItem & { args?: Record<string, unknown>; preview?: Record<string, unknown> };
+
+export interface ApprovalDecisionInput {
+  expected_revision: number;
+  preview_digest: string;
+}
+
+export interface ApprovalDecisionResult {
+  id: string;
+  revision: number;
+  status: ApprovalStatus;
+}
+
+function decodeApprovalStatus(value: unknown, field: string): ApprovalStatus {
+  if (!APPROVAL_STATES.includes(value as ApprovalStatus)) throw new Error(`Invalid approval response: ${field} has an unknown status`);
+  return value as ApprovalStatus;
+}
+
+function decodeApprovalListItem(value: unknown): ApprovalListItem {
+  const item = object(value);
+  if (!item || !Number.isSafeInteger(item.revision) || !Number.isSafeInteger(item.command_version)) {
+    throw new Error('Invalid approval response: approval row is malformed');
+  }
+  const decoded: ApprovalListItem = {
+    id: requiredString(item.id, 'approval.id'),
+    command_id: requiredString(item.command_id, 'approval.command_id'),
+    command_version: Number(item.command_version),
+    revision: Number(item.revision),
+    status: decodeApprovalStatus(item.status, 'approval.status'),
+    expires_at: requiredString(item.expires_at, 'approval.expires_at'),
+    preview_digest: requiredString(item.preview_digest, 'approval.preview_digest'),
+  };
+  if (typeof item.title === 'string') decoded.title = item.title;
+  if (typeof item.impacted_versions_count === 'number') decoded.impacted_versions_count = Number(item.impacted_versions_count);
+  if (typeof item.run_id === 'string') decoded.run_id = item.run_id;
+  const args = object(item.args);
+  if (args) decoded.args = args;
+  const preview = object(item.preview);
+  if (preview) decoded.preview = preview;
+  return decoded;
+}
+
+function decodeApprovalList(value: unknown): ApprovalList {
+  const list = object(value);
+  if (!list || !Array.isArray(list.items)) throw new Error('Invalid approval response: approval list is malformed');
+  return {
+    items: list.items.map(decodeApprovalListItem),
+    next_cursor: typeof list.next_cursor === 'string' ? list.next_cursor : null,
+  };
+}
+
+function decodeApprovalDetail(value: unknown): ApprovalDetail {
+  return decodeApprovalListItem(value);
+}
+
+function decodeApprovalDecision(value: unknown): ApprovalDecisionResult {
+  const result = object(value);
+  if (!result || !Number.isSafeInteger(result.revision)) throw new Error('Invalid approval response: decision receipt is malformed');
+  return {
+    id: requiredString(result.id, 'decision.id'),
+    revision: Number(result.revision),
+    status: decodeApprovalStatus(result.status, 'decision.status'),
+  };
 }

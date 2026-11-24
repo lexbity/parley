@@ -21,6 +21,16 @@ export type CommandReceipt = {
   result?: { stage_id?: string | null; phase_revision?: number; event_id?: string | null; opportunity_id?: string; revision?: number };
 };
 
+export async function readProviderRevision(page: Page, session: OwnerSession): Promise<number> {
+  const response = await page.request.get('/api/v1/agent/provider', {
+    headers: { 'X-Parley-Token': session.mutation_token, 'X-Parley-Epoch': session.epoch },
+  });
+  expect(response.ok()).toBe(true);
+  const { profile_revision } = await response.json() as { profile_revision: number };
+  expect(Number.isSafeInteger(profile_revision)).toBe(true);
+  return profile_revision;
+}
+
 export async function signIn(page: Page): Promise<OwnerSession> {
   let session: OwnerSession | null = null;
   page.on('response', (response: Response) => {

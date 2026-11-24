@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:http';
 import { expect, type Locator, type Page } from '@playwright/test';
 import { test } from './fixtures';
 import { addParty, openParties } from './parties';
-import { signIn, type OwnerSession } from './sheet';
+import { readProviderRevision, signIn, type OwnerSession } from './sheet';
 
 /** A loopback scripted provider for the real Rust runtime. Responses are
  *  chosen from the request body so connection order stays deterministic even
@@ -136,7 +136,7 @@ async function configureProvider(page: Page, session: OwnerSession, endpoint: st
       'X-Parley-Epoch': session.epoch,
       'Idempotency-Key': randomUUID(),
     },
-    data: { endpoint, model: 'fixture', num_ctx: 8192, num_predict: 256, locale: 'en' },
+    data: { endpoint, model: 'fixture', num_ctx: 8192, num_predict: 256, locale: 'en', expected_profile_revision: await readProviderRevision(page, session) },
   });
   expect(response.ok()).toBe(true);
   const health = await page.request.post('/api/v1/agent/provider/health', {
@@ -254,7 +254,7 @@ test('u05_hung_provider_leaves_queue_and_brief_usable', async ({ page }, testInf
         'X-Parley-Epoch': session.epoch,
         'Idempotency-Key': randomUUID(),
       },
-      data: { endpoint, model: 'fixture', num_ctx: 8192, num_predict: 256, locale: 'en' },
+      data: { endpoint, model: 'fixture', num_ctx: 8192, num_predict: 256, locale: 'en', expected_profile_revision: await readProviderRevision(page, session) },
     });
     expect(response.ok()).toBe(true);
     provider = {

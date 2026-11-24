@@ -1,0 +1,525 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:parley:agent:runtime-v1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/hello"
+    },
+    {
+      "$ref": "#/$defs/hello_ack"
+    },
+    {
+      "$ref": "#/$defs/execute"
+    },
+    {
+      "$ref": "#/$defs/complete"
+    },
+    {
+      "$ref": "#/$defs/failed"
+    },
+    {
+      "$ref": "#/$defs/cancel"
+    }
+  ],
+  "$defs": {
+    "opaque": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,128}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "provider_version",
+        "model_tag",
+        "model_digest",
+        "tokenizer_digest",
+        "context_tokens",
+        "template_tokens",
+        "max_output_tokens"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "provider_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "model_tag": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$"
+        },
+        "model_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "tokenizer_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "context_tokens": {
+          "type": "integer",
+          "minimum": 256,
+          "maximum": 2097152
+        },
+        "template_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2097151
+        },
+        "max_output_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32768
+        }
+      }
+    },
+    "observed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider_version",
+        "model_tag",
+        "model_digest"
+      ],
+      "properties": {
+        "provider_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "model_tag": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "model_digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_tokens",
+        "output_tokens"
+      ],
+      "properties": {
+        "input_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2097152
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32768
+        }
+      }
+    },
+    "hello": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "kind",
+        "seq",
+        "body"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "kind": {
+          "const": "hello"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "build",
+            "schema_digest",
+            "capabilities",
+            "namespaces"
+          ],
+          "properties": {
+            "build": {
+              "$ref": "#/$defs/digest"
+            },
+            "schema_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "capabilities": {
+              "const": [
+                "structured_role"
+              ]
+            },
+            "namespaces": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "user",
+                "net",
+                "pid",
+                "ipc",
+                "uts"
+              ],
+              "properties": {
+                "user": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                },
+                "net": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                },
+                "pid": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                },
+                "ipc": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                },
+                "uts": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "hello_ack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "kind",
+        "seq",
+        "body"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "kind": {
+          "const": "hello_ack"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "capabilities",
+            "max_frame_bytes"
+          ],
+          "properties": {
+            "capabilities": {
+              "const": [
+                "structured_role"
+              ]
+            },
+            "max_frame_bytes": {
+              "const": 524288
+            }
+          }
+        }
+      }
+    },
+    "execute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "kind",
+        "seq",
+        "body",
+        "execution_id",
+        "lease_id"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "kind": {
+          "const": "execute"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "body": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "mode",
+                "profile",
+                "deadline_ms"
+              ],
+              "properties": {
+                "mode": {
+                  "const": "probe"
+                },
+                "profile": {
+                  "$ref": "#/$defs/profile"
+                },
+                "deadline_ms": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 120000
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "mode",
+                "profile",
+                "deadline_ms",
+                "role",
+                "prompt_version",
+                "schema_digest",
+                "system",
+                "input"
+              ],
+              "properties": {
+                "mode": {
+                  "const": "structured_role"
+                },
+                "profile": {
+                  "$ref": "#/$defs/profile"
+                },
+                "deadline_ms": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 120000
+                },
+                "role": {
+                  "const": "coach"
+                },
+                "prompt_version": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "schema_digest": {
+                  "$ref": "#/$defs/digest"
+                },
+                "system": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 98304
+                },
+                "input": {
+                  "type": "object"
+                }
+              }
+            }
+          ]
+        },
+        "execution_id": {
+          "$ref": "#/$defs/opaque"
+        },
+        "lease_id": {
+          "$ref": "#/$defs/opaque"
+        }
+      }
+    },
+    "complete": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "kind",
+        "seq",
+        "body",
+        "execution_id",
+        "lease_id"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "kind": {
+          "const": "complete"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "body": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "mode",
+                "observed",
+                "usage"
+              ],
+              "properties": {
+                "mode": {
+                  "const": "probe"
+                },
+                "observed": {
+                  "$ref": "#/$defs/observed"
+                },
+                "usage": {
+                  "$ref": "#/$defs/usage"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "mode",
+                "observed",
+                "usage",
+                "candidate"
+              ],
+              "properties": {
+                "mode": {
+                  "const": "structured_role"
+                },
+                "observed": {
+                  "$ref": "#/$defs/observed"
+                },
+                "usage": {
+                  "$ref": "#/$defs/usage"
+                },
+                "candidate": {
+                  "type": "object"
+                }
+              }
+            }
+          ]
+        },
+        "execution_id": {
+          "$ref": "#/$defs/opaque"
+        },
+        "lease_id": {
+          "$ref": "#/$defs/opaque"
+        }
+      }
+    },
+    "failed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "kind",
+        "seq",
+        "body",
+        "execution_id",
+        "lease_id"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "kind": {
+          "const": "failed"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code"
+          ],
+          "properties": {
+            "code": {
+              "enum": [
+                "MODEL_UNAVAILABLE",
+                "PROFILE_CHANGED",
+                "CONTEXT_BUDGET",
+                "WORKER_PROTOCOL",
+                "RESULT_INVALID",
+                "PROVIDER_FAILED",
+                "CANCELLED",
+                "ISOLATION_UNAVAILABLE"
+              ]
+            }
+          }
+        },
+        "execution_id": {
+          "$ref": "#/$defs/opaque"
+        },
+        "lease_id": {
+          "$ref": "#/$defs/opaque"
+        }
+      }
+    },
+    "cancel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "kind",
+        "seq",
+        "body",
+        "execution_id",
+        "lease_id"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "kind": {
+          "const": "cancel"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [],
+          "properties": {}
+        },
+        "execution_id": {
+          "$ref": "#/$defs/opaque"
+        },
+        "lease_id": {
+          "$ref": "#/$defs/opaque"
+        }
+      }
+    }
+  }
+}

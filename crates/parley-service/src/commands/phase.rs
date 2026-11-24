@@ -110,6 +110,7 @@ pub(crate) fn descriptors() -> Vec<&'static CommandDescriptor> {
         args_schema: &SET_PHASE_ARGS_SCHEMA,
         result_schema: &SET_PHASE_RESULT_SCHEMA,
         supports_dry_run: false,
+        preview_schema: None,
         when: Some(QUEUE_WHEN),
         palette: PaletteSpec {
             context_fields: CONTEXT_FIELDS,
@@ -134,6 +135,7 @@ pub(crate) fn descriptors() -> Vec<&'static CommandDescriptor> {
         args_schema: &UNDO_PHASE_ARGS_SCHEMA,
         result_schema: &UNDO_PHASE_RESULT_SCHEMA,
         supports_dry_run: false,
+        preview_schema: None,
         when: Some(QUEUE_WHEN),
         palette: PaletteSpec {
             context_fields: CONTEXT_FIELDS,

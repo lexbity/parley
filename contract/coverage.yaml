@@ -2013,3 +2013,146 @@ slices:
       owner_role: owner
       package_target: rust+mock
       evidence_path: evidence/u07.md
+  u08:
+    - requirement: UCR-FR-8
+      operationId: runCommand
+      test_id: u08_grant_then_same_key_executes_once
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u08.md
+    - requirement: UCR-FR-8
+      operationId: runCommand
+      test_id: u08_denied_intent_fails_closed
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u08.md
+    - requirement: UCR-FR-2
+      operationId: runCommand
+      test_id: u08_stale_dependency_blocks_approved_execution
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u08.md
+    - requirement: UCR-FR-4
+      operationId: runCommand
+      test_id: u08_dry_run_produces_preview_without_effect
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u08.md
+    - requirement: UCR-FR-8
+      operationId: grantApproval
+      test_id: u08_decisions_replay_exactly_and_reject_stale_changes
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u08.md
+    - requirement: UCR-FR-9
+      operationId: runCommand
+      test_id: u08_agent_request_wait_and_resume
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u08.md
+    - requirement: UCR-FR-8
+      operationId: listApprovals
+      test_id: u08_approval_inbox_grant_and_deny
+      fixture_id: commands
+      owner_role: owner
+      package_target: mock
+      evidence_path: evidence/u08.md
+    - requirement: UCR-FR-7
+      operationId: runCommand
+      test_id: u08_owner_palette_retire_waits_for_approval_and_resumes
+      fixture_id: commands
+      owner_role: owner
+      package_target: mock
+      evidence_path: evidence/u08.md
+  ar01:
+    - requirement: FR-1
+      operationId: generateWeeklyCoachReport
+      test_id: ar01_weekly_coach_starts_cancels_and_recovers
+      fixture_id: coach
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar01.md
+    - requirement: FR-2
+      operationId: getWeeklyCoachReport
+      test_id: ar01_offline_coach_retains_deterministic_insights
+      fixture_id: coach
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar01.md
+    - requirement: FR-9
+      operationId: cancelJob
+      test_id: ar01_weekly_coach_starts_cancels_and_recovers
+      fixture_id: coach
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar01.md
+    - requirement: FR-12
+      operationId: checkAgentProvider
+      test_id: ar01_probe_capacity_and_activation_are_database_fenced
+      fixture_id: coach
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar01.md
+  ar02:
+    - requirement: FR-2
+      operationId: generateContextCoachQuestions
+      test_id: ar02_context_distinguishes_no_match_from_missing_and_stale
+      fixture_id: contextual_coach
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar02.md
+    - requirement: FR-3
+      operationId: listCoachQuestions
+      test_id: ar02_concurrent_question_dispositions_keep_one_open_key
+      fixture_id: contextual_coach
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar02.md
+    - requirement: FR-3
+      operationId: answerCoachQuestion
+      test_id: ar02_disposition_links_current_context
+      fixture_id: contextual_coach
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar02.md
+    - requirement: FR-3
+      operationId: answerCoachQuestion
+      test_id: ar02_answer_creates_owner_interviewer_and_waits_for_review
+      fixture_id: contextual_coach
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar02.md
+    - requirement: FR-3
+      operationId: dismissCoachQuestion
+      test_id: ar02_concurrent_question_dispositions_keep_one_open_key
+      fixture_id: contextual_coach
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar02.md
+    - requirement: FR-3
+      operationId: deferCoachQuestion
+      test_id: ar02_concurrent_question_dispositions_keep_one_open_key
+      fixture_id: contextual_coach
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar02.md
+    - requirement: FR-1
+      operationId: generateContextCoachQuestions
+      test_id: ar02_party_questions_open_relevant_work
+      fixture_id: contextual_coach
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar02.md
+    - requirement: FR-1
+      operationId: generateContextCoachQuestions
+      test_id: ar02_switching_scope_keeps_the_admitted_context
+      fixture_id: contextual_coach
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar02.md

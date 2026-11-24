@@ -30,6 +30,7 @@ export type OwnerSession = {
 type Fixtures = {
   ownerSession: OwnerSession;
   pauseExtractor: boolean;
+  coachOnline: boolean;
 };
 
 const BOOTSTRAP_PREFIX = 'Bootstrap URL: ';
@@ -62,10 +63,11 @@ export async function openOwnerPage(page: Page, bootstrapUrl: string): Promise<v
 
 export const test = base.extend<Fixtures>({
   pauseExtractor: [false, { option: true }],
+  coachOnline: [false, { option: true }],
   ownerSession: [
-    async ({ pauseExtractor }, use, testInfo) => {
+    async ({ pauseExtractor, coachOnline }, use, testInfo) => {
       if (testInfo.project.name === 'mock') {
-        const mock: MockApi = createMockApi({ pauseExtractor });
+        const mock: MockApi = createMockApi({ pauseExtractor, coachOnline });
         const server = await createServer({
           root: webRoot,
           plugins: [mock.plugin],

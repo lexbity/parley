@@ -1,0 +1,1 @@
+{"query":{"scope_kind":"party"},"expected_status":400,"expected_error":"SCOPE_INVALID"}

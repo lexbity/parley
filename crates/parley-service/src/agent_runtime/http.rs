@@ -226,6 +226,7 @@ async fn start(
     };
     match state.writer.run(job).await {
         crate::application::writer::WriteOutcome::Committed(body) => {
+            let _ = state.notify.send(crate::CommandSignal::RunChanged);
             let mut response = Json(body).into_response();
             *response.status_mut() = StatusCode::CREATED;
             private_headers(&mut response, state.workspace.epoch());
@@ -492,6 +493,7 @@ async fn cancel(
     };
     match state.writer.run(job).await {
         crate::application::writer::WriteOutcome::Committed(body) => {
+            let _ = state.notify.send(crate::CommandSignal::RunChanged);
             let mut response = Json(body).into_response();
             private_headers(&mut response, state.workspace.epoch());
             response

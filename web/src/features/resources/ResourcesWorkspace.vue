@@ -3,7 +3,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ApiError, newOperationKey, parley, type DeliveryRow, type EntityAttachment, type EntityCard, type GraphSnapshot, type PlacementView, type ResourceBoardSnapshot, type ResourceColumn } from '../../api/client';
 import { commands } from '../../api/commands';
-import { registerScoped, resourceMarkReadyAction, useCommandRegistry, type UiCommand } from '../../app/commands/registry';
+import { registerScoped, resourceMarkReadyAction, resourceRetireAction, useCommandRegistry, type UiCommand } from '../../app/commands/registry';
 import { kindLabel } from '../parties/relations';
 import MarkdownPreview from '../../shared/MarkdownPreview.vue';
 import ResourceEditorForm from './ResourceEditorForm.vue';
@@ -1170,9 +1170,11 @@ function applyRoute(id: string) {
 }
 watch(() => props.routeId, id => { if (id && id !== rootId.value) applyRoute(id); });
 
-// --- U06 scoped command front doors -------------------------------------
-// The selected resource card is frozen (id + content revision) before the
-// readiness command is exposed; any change to that pair is a new intent.
+// --- U06/U08 scoped command front doors ----------------------------------
+// The selected resource card is frozen (id + card/content revisions) before
+// the readiness or retirement command is exposed; any change to that set is
+// a new intent. Retirement is destructive: the server parks it on a human
+// approval (FR-8) and the secretary commits the frozen intent once granted.
 const commandRegistry = useCommandRegistry();
 let disposeResourceActions: (() => void) | undefined;
 let scopedResourceFingerprint: string | null = null;
@@ -1181,7 +1183,7 @@ function refreshScopedResourceActions() {
   const id = selectedResourceId.value;
   const card = id ? resourceById.value.get(id) : undefined;
   const fingerprint = id && card && card.readiness !== 'retired'
-    ? JSON.stringify([parley.workspaceEpoch, id, card.content_revision])
+    ? JSON.stringify([parley.workspaceEpoch, id, card.content_revision, card.revision])
     : null;
   if (fingerprint === scopedResourceFingerprint) return;
   scopedResourceFingerprint = fingerprint;
@@ -1200,6 +1202,28 @@ function refreshScopedResourceActions() {
       void refreshBoard();
     },
   })];
+  if (selectedCard.readiness !== 'retired') {
+    actions.push(resourceRetireAction({
+      resourceId: id!,
+      cardRevision: selectedCard.revision,
+      contentRevision: selectedCard.content_revision,
+      intentFingerprint: fingerprint,
+      invoke: (commandId, args, key) => commands.invoke(commandId, { version: 1, args, dry_run: false }, key),
+      onCommitted: (result) => {
+        status.value = result.dry_run
+          ? 'Resource retirement dry run completed.'
+          : 'Resource retired.';
+        error.value = '';
+        // The retired card leaves the board and the selection; the graph,
+        // inspector and historical view refresh from the event cursor.
+        if (selectedId.value === id) setBoardSelection('', false);
+        if (inspectedId.value === id) inspectedId.value = '';
+        if (rootId.value === id) rootId.value = '';
+        void refreshBoard();
+        void loadGraph();
+      },
+    }));
+  }
   disposeResourceActions = registerScoped(commandRegistry, actions);
 }
 watch([snapshot, selectedResourceId], refreshScopedResourceActions);

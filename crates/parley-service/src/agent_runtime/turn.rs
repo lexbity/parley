@@ -68,6 +68,23 @@ pub(crate) async fn claim(
             return Ok(None);
         }
     }
+    // A run parked on an owner approval (U08) stays asleep while the approval
+    // is pending. Any other state — granted, consumed, denied, revoked,
+    // expired or stale — lets the run resume so the durable tool intent is
+    // re-dispatched with its original key and the model sees the outcome.
+    if state == "waiting_owner"
+        && let Some(approval) = wake.as_deref()
+        && !approval.is_empty()
+    {
+        let status: Option<String> =
+            sqlx::query_scalar("SELECT status FROM command_approval WHERE id=?")
+                .bind(approval)
+                .fetch_optional(&mut **tx)
+                .await?;
+        if status.as_deref() == Some("pending") {
+            return Ok(None);
+        }
+    }
     if let Some(deadline) = deadline.as_ref()
         && !deadline.is_empty()
         && *deadline <= crate::now_utc()

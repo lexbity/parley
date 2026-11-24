@@ -843,7 +843,7 @@ async fn start_match(
             "commit failure".into(),
         )));
     }
-    super::jobs::wake(&state.jobs, &outcome.job_id);
+    state.jobs.notify_one();
     (StatusCode::ACCEPTED, Json(result)).into_response()
 }
 
@@ -1452,7 +1452,7 @@ async fn compose_material(
             "commit failure".into(),
         )));
     }
-    super::jobs::wake(&state.jobs, &outcome.job_id);
+    state.jobs.notify_one();
     (StatusCode::ACCEPTED, Json(result)).into_response()
 }
 
@@ -1970,7 +1970,7 @@ async fn lint_material(
     if let Err(error) = tx.commit().await {
         return command_error(error.into());
     }
-    super::jobs::wake(&state.jobs, &job_id);
+    state.jobs.notify_one();
     (StatusCode::ACCEPTED, Json(response_body)).into_response()
 }
 
@@ -2107,7 +2107,7 @@ async fn enqueue_role_command(
     tx.commit()
         .await
         .map_err(|error| command_error(error.into()))?;
-    super::jobs::wake(&state.jobs, &job_id);
+    state.jobs.notify_one();
     Ok(EnqueueOutcome::New(job_id))
 }
 

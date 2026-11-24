@@ -14,21 +14,21 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::{AssertSqlSafe, Connection, sqlite::SqlitePoolOptions};
 use std::{
+    collections::BTreeSet,
     fs,
     io::Read,
     path::{Path, PathBuf},
-    str::FromStr,
 };
 
-/// Versioned table policy for transient UCR-001 command state. Backups carry
-/// scrubbed metadata only; portable exports omit the rows entirely (FR-10).
-/// Job rows carry private inputs and outputs, so scoped and fixed-role job
-/// state is scrubbed and omitted with the rest of the command ledger.
-pub(crate) const COMMAND_TABLE_POLICY_VERSION: u32 = 3;
-pub(crate) const SCRUB_ON_BACKUP: &[&str] = &[
+/// Policy for detached archives. Disposable tables stay empty, preserving
+/// the forward SQLx schema and retained product lineage.
+pub(crate) const COMMAND_TABLE_POLICY_VERSION: u32 = 5;
+const ARCHIVE_FORMAT: u32 = 2;
+const PRIVATE_ARCHIVE_TABLES: &[&str] = &[
     "command_audit_event",
     "command_receipt",
     "command_ledger_meta",
+    "command_approval",
     "agent_run",
     "agent_run_target",
     "agent_run_turn",
@@ -36,39 +36,219 @@ pub(crate) const SCRUB_ON_BACKUP: &[&str] = &[
     "agent_run_budget",
     "durable_job",
     "job_attempt",
+    "coach_question_hold",
+    "inference_job_dependency",
+    "inference_active_profile",
+    "inference_probe",
+    "inference_qualification",
+    "inference_profile_revocation",
+    "inference_profile",
+    "embedding_cache",
+    "idempotency_receipt",
+    "maintenance_preview",
+    "blob_snapshot_pin",
+    "blob_upload_lease",
 ];
-pub(crate) const OMIT_FROM_EXPORT: &[&str] = SCRUB_ON_BACKUP;
+const PORTABLE_TABLES: &[&str] = &[
+    "_sqlx_migrations",
+    "accepted_hook",
+    "agent_chat",
+    "agent_prompt_active",
+    "agent_prompt_version",
+    "agent_provider",
+    "agent_turn",
+    "approval",
+    "blob",
+    "blob_upload",
+    "board_list",
+    "board_placement",
+    "brief_item",
+    "capacity_ledger",
+    "claim",
+    "claim_revision",
+    "coach_question",
+    "coach_report",
+    "contact_thread",
+    "delivered_resource_version",
+    "edge",
+    "edge_evidence",
+    "edge_history",
+    "entity",
+    "entity_attachment",
+    "erasure_authorization",
+    "erasure_tombstone",
+    "event",
+    "exchange_interest_link",
+    "exchange_version",
+    "fluency",
+    "inference_record",
+    "interviewer_candidate",
+    "interviewer_question_bank_active",
+    "interviewer_question_bank_version",
+    "interviewer_question_state",
+    "legacy_conversion_diagnostic",
+    "legacy_key_map",
+    "maintenance_operation",
+    "maintenance_settings",
+    "match_run",
+    "matching_calibration",
+    "material",
+    "material_lint",
+    "material_version",
+    "opportunity",
+    "opportunity_interest",
+    "opportunity_party",
+    "opportunity_tag",
+    "outcome",
+    "outcome_revision",
+    "owner_identity_revision",
+    "owner_identity_tag",
+    "owner_profile",
+    "pack_stage",
+    "party_identity_tag",
+    "party_import_batch",
+    "party_import_origin",
+    "party_import_stage",
+    "party_policy",
+    "party_stage_receipt",
+    "proposal_batch",
+    "proposal_decision",
+    "proposal_item",
+    "release_ack",
+    "release_record",
+    "resolution",
+    "resource_column",
+    "resource_placement",
+    "resource_tag",
+    "resource_use",
+    "segment",
+    "segment_party",
+    "send",
+    "send_part",
+    "source_content",
+    "source_occurrence",
+    "source_opportunity_link",
+    "source_variant",
+    "template_family",
+    "template_version",
+    "unresolved_mention",
+    "version_dependency",
+    "view_position",
+    "voice_sample",
+    "workspace_meta",
+];
 
-/// Remove command transcripts, approval arguments and receipt bodies from a
-/// detached snapshot before it is hashed or shipped. The live database and
-/// its domain history are untouched.
-async fn scrub_command_tables(db: &Path) -> Result<(), String> {
-    let options =
-        sqlx::sqlite::SqliteConnectOptions::from_str(&format!("sqlite://{}", db.display()))
-            .map_err(|e| format!("scrub snapshot options: {e}"))?
-            .foreign_keys(false);
-    let mut conn = sqlx::sqlite::SqliteConnection::connect_with(&options)
-        .await
-        .map_err(|e| format!("scrub snapshot connection: {e}"))?;
-    let mut tx = conn
-        .begin()
-        .await
-        .map_err(|e| format!("scrub snapshot transaction: {e}"))?;
-    for table in OMIT_FROM_EXPORT {
-        // The table names come from the closed, versioned policy above.
-        sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {table}")))
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| format!("scrub {table}: {e}"))?;
+async fn verify_portable_schema(conn: &mut sqlx::SqliteConnection) -> Result<(), sqlx::Error> {
+    let tables: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    if tables.iter().any(|name| {
+        !PRIVATE_ARCHIVE_TABLES.contains(&name.as_str())
+            && !PORTABLE_TABLES.contains(&name.as_str())
+            && !name.starts_with("draft00_")
+    }) {
+        return Err(sqlx::Error::Protocol(
+            "archive contains an unclassified table".into(),
+        ));
     }
-    tx.commit()
-        .await
-        .map_err(|e| format!("scrub snapshot commit: {e}"))?;
-    sqlx::query("VACUUM")
-        .execute(&mut conn)
-        .await
-        .map_err(|e| format!("scrub snapshot vacuum: {e}"))?;
     Ok(())
+}
+
+async fn verify_database_integrity(conn: &mut sqlx::SqliteConnection) -> Result<(), sqlx::Error> {
+    let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
+        .fetch_one(&mut *conn)
+        .await?;
+    let orphan: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pragma_foreign_key_check)")
+        .fetch_one(&mut *conn)
+        .await?;
+    if integrity != "ok" || orphan {
+        return Err(sqlx::Error::Protocol(
+            "archive failed database integrity checks".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn open_archive_database(
+    db: &Path,
+    read_only: bool,
+) -> Result<sqlx::SqliteConnection, sqlx::Error> {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(db)
+        .read_only(read_only)
+        .foreign_keys(true);
+    sqlx::sqlite::SqliteConnection::connect_with(&options).await
+}
+
+async fn verify_portable_database(db: &Path) -> Result<(), sqlx::Error> {
+    let mut conn = open_archive_database(db, true).await?;
+    verify_portable_schema(&mut conn).await?;
+    verify_database_integrity(&mut conn).await?;
+    for table in PRIVATE_ARCHIVE_TABLES {
+        let has_rows: bool = sqlx::query_scalar(AssertSqlSafe(format!(
+            "SELECT EXISTS(SELECT 1 FROM {table})"
+        )))
+        .fetch_one(&mut conn)
+        .await?;
+        if has_rows {
+            return Err(sqlx::Error::Protocol(
+                "archive contains private execution state".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Apply the portable policy with foreign keys enabled, including the
+/// proposal decisions and minimized lineage permitted in a detached copy.
+async fn scrub_archive_database(db: &Path) -> Result<(), sqlx::Error> {
+    let mut conn = open_archive_database(db, false).await?;
+    verify_portable_schema(&mut conn).await?;
+    let mut tx = conn.begin().await?;
+    for table in PRIVATE_ARCHIVE_TABLES {
+        // Order handles restricted foreign keys before deleting their parent.
+        sqlx::query(AssertSqlSafe(format!("DELETE FROM {table}")))
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::raw_sql(
+        "DELETE FROM coach_question WHERE status = 'open';
+         UPDATE coach_question SET text = '';
+         UPDATE coach_report SET
+           report_json = json_object(
+             'period',period,
+             'event_cursor',CAST(event_cursor AS TEXT),
+             'evidence',json_object(
+               'candidate_count',CASE WHEN json_valid(report_json)
+                 THEN CAST(json_extract(report_json,'$.evidence.candidate_count') AS INTEGER) END
+             )
+           );
+         DELETE FROM brief_item WHERE status = 'proposed';
+         DELETE FROM interviewer_candidate WHERE state = 'proposed';
+         UPDATE interviewer_candidate SET fields_json = '{}', owner_quotes_json = '{}',
+           missing_fields_json = '[]' WHERE state = 'dismissed';
+         UPDATE agent_provider
+         SET endpoint='http://127.0.0.1:11434',model='',model_digest=NULL,
+             embed_model='',embed_model_digest=NULL,updated_at='1970-01-01T00:00:00Z';
+         DELETE FROM inference_record WHERE id NOT IN (
+           SELECT job_id FROM agent_turn WHERE job_id IS NOT NULL
+           UNION SELECT job_id FROM interviewer_candidate
+           UNION SELECT job_id FROM brief_item WHERE job_id IS NOT NULL
+           UNION SELECT job_id FROM coach_report
+           UNION SELECT job_id FROM coach_question
+           UNION SELECT job_id FROM material_version WHERE job_id IS NOT NULL
+           UNION SELECT linter_job_id FROM material_lint WHERE linter_job_id IS NOT NULL
+           UNION SELECT why_job_id FROM match_run WHERE why_job_id IS NOT NULL
+           UNION SELECT job_id FROM proposal_batch WHERE job_id IS NOT NULL
+         );",
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    sqlx::query("VACUUM").execute(&mut conn).await?;
+    verify_database_integrity(&mut conn).await
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -87,14 +267,17 @@ pub struct MaintenanceSettingsInput {
     pub retention_count: i64,
     pub expected_revision: i64,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct BlobRecord {
     sha256: String,
     size: u64,
 }
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Manifest {
     format_version: u32,
+    policy_version: u32,
     backup_id: String,
     created_at: String,
     workspace_id: String,
@@ -107,6 +290,7 @@ struct Manifest {
 #[serde(deny_unknown_fields)]
 struct ExportManifest {
     format_version: u32,
+    policy_version: u32,
     workspace_id: String,
     database_sha256: String,
     database_size: u64,
@@ -637,45 +821,35 @@ async fn create_export(State(s): State<AppState>, h: HeaderMap) -> Response {
             "Could not create a consistent database snapshot",
         );
     }
-    if let Err(error) = scrub_command_tables(&db).await {
+    if scrub_archive_database(&db).await.is_err() {
         let _ = fs::remove_file(&db);
-        eprintln!("export scrub failed: {error}");
         return super::error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "EXPORT_SCRUB_FAILED",
             "Could not scrub transient command state",
         );
     }
-    let entries: Vec<(String, i64)> =
-        match sqlx::query_as("SELECT sha256,size FROM blob ORDER BY sha256")
-            .fetch_all(s.workspace.pool())
-            .await
+    let blobs = match archive_blob_records(&db).await {
+        Ok(records) => records,
+        Err(_) => {
+            let _ = fs::remove_file(&db);
+            return super::error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "EXPORT_READ_FAILED",
+                "Could not read attachment references",
+            );
+        }
+    };
+    for blob in &blobs {
+        if file_hash(&s.workspace.blob_root().join(&blob.sha256)).ok()
+            != Some((blob.size, blob.sha256.clone()))
         {
-            Ok(v) => v,
-            Err(_) => {
-                let _ = fs::remove_file(&db);
-                return super::error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "EXPORT_READ_FAILED",
-                    "Could not read attachment references",
-                );
-            }
-        };
-    let mut blobs = Vec::new();
-    for (sha, size) in entries {
-        match file_hash(&s.workspace.blob_root().join(&sha)) {
-            Ok((actual, hash)) if actual == size as u64 && hash == sha => blobs.push(BlobRecord {
-                sha256: sha,
-                size: actual,
-            }),
-            _ => {
-                let _ = fs::remove_file(&db);
-                return super::error(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "EXPORT_BLOB_INVALID",
-                    "A retained attachment failed integrity verification",
-                );
-            }
+            let _ = fs::remove_file(&db);
+            return super::error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "EXPORT_BLOB_INVALID",
+                "A retained attachment failed integrity verification",
+            );
         }
     }
     let (database_size, database_sha256) = match file_hash(&db) {
@@ -713,7 +887,8 @@ async fn create_export(State(s): State<AppState>, h: HeaderMap) -> Response {
         .as_bytes(),
     );
     let manifest = ExportManifest {
-        format_version: 1,
+        format_version: ARCHIVE_FORMAT,
+        policy_version: COMMAND_TABLE_POLICY_VERSION,
         workspace_id: s.workspace.workspace_id().into(),
         database_sha256,
         database_size,
@@ -1139,7 +1314,7 @@ async fn extract_verified_export(archive: &Path, output: &Path) -> Result<Export
     if entry_count > 100_002 {
         return Err("too many entries".into());
     }
-    let mut names = std::collections::BTreeSet::new();
+    let mut names = BTreeSet::new();
     let mut manifest = None;
     let mut expanded = 0u64;
     for n in 0..entry_count {
@@ -1159,8 +1334,8 @@ async fn extract_verified_export(archive: &Path, output: &Path) -> Result<Export
             return Err("symlink".into());
         }
         if name == "manifest.json" {
-            if n + 1 != entry_count {
-                return Err("manifest must be last".into());
+            if n + 1 != entry_count || f.size() > 16 * 1024 * 1024 {
+                return Err("invalid manifest extent".into());
             }
             let mut b = Vec::new();
             f.read_to_end(&mut b).map_err(|e| e.to_string())?;
@@ -1171,12 +1346,7 @@ async fn extract_verified_export(archive: &Path, output: &Path) -> Result<Export
         let dest = if name == "workspace.sqlite" {
             output.join(name)
         } else if let Some(sha) = name.strip_prefix("blobs/") {
-            if sha.len() != 64
-                || !sha
-                    .bytes()
-                    .all(|x| x.is_ascii_hexdigit() && !x.is_ascii_uppercase())
-                || f.size() > 64 * 1024 * 1024
-            {
+            if !valid_blob_digest(sha) || f.size() > 64 * 1024 * 1024 {
                 return Err("invalid blob".into());
             }
             let d = output.join("blobs");
@@ -1198,17 +1368,31 @@ async fn extract_verified_export(archive: &Path, output: &Path) -> Result<Export
         out.sync_all().map_err(|e| e.to_string())?;
     }
     let m = manifest.ok_or("manifest missing")?;
-    if m.format_version != 1 {
-        return Err("future format".into());
+    if m.format_version != ARCHIVE_FORMAT || m.policy_version != COMMAND_TABLE_POLICY_VERSION {
+        return Err("unsupported archive policy".into());
     }
     if file_hash(&output.join("workspace.sqlite"))? != (m.database_size, m.database_sha256.clone())
     {
         return Err("database mismatch".into());
     }
-    for b in &m.blobs {
-        if file_hash(&output.join("blobs").join(&b.sha256))? != (b.size, b.sha256.clone()) {
-            return Err("blob mismatch".into());
-        }
+    let expected_names: BTreeSet<String> = m
+        .blobs
+        .iter()
+        .map(|blob| format!("blobs/{}", blob.sha256))
+        .chain(["workspace.sqlite".into(), "manifest.json".into()])
+        .collect();
+    if names != expected_names || names.len() != m.blobs.len() + 2 {
+        return Err("archive membership mismatch".into());
+    }
+    if !verify_blob_members(&output.join("blobs"), &m.blobs) {
+        return Err("blob mismatch".into());
+    }
+    let database = output.join("workspace.sqlite");
+    verify_portable_database(&database)
+        .await
+        .map_err(|e| e.to_string())?;
+    if archive_blob_records(&database).await? != m.blobs {
+        return Err("database attachment manifest mismatch".into());
     }
     let canonical_db = canonical_database_hash(&output.join("workspace.sqlite")).await?;
     let expected = hash(
@@ -1236,13 +1420,9 @@ async fn set_database_epoch(path: &Path, epoch: &str) -> Result<(), String> {
     let pool = sqlx::SqlitePool::connect_with(opts)
         .await
         .map_err(|e| e.to_string())?;
-    let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
-        .fetch_one(&pool)
+    verify_portable_database(path)
         .await
         .map_err(|e| e.to_string())?;
-    if integrity != "ok" {
-        return Err("integrity check failed".into());
-    }
     let mut tx = pool
         .begin_with("BEGIN IMMEDIATE")
         .await
@@ -1394,6 +1574,15 @@ async fn erase_from_database(
     // Retain an independent upload when it shares the same digest.
     sqlx::query("DELETE FROM blob_upload WHERE card_private=1 AND id IN (SELECT upload_id FROM entity_attachment WHERE entity_id=?) AND id NOT IN (SELECT blob_upload_id FROM material_version WHERE blob_upload_id IS NOT NULL)").bind(subject).execute(&mut *tx).await.map_err(|e|e.to_string())?;
     sqlx::query("DELETE FROM blob WHERE sha256 NOT IN (SELECT blob_sha256 FROM blob_upload UNION SELECT blob_sha256 FROM material_version WHERE blob_sha256 IS NOT NULL UNION SELECT blob_sha256 FROM blob_snapshot_pin UNION SELECT blob_sha256 FROM blob_upload_lease)").execute(&mut *tx).await.map_err(|e|e.to_string())?;
+    // Probe observations and readiness are scoped to the old generation.
+    sqlx::raw_sql(
+        "DELETE FROM inference_probe;
+         DELETE FROM inference_qualification;
+         DELETE FROM inference_active_profile;",
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
     // Stages belong to the replaced epoch, including mapping/preview receipts.
     sqlx::query("DELETE FROM party_import_stage")
         .execute(&mut *tx)
@@ -1597,7 +1786,7 @@ async fn preview_restore(
     };
     if manifest.backup_id != i.backup_id
         || manifest.workspace_id != s.workspace.workspace_id()
-        || !verify(&dir, &manifest)
+        || !verify_backup_snapshot(&dir, &manifest).await
     {
         return super::error(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -1687,7 +1876,7 @@ async fn commit_restore(
             );
         }
     };
-    if !verify(&dir, &manifest) {
+    if !verify_backup_snapshot(&dir, &manifest).await {
         return super::error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "BACKUP_INVALID",
@@ -1863,26 +2052,21 @@ async fn make_backup(w: &Workspace) -> Result<Manifest, String> {
         .await
         .map_err(|e| e.to_string())?;
     drop(conn);
-    scrub_command_tables(&db).await?;
-    let blobs: Vec<(String, i64)> = sqlx::query_as("SELECT sha256,size FROM blob ORDER BY sha256")
-        .fetch_all(w.pool())
+    scrub_archive_database(&db)
         .await
         .map_err(|e| e.to_string())?;
-    let mut entries = Vec::new();
-    for (sha, size) in blobs {
-        let src = w.blob_root().join(&sha);
-        if file_hash(&src)? != (size as u64, sha.clone()) {
-            return Err("blob integrity failure".into());
-        }
-        fs::copy(src, staging.join("blobs").join(&sha)).map_err(|e| e.to_string())?;
-        entries.push(BlobRecord {
-            sha256: sha,
-            size: size as u64,
-        });
+    let entries = archive_blob_records(&db).await?;
+    for blob in &entries {
+        let src = w.blob_root().join(&blob.sha256);
+        let destination = staging.join("blobs").join(&blob.sha256);
+        fs::copy(src, &destination).map_err(|e| e.to_string())?;
+        FileSync::sync(&destination)?;
     }
+    sync_dir(&staging.join("blobs"))?;
     let (db_size, db_sha256) = file_hash(&db)?;
     let m = Manifest {
-        format_version: 1,
+        format_version: ARCHIVE_FORMAT,
+        policy_version: COMMAND_TABLE_POLICY_VERSION,
         backup_id: id.clone(),
         created_at: now_utc(),
         workspace_id: w.workspace_id().into(),
@@ -1894,6 +2078,10 @@ async fn make_backup(w: &Workspace) -> Result<Manifest, String> {
     fs::write(staging.join("manifest.json"), bytes).map_err(|e| e.to_string())?;
     FileSync::sync(&staging.join("manifest.json"))?;
     FileSync::sync(&db)?;
+    if !verify(&staging, &m) {
+        return Err("backup member verification failed".into());
+    }
+    sync_dir(&staging)?;
     fs::rename(&staging, root.join(&id)).map_err(|e| e.to_string())?;
     sync_dir(&root)?;
     let mut tx = w
@@ -1945,18 +2133,109 @@ fn sync_dir(path: &Path) -> Result<(), String> {
         .and_then(|f| f.sync_all())
         .map_err(|e| e.to_string())
 }
-fn verify(p: &Path, m: &Manifest) -> bool {
-    file_hash(&p.join("workspace.sqlite")).ok() == Some((m.db_size, m.db_sha256.clone()))
-        && m.blobs.iter().all(|b| {
-            file_hash(&p.join("blobs").join(&b.sha256)).ok() == Some((b.size, b.sha256.clone()))
+async fn archive_blob_records(db: &Path) -> Result<Vec<BlobRecord>, String> {
+    let mut conn = open_archive_database(db, true)
+        .await
+        .map_err(|error| error.to_string())?;
+    let rows: Vec<(String, i64)> = sqlx::query_as("SELECT sha256,size FROM blob ORDER BY sha256")
+        .fetch_all(&mut conn)
+        .await
+        .map_err(|error| error.to_string())?;
+    rows.into_iter()
+        .map(|(sha256, size)| {
+            if !valid_blob_digest(&sha256) || size < 0 {
+                return Err("invalid database blob metadata".into());
+            }
+            Ok(BlobRecord {
+                sha256,
+                size: size as u64,
+            })
+        })
+        .collect()
+}
+
+fn valid_blob_digest(digest: &str) -> bool {
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn verify_blob_members(dir: &Path, blobs: &[BlobRecord]) -> bool {
+    if blobs.is_empty() && !dir.exists() {
+        return true;
+    }
+    let Ok(metadata) = fs::symlink_metadata(dir) else {
+        return false;
+    };
+    if !metadata.is_dir() {
+        return false;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    let names = entries
+        .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+        .collect::<Result<BTreeSet<_>, _>>();
+    let expected: BTreeSet<_> = blobs.iter().map(|blob| blob.sha256.clone()).collect();
+    names.is_ok_and(|names| names == expected)
+        && expected.len() == blobs.len()
+        && blobs.iter().all(|blob| {
+            valid_blob_digest(&blob.sha256)
+                && file_hash(&dir.join(&blob.sha256)).ok() == Some((blob.size, blob.sha256.clone()))
         })
 }
+
+async fn verify_backup_snapshot(path: &Path, manifest: &Manifest) -> bool {
+    if !verify(path, manifest) {
+        return false;
+    }
+    let database = path.join("workspace.sqlite");
+    verify_portable_database(&database).await.is_ok()
+        && archive_blob_records(&database)
+            .await
+            .is_ok_and(|records| records == manifest.blobs)
+}
+
+fn verify(p: &Path, m: &Manifest) -> bool {
+    if !fs::symlink_metadata(p).is_ok_and(|metadata| metadata.is_dir())
+        || !fs::symlink_metadata(p.join("manifest.json")).is_ok_and(|metadata| metadata.is_file())
+    {
+        return false;
+    }
+    let Ok(entries) = fs::read_dir(p) else {
+        return false;
+    };
+    let names = entries
+        .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+        .collect::<Result<BTreeSet<_>, _>>();
+    m.format_version == ARCHIVE_FORMAT
+        && m.policy_version == COMMAND_TABLE_POLICY_VERSION
+        && names.is_ok_and(|names| {
+            names
+                == [
+                    "blobs".into(),
+                    "manifest.json".into(),
+                    "workspace.sqlite".into(),
+                ]
+                .into()
+        })
+        && file_hash(&p.join("workspace.sqlite")).ok() == Some((m.db_size, m.db_sha256.clone()))
+        && verify_blob_members(&p.join("blobs"), &m.blobs)
+}
+
 fn hash(b: &[u8]) -> String {
     hex::encode(sha2::Sha256::digest(b))
 }
 fn file_hash(p: &Path) -> Result<(u64, String), String> {
-    let b = fs::read(p).map_err(|e| e.to_string())?;
-    Ok((b.len() as u64, hash(&b)))
+    let metadata = fs::symlink_metadata(p).map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("archive member is not a regular file".into());
+    }
+    let mut file = fs::File::open(p).map_err(|error| error.to_string())?;
+    let mut digest = Sha256::new();
+    let size = std::io::copy(&mut file, &mut digest).map_err(|error| error.to_string())?;
+    Ok((size, hex::encode(digest.finalize())))
 }
 struct FileSync;
 impl FileSync {
@@ -1999,10 +2278,12 @@ mod archive_tests {
             .execute(workspace.pool())
             .await
             .unwrap();
+        scrub_archive_database(&snapshot).await.unwrap();
         let dbhash = canonical_database_hash(&snapshot).await.unwrap();
         let (size, digest) = file_hash(&snapshot).unwrap();
         let manifest = ExportManifest {
-            format_version: 1,
+            format_version: ARCHIVE_FORMAT,
+            policy_version: COMMAND_TABLE_POLICY_VERSION,
             workspace_id: workspace.workspace_id().to_owned(),
             database_sha256: digest,
             database_size: size,

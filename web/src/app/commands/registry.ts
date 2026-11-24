@@ -22,7 +22,7 @@ export interface UiCommand {
   title: string;
   summary?: string;
   keywords?: string[];
-  effect: 'read';
+  effect: 'read' | 'write' | 'destructive';
   /** Server descriptor id whose UI front door this command replaces in context. */
   replaces?: string;
   when?: (ctx: UiRunContext) => boolean;
@@ -399,6 +399,49 @@ export function resourceMarkReadyAction(input: ResourceMarkReadyActionInput): Ui
       if (intent?.fingerprint !== fingerprint) intent = { fingerprint, key: newOperationKey() };
       const result = await input.invoke(MARK_READY_ID, args, intent.key);
       await input.onCommitted(result, MARK_READY_ID);
+    },
+  };
+}
+
+export interface ResourceRetireActionInput {
+  resourceId: string;
+  cardRevision: number;
+  contentRevision: number;
+  intentFingerprint: string;
+  invoke: (id: string, args: CommandArgs, key: string) => Promise<CommandSuccess>;
+  onCommitted: (result: CommandSuccess, commandId: string) => void | Promise<void>;
+}
+
+const RETIRE_ID = 'resource.retire';
+
+/**
+ * Scoped Resources action (U08). The palette freezes the selected resource,
+ * its card and content revisions and a fresh operation key. Every destructive
+ * execution stops at the human approval: the server returns `approval_required`
+ * with an owner-only approval location, which the palette renders inside one
+ * modal and resumes with the same frozen key once granted.
+ */
+export function resourceRetireAction(input: ResourceRetireActionInput): UiCommand {
+  let intent: { fingerprint: string; key: string } | null = null;
+  return {
+    id: 'ui.resources.retire',
+    title: 'Retire resource',
+    summary: 'Remove the selected resource from ordinary use after approval',
+    keywords: ['resource', 'retire', 'remove', 'archive'],
+    effect: 'destructive',
+    replaces: RETIRE_ID,
+    confirmation: 'Retire the selected resource? This needs your review in Approvals before it commits.',
+    when: (ctx) => ctx.context.route === 'resources' && ctx.context['selection.resource'] === true,
+    run: async () => {
+      const args: CommandArgs = {
+        resource_id: input.resourceId,
+        expected_card_revision: input.cardRevision,
+        expected_content_revision: input.contentRevision,
+      };
+      const fingerprint = JSON.stringify([input.intentFingerprint, RETIRE_ID, args]);
+      if (intent?.fingerprint !== fingerprint) intent = { fingerprint, key: newOperationKey() };
+      const result = await input.invoke(RETIRE_ID, args, intent.key);
+      await input.onCommitted(result, RETIRE_ID);
     },
   };
 }

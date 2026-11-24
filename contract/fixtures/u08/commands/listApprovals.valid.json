@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/ApprovalList","body":{"items":[{"id":"aprv_u08_01","command_id":"resource.retire","command_version":1,"revision":1,"status":"pending","expires_at":"2026-11-23T00:10:00.000Z","preview_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","title":"Gift A","impacted_versions_count":2}],"next_cursor":null}}

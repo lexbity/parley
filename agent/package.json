@@ -3,11 +3,22 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Pinned agent-runner dependencies for the Parley agent worker (RFC-0002 BE-09). pi is the first supported runner; its adapter lands in RFC-0004 slice S04 behind the typed run/cancel/health port.",
+  "description": "Parley isolated Pi inference worker",
   "engines": {
-    "node": ">=22.19.0"
+    "node": "26.12.0"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "1.6.0"
+    "@earendil-works/pi-ai": "1.6.0",
+    "@huggingface/tokenizers": "0.2.0",
+    "ajv": "8.20.0",
+    "undici": "8.12.4"
+  },
+  "scripts": {
+    "lint": "eslint src test --max-warnings 0",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "eslint": "10.15.0",
+    "esbuild": "0.28.2"
   }
 }

@@ -39,14 +39,10 @@ describe('ParleyClient Queue, insights and board decoders', () => {
       actionable_count: 1, deferred_count: 0,
       items: [{ id: 'd1', opportunity_id: 'o1', title: 'Onboarding', type: 'followup_due', party_id: 'p1', party_name: 'Dana Lee', due_at: '2026-11-24', reason: 'Due', blocking_reason: null, remediation_target: { kind: 'opportunity', id: 'o1' } }],
     };
-    const metric = { id: 'm1', label: 'Response rate', numerator: 3, denominator: 4, rate: 0.75, lower: 0.2, upper: 0.9, state: 'measured' };
+    const metric = { metric: 'reply_rate', k: 3, n: 4, interval_95: { lower_95: 0.2, upper_95: 0.9 } };
     const insights = {
-      as_of: '2026-11-23T00:00:00Z', period_start: '2026-11-16', period_end: '2026-11-23',
-      pack_id: 'job_search', pack_version: '1.0.0', sample_size: 4,
-      metrics: [metric],
-      comparisons: [{ label: 'A vs B', left: metric, right: { ...metric, state: 'insufficient_observations' }, state: 'inconclusive' }],
-      gaps: [{ id: 'g1', label: 'Proof', covered: 1, total: 4, blocked_count: 1, suggested_kind: 'proof' }],
-      questions: [{ id: 'q1', kind: 'proof', text: 'What changed?', target_kind: 'party', target_id: 'p1', impact: 2, state: 'open' }],
+      as_of: '2026-11-23T00:00:00Z', event_cursor: '7', effective_outcomes: [],
+      rates: [metric], strata: [], comparisons: [],
     };
     const client = clientWith(
       sheet,
@@ -58,7 +54,7 @@ describe('ParleyClient Queue, insights and board decoders', () => {
     expect((await client.getQueueSheet({ search: 'Onboarding', phase: 'preparing', sort: 'name' })).rows[0]?.phase?.label).toBe('Preparing');
     expect((await client.setOpportunityPhase('o1', { target_stage_id: 'preparing', pack_version: '1.0.0', expected_phase_revision: 2 })).event_id).toBe('ev-1');
     expect((await client.getDailyQueue({ missing_material: true })).actionable_count).toBe(1);
-    expect((await client.getInsights()).comparisons[0]?.state).toBe('inconclusive');
+    expect((await client.getInsights()).rates[0]).toEqual(metric);
   });
 
   it('rejects malformed sheet, phase, daily and insight payloads', async () => {
@@ -66,7 +62,7 @@ describe('ParleyClient Queue, insights and board decoders', () => {
       { generation: '1', total: 0, rows: [], phases: [{ kind: 'planning', count: 'bad' }], cursor: null, next_cursor: null },
       { row: {}, event_id: 'ev', phase_revision: 1, reverted: false },
       { as_of: 'now', pack_id: 'p', pack_version: '1', daily_cap: 1, actionable_count: 0, deferred_count: 0, items: [{ id: 'd', opportunity_id: 'o', title: 'x', type: 'unknown' }] },
-      { as_of: 'now', period_start: 'a', period_end: 'b', pack_id: 'p', pack_version: '1', sample_size: 0, metrics: [{ id: 'm', label: 'x', numerator: 0, denominator: 0, rate: 'bad', lower: null, upper: null, state: 'measured' }], comparisons: [], gaps: [], questions: [] },
+      { as_of: 'now', event_cursor: '1', effective_outcomes: [], rates: [{ metric: 'reply_rate', k: 1, n: 2, interval_95: { lower_95: 'bad', upper_95: 1 } }], strata: [], comparisons: [] },
     );
     await client.connect();
     await expect(client.getQueueSheet()).rejects.toThrow(/phase kind is malformed/);
@@ -118,7 +114,7 @@ describe('ParleyClient administration decoders', () => {
       overview, preview, job,
       { revision: 1, active_pack_id: 'job_search', active_pack_version: '1.0.0', active_document: 'pack', available_packs: [{ id: 'job_search', name: 'Job search', version: '1.0.0', document: 'pack' }] },
       { valid: true, pack_id: 'job_search', version: '1.0.0', normalized_document: 'pack', errors: [{ line: 1, field: 'stage', message: 'fix' }] },
-      { job_id: 'run-1' },
+      { job_id: 'run-1', status: 'queued' },
       { items: [{ id: 'b1' }] },
     );
     await client.connect();
@@ -130,7 +126,7 @@ describe('ParleyClient administration decoders', () => {
     expect((await client.getAdminJob('j1')).status).toBe('queued');
     expect((await client.getPackSettings()).available_packs[0]?.id).toBe('job_search');
     expect((await client.validatePack('pack')).errors[0]?.message).toBe('fix');
-    expect((await client.runCoach()).job_id).toBe('run-1');
+    expect(await client.startWeeklyCoach()).toEqual({ kind: 'queued', jobId: 'run-1' });
     expect((await client.listBackups()).items).toHaveLength(1);
   });
 

@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:http';
 import { expect } from '@playwright/test';
 import { test } from './fixtures';
 import { addParty, openParties } from './parties';
-import { invoke, openPalette, palette, signIn } from './sheet';
+import { invoke, openPalette, palette, readProviderRevision, signIn } from './sheet';
 
 type ScriptedProvider = { endpoint: string; close(): Promise<void> };
 
@@ -49,7 +49,7 @@ async function configureProvider(page: import('@playwright/test').Page, session:
       'X-Parley-Epoch': session.epoch,
       'Idempotency-Key': randomUUID(),
     },
-    data: { endpoint, model: 'fixture', num_ctx: 8192, num_predict: 256, locale: 'en' },
+    data: { endpoint, model: 'fixture', num_ctx: 8192, num_predict: 256, locale: 'en', expected_profile_revision: await readProviderRevision(page, session) },
   });
   expect(response.ok()).toBe(true);
 }
