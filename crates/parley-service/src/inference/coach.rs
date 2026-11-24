@@ -221,7 +221,18 @@ pub(crate) async fn run(state: &AppState, id: &str) {
     };
     match execute(state, id, &lease).await {
         Ok((candidate, usage)) => {
-            if let Some(questions) = coach::validate_output(candidate, &lease.input.seeds) {
+            let allowed_resources = lease
+                .input
+                .context_projection
+                .as_ref()
+                .and_then(|context| context["resources"].as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|resource| resource["id"].as_str().map(str::to_owned))
+                .collect::<Vec<_>>();
+            if let Some(questions) =
+                coach::validate_output(candidate, &lease.input.seeds, &allowed_resources)
+            {
                 if let Err(error) = publish(state, id, &lease, questions, usage).await {
                     let code = if matches!(error, WorkspaceError::StaleRevision) {
                         "STALE_INPUT"
@@ -346,7 +357,7 @@ async fn publish(
     state: &AppState,
     id: &str,
     lease: &Lease,
-    questions: Vec<String>,
+    questions: Vec<coach::ValidatedQuestion>,
     usage: Usage,
 ) -> Result<(), WorkspaceError> {
     let workspace = &state.workspace;
@@ -363,11 +374,17 @@ async fn publish(
     }
     let dependencies = tokio::time::timeout(Duration::from_millis(500), async {
         if let Some(scope) = &lease.input.scope {
-            coach::plan_context(&mut tx, scope).await.map(|plan| plan.dependencies)
+            coach::plan_context(&mut tx, scope)
+                .await
+                .map(|plan| plan.dependencies)
         } else {
-            coach::plan(&mut tx, &lease.input.week).await.map(|plan| plan.dependencies)
+            coach::plan(&mut tx, &lease.input.week)
+                .await
+                .map(|plan| plan.dependencies)
         }
-    }).await.map_err(|_| WorkspaceError::StaleRevision)??;
+    })
+    .await
+    .map_err(|_| WorkspaceError::StaleRevision)??;
     if dependencies != lease.dependencies {
         return Err(WorkspaceError::StaleRevision);
     }
@@ -393,21 +410,22 @@ async fn publish(
     sqlx::query("INSERT INTO coach_report(id,period,input_digest,event_cursor,job_id,report_json,created_at) VALUES(?,?,?,?,?,?,?)")
         .bind(&report_id).bind(period).bind(&lease.input_sha256).bind(cursor).bind(id)
         .bind(report.to_string()).bind(&now).execute(&mut *tx).await?;
-    for (rank, (seed, text)) in lease.input.seeds.iter().zip(questions).enumerate() {
+    for (rank, (seed, question)) in lease.input.seeds.iter().zip(questions).enumerate() {
         let selector = if let Some(scope) = &lease.input.scope {
-            serde_json::to_value(scope).map_err(|_| WorkspaceError::Invalid("Invalid Coach selector".into()))?
+            serde_json::to_value(scope)
+                .map_err(|_| WorkspaceError::Invalid("Invalid Coach selector".into()))?
         } else {
             json!({"kind":"weekly","period":period})
         };
         sqlx::query(
             "INSERT INTO coach_question(id,job_id,question_key,kind,target_json,answer_schema_json,priority,impact,
-                 text,status,created_at,updated_at,semantic_key,selector_json,dependency_json,dependency_digest)
-             VALUES(?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?)",
+                 text,status,created_at,updated_at,semantic_key,selector_json,dependency_json,dependency_digest,suggested_resource_id)
+             VALUES(?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?)",
         ).bind(new_id(id)).bind(id).bind(&seed.key).bind(seed.reason.kind()).bind(seed.target.wire().to_string())
-            .bind(seed.answer_schema().to_string()).bind(rank as i64).bind(seed.impact).bind(text)
+            .bind(seed.answer_schema().to_string()).bind(rank as i64).bind(seed.impact).bind(&question.text)
             .bind(&now).bind(&now).bind(&seed.key).bind(selector.to_string())
             .bind(lease.input.dependency_json.as_ref().unwrap_or(&json!([])).to_string())
-            .bind(&lease.dependencies).execute(&mut *tx).await?;
+            .bind(&lease.dependencies).bind(&question.resource_ref).execute(&mut *tx).await?;
     }
     sqlx::query("UPDATE inference_record SET model_digest=?,metadata_class='observed' WHERE id=?")
         .bind(&lease.profile.model_digest)
@@ -427,4 +445,49 @@ async fn publish(
     .await?;
     tx.commit().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn profile_row() -> ProfileRow {
+        ProfileRow {
+            endpoint: Some("http://127.0.0.1:11434".into()),
+            runner_build_digest: Some("a".repeat(64)),
+            provider_version: Some("0.18.0".into()),
+            chat_model: Some("local:approved".into()),
+            chat_model_digest: Some("b".repeat(64)),
+            tokenizer_digest: Some("c".repeat(64)),
+            recipe_json: r#"{"template_tokens":128}"#.into(),
+            context_tokens: 8192,
+            output_tokens: 512,
+        }
+    }
+
+    #[test]
+    fn ar01_coach_profile_projection_requires_complete_local_identity() {
+        let (endpoint, profile, build) = profile_fields(1, profile_row()).unwrap();
+        assert_eq!(endpoint, "127.0.0.1:11434".parse().unwrap());
+        assert_eq!(profile.revision, 1);
+        assert_eq!(profile.template_tokens, 128);
+        assert_eq!(build, "a".repeat(64));
+
+        let mut invalid = profile_row();
+        invalid.endpoint = Some("http://localhost:11434".into());
+        assert!(profile_fields(1, invalid).is_none());
+        let mut invalid = profile_row();
+        invalid.recipe_json = "[]".into();
+        assert!(profile_fields(1, invalid).is_none());
+        let mut invalid = profile_row();
+        invalid.chat_model = Some("remote:cloud".into());
+        assert!(profile_fields(1, invalid).is_none());
+        let mut invalid = profile_row();
+        invalid.chat_model_digest = Some("D".repeat(64));
+        assert!(profile_fields(1, invalid).is_none());
+        let mut invalid = profile_row();
+        invalid.runner_build_digest = None;
+        assert!(profile_fields(1, invalid).is_none());
+        assert!(profile_fields(-1, profile_row()).is_none());
+    }
 }

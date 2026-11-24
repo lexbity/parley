@@ -335,3 +335,122 @@ async fn forward(
         .body(Body::from_stream(stream))
         .expect("validated provider response"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn policy() -> Policy {
+        Policy {
+            endpoint: "127.0.0.1:11434".parse().unwrap(),
+            model: "local:approved".into(),
+            max_output_tokens: 512,
+            stage: AtomicU8::new(2),
+        }
+    }
+
+    fn request(method: Method, uri: &str) -> Parts {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::HOST, AUTHORITY)
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0
+    }
+
+    fn valid_chat_body() -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "model":"local:approved",
+            "messages":[{"role":"system","content":"instructions"},{"role":"user","content":"data"}],
+            "stream":true,
+            "stream_options":{"include_usage":true},
+            "max_tokens":512,
+            "temperature":0,
+            "response_format":{"type":"json_schema","json_schema":{"name":"coach","schema":{}}}
+        })).unwrap()
+    }
+
+    #[test]
+    fn ar01_relay_limits_loopback_authority_headers_and_framing() {
+        for allowed in [
+            "127.0.0.1:11434".parse().unwrap(),
+            "[::1]:11434".parse().unwrap(),
+        ] {
+            assert!(is_allowed_endpoint(allowed));
+        }
+        for denied in [
+            "127.0.0.2:11434".parse().unwrap(),
+            "0.0.0.0:11434".parse().unwrap(),
+            "127.0.0.1:0".parse().unwrap(),
+        ] {
+            assert!(!is_allowed_endpoint(denied));
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_LENGTH, "12".parse().unwrap());
+        assert!(allowed_framing(&headers, false));
+        headers.append(header::CONTENT_LENGTH, "12".parse().unwrap());
+        assert!(!allowed_framing(&headers, false));
+        let mut chunked = HeaderMap::new();
+        chunked.insert(header::TRANSFER_ENCODING, "chunked".parse().unwrap());
+        assert!(allowed_framing(&chunked, true));
+        chunked.insert(header::CONTENT_LENGTH, "12".parse().unwrap());
+        assert!(!allowed_framing(&chunked, true));
+        let mut encoded = HeaderMap::new();
+        encoded.insert(header::CONTENT_ENCODING, "gzip".parse().unwrap());
+        assert!(!allowed_framing(&encoded, true));
+        let mut huge = HeaderMap::new();
+        huge.insert("x-large", "x".repeat(MAX_HEADERS).parse().unwrap());
+        assert!(!headers_within_budget(&huge));
+    }
+
+    #[test]
+    fn ar01_relay_routes_only_expected_methods_and_paths() {
+        assert_eq!(
+            validate_request(&request(Method::GET, "/api/tags")).unwrap(),
+            "/api/tags"
+        );
+        assert_eq!(
+            validate_request(&request(Method::GET, "/api/version")).unwrap(),
+            "/api/version"
+        );
+        let mut chat = request(Method::POST, "/v1/chat/completions");
+        chat.headers
+            .insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+        assert_eq!(validate_request(&chat).unwrap(), "/v1/chat/completions");
+        for (method, uri) in [
+            (Method::POST, "/api/tags"),
+            (Method::GET, "/v1/chat/completions"),
+            (Method::GET, "/api/tags?x=1"),
+            (Method::GET, "http://evil.test/api/tags"),
+        ] {
+            assert!(validate_request(&request(method, uri)).is_err());
+        }
+        let mut hostile = request(Method::GET, "/api/tags");
+        hostile
+            .headers
+            .insert(header::AUTHORIZATION, "secret".parse().unwrap());
+        assert!(validate_request(&hostile).is_err());
+        let mut wrong_host = request(Method::GET, "/api/tags");
+        wrong_host
+            .headers
+            .insert(header::HOST, "localhost".parse().unwrap());
+        assert!(validate_request(&wrong_host).is_err());
+    }
+
+    #[test]
+    fn ar01_relay_chat_body_is_closed_and_profile_bound() {
+        let policy = policy();
+        let body = valid_chat_body();
+        assert!(valid_chat(&body, &policy));
+        for body in [
+            serde_json::to_vec(&serde_json::json!({"model":"foreign","messages":[]})).unwrap(),
+            serde_json::to_vec(&serde_json::json!({"model":"local:approved","messages":[],"extra":true})).unwrap(),
+            serde_json::to_vec(&serde_json::json!({"model":"local:approved","messages":[],"stream":false,"stream_options":{"include_usage":true},"max_tokens":512,"temperature":0,"response_format":{"type":"json_schema"}})).unwrap(),
+            b"{\"model\":\"local:approved\",\"model\":\"foreign\"}".to_vec(),
+        ] {
+            assert!(!valid_chat(&body, &policy));
+        }
+    }
+}

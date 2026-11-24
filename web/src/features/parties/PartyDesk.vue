@@ -5,6 +5,7 @@ import {
   newOperationKey, parley, ApiError,
   type PartyImportReceipt, type Dossier, type EntityNotes, type ExtractorJob, type ExtractorProposal,
   type GraphSnapshot, type GraphEntity, type OpportunitySummary, type SavedSource,
+  type CoachSelector, type CoachQuestion,
 } from '../../api/client';
 import { commands } from '../../api/commands';
 import { partyActions, registerScoped, useCommandRegistry } from '../../app/commands/registry';
@@ -15,6 +16,7 @@ import PartySheet from './PartySheet.vue';
 import PartyInspector from './PartyInspector.vue';
 import RelationshipGraph from '../leads/RelationshipGraph.vue';
 import BriefWorkspace from '../leads/BriefWorkspace.vue';
+import CoachQuestions from '../coach/CoachQuestions.vue';
 import MarkdownEditor from '../../shared/MarkdownEditor.vue';
 import MarkdownPreview from '../../shared/MarkdownPreview.vue';
 
@@ -214,6 +216,41 @@ watch(() => props.inbox, open => {
 const selectedParty = computed(() => directoryRows.value.find(p => p.id === selectedRecordId.value) ?? props.parties.find(p => p.id === selectedRecordId.value)
   ?? graphNodes.value.find(p => p.id === selectedRecordId.value)
   ?? (dossier.value?.entity.id === selectedRecordId.value ? dossier.value.entity : null));
+
+const coachChoices = computed(() => {
+  const party = selectedParty.value;
+  if (!party || !['person','org'].includes(party.kind) || !Number.isSafeInteger(party.revision)) return [];
+  const choices: Array<{ selector: CoachSelector; label: string }> = [{
+    selector: { kind: 'party', id: party.id, revision: party.revision }, label: `${party.name} · party research`,
+  }];
+  for (const opportunity of props.opportunities) {
+    if (opportunity.state !== 'open' || !opportunity.participants.some(item => item.id === party.id)) continue;
+    choices.push({ selector: { kind: 'opportunity', id: opportunity.id, revision: opportunity.revision, recipient_id: party.id, recipient_revision: party.revision }, label: `${opportunity.title} · ${party.name}` });
+  }
+  return choices;
+});
+const coachEvidenceChoices = computed(() => {
+  const dossierRecord = dossier.value;
+  if (!dossierRecord || dossierRecord.entity.id !== selectedParty.value?.id) return [];
+  return dossierRecord.direct_links.flatMap(link => {
+    if (link.to_id !== dossierRecord.entity.id || link.tier !== 3 || !link.claim_id || !link.claim_revision || !link.wording) return [];
+    return [{ claim_id: link.claim_id, revision: link.claim_revision, label: link.wording.slice(0, 180) }];
+  }).slice(0, 8);
+});
+
+async function openCoachQuestion(question: CoachQuestion) {
+  const scope = question.selector;
+  try {
+    const path = scope.kind === 'opportunity'
+      ? (await parley.getOpportunity(scope.id), `/queue/${encodeURIComponent(scope.id)}`)
+      : scope.kind === 'party'
+        ? (await parley.getDossier(scope.id), `/parties/${encodeURIComponent(scope.id)}`)
+        : '/queue';
+    emit('navigate', path);
+  } catch {
+    error.value = 'The question context is no longer available. Refresh the selection.';
+  }
+}
 const rootName = computed(() => (directoryRows.value.find(p => p.id === rootPartyId.value)
   ?? graphNodes.value.find(p => p.id === rootPartyId.value)
   ?? props.parties.find(p => p.id === rootPartyId.value))?.name ?? '');
@@ -1066,6 +1103,13 @@ onBeforeUnmount(() => {
             @review-retirement="requestSwitch(() => { void reviewRetirement(); })"
             @return-to-results="returnToRootList"
             @make-root="makeRoot"
+          />
+          <CoachQuestions
+            v-if="coachChoices.length"
+            :choices="coachChoices"
+            :evidence-choices="coachEvidenceChoices"
+            :active="props.active !== false"
+            @open="openCoachQuestion"
           />
           <section
             v-if="retirement"

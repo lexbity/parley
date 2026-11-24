@@ -46,21 +46,35 @@ impl Reason {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum Target {
-    Party { party_id: String },
-    Opportunity { opportunity_id: String, recipient_id: String },
-    Segment { segment_id: String },
-    Term { term: String },
+    Party {
+        party_id: String,
+    },
+    Opportunity {
+        opportunity_id: String,
+        recipient_id: String,
+    },
+    Segment {
+        segment_id: String,
+    },
+    Term {
+        term: String,
+    },
     FlaggedTemplates,
     StaleCapacity,
     OwnerIdentity,
-    FirstTouches { first_touch_count: i64 },
+    FirstTouches {
+        first_touch_count: i64,
+    },
 }
 
 impl Target {
     pub(crate) fn wire(&self) -> Value {
         match self {
             Self::Party { party_id } => json!({"party_id":party_id}),
-            Self::Opportunity { opportunity_id, recipient_id } => json!({"opportunity_id":opportunity_id,"recipient_id":recipient_id}),
+            Self::Opportunity {
+                opportunity_id,
+                recipient_id,
+            } => json!({"opportunity_id":opportunity_id,"recipient_id":recipient_id}),
             Self::Segment { segment_id } => json!({"segment_id":segment_id}),
             Self::Term { term } => json!({"term":term}),
             Self::FlaggedTemplates => json!({"status":"flagged"}),
@@ -154,45 +168,156 @@ pub(crate) async fn plan_context(
     let mut coverage = Coverage::default();
     let mut seeds = Vec::new();
     if scope["kind"] == "opportunity" {
-        let opportunity_id = scope["id"].as_str().ok_or_else(|| WorkspaceError::Invalid("Invalid Coach scope".into()))?;
-        let recipient_id = scope["recipient_id"].as_str().ok_or_else(|| WorkspaceError::Invalid("Invalid Coach scope".into()))?;
-        let latest: Option<(String, i64, i64, String)> = sqlx::query_as(
-            "SELECT id,opportunity_revision,recipient_revision,shortlist_json FROM match_run
+        let opportunity_id = scope["id"]
+            .as_str()
+            .ok_or_else(|| WorkspaceError::Invalid("Invalid Coach scope".into()))?;
+        let recipient_id = scope["recipient_id"]
+            .as_str()
+            .ok_or_else(|| WorkspaceError::Invalid("Invalid Coach scope".into()))?;
+        let latest: Option<(String, i64, i64, String, String, String)> = sqlx::query_as(
+            "SELECT id,opportunity_revision,recipient_revision,embed_model_digest,calibration_json,shortlist_json FROM match_run
              WHERE opportunity_id=? AND recipient_id=? ORDER BY created_at DESC,id DESC LIMIT 1",
         ).bind(opportunity_id).bind(recipient_id).fetch_optional(&mut *conn).await?;
+        let model: Option<String> =
+            sqlx::query_scalar("SELECT embed_model_digest FROM agent_provider WHERE singleton=1")
+                .fetch_optional(&mut *conn)
+                .await?;
+        let calibration: Vec<CurrentCalibration> = sqlx::query_as(
+            "SELECT c.asset_kind,c.threshold,c.fixture_digest,c.calibration_revision,c.scoring_config_digest
+             FROM matching_calibration c WHERE c.trusted=1 AND c.model_digest=?
+             AND c.calibration_revision=(SELECT max(c2.calibration_revision) FROM matching_calibration c2
+               WHERE c2.trusted=1 AND c2.model_digest=c.model_digest AND c2.asset_kind=c.asset_kind)
+             ORDER BY c.asset_kind",
+        ).bind(model.as_deref()).fetch_all(&mut *conn).await?;
         match latest {
             None => {
                 coverage.missing = 1;
-                seeds.push(Seed::new(Reason::AssessmentCheck, Target::Opportunity { opportunity_id: opportunity_id.to_owned(), recipient_id: recipient_id.to_owned() }, 2)?);
+                seeds.push(Seed::new(
+                    Reason::AssessmentCheck,
+                    Target::Opportunity {
+                        opportunity_id: opportunity_id.to_owned(),
+                        recipient_id: recipient_id.to_owned(),
+                    },
+                    2,
+                )?);
             }
-            Some((_id, opportunity_revision, recipient_revision, shortlist)) => {
-                let current = opportunity_revision == scope["revision"].as_i64().unwrap_or_default()
-                    && recipient_revision == scope["recipient_revision"].as_i64().unwrap_or_default();
+            Some((
+                match_id,
+                opportunity_revision,
+                recipient_revision,
+                model_digest,
+                calibration_json,
+                shortlist_json,
+            )) => {
+                let current = opportunity_revision
+                    == scope["revision"].as_i64().unwrap_or_default()
+                    && recipient_revision
+                        == scope["recipient_revision"].as_i64().unwrap_or_default();
                 if current {
-                    coverage.current = 1;
-                    let gaps = serde_json::from_str::<Value>(&shortlist).ok()
-                        .and_then(|value| value["results"].as_array().cloned())
-                        .is_some_and(|results| results.iter().all(|row| row["no_match"] == true));
-                    coverage.no_match = i64::from(gaps);
-                    if gaps {
-                        seeds.push(Seed::new(Reason::ContextReview, Target::Opportunity { opportunity_id: opportunity_id.to_owned(), recipient_id: recipient_id.to_owned() }, 2)?);
+                    let row = Assessment {
+                        segment_id: String::new(),
+                        segment_revision: 0,
+                        opportunity_id: opportunity_id.to_owned(),
+                        opportunity_revision,
+                        recipient_id: recipient_id.to_owned(),
+                        recipient_revision,
+                        match_id: Some(match_id.clone()),
+                        match_opportunity_revision: Some(opportunity_revision),
+                        match_recipient_revision: Some(recipient_revision),
+                        model_digest: Some(model_digest.clone()),
+                        calibration_json: Some(calibration_json),
+                        shortlist_json: Some(shortlist_json),
+                    };
+                    if let Some(gaps) = assessment_result(&row, model.as_deref(), &calibration) {
+                        coverage.current = 1;
+                        coverage.no_match = i64::from(!gaps.is_empty());
+                        for kind in gaps {
+                            let reason = match kind.as_str() {
+                                "proof" => Reason::MissingProof,
+                                "gift" => Reason::MissingGift,
+                                "artifact" => Reason::MissingArtifact,
+                                _ => continue,
+                            };
+                            seeds.push(Seed::new(
+                                reason,
+                                Target::Opportunity {
+                                    opportunity_id: opportunity_id.to_owned(),
+                                    recipient_id: recipient_id.to_owned(),
+                                },
+                                2,
+                            )?);
+                        }
+                    } else {
+                        coverage.stale = 1;
+                        seeds.push(Seed::new(
+                            Reason::AssessmentCheck,
+                            Target::Opportunity {
+                                opportunity_id: opportunity_id.to_owned(),
+                                recipient_id: recipient_id.to_owned(),
+                            },
+                            2,
+                        )?);
                     }
                 } else {
                     coverage.stale = 1;
-                    seeds.push(Seed::new(Reason::AssessmentCheck, Target::Opportunity { opportunity_id: opportunity_id.to_owned(), recipient_id: recipient_id.to_owned() }, 2)?);
+                    seeds.push(Seed::new(
+                        Reason::AssessmentCheck,
+                        Target::Opportunity {
+                            opportunity_id: opportunity_id.to_owned(),
+                            recipient_id: recipient_id.to_owned(),
+                        },
+                        2,
+                    )?);
                 }
             }
         }
     } else {
         // A party selection has no implicit match/assessment. Its contextual
         // question is explicitly about the selected research context.
-        seeds.push(Seed::new(Reason::ContextReview, Target::Party { party_id: scope["id"].as_str().unwrap_or_default().to_owned() }, 1)?);
+        seeds.push(Seed::new(
+            Reason::ContextReview,
+            Target::Party {
+                party_id: scope["id"].as_str().unwrap_or_default().to_owned(),
+            },
+            1,
+        )?);
     }
+    let dependency_json = if scope["kind"] == "opportunity" {
+        let opportunity_id = scope["id"].as_str().unwrap_or_default();
+        let recipient_id = scope["recipient_id"].as_str().unwrap_or_default();
+        let assessment: Option<(String,i64,i64,String)> = sqlx::query_as("SELECT id,opportunity_revision,recipient_revision,embed_model_digest FROM match_run WHERE opportunity_id=? AND recipient_id=? ORDER BY created_at DESC,id DESC LIMIT 1")
+            .bind(opportunity_id).bind(recipient_id).fetch_optional(&mut *conn).await?;
+        let mut refs = snapshot
+            .dependency_json
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if let Some((id, opportunity_revision, recipient_revision, model_digest)) = assessment {
+            refs.push(json!({"kind":"assessment","id":id,"revision":format!("{opportunity_revision}:{recipient_revision}:{model_digest}")}));
+        } else {
+            refs.push(json!({"kind":"assessment_collection","id":format!("{opportunity_id}:{recipient_id}"),"revision":"missing"}));
+        }
+        Value::Array(refs)
+    } else {
+        snapshot.dependency_json.clone()
+    };
+    let dependencies = fingerprint(&dependency_json)?;
     for seed in &mut seeds {
-        seed.key = fingerprint(&json!({"selector":scope,"reason":seed.reason,"target":seed.target}))?;
+        // A material change in the selected assessment or evidence context
+        // creates a new semantic question key; an unchanged dismissal or
+        // deferral remains suppressed for the same dependency vector.
+        seed.key = fingerprint(&json!({
+            "selector":scope,"reason":seed.reason,"target":seed.target,
+            "dependencies":dependencies
+        }))?;
     }
-    let dependencies = snapshot.dependency_digest;
-    Ok(ContextPlan { seeds, coverage, dependencies, dependency_json: snapshot.dependency_json, projection: snapshot.projection })
+    Ok(ContextPlan {
+        seeds,
+        coverage,
+        dependencies,
+        dependency_json,
+        projection: snapshot.projection,
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -269,19 +394,19 @@ pub(crate) async fn resolve_week(
 }
 
 #[derive(Serialize, sqlx::FromRow)]
-struct Assessment {
-    segment_id: String,
-    segment_revision: i64,
-    opportunity_id: String,
-    opportunity_revision: i64,
-    recipient_id: String,
-    recipient_revision: i64,
-    match_id: Option<String>,
-    match_opportunity_revision: Option<i64>,
-    match_recipient_revision: Option<i64>,
-    model_digest: Option<String>,
-    calibration_json: Option<String>,
-    shortlist_json: Option<String>,
+pub(crate) struct Assessment {
+    pub(crate) segment_id: String,
+    pub(crate) segment_revision: i64,
+    pub(crate) opportunity_id: String,
+    pub(crate) opportunity_revision: i64,
+    pub(crate) recipient_id: String,
+    pub(crate) recipient_revision: i64,
+    pub(crate) match_id: Option<String>,
+    pub(crate) match_opportunity_revision: Option<i64>,
+    pub(crate) match_recipient_revision: Option<i64>,
+    pub(crate) model_digest: Option<String>,
+    pub(crate) calibration_json: Option<String>,
+    pub(crate) shortlist_json: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -302,9 +427,9 @@ struct Calibration {
     model_digest: String,
 }
 
-type CurrentCalibration = (String, f64, String, i64, String);
+pub(crate) type CurrentCalibration = (String, f64, String, i64, String);
 
-fn assessment_result(
+pub(crate) fn assessment_result(
     row: &Assessment,
     model: Option<&str>,
     current: &[CurrentCalibration],
@@ -512,9 +637,21 @@ struct Output {
 struct Question {
     question_key: String,
     text: String,
+    #[serde(default)]
+    resource_ref: Option<String>,
 }
 
-pub(crate) fn validate_output(candidate: Value, seeds: &[Seed]) -> Option<Vec<String>> {
+#[derive(Clone, Debug)]
+pub(crate) struct ValidatedQuestion {
+    pub(crate) text: String,
+    pub(crate) resource_ref: Option<String>,
+}
+
+pub(crate) fn validate_output(
+    candidate: Value,
+    seeds: &[Seed],
+    allowed_resources: &[String],
+) -> Option<Vec<ValidatedQuestion>> {
     let output: Output = serde_json::from_value(candidate).ok()?;
     let mut questions = BTreeMap::new();
     if output.questions.len() != seeds.len() {
@@ -528,8 +665,17 @@ pub(crate) fn validate_output(candidate: Value, seeds: &[Seed]) -> Option<Vec<St
                 c.is_control() || c.is_numeric() || matches!(c, '<' | '>' | '"' | '“' | '”')
             })
             || text.contains("://")
+            || question.resource_ref.as_ref().is_some_and(|reference| {
+                !allowed_resources.iter().any(|allowed| allowed == reference)
+            })
             || questions
-                .insert(question.question_key, text.to_owned())
+                .insert(
+                    question.question_key,
+                    ValidatedQuestion {
+                        text: text.to_owned(),
+                        resource_ref: question.resource_ref,
+                    },
+                )
                 .is_some()
         {
             return None;

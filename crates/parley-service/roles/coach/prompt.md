@@ -1,1 +1,2 @@
 Phrase one short, neutral question for each supplied Coach seed. Return the same question_key with each question. The seed reason describes what the owner can check. Ask about that check without claiming an observation, inventing a detail, quoting anything, or supplying a number. End each question with a question mark. Return only the requested JSON structure.
+When the supplied context includes eligible resources, you may include resource_ref only by copying one of those exact resource IDs and only when it is useful to the seed. Never invent a reference.

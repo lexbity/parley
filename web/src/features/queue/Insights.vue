@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import {
-  ApiError, newOperationKey, parley, type CoachJob, type CoachQuestion, type CoachReason, type CoachSnapshot, type InsightsReport,
+  ApiError, newOperationKey, parley, type CoachJob, type CoachQuestion, type CoachReason, type CoachSelector, type CoachSnapshot, type InsightsReport,
 } from '../../api/client';
 import { inferenceActivity, jobIsActive } from '../../app/inference/activity';
+import CoachQuestions from '../coach/CoachQuestions.vue';
 
 defineOptions({ name: 'QueueInsightsView' });
 
@@ -11,7 +12,6 @@ const emit = defineEmits<{ navigate: [path: string] }>();
 const report = ref<InsightsReport | null>(null);
 const snapshot = ref<CoachSnapshot | null>(null);
 const job = ref<CoachJob | null>(null);
-const questions = ref<CoachQuestion[]>([]);
 const loading = ref(false);
 const starting = ref(false);
 const cancelling = ref(false);
@@ -24,11 +24,23 @@ const active = computed(() => jobIsActive(job.value));
 const pendingAdmission = ref<string | null>(null);
 let unsubscribe: (() => void) | undefined;
 let reportRequest: InstanceType<typeof globalThis.AbortController> | undefined;
-let questionsRequest: InstanceType<typeof globalThis.AbortController> | undefined;
+const weeklyChoices = computed(() => [{ selector: { kind: 'weekly', period: snapshot.value?.period ?? currentWeek() } as CoachSelector, label: 'Weekly questions' }]);
 let mounted = false;
 let epoch: string | undefined;
 let startKey: string | undefined;
 let cancelKey: { id: string; key: string } | undefined;
+
+function currentWeek(): string {
+  const date = new Date();
+  const day = (date.getUTCDay() + 6) % 7;
+  date.setUTCDate(date.getUTCDate() - day + 3);
+  const year = date.getUTCFullYear();
+  const firstThursday = new Date(Date.UTC(year, 0, 4));
+  const firstDay = (firstThursday.getUTCDay() + 6) % 7;
+  firstThursday.setUTCDate(firstThursday.getUTCDate() - firstDay + 3);
+  const week = 1 + Math.round((date.getTime() - firstThursday.getTime()) / 604800000);
+  return `${year}-W${String(week).padStart(2, '0')}`;
+}
 
 function currentSession(): boolean {
   return mounted && epoch === parley.workspaceEpoch;
@@ -81,22 +93,9 @@ async function loadReport() {
   }
 }
 
-async function loadQuestions() {
-  questionsRequest?.abort();
-  const request = new globalThis.AbortController();
-  questionsRequest = request;
-  try {
-    const next = await parley.listCoachQuestions(request.signal);
-    if (!request.signal.aborted && currentSession()) questions.value = next;
-  } catch {
-    if (!request.signal.aborted && currentSession()) readError.value = 'Could not load Coach questions. Refresh the report to retry.';
-  }
-}
-
 function refresh() {
   inferenceActivity.refresh();
   void loadReport();
-  void loadQuestions();
 }
 
 function observe() {
@@ -107,7 +106,6 @@ function observe() {
       snapshot.value = value.snapshot;
       job.value = value.job;
       pendingAdmission.value = null;
-      if (!jobIsActive(value.job)) void loadQuestions();
       if (!value.job || (value.job.id === previous?.id && value.job.state_revision === previous.state_revision)) return;
       const restoreFocus = globalThis.document.activeElement === cancelButton.value;
       const period = value.job.scope.period;
@@ -157,7 +155,6 @@ async function runCoach() {
     } else {
       snapshot.value = result.snapshot;
       status.value = 'There are no new Coach questions to generate for this week.';
-      void loadQuestions();
     }
   } catch (reason) {
     if (!currentSession() || actionEpoch !== epoch) return;
@@ -189,20 +186,6 @@ async function cancel() {
     inferenceActivity.refresh();
   } finally {
     if (actionEpoch === epoch) cancelling.value = false;
-  }
-}
-
-async function dismiss(questionId: string) {
-  error.value = '';
-  status.value = '';
-  const actionEpoch = epoch;
-  try {
-    await parley.dismissCoachQuestion(questionId);
-    if (!currentSession() || actionEpoch !== epoch) return;
-    await loadQuestions();
-    if (currentSession() && actionEpoch === epoch) status.value = 'Question dismissed.';
-  } catch {
-    if (currentSession() && actionEpoch === epoch) error.value = 'Could not record this question disposition.';
   }
 }
 
@@ -247,7 +230,6 @@ async function initialize() {
     epoch = parley.workspaceEpoch;
     observe();
     void loadReport();
-    void loadQuestions();
   } catch {
     if (mounted) readError.value = 'Could not connect to the workspace. Reload to try again.';
   }
@@ -256,11 +238,9 @@ async function initialize() {
 function workspaceChanged() {
   unsubscribe?.();
   reportRequest?.abort();
-  questionsRequest?.abort();
   report.value = null;
   snapshot.value = null;
   job.value = null;
-  questions.value = [];
   pendingAdmission.value = null;
   startKey = undefined;
   cancelKey = undefined;
@@ -280,7 +260,6 @@ onBeforeUnmount(() => {
   mounted = false;
   unsubscribe?.();
   reportRequest?.abort();
-  questionsRequest?.abort();
   globalThis.removeEventListener('parley:workspace-changed', workspaceChanged);
 });
 </script>
@@ -387,32 +366,12 @@ onBeforeUnmount(() => {
         </li>
       </ul>
     </template>
-    <h4>Open coaching questions</h4>
-    <p v-if="!questions.length">
-      No open coaching questions.
-    </p>
-    <article
-      v-for="question in questions"
-      :key="question.id"
-      class="question"
-    >
-      <p>{{ question.text }}</p>
-      <small>{{ question.kind }} · impact {{ question.impact }} · owner review required</small>
-      <div class="actions">
-        <button
-          v-if="targetPath(question)"
-          type="button"
-          @click="openTarget(question)"
-        >
-          Open related work
-        </button><button
-          type="button"
-          @click="dismiss(question.id)"
-        >
-          Dismiss question
-        </button>
-      </div>
-    </article>
+    <CoachQuestions
+      :choices="weeklyChoices"
+      :active="true"
+      :refresh-key="job?.state_revision ?? snapshot?.input_digest ?? ''"
+      @open="openTarget"
+    />
   </section>
 </template>
 

@@ -1861,6 +1861,40 @@ async fn confirm_candidate(
     }
     if let Err(error)=sqlx::query("UPDATE interviewer_candidate SET fields_json=?,missing_fields_json=?,state='saved',resource_id=?,updated_at=? WHERE id=? AND state='proposed'")
         .bind(&body).bind(serde_json::to_string(&missing).unwrap_or_default()).bind(&resource_id).bind(&now).bind(&id).execute(&mut *tx).await{return super::command_error(error.into());}
+    let coach_question: Option<String> = match sqlx::query_scalar(
+        "SELECT json_extract(j.input_json,'$.coach_question_id')
+         FROM interviewer_candidate c JOIN durable_job j ON j.id=c.job_id WHERE c.id=?",
+    )
+    .bind(&id)
+    .fetch_optional(&mut *tx)
+    .await
+    {
+        Ok(value) => value.flatten(),
+        Err(error) => return super::command_error(error.into()),
+    };
+    if let Some(question_id) = coach_question {
+        let linked = sqlx::query(
+            "UPDATE coach_question SET status='answered',disposition_json=json_set(disposition_json,'$.resource_id',?),
+             revision=revision+1,updated_at=? WHERE id=? AND status='answer_pending'
+             AND json_extract(disposition_json,'$.job_id')=(SELECT job_id FROM interviewer_candidate WHERE id=?)",
+        ).bind(&resource_id).bind(&now).bind(&question_id).bind(&id).execute(&mut *tx).await;
+        match linked {
+            Ok(result) if result.rows_affected() == 1 => {
+                if let Err(error) = append_event(
+                    &mut tx,
+                    &question_id,
+                    "coach.question_answer_confirmed",
+                    json!({"candidate_id":id,"resource_id":resource_id}),
+                )
+                .await
+                {
+                    return super::materials::workspace_error(error);
+                }
+            }
+            Ok(_) => {}
+            Err(error) => return super::command_error(error.into()),
+        }
+    }
     sqlx::query("UPDATE agent_chat SET revision=revision+1,updated_at=? WHERE id=? AND revision=?")
         .bind(&now)
         .bind(&chat_id)

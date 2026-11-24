@@ -8,10 +8,10 @@ parley-service = 70.0
 [rust.baseline]
 parley-cli = 71.98
 parley-domain = 91.19
-parley-service = 74.83
+parley-service = 72.62
 
 [web.floors]
-lines = 0.0
+lines = 70.0
 
 [web.baseline]
-lines = 74.91
+lines = 74.35

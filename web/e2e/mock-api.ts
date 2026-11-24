@@ -2473,9 +2473,12 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
           if (epoch !== admittedEpoch || job.status !== 'running') return;
           const questionId = randomHex();
           const reportId = randomHex();
+          const questionKey = createHash('sha256').update(JSON.stringify(['missing_identity', { scope: 'owner' }])).digest('hex');
           coachQuestions.set(questionId, {
             id: questionId, kind: 'missing_identity', text: 'Which professional interests do you share with the people you work with?',
-            target: { scope: 'owner' }, impact: 1, priority: 0, status: 'open',
+            question_key: questionKey, revision: 1, selector: { kind: 'weekly', period },
+            target: { scope: 'owner' }, impact: 1, priority: 0, status: 'open', action: 'research',
+            deferred_until: null, dependency_digest: digest, suggested_resource_ref: null,
           });
           coachReports.set(period, { report: { question_count: 1 }, input_digest: digest });
           job.state_revision += 1;
@@ -2488,10 +2491,81 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
         return save(202, { job_id: id, status: 'queued', period });
       }
     }
+    if (url.pathname === '/api/v1/coach/context' && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const scope = input.scope as RecordData | undefined;
+      if (!scope || (scope.kind !== 'party' && scope.kind !== 'opportunity') || typeof scope.id !== 'string' || !Number.isSafeInteger(scope.revision)
+        || Object.keys(input).some(key => !['scope', 'segment_id', 'evidence', 'resource_ids'].includes(key))) return fail(response, 422, 'SCOPE_INVALID', 'Select a current party or opportunity.');
+      if (scope.kind === 'party') {
+        const party = directory.get(scope.id);
+        if (!party) return fail(response, 404, 'TARGET_UNAVAILABLE', 'The selected party is unavailable.');
+        if (party.revision !== scope.revision) return fail(response, 409, 'STALE_INPUT', 'Refresh the selected party.');
+      } else {
+        const opportunity = opportunities.get(scope.id);
+        if (!opportunity || !Array.isArray(opportunity.participant_ids) || !opportunity.participant_ids.includes(scope.recipient_id)) return fail(response, 404, 'TARGET_UNAVAILABLE', 'The selected recipient is unavailable for this opportunity.');
+        if (opportunity.revision !== scope.revision || directory.get(String(scope.recipient_id))?.revision !== scope.recipient_revision) return fail(response, 409, 'STALE_INPUT', 'Refresh the selected opportunity.');
+      }
+      const evidence = Array.isArray(input.evidence) ? input.evidence : [];
+      const resources = Array.isArray(input.resource_ids) ? input.resource_ids : [];
+      if (evidence.length > 8 || resources.length > 8 || new Set(resources).size !== resources.length) return fail(response, 422, 'CONTEXT_BUDGET', 'Choose up to eight unique evidence and resource references.');
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key || key.length > 200) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+      const digest = createHash('sha256').update(JSON.stringify([url.pathname, input])).digest('hex');
+      const prior = receipts.get(key);
+      if (prior) return prior.digest === digest ? json(response, prior.status ?? 200, prior.result) : fail(response, 409, 'IDEMPOTENCY_MISMATCH', 'Use a fresh key for a different request.');
+      const selector = scope.kind === 'party' ? { kind: 'party', id: scope.id, revision: scope.revision }
+        : { kind: 'opportunity', id: scope.id, revision: scope.revision, recipient_id: scope.recipient_id, recipient_revision: scope.recipient_revision };
+      const result = { status: 'current', scope: selector, coverage: { current: 0, missing: 1, stale: 0, no_match: 0 }, questions: [] };
+      if (!coachOnline) return fail(response, 503, 'CAPABILITY_UNQUALIFIED', 'A qualified local model is required.');
+      const questionKey = createHash('sha256').update(JSON.stringify([selector, 'context_review'])).digest('hex');
+      const existing = [...coachQuestions.values()].find(question => question.question_key === questionKey && ['open', 'answer_pending', 'deferred'].includes(String(question.status)));
+      if (existing) return json(response, 200, { ...result, questions: [existing] });
+      if ([...coachQuestions.values()].filter(question => question.status === 'open' || question.status === 'answer_pending').length >= 5) return fail(response, 429, 'INFERENCE_BUSY', 'The Coach question limit is full.');
+      const questionId = randomHex();
+      const target = scope.kind === 'party' ? { party_id: scope.id } : { opportunity_id: scope.id, recipient_id: scope.recipient_id };
+      const question: RecordData = {
+        id: questionId, question_key: questionKey, revision: 1, kind: 'context_review',
+        target, selector, text: 'Which part of this selected context would be most useful to clarify next?',
+        priority: 0, impact: 1, status: 'open', action: 'research', deferred_until: null,
+        dependency_digest: createHash('sha256').update(JSON.stringify(input)).digest('hex'), suggested_resource_ref: null,
+      };
+      coachQuestions.set(questionId, question);
+      const queued = { job_id: randomHex(), status: 'queued' };
+      receipts.set(key, { digest, result: queued, status: 202 });
+      return json(response, 202, queued);
+    }
     if (url.pathname === '/api/v1/coach/questions' && request.method === 'GET') {
-      const items = [...coachQuestions.values()].filter((question) => question.status === 'open')
+      const scopeKind = url.searchParams.get('scope_kind');
+      const scopeId = url.searchParams.get('scope_id');
+      const scopePeriod = url.searchParams.get('scope_period');
+      const recipientId = url.searchParams.get('recipient_id');
+      const items = [...coachQuestions.values()].filter((question) => ['open', 'answer_pending', 'deferred'].includes(String(question.status))
+        && (!scopeKind || (question.selector as RecordData | undefined)?.kind === scopeKind)
+        && (!scopeId || (question.selector as RecordData | undefined)?.id === scopeId)
+        && (!scopePeriod || (question.selector as RecordData | undefined)?.period === scopePeriod)
+        && (!recipientId || (question.selector as RecordData | undefined)?.recipient_id === recipientId))
         .sort((a, b) => Number(a.priority) - Number(b.priority) || Number(b.impact) - Number(a.impact));
-      return json(response, 200, { items, open_count: items.length, max_open: 5 });
+      return json(response, 200, { items, open_count: items.filter(item => item.status === 'open' || item.status === 'answer_pending').length, max_open: 5 });
+    }
+    const questionAnswerMatch = /^\/api\/v1\/coach\/questions\/([^/]+)\/answer$/.exec(url.pathname);
+    if (questionAnswerMatch && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const id = questionAnswerMatch[1]!;
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+      const digest = createHash('sha256').update(JSON.stringify([url.pathname, input])).digest('hex');
+      const prior = receipts.get(key);
+      if (prior) return prior.digest === digest ? json(response, prior.status ?? 200, prior.result) : fail(response, 409, 'IDEMPOTENCY_MISMATCH', 'Use a fresh key.');
+      const question = coachQuestions.get(id);
+      if (!question || question.status !== 'open') return fail(response, 409, 'QUESTION_CLOSED', 'Question is absent or already closed');
+      if (input.expected_revision !== question.revision || input.question_key !== question.question_key) return fail(response, 409, 'QUESTION_STALE', 'Refresh this question before answering.');
+      if (!input.answer || typeof input.answer !== 'object' || Array.isArray(input.answer)) return fail(response, 422, 'ANSWER_SCHEMA_INVALID', 'Use the declared answer shape.');
+      question.status = 'answered'; question.revision = Number(question.revision) + 1; question.disposition = input.answer;
+      const result = { id, status: 'answered', revision: question.revision };
+      receipts.set(key, { digest, result, status: 200 });
+      return json(response, 200, result);
     }
     if (url.pathname === '/api/v1/settings' && request.method === 'GET') {
       const available = PACK_DOCUMENTS.map((pack) => ({ ...pack }));
@@ -2518,17 +2592,28 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       return json(response, 200, { revision: packSettingsRevision, active_pack_id: activePackId, active_pack_version: activePackVersion, active_document: activePackDocument, available_packs: [...PACK_DOCUMENTS.map((pack) => ({ ...pack })), ...(PACK_DOCUMENTS.some((pack) => pack.id === activePackId && pack.version === activePackVersion) ? [] : [{ id: activePackId, name: activePackId, version: activePackVersion, document: activePackDocument }])] });
     }
     const questionDismissMatch = /^\/api\/v1\/coach\/questions\/([^/]+)\/dismiss$/.exec(url.pathname);
-    if (questionDismissMatch && request.method === 'POST') {
-      const id = questionDismissMatch[1]!;
+    const questionDeferMatch = /^\/api\/v1\/coach\/questions\/([^/]+)\/defer$/.exec(url.pathname);
+    if ((questionDismissMatch || questionDeferMatch) && request.method === 'POST') {
+      const id = (questionDismissMatch ?? questionDeferMatch)![1]!;
       const key = request.headers['idempotency-key'];
       if (typeof key !== 'string' || !key) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
-      const digest = createHash('sha256').update(url.pathname).digest('hex');
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const digest = createHash('sha256').update(JSON.stringify([url.pathname, input])).digest('hex');
       const prior = receipts.get(key);
       if (prior) return prior.digest === digest ? json(response, 200, prior.result) : fail(response, 409, 'IDEMPOTENCY_MISMATCH', 'Use a fresh key.');
       const question = coachQuestions.get(id);
       if (question?.status !== 'open') return fail(response, 409, 'QUESTION_CLOSED', 'Question is absent or already closed');
-      question.status = 'dismissed';
-      const result = { id, status: 'dismissed' };
+      if (input.expected_revision !== question.revision || input.question_key !== question.question_key) return fail(response, 409, 'QUESTION_STALE', 'Refresh this question before choosing an action.');
+      if (questionDeferMatch) {
+        const days = Number(input.defer_days ?? 7);
+        if (!Number.isInteger(days) || days < 1 || days > 30) return fail(response, 422, 'DEFER_RANGE_INVALID', 'Choose a defer interval from one to thirty days.');
+        question.status = 'deferred'; question.revision = Number(question.revision) + 1;
+        question.deferred_until = new Date(testClock + days * 86_400_000).toISOString();
+      } else {
+        question.status = 'dismissed'; question.revision = Number(question.revision) + 1;
+      }
+      const result = { id, status: question.status, revision: question.revision, deferred_until: question.deferred_until ?? null };
       receipts.set(key, { digest, result });
       return json(response, 200, result);
     }

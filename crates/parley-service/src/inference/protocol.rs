@@ -357,3 +357,108 @@ pub async fn write_host_frame(
     bytes.push(b'\n');
     writer.write_all(&bytes).await.map_err(|_| ProtocolError)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::BufReader;
+
+    fn hello() -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "v": 1,
+            "kind": "hello",
+            "seq": 1,
+            "body": {
+                "build": "a".repeat(64),
+                "schema_digest": "b".repeat(64),
+                "capabilities": ["structured_role"],
+                "namespaces": {
+                    "user": "user:[1]", "net": "net:[2]", "pid": "pid:[3]",
+                    "ipc": "ipc:[4]", "uts": "uts:[5]"
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn ar01_json_reader_rejects_duplicate_invalid_and_oversized_values() {
+        for invalid in [
+            &b"{\"field\":1,\"field\":2}"[..],
+            b"\xef\xbb\xbf{}",
+            b"{} trailing",
+            b"\xff",
+            b"9007199254740992",
+            b"1e400",
+        ] {
+            assert!(parse_json(invalid).is_err());
+        }
+        assert_eq!(
+            parse_json(b"-9007199254740991").unwrap(),
+            -9_007_199_254_740_991i64
+        );
+        let nested = format!("{}0{}", "[".repeat(31), "]".repeat(31));
+        assert!(parse_json(nested.as_bytes()).is_ok());
+        let too_deep = format!("{}0{}", "[".repeat(32), "]".repeat(32));
+        assert!(parse_json(too_deep.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn ar01_frame_decoder_enforces_schema_and_line_bounds() {
+        let frame = hello();
+        assert!(matches!(
+            decode_worker_frame(&frame),
+            Ok(WorkerFrame::Hello { seq: 1, .. })
+        ));
+        for invalid in [
+            serde_json::to_vec(&serde_json::json!({"v":2,"kind":"hello","seq":1,"body":{}}))
+                .unwrap(),
+            serde_json::to_vec(
+                &serde_json::json!({"v":1,"kind":"hello","seq":1,"body":{},"extra":true}),
+            )
+            .unwrap(),
+            [frame.clone(), b"\n".to_vec()].concat(),
+            [frame.clone(), b"\r".to_vec()].concat(),
+            vec![b'x'; MAX_FRAME],
+        ] {
+            assert!(decode_worker_frame(&invalid).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn ar01_frame_stream_handles_eof_and_truncation() {
+        let mut reader = BufReader::new(&b""[..]);
+        assert!(read_worker_frame(&mut reader).await.unwrap().is_none());
+        let mut reader = BufReader::new(&b"{\"v\":1}"[..]);
+        assert!(read_worker_frame(&mut reader).await.is_err());
+        let mut bytes = hello();
+        bytes.push(b'\n');
+        bytes.extend_from_slice(&hello());
+        let mut reader = BufReader::new(bytes.as_slice());
+        assert!(matches!(
+            read_worker_frame(&mut reader).await.unwrap(),
+            Some(WorkerFrame::Hello { .. })
+        ));
+        assert!(read_worker_frame(&mut reader).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn ar01_host_frames_are_schema_checked_and_lf_terminated() {
+        let mut output = Vec::new();
+        write_host_frame(
+            &mut output,
+            HostFrame::HelloAck {
+                v: 1,
+                seq: 1,
+                body: Ack {
+                    capabilities: [Capability::StructuredRole],
+                    max_frame_bytes: MAX_FRAME,
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.last(), Some(&b'\n'));
+        assert!(VALIDATOR.is_valid(&parse_json(&output[..output.len() - 1]).unwrap()));
+    }
+}

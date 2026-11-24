@@ -2574,9 +2574,31 @@ paths:
     get:
       operationId: listCoachQuestions
       security: [{sessionCookie: []}]
-      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}]
+      parameters:
+      - {in: query, name: scope_kind, required: false, schema: {type: string, enum: [weekly, party, opportunity]}}
+      - {in: query, name: scope_id, required: false, schema: {type: string}}
+      - {in: query, name: scope_period, required: false, schema: {$ref: '#/components/schemas/CoachPeriod'}}
+      - {in: query, name: recipient_id, required: false, schema: {type: string}}
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
       responses:
         '200': {description: Open Coach questions in impact order., content: {application/json: {schema: {$ref: '#/components/schemas/CoachQuestionList'}}}}
+  /coach/context:
+    post:
+      operationId: generateContextCoachQuestions
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CoachContextRequest'}}}
+      responses:
+        '200': {description: Current deterministic contextual assessment with no new wording required., content: {application/json: {schema: {$ref: '#/components/schemas/CoachContextSnapshot'}}}}
+        '202': {description: Context-bound Coach question job queued., content: {application/json: {schema: {$ref: '#/components/schemas/QueuedJob'}}}}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
   /coach/questions/{id}/answer:
     post:
       operationId: answerCoachQuestion
@@ -2586,15 +2608,29 @@ paths:
         required: true
         content: {application/json: {schema: {$ref: '#/components/schemas/CoachAnswerInput'}}}
       responses:
-        '202': {description: Owner answer routed into the relevant Interviewer context., content: {application/json: {schema: {$ref: '#/components/schemas/QueuedJob'}}}}
+        '202': {description: Owner answer routed into an owner Interviewer context; when omitted, an asset-typed chat is created atomically., content: {application/json: {schema: {$ref: '#/components/schemas/QueuedJob'}}}}
         '409': {$ref: '#/components/responses/Error'}
   /coach/questions/{id}/dismiss:
     post:
       operationId: dismissCoachQuestion
       security: [{sessionCookie: []}]
       parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CoachQuestionRevision'}}}
       responses:
-        '200': {description: Question disposition recorded., content: {application/json: {schema: {type: object, required: [id, status], properties: {id: {type: string}, status: {const: dismissed}}, additionalProperties: false}}}}
+        '200': {description: Question disposition recorded., content: {application/json: {schema: {type: object, required: [id, status, revision], properties: {id: {type: string}, status: {const: dismissed}, revision: {type: integer, minimum: 1}}, additionalProperties: false}}}}
+  /coach/questions/{id}/defer:
+    post:
+      operationId: deferCoachQuestion
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CoachQuestionDefer'}}}
+      responses:
+        '200': {description: Question deferred for a bounded owner-timezone interval., content: {application/json: {schema: {$ref: '#/components/schemas/CoachQuestionDisposition'}}}}
+        '409': {$ref: '#/components/responses/Error'}
   /sends:
     get:
       operationId: listSends
@@ -6029,15 +6065,91 @@ components:
       additionalProperties: false
     CoachQuestion:
       type: object
-      required: [id, kind, target, text, priority]
+      required: [id, question_key, revision, kind, target, selector, text, priority, impact, status, action]
       properties:
         id: {type: string}
+        question_key: {type: string, pattern: '^[0-9a-f]{64}$'}
+        revision: {type: integer, minimum: 1}
         kind: {type: string}
         target: {type: object, additionalProperties: true}
+        selector: {$ref: '#/components/schemas/CoachSelector'}
         text: {type: string}
         priority: {type: integer}
         impact: {type: integer, minimum: 0}
-        status: {type: string, enum: [open, answered, dismissed, expired]}
+        status: {type: string, enum: [open, answer_pending, answered, dismissed, deferred, superseded]}
+        action: {type: string, enum: [research, interviewer]}
+        deferred_until: {type: [string, 'null'], format: date-time}
+        dependency_digest: {type: [string, 'null']}
+        suggested_resource_ref: {type: [string, 'null']}
+      additionalProperties: false
+    CoachSelector:
+      oneOf:
+      - type: object
+        required: [kind, period]
+        properties: {kind: {const: weekly}, period: {$ref: '#/components/schemas/CoachPeriod'}}
+        additionalProperties: false
+      - type: object
+        required: [kind, id, revision]
+        properties: {kind: {const: party}, id: {type: string}, revision: {type: integer, minimum: 1}}
+        additionalProperties: false
+      - type: object
+        required: [kind, id, revision, recipient_id, recipient_revision]
+        properties: {kind: {const: opportunity}, id: {type: string}, revision: {type: integer, minimum: 1}, recipient_id: {type: string}, recipient_revision: {type: integer, minimum: 1}}
+        additionalProperties: false
+    CoachContextRequest:
+      type: object
+      required: [scope]
+      properties:
+        scope:
+          oneOf:
+          - type: object
+            required: [kind, id, revision]
+            properties: {kind: {const: party}, id: {type: string}, revision: {type: integer, minimum: 1}}
+            additionalProperties: false
+          - type: object
+            required: [kind, id, revision, recipient_id, recipient_revision]
+            properties: {kind: {const: opportunity}, id: {type: string}, revision: {type: integer, minimum: 1}, recipient_id: {type: string}, recipient_revision: {type: integer, minimum: 1}}
+            additionalProperties: false
+        segment_id: {type: string}
+        evidence:
+          type: array
+          maxItems: 8
+          uniqueItems: true
+          items: {type: object, required: [claim_id, revision], properties: {claim_id: {type: string}, revision: {type: integer, minimum: 1}}, additionalProperties: false}
+        resource_ids: {type: array, maxItems: 8, uniqueItems: true, items: {type: string}}
+      additionalProperties: false
+    CoachContextSnapshot:
+      type: object
+      required: [status, scope, coverage, questions]
+      properties:
+        status: {const: current}
+        scope: {$ref: '#/components/schemas/CoachSelector'}
+        coverage: {type: object, required: [current, missing, stale, no_match], properties: {current: {type: integer}, missing: {type: integer}, stale: {type: integer}, no_match: {type: integer}}, additionalProperties: false}
+        questions: {type: array, items: {$ref: '#/components/schemas/CoachQuestion'}}
+      additionalProperties: false
+    CoachQuestionRevision:
+      type: object
+      required: [expected_revision, question_key]
+      properties:
+        expected_revision: {type: integer, minimum: 1}
+        question_key: {type: string, pattern: '^[0-9a-f]{64}$'}
+      additionalProperties: false
+    CoachQuestionDefer:
+      type: object
+      required: [expected_revision, question_key]
+      properties:
+        expected_revision: {type: integer, minimum: 1}
+        question_key: {type: string, pattern: '^[0-9a-f]{64}$'}
+        defer_days: {type: integer, minimum: 1, maximum: 30}
+      additionalProperties: false
+    CoachQuestionDisposition:
+      type: object
+      required: [id, status, revision, deferred_until]
+      properties:
+        id: {type: string}
+        status: {const: deferred}
+        revision: {type: integer, minimum: 1}
+        deferred_until: {type: string, format: date-time}
       additionalProperties: false
     CoachQuestionList:
       type: object
@@ -6049,10 +6161,15 @@ components:
       additionalProperties: false
     CoachAnswerInput:
       type: object
-      required: [answer, interviewer_chat_id]
+      required: [answer, expected_revision, question_key]
       properties:
-        answer: {type: string, minLength: 1, maxLength: 12000}
+        answer:
+          oneOf:
+          - {type: string, minLength: 1, maxLength: 12000}
+          - {type: object, minProperties: 1, maxProperties: 32, additionalProperties: true}
         interviewer_chat_id: {type: string}
+        expected_revision: {type: integer, minimum: 1}
+        question_key: {type: string, pattern: '^[0-9a-f]{64}$'}
       additionalProperties: false
     CoachPeriod:
       type: string

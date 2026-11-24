@@ -602,3 +602,191 @@ fn validate_completion(request: &Execute, result: &Completion) -> Result<(), Run
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+    use sha2::Sha256;
+
+    fn profile() -> super::protocol::Profile {
+        super::protocol::Profile {
+            revision: 2,
+            provider_version: "0.18.0".into(),
+            model_tag: "local:approved".into(),
+            model_digest: "a".repeat(64),
+            tokenizer_digest: "b".repeat(64),
+            context_tokens: 8192,
+            template_tokens: 128,
+            max_output_tokens: 512,
+        }
+    }
+
+    fn observed() -> super::protocol::ObservedModel {
+        super::protocol::ObservedModel {
+            provider_version: "0.18.0".into(),
+            model_tag: "local:approved".into(),
+            model_digest: "a".repeat(64),
+        }
+    }
+
+    fn usage() -> super::protocol::Usage {
+        super::protocol::Usage {
+            input_tokens: 1024,
+            output_tokens: 128,
+        }
+    }
+
+    fn coach_request() -> Execute {
+        Execute::StructuredRole {
+            profile: profile(),
+            deadline_ms: 30_000,
+            role: super::protocol::Role::Coach,
+            prompt_version: "coach-v2".into(),
+            schema_digest: hex::encode(Sha256::digest(crate::inference::coach_schema())),
+            system: "Use only the supplied seeds.".into(),
+            input: serde_json::json!({"seeds": []}),
+        }
+    }
+
+    fn candidate() -> Value {
+        serde_json::json!({"questions":[{
+            "question_key":"c".repeat(64),
+            "text":"Which measure should be reviewed?"
+        }]})
+    }
+
+    #[test]
+    fn ar01_completion_is_profile_and_role_schema_bound() {
+        let request = coach_request();
+        let result = Completion::StructuredRole {
+            observed: observed(),
+            usage: usage(),
+            candidate: candidate(),
+        };
+        assert!(request.matches(&result));
+        assert!(validate_completion(&request, &result).is_ok());
+
+        let wrong_model = Completion::StructuredRole {
+            observed: super::protocol::ObservedModel {
+                model_tag: "other".into(),
+                ..observed()
+            },
+            usage: usage(),
+            candidate: candidate(),
+        };
+        assert!(matches!(
+            validate_completion(&request, &wrong_model),
+            Err(RunError::Worker(Failure::ProfileChanged))
+        ));
+        let zero_usage = Completion::StructuredRole {
+            observed: observed(),
+            usage: super::protocol::Usage {
+                input_tokens: 0,
+                output_tokens: 1,
+            },
+            candidate: candidate(),
+        };
+        assert!(matches!(
+            validate_completion(&request, &zero_usage),
+            Err(RunError::Worker(Failure::ResultInvalid))
+        ));
+        let invalid_candidate = Completion::StructuredRole {
+            observed: observed(),
+            usage: usage(),
+            candidate: serde_json::json!({"questions":[{"question_key":"bad","text":"question"}]}),
+        };
+        assert!(matches!(
+            validate_completion(&request, &invalid_candidate),
+            Err(RunError::Worker(Failure::ResultInvalid))
+        ));
+        let bad_digest = match request.clone() {
+            Execute::StructuredRole {
+                profile,
+                deadline_ms,
+                role,
+                prompt_version,
+                system,
+                input,
+                ..
+            } => Execute::StructuredRole {
+                profile,
+                deadline_ms,
+                role,
+                prompt_version,
+                schema_digest: "0".repeat(64),
+                system,
+                input,
+            },
+            Execute::Probe { .. } => unreachable!(),
+        };
+        assert!(matches!(
+            validate_completion(&bad_digest, &result),
+            Err(RunError::ProtocolMismatch)
+        ));
+        assert!(!request.matches(&Completion::Probe {
+            observed: observed(),
+            usage: usage()
+        }));
+    }
+
+    #[test]
+    fn ar01_sandbox_namespaces_and_closed_diagnostics_are_checked() {
+        let host = Namespaces {
+            user: "user:[1]".into(),
+            net: "net:[2]".into(),
+            pid: "pid:[3]".into(),
+            ipc: "ipc:[4]".into(),
+            uts: "uts:[5]".into(),
+        };
+        let child = Namespaces {
+            user: "user:[11]".into(),
+            net: "net:[12]".into(),
+            pid: "pid:[13]".into(),
+            ipc: "ipc:[14]".into(),
+            uts: "uts:[15]".into(),
+        };
+        assert!(namespace_separation(&host, &child));
+        let same = Namespaces {
+            net: host.net.clone(),
+            ..child
+        };
+        assert!(!namespace_separation(&host, &same));
+        for (error, code) in [
+            (RunError::Install, "RUNNER_INSTALL_INVALID"),
+            (RunError::ProtocolMismatch, "PROTOCOL_MISMATCH"),
+            (RunError::Isolation, "ISOLATION_UNAVAILABLE"),
+            (RunError::Protocol, "WORKER_PROTOCOL"),
+            (RunError::Provider, "PROVIDER_FAILED"),
+            (RunError::Cancelled, "CANCELLED"),
+            (RunError::Timeout, "INFERENCE_TIMEOUT"),
+        ] {
+            assert_eq!(error.code(), code);
+        }
+    }
+
+    #[test]
+    fn ar01_installation_path_helpers_reject_symlinks_and_unsafe_members() {
+        assert!(hexadecimal(&"a".repeat(64), 64));
+        assert!(!hexadecimal(&"A".repeat(64), 64));
+        assert!(safe_member(Path::new("licenses/index.json")));
+        assert!(!safe_member(Path::new("../worker.mjs")));
+        assert!(!safe_member(Path::new("/worker.mjs")));
+        let root = std::env::temp_dir().join(format!("parley-supervisor-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        let file = root.join("tokenizer.json");
+        fs::write(&file, b"tokenizer").unwrap();
+        let uid = effective_uid().unwrap();
+        assert_eq!(bounded_read(&file, 32, uid).unwrap(), b"tokenizer");
+        assert!(bounded_read(&file, 4, uid).is_err());
+        let link = root.join("tokenizer-link.json");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        assert!(bounded_read(&link, 32, uid).is_err());
+        assert!(secure_ancestry(&root, uid, true).is_ok());
+        assert!(list_members(&root, &root, uid, &mut BTreeSet::new()).is_err());
+        fs::remove_file(&link).unwrap();
+        assert!(list_members(&root, &root, uid, &mut BTreeSet::new()).is_ok());
+        fs::remove_dir_all(root).unwrap();
+    }
+}

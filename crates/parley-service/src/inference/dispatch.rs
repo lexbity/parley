@@ -113,3 +113,39 @@ pub(crate) fn process_nonce() -> &'static str {
     static NONCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     NONCE.get_or_init(|| crate::random_hex(32))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn head(ready_at: String) -> Head {
+        Head {
+            id: "job".into(),
+            ready_at,
+        }
+    }
+
+    #[test]
+    fn ar01_dispatch_rotates_classes_and_promotes_starved_work() {
+        let ready = crate::now_utc();
+        let role = head(ready.clone());
+        let run = head(ready.clone());
+        let probe = head(ready);
+        let refs = [Some(&role), Some(&run), Some(&probe)];
+        let mut next = 0;
+        let selected = (0..6)
+            .map(|_| select_class(refs, &mut next).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(selected, [0, 1, 0, 1, 0, 2]);
+
+        let role = head(crate::now_utc_offset(-60));
+        let run = head(crate::now_utc_offset(-50));
+        let probe = head(crate::now_utc_offset(-55));
+        assert_eq!(
+            select_class([Some(&role), Some(&run), Some(&probe)], &mut next),
+            Some(0)
+        );
+        assert_eq!(select_class([None, Some(&run), None], &mut next), Some(1));
+        assert_eq!(select_class([None, None, None], &mut next), None);
+    }
+}

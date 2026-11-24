@@ -35,10 +35,13 @@ export type DailyQueueItem = {
 export type DailyQueueSnapshot = { as_of: string; pack_id: string; pack_version: string; daily_cap: number; actionable_count: number; deferred_count: number; items: DailyQueueItem[] };
 export type InsightsReport = components['schemas']['InsightsReport'];
 export type CoachQuestion = components['schemas']['CoachQuestion'];
+export type CoachSelector = components['schemas']['CoachSelector'];
+export type CoachContextRequest = components['schemas']['CoachContextRequest'];
 export type CoachSnapshot = components['schemas']['CoachSnapshot'];
 export type CoachJob = components['schemas']['CoachJob'];
 export type CoachReason = components['schemas']['CoachReason'];
 export type WeeklyCoachStart = { kind: 'queued'; jobId: string } | { kind: 'snapshot'; snapshot: CoachSnapshot };
+export type ContextCoachStart = { kind: 'queued'; jobId: string } | { kind: 'current'; snapshot: components['schemas']['CoachContextSnapshot'] };
 export type PackSettings = { revision: number; active_pack_id: string; active_pack_version: string; active_document: string; available_packs: Array<{ id: string; name: string; version: string; document: string }> };
 export type PackValidation = { valid: boolean; pack_id: string | null; version: string | null; normalized_document: string | null; errors: Array<{ line: number | null; field: string | null; message: string }> };
 export type AdminBackup = { id: string; created_at: string; schema_version: number; workspace_epoch: string; size_bytes: number; integrity: 'verified' | 'unknown' };
@@ -540,14 +543,33 @@ function decodeCoachQuestions(value: unknown): CoachQuestion[] {
   return list.items.map((value) => {
     const item = object(value);
     const target = object(item?.target);
-    if (!item || !target) throw new Error('Invalid response: Coach question is malformed');
+    const selector = object(item?.selector);
+    if (!item || !target || !selector) throw new Error('Invalid response: Coach question is malformed');
+    const kind = selector.kind;
+    let decodedSelector: CoachSelector;
+    if (kind === 'weekly') decodedSelector = { kind, period: decodeCoachPeriod(selector.period) };
+    else if (kind === 'party' && Number.isSafeInteger(selector.revision)) decodedSelector = { kind, id: requiredString(selector.id, 'question.selector.id'), revision: Number(selector.revision) };
+    else if (kind === 'opportunity' && Number.isSafeInteger(selector.revision) && Number.isSafeInteger(selector.recipient_revision)) decodedSelector = { kind, id: requiredString(selector.id, 'question.selector.id'), revision: Number(selector.revision), recipient_id: requiredString(selector.recipient_id, 'question.selector.recipient_id'), recipient_revision: Number(selector.recipient_revision) };
+    else throw new Error('Invalid response: Coach question selector is malformed');
+    const status = item.status;
+    if (!['open','answer_pending','answered','dismissed','deferred','superseded'].includes(String(status))) throw new Error('Invalid response: Coach question status is malformed');
+    const action = item.action;
+    if (action !== 'research' && action !== 'interviewer') throw new Error('Invalid response: Coach question action is malformed');
     return {
       id: requiredString(item.id, 'question.id'),
+      question_key: requiredString(item.question_key, 'question.question_key'),
+      revision: nonnegativeInteger(item.revision, 'question.revision'),
       kind: requiredString(item.kind, 'question.kind'),
       text: requiredString(item.text, 'question.text'),
       impact: nonnegativeInteger(item.impact, 'question impact'),
       priority: nonnegativeInteger(item.priority, 'question priority'),
       target,
+      selector: decodedSelector,
+      status: status as CoachQuestion['status'],
+      action,
+      deferred_until: typeof item.deferred_until === 'string' ? item.deferred_until : null,
+      dependency_digest: typeof item.dependency_digest === 'string' ? item.dependency_digest : null,
+      suggested_resource_ref: typeof item.suggested_resource_ref === 'string' ? item.suggested_resource_ref : null,
     };
   });
 }
@@ -1479,6 +1501,15 @@ export class ParleyClient {
     return { kind: 'snapshot', snapshot: decodeCoachSnapshot(result) };
   }
 
+  async startContextCoach(input: CoachContextRequest, key = newOperationKey()): Promise<ContextCoachStart> {
+    const result = object(await this.mutate('/coach/context', 'POST', input, { 'Idempotency-Key': key }));
+    if (result?.status === 'queued') return { kind: 'queued', jobId: requiredString(result.job_id, 'coach.job_id') };
+    if (result?.status !== 'current' || !Array.isArray(result.questions) || !object(result.coverage) || !object(result.scope)) {
+      throw new Error('Invalid response: contextual Coach result is malformed');
+    }
+    return { kind: 'current', snapshot: result as unknown as components['schemas']['CoachContextSnapshot'] };
+  }
+
   async getWeeklyCoach(signal?: AbortSignal): Promise<CoachSnapshot> {
     return decodeCoachSnapshot(await this.request('/coach/weekly', { signal }));
   }
@@ -1489,8 +1520,10 @@ export class ParleyClient {
     return job;
   }
 
-  async listCoachQuestions(signal?: AbortSignal): Promise<CoachQuestion[]> {
-    return decodeCoachQuestions(await this.request('/coach/questions', { signal }));
+  async listCoachQuestions(filter: { scope_kind?: CoachSelector['kind']; scope_id?: string; scope_period?: string; recipient_id?: string } = {}, signal?: AbortSignal): Promise<CoachQuestion[]> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filter)) if (value) params.set(key, value);
+    return decodeCoachQuestions(await this.request(`/coach/questions${params.size ? `?${params.toString()}` : ''}`, { signal }));
   }
 
   async getPackSettings(): Promise<PackSettings> {
@@ -1537,8 +1570,16 @@ export class ParleyClient {
     return this.getPackSettings();
   }
 
-  async dismissCoachQuestion(id: string, key = newOperationKey()): Promise<void> {
-    await this.mutate(`/coach/questions/${encodeURIComponent(id)}/dismiss`, 'POST', {}, { 'Idempotency-Key': key });
+  async answerCoachQuestion(id: string, input: components['schemas']['CoachAnswerInput'], key = newOperationKey()): Promise<Record<string, unknown>> {
+    return object(await this.mutate(`/coach/questions/${encodeURIComponent(id)}/answer`, 'POST', input, { 'Idempotency-Key': key })) ?? {};
+  }
+
+  async dismissCoachQuestion(question: Pick<CoachQuestion, 'id' | 'question_key' | 'revision'>, key = newOperationKey()): Promise<void> {
+    await this.mutate(`/coach/questions/${encodeURIComponent(question.id)}/dismiss`, 'POST', { expected_revision: question.revision, question_key: question.question_key }, { 'Idempotency-Key': key });
+  }
+
+  async deferCoachQuestion(question: Pick<CoachQuestion, 'id' | 'question_key' | 'revision'>, defer_days = 7, key = newOperationKey()): Promise<void> {
+    await this.mutate(`/coach/questions/${encodeURIComponent(question.id)}/defer`, 'POST', { expected_revision: question.revision, question_key: question.question_key, defer_days }, { 'Idempotency-Key': key });
   }
 
   async createBoardList(input: components['schemas']['CreateBoardList'], key = newOperationKey()): Promise<components['schemas']['CreatedBoardList']> {

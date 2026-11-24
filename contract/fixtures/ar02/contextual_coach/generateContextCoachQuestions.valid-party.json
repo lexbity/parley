@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/CoachContextRequest","body":{"scope":{"kind":"party","id":"party_42","revision":7},"evidence":[{"claim_id":"claim_3","revision":2}],"resource_ids":[]}}

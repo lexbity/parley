@@ -210,7 +210,10 @@ onBeforeUnmount(() => {
       >
         <div class="inbox-row-head">
           <strong>{{ row.title ?? row.command_id }}</strong>
-          <span class="inbox-run" v-if="row.run_id">delegated run</span>
+          <span
+            v-if="row.run_id"
+            class="inbox-run"
+          >delegated run</span>
           <span class="inbox-expires">expires {{ row.expires_at }}</span>
         </div>
         <dl
@@ -252,10 +255,16 @@ onBeforeUnmount(() => {
           v-if="expanded === row.id"
           class="inbox-detail"
         >
-          <p v-if="!detail">Loading detail…</p>
+          <p v-if="!detail">
+            Loading detail…
+          </p>
           <template v-else>
-            <p v-if="detail.args"><strong>Arguments</strong><code>{{ JSON.stringify(detail.args) }}</code></p>
-            <p v-if="detail.preview"><strong>Preview</strong><code>{{ JSON.stringify(detail.preview) }}</code></p>
+            <p v-if="detail.args">
+              <strong>Arguments</strong><code>{{ JSON.stringify(detail.args) }}</code>
+            </p>
+            <p v-if="detail.preview">
+              <strong>Preview</strong><code>{{ JSON.stringify(detail.preview) }}</code>
+            </p>
           </template>
         </div>
       </li>

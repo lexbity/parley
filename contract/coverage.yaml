@@ -2099,3 +2099,60 @@ slices:
       owner_role: owner
       package_target: rust
       evidence_path: evidence/ar01.md
+  ar02:
+    - requirement: FR-2
+      operationId: generateContextCoachQuestions
+      test_id: ar02_context_distinguishes_no_match_from_missing_and_stale
+      fixture_id: contextual_coach
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar02.md
+    - requirement: FR-3
+      operationId: listCoachQuestions
+      test_id: ar02_concurrent_question_dispositions_keep_one_open_key
+      fixture_id: contextual_coach
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar02.md
+    - requirement: FR-3
+      operationId: answerCoachQuestion
+      test_id: ar02_disposition_links_current_context
+      fixture_id: contextual_coach
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar02.md
+    - requirement: FR-3
+      operationId: answerCoachQuestion
+      test_id: ar02_answer_creates_owner_interviewer_and_waits_for_review
+      fixture_id: contextual_coach
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar02.md
+    - requirement: FR-3
+      operationId: dismissCoachQuestion
+      test_id: ar02_concurrent_question_dispositions_keep_one_open_key
+      fixture_id: contextual_coach
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar02.md
+    - requirement: FR-3
+      operationId: deferCoachQuestion
+      test_id: ar02_concurrent_question_dispositions_keep_one_open_key
+      fixture_id: contextual_coach
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar02.md
+    - requirement: FR-1
+      operationId: generateContextCoachQuestions
+      test_id: ar02_party_questions_open_relevant_work
+      fixture_id: contextual_coach
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar02.md
+    - requirement: FR-1
+      operationId: generateContextCoachQuestions
+      test_id: ar02_switching_scope_keeps_the_admitted_context
+      fixture_id: contextual_coach
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar02.md

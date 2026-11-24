@@ -217,3 +217,61 @@ async fn finish(
     tx.commit().await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::Connection;
+
+    #[tokio::test]
+    async fn ar01_probe_status_and_enqueue_are_durable_and_coalesced() {
+        let mut db = sqlx::SqliteConnection::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../../migrations")
+            .run(&mut db)
+            .await
+            .unwrap();
+        let epoch: String =
+            sqlx::query_scalar("SELECT epoch FROM workspace_meta WHERE singleton=1")
+                .fetch_one(&mut db)
+                .await
+                .unwrap();
+        assert_eq!(
+            status(&mut db, 1, &epoch).await.unwrap().status,
+            "unqualified"
+        );
+        assert!(enqueue(&mut db, 1, &epoch).await.unwrap());
+        assert!(enqueue(&mut db, 1, &epoch).await.unwrap());
+        let probe_id: String = sqlx::query_scalar("SELECT id FROM inference_probe")
+            .fetch_one(&mut db)
+            .await
+            .unwrap();
+        let queued = status(&mut db, 1, &epoch).await.unwrap();
+        assert_eq!(queued.status, "queued");
+        assert_eq!(queued.probe_id.as_deref(), Some(probe_id.as_str()));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM inference_probe")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            1
+        );
+
+        sqlx::query("UPDATE inference_probe SET status='failed',diagnostic='MODEL_UNAVAILABLE',finished_at=?,updated_at=? WHERE id=?")
+            .bind(now_utc()).bind(now_utc()).bind(&probe_id).execute(&mut db).await.unwrap();
+        let failed = status(&mut db, 1, &epoch).await.unwrap();
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.diagnostic.as_deref(), Some("MODEL_UNAVAILABLE"));
+
+        sqlx::query("INSERT INTO inference_profile(revision,runner_kind,protocol_major,context_tokens,output_tokens,locale,created_at) VALUES(2,'pi',1,8192,512,'en-CA',?)")
+            .bind(now_utc()).execute(&mut db).await.unwrap();
+        assert!(enqueue(&mut db, 2, &epoch).await.unwrap());
+        sqlx::query("UPDATE inference_probe SET status='succeeded',diagnostic=NULL,finished_at=?,updated_at=? WHERE profile_revision=2")
+            .bind(now_utc()).bind(now_utc()).execute(&mut db).await.unwrap();
+        assert_eq!(
+            status(&mut db, 2, &epoch).await.unwrap().status,
+            "probe_succeeded"
+        );
+    }
+}

@@ -13,7 +13,8 @@
         "required": ["question_key", "text"],
         "properties": {
           "question_key": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-          "text": { "type": "string", "minLength": 4, "maxLength": 1200 }
+          "text": { "type": "string", "minLength": 4, "maxLength": 1200 },
+          "resource_ref": { "type": "string", "minLength": 1, "maxLength": 200 }
         }
       }
     }

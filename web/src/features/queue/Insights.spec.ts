@@ -61,7 +61,7 @@ describe('Insights S10 and AR01', () => {
       ...report, rates: [{ metric: 'reply_rate', k: 4, n: 8, interval_95: { lower_95: 0.2, upper_95: 0.8 } }],
     });
     vi.spyOn(parley, 'listCoachQuestions').mockResolvedValue([
-      { id: 'q1', kind: 'proof', text: 'What changed?', target: { opportunity_id: 'o1' }, impact: 2, priority: 0 },
+      { id: 'q1', question_key: 'a'.repeat(64), revision: 1, kind: 'missing_proof', text: 'What changed?', target: { opportunity_id: 'o1' }, selector: { kind: 'weekly', period: '2026-W47' }, impact: 2, priority: 0, status: 'open', action: 'interviewer', deferred_until: null, dependency_digest: null, suggested_resource_ref: null },
     ]);
     const canOpen = vi.spyOn(parley, 'getOpportunity').mockResolvedValue({} as Awaited<ReturnType<typeof parley.getOpportunity>>);
     const dismiss = vi.spyOn(parley, 'dismissCoachQuestion').mockResolvedValue();
@@ -74,12 +74,13 @@ describe('Insights S10 and AR01', () => {
     expect(wrapper.emitted('navigate')?.[0]).toEqual(['/queue/o1']);
     await wrapper.findAll('button').find((button) => button.text() === 'Dismiss question')!.trigger('click');
     await flushPromises();
-    expect(dismiss).toHaveBeenCalledWith('q1');
+    expect(dismiss).toHaveBeenCalledWith(expect.objectContaining({ id: 'q1', revision: 1 }));
     expect(wrapper.text()).toContain('Question dismissed');
     wrapper.unmount();
   });
 
   it('recovers a current job and cancels through the authenticated API', async () => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
     vi.spyOn(parley, 'getWeeklyCoach').mockResolvedValue({ ...snapshot, active_job_id: job.id, latest_job_id: job.id });
     const getJob = vi.spyOn(parley, 'getCoachJob').mockResolvedValue(job);
     const cancel = vi.spyOn(parley, 'cancelJob').mockImplementation(async () => {

@@ -275,6 +275,52 @@ mod tests {
         }
     }
 
+    #[test]
+    fn ar01_profile_validation_rejects_unsafe_models_and_unbounded_budgets() {
+        let base = || ProfileConfiguration {
+            endpoint: "http://127.0.0.1:11434".into(),
+            model: "local:approved".into(),
+            num_ctx: 8192,
+            num_predict: 1024,
+            locale: "en-CA".into(),
+            pairing: None,
+        };
+        assert!(validate(&base()).is_ok());
+        for model in [
+            "remote:cloud",
+            "local/../secret",
+            "../model",
+            "local:cloud",
+            "/absolute",
+        ] {
+            let mut invalid = base();
+            invalid.model = model.into();
+            assert!(validate(&invalid).is_err(), "{model}");
+        }
+        for (context, output) in [(1023, 64), (131_073, 64), (8192, 8192), (8192, 63)] {
+            let mut invalid = base();
+            invalid.num_ctx = context;
+            invalid.num_predict = output;
+            assert!(validate(&invalid).is_err());
+        }
+        for locale in ["", "en--CA", "en-CA/../../tmp", "é"] {
+            let mut invalid = base();
+            invalid.locale = locale.into();
+            assert!(validate(&invalid).is_err(), "{locale}");
+        }
+        let mut invalid_pairing = base();
+        invalid_pairing.pairing = Some(ObservedPairing {
+            provider_version: "0.18.0".into(),
+            model_digest: "A".repeat(64),
+            tokenizer_digest: "b".repeat(64),
+            template_tokens: 128,
+        });
+        assert!(matches!(
+            validate(&invalid_pairing),
+            Err(ProfileError::Invalid("model_digest"))
+        ));
+    }
+
     #[tokio::test]
     async fn ar01_profile_settings_cas_does_not_activate_an_observed_pairing() {
         let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();

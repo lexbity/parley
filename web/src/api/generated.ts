@@ -1419,6 +1419,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/coach/context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["generateContextCoachQuestions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/coach/questions/{id}/answer": {
         parameters: {
             query?: never;
@@ -1445,6 +1461,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["dismissCoachQuestion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/coach/questions/{id}/defer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["deferCoachQuestion"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3411,15 +3443,91 @@ export interface components {
         };
         CoachQuestion: {
             id: string;
+            question_key: string;
+            revision: number;
             kind: string;
             target: {
                 [key: string]: unknown;
             };
+            selector: components["schemas"]["CoachSelector"];
             text: string;
             priority: number;
-            impact?: number;
+            impact: number;
             /** @enum {string} */
-            status?: "open" | "answered" | "dismissed" | "expired";
+            status: "open" | "answer_pending" | "answered" | "dismissed" | "deferred" | "superseded";
+            /** @enum {string} */
+            action: "research" | "interviewer";
+            /** Format: date-time */
+            deferred_until?: string | null;
+            dependency_digest?: string | null;
+            suggested_resource_ref?: string | null;
+        };
+        CoachSelector: {
+            /** @constant */
+            kind: "weekly";
+            period: components["schemas"]["CoachPeriod"];
+        } | {
+            /** @constant */
+            kind: "party";
+            id: string;
+            revision: number;
+        } | {
+            /** @constant */
+            kind: "opportunity";
+            id: string;
+            revision: number;
+            recipient_id: string;
+            recipient_revision: number;
+        };
+        CoachContextRequest: {
+            scope: {
+                /** @constant */
+                kind: "party";
+                id: string;
+                revision: number;
+            } | {
+                /** @constant */
+                kind: "opportunity";
+                id: string;
+                revision: number;
+                recipient_id: string;
+                recipient_revision: number;
+            };
+            segment_id?: string;
+            evidence?: {
+                claim_id: string;
+                revision: number;
+            }[];
+            resource_ids?: string[];
+        };
+        CoachContextSnapshot: {
+            /** @constant */
+            status: "current";
+            scope: components["schemas"]["CoachSelector"];
+            coverage: {
+                current: number;
+                missing: number;
+                stale: number;
+                no_match: number;
+            };
+            questions: components["schemas"]["CoachQuestion"][];
+        };
+        CoachQuestionRevision: {
+            expected_revision: number;
+            question_key: string;
+        };
+        CoachQuestionDefer: {
+            expected_revision: number;
+            question_key: string;
+            defer_days?: number;
+        };
+        CoachQuestionDisposition: {
+            id: string;
+            /** @constant */
+            status: "deferred";
+            revision: number;
+            /** Format: date-time */
+            deferred_until: string;
         };
         CoachQuestionList: {
             items: components["schemas"]["CoachQuestion"][];
@@ -3428,8 +3536,12 @@ export interface components {
             max_open?: 5;
         };
         CoachAnswerInput: {
-            answer: string;
-            interviewer_chat_id: string;
+            answer: string | {
+                [key: string]: unknown;
+            };
+            interviewer_chat_id?: string;
+            expected_revision: number;
+            question_key: string;
         };
         CoachPeriod: string;
         CoachSnapshot: {
@@ -7227,7 +7339,12 @@ export interface operations {
     };
     listCoachQuestions: {
         parameters: {
-            query?: never;
+            query?: {
+                scope_kind?: "weekly" | "party" | "opportunity";
+                scope_id?: string;
+                scope_period?: components["schemas"]["CoachPeriod"];
+                recipient_id?: string;
+            };
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
                 "X-Parley-Epoch": components["parameters"]["Epoch"];
@@ -7246,6 +7363,48 @@ export interface operations {
                     "application/json": components["schemas"]["CoachQuestionList"];
                 };
             };
+        };
+    };
+    generateContextCoachQuestions: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoachContextRequest"];
+            };
+        };
+        responses: {
+            /** @description Current deterministic contextual assessment with no new wording required. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoachContextSnapshot"];
+                };
+            };
+            /** @description Context-bound Coach question job queued. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueuedJob"];
+                };
+            };
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+            503: components["responses"]["Error"];
         };
     };
     answerCoachQuestion: {
@@ -7267,7 +7426,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Owner answer routed into the relevant Interviewer context. */
+            /** @description Owner answer routed into an owner Interviewer context; when omitted */
             202: {
                 headers: {
                     [name: string]: unknown;
@@ -7292,7 +7451,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoachQuestionRevision"];
+            };
+        };
         responses: {
             /** @description Question disposition recorded. */
             200: {
@@ -7304,9 +7467,41 @@ export interface operations {
                         id: string;
                         /** @constant */
                         status: "dismissed";
+                        revision: number;
                     };
                 };
             };
+        };
+    };
+    deferCoachQuestion: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoachQuestionDefer"];
+            };
+        };
+        responses: {
+            /** @description Question deferred for a bounded owner-timezone interval. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoachQuestionDisposition"];
+                };
+            };
+            409: components["responses"]["Error"];
         };
     };
     listSends: {
