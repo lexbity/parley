@@ -2,6 +2,10 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parley, type GraphEntity, type OpportunitySummary } from '../../api/client';
 import { CommandApiError, commands, type RunListItem, type RunStatus, type TranscriptPage } from '../../api/commands';
+
+type SignalHandler = (signal: 'approvals_changed' | 'run_changed' | 'epoch_changed') => void;
+let signalHandler: SignalHandler | undefined;
+let notifyStops = 0;
 import DelegatedRuns from './DelegatedRuns.vue';
 
 afterEach(() => {
@@ -41,6 +45,12 @@ function setup(options: {
   else getRunTranscript.mockResolvedValue(options.transcript ?? { items: [], next_cursor: null });
   vi.spyOn(commands, 'startRun').mockResolvedValue(started);
   vi.spyOn(commands, 'cancelRun').mockResolvedValue({ run_id: 'run-1', state: 'cancelled' });
+  signalHandler = undefined;
+  notifyStops = 0;
+  vi.spyOn(commands, 'notify').mockImplementation(async (handlers) => {
+    signalHandler = handlers.onSignal;
+    return () => { notifyStops += 1; };
+  });
   return { epoch, listRuns, getRunTranscript, wrapper: mount(DelegatedRuns) };
 }
 
@@ -193,5 +203,62 @@ describe('DelegatedRuns U02 owner consent', () => {
     await flushPromises();
     expect(failed.wrapper.text()).toContain('Read failed');
     failed.wrapper.unmount();
+  });
+
+  it('suspends polling while the tab is hidden and resumes on visibility', async () => {
+    vi.useFakeTimers();
+    const { wrapper, listRuns } = setup({ runs: [queued] });
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushPromises();
+    expect(listRuns.mock.calls.length).toBeGreaterThan(1);
+
+    const original = Object.getOwnPropertyDescriptor(globalThis.document, 'visibilityState');
+    Object.defineProperty(globalThis.document, 'visibilityState', { configurable: true, value: 'hidden' });
+    try {
+      const atHidden = listRuns.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(listRuns.mock.calls.length).toBe(atHidden);
+      Object.defineProperty(globalThis.document, 'visibilityState', { configurable: true, value: 'visible' });
+      globalThis.document.dispatchEvent(new Event('visibilitychange'));
+      await flushPromises();
+      expect(listRuns.mock.calls.length).toBeGreaterThan(atHidden);
+    } finally {
+      if (original) Object.defineProperty(globalThis.document, 'visibilityState', original);
+    }
+    wrapper.unmount();
+  });
+
+  it('refreshes on a run_changed notification without waiting for the timer', async () => {
+    vi.useFakeTimers();
+    const { wrapper, listRuns } = setup({ runs: [] });
+    await flushPromises();
+    const before = listRuns.mock.calls.length;
+    expect(signalHandler).toBeDefined();
+    signalHandler!('run_changed');
+    await flushPromises();
+    expect(listRuns.mock.calls.length).toBe(before + 1);
+    // Other notification channels do not trigger a run read here.
+    signalHandler!('approvals_changed');
+    await flushPromises();
+    expect(listRuns.mock.calls.length).toBe(before + 1);
+    wrapper.unmount();
+    expect(notifyStops).toBe(1);
+  });
+
+  it('reads status only for nonterminal runs after the initial load', async () => {
+    vi.useFakeTimers();
+    const terminal: RunListItem = { run_id: 'run-2', state: 'succeeded', revision: 3, deadline_at: queued.deadline_at };
+    const getRun = vi.spyOn(commands, 'getRun');
+    setup({ runs: [queued, terminal] });
+    await flushPromises();
+    expect(getRun).toHaveBeenCalledWith('run-1');
+    expect(getRun).toHaveBeenCalledWith('run-2');
+    getRun.mockClear();
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushPromises();
+    expect(getRun).toHaveBeenCalledWith('run-1');
+    expect(getRun).not.toHaveBeenCalledWith('run-2');
   });
 });

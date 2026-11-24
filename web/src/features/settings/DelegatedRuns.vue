@@ -82,6 +82,12 @@ const staleReason = ref('');
 const observedEpoch = ref('');
 let pollTimer: ReturnType<typeof globalThis.setInterval> | undefined;
 let pollInFlight = false;
+let stopNotify: (() => void) | undefined;
+let disposed = false;
+
+function isVisible(): boolean {
+  return globalThis.document?.visibilityState !== 'hidden';
+}
 
 type TargetOption = { key: string; label: string; kind: RunTargetKind; id: string };
 
@@ -115,6 +121,32 @@ function sessionInvalid(reason: unknown): boolean {
 function stopPolling() {
   if (pollTimer) globalThis.clearInterval(pollTimer);
   pollTimer = undefined;
+}
+
+/** Run the fallback timer only while there is live work and the tab is visible. */
+function startPolling() {
+  stopPolling();
+  if (stale.value || !isVisible()) return;
+  if (!runs.value.some(row => ACTIVE_STATES.includes(row.state))) return;
+  pollTimer = globalThis.setInterval(() => { void poll(); }, POLL_MS);
+}
+
+function onVisibility() {
+  if (!isVisible()) { stopPolling(); return; }
+  void poll();
+  startPolling();
+}
+
+async function startNotifications() {
+  try {
+    const stop = await commands.notify({
+      onSignal: (signal) => { if (signal === 'run_changed') void poll(); },
+    });
+    if (disposed) stop();
+    else stopNotify = stop;
+  } catch {
+    // The authoritative poll above remains the fallback when SSE is unavailable.
+  }
 }
 
 function markStale(reason: string) {
@@ -167,8 +199,12 @@ async function load() {
   else targetError.value = message(partyResult.reason, 'Could not load parties.');
   if (opportunityResult.status === 'fulfilled') opportunities.value = opportunityResult.value;
   else targetError.value = targetError.value || message(opportunityResult.reason, 'Could not load opportunities.');
-  if (runResult.status === 'fulfilled') applyRuns(runResult.value.items);
-  else handleRunError(runResult.reason);
+  if (runResult.status === 'fulfilled') {
+    applyRuns(runResult.value.items);
+    // One authoritative read when the view opens; later polls only refresh
+    // nonterminal runs. Parallel so a large recent-run list does not serialize.
+    await refreshStatuses(runResult.value.items.map(row => row.run_id));
+  } else handleRunError(runResult.reason);
   loadingTargets.value = false;
   runsLoading.value = false;
   if (stale.value) stopPolling();
@@ -180,6 +216,19 @@ async function refreshStatus(runId: string) {
   } catch (reason) {
     handleRunError(reason);
   }
+}
+
+/** Read many run statuses concurrently; one slow run cannot stall the rest. */
+async function refreshStatuses(ids: string[]) {
+  if (!ids.length) return;
+  const results = await Promise.allSettled(ids.map(id => commands.getRun(id)));
+  const next = { ...runStatuses.value };
+  for (let index = 0; index < ids.length; index += 1) {
+    const result = results[index];
+    if (result?.status === 'fulfilled') next[ids[index]!] = result.value;
+    else if (result?.status === 'rejected') handleRunError(result.reason);
+  }
+  runStatuses.value = next;
 }
 
 async function loadTranscriptPage(index: number) {
@@ -201,24 +250,25 @@ async function loadTranscriptPage(index: number) {
 }
 
 async function poll() {
-  if (stale.value || pollInFlight || !checkEpoch()) return;
-  if (!runs.value.length && !selectedRunId.value) return;
+  if (stale.value || pollInFlight || !checkEpoch() || !isVisible()) return;
   pollInFlight = true;
   try {
     const list = await commands.listRuns({ limit: 20 });
     applyRuns(list.items);
-    for (const row of runs.value) await refreshStatus(row.run_id);
+    // Terminal runs cannot change again; their status was read on load (or
+    // when opened), so only nonterminal runs and the open transcript are read.
+    const ids = runs.value
+      .filter(row => ACTIVE_STATES.includes(row.state) || row.run_id === selectedRunId.value)
+      .map(row => row.run_id);
+    await refreshStatuses(ids);
     if (selectedRunId.value) await loadTranscriptPage(pageIndex.value);
     checkEpoch();
   } catch (reason) {
     handleRunError(reason);
   } finally {
     pollInFlight = false;
+    startPolling();
   }
-}
-
-function startPolling() {
-  if (!pollTimer && !stale.value) pollTimer = globalThis.setInterval(() => { void poll(); }, POLL_MS);
 }
 
 async function openRun(runId: string) {
@@ -351,11 +401,18 @@ function progress(runId: string): number {
 onMounted(() => {
   globalThis.addEventListener('parley:workspace-changed', onWorkspaceChanged);
   globalThis.addEventListener('parley:workspace-quarantined', onWorkspaceChanged);
+  globalThis.document?.addEventListener('visibilitychange', onVisibility);
+  globalThis.addEventListener('focus', onVisibility);
   void load().then(startPolling);
+  void startNotifications();
 });
 onBeforeUnmount(() => {
+  disposed = true;
   globalThis.removeEventListener('parley:workspace-changed', onWorkspaceChanged);
   globalThis.removeEventListener('parley:workspace-quarantined', onWorkspaceChanged);
+  globalThis.document?.removeEventListener('visibilitychange', onVisibility);
+  globalThis.removeEventListener('focus', onVisibility);
+  stopNotify?.();
   stopPolling();
 });
 </script>
