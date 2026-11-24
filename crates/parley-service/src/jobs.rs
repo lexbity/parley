@@ -453,6 +453,7 @@ pub(crate) async fn process(state: &super::AppState, job_id: &str) {
         };
         let call = tokio::time::timeout(Duration::from_secs(120), async {
                 let mut combined = ExtractorOutput { candidates: Vec::new(), injection_suspected: suspicious, dropped_items: 0 };
+            let source_index = parley_domain::evidence::SourceIndex::new(&raw_text);
             let mut seen = std::collections::BTreeSet::new();
             let mut tokens_in = 0;
             let mut tokens_out = 0;
@@ -475,7 +476,7 @@ pub(crate) async fn process(state: &super::AppState, job_id: &str) {
                         combined.dropped_items += 1;
                         continue;
                     }
-                    if parley_domain::evidence::verify_quote(&raw_text, &candidate.quote, None).is_err() {
+                    if source_index.verify(&candidate.quote, None).is_err() {
                         combined.dropped_items += 1;
                         continue;
                     }
@@ -784,14 +785,12 @@ async fn save_proposals(
     let batch_id = new_id(job_id);
     let now = now_utc();
     sqlx::query("INSERT INTO proposal_batch(id,source_variant_id,job_id,source_occurrence_id,status,created_at) VALUES(?,?,?,?,'pending',?)").bind(&batch_id).bind(&variant).bind(job_id).bind(&occurrence).bind(&now).execute(&mut *tx).await?;
+    let source = source_text(&mut tx, &variant).await?;
+    let source_index = parley_domain::evidence::SourceIndex::new(&source);
     let mut dropped = output.dropped_items as usize;
     let mut staged_count = 0usize;
     for candidate in output.candidates {
-        let matched = match parley_domain::evidence::verify_quote(
-            &source_text(&mut tx, &variant).await?,
-            &candidate.quote,
-            None,
-        ) {
+        let matched = match source_index.verify(&candidate.quote, None) {
             Ok(value) => value,
             Err(_) => {
                 dropped += 1;
