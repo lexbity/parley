@@ -606,3 +606,71 @@ describe('ParleyClient P01 party notes and dossier commands', () => {
     ]);
   });
 });
+
+describe('ParleyClient AR04 role job projections', () => {
+  it('decodes typed review references for interviewer and briefer jobs', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(sessionResponse())
+      .mockResolvedValueOnce(response({
+        id: 'job-1', role: 'interviewer', status: 'succeeded', state_revision: 2,
+        attempt_count: 1, current_attempt: 1, max_attempts: 3,
+        progress_current: 0, progress_total: 0, injection_suspected: false,
+        last_error_code: null, last_error: null, source_occurrence_id: null,
+        scope_kind: 'owner', scope_id: 'chat-1', proposal_batch_id: null,
+        proposals: [], result: { candidate_id: 'cand-1' },
+        review_ref: { kind: 'interviewer_candidate', id: 'cand-1' },
+      }))
+      .mockResolvedValueOnce(response({
+        id: 'job-2', role: 'briefer', status: 'running', state_revision: 1,
+        attempt_count: 1, current_attempt: 1, max_attempts: 3,
+        progress_current: 0, progress_total: 0, injection_suspected: false,
+        last_error_code: null, last_error: null, source_occurrence_id: null,
+        scope_kind: 'party', scope_id: 'p-1', proposal_batch_id: null,
+        proposals: [], result: null,
+        review_ref: { kind: 'brief_scope', id: 'p-1' },
+      }));
+    const client = new ParleyClient();
+    await client.connect();
+    const interviewer = await client.getRoleJob('job-1');
+    expect(interviewer.review_ref).toEqual({ kind: 'interviewer_candidate', id: 'cand-1' });
+    const briefer = await client.getRoleJob('job-2');
+    expect(briefer.review_ref).toEqual({ kind: 'brief_scope', id: 'p-1' });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects an unknown review reference kind', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(sessionResponse())
+      .mockResolvedValueOnce(response({
+        id: 'job-1', role: 'interviewer', status: 'succeeded', state_revision: 1,
+        attempt_count: 1, current_attempt: 1, max_attempts: 3,
+        progress_current: 0, progress_total: 0, injection_suspected: false,
+        last_error_code: null, last_error: null, source_occurrence_id: null,
+        scope_kind: 'owner', scope_id: 'chat-1', proposal_batch_id: null,
+        proposals: [], result: null, review_ref: { kind: 'something_else', id: 'x' },
+      }));
+    const client = new ParleyClient();
+    await client.connect();
+    await expect(client.getRoleJob('job-1')).rejects.toThrow('review reference is malformed');
+  });
+});
+
+describe('ParleyClient AR04 role-job null review reference', () => {
+  it('decodes a job without a review reference', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(sessionResponse())
+      .mockResolvedValueOnce(response({
+        id: 'job-3', role: 'briefer', status: 'queued', state_revision: 1,
+        attempt_count: 0, current_attempt: 0, max_attempts: 3,
+        progress_current: 0, progress_total: 0, injection_suspected: false,
+        last_error_code: null, last_error: null, source_occurrence_id: null,
+        scope_kind: 'party', scope_id: 'p-2', proposal_batch_id: null,
+        proposals: [], result: null, review_ref: null,
+      }));
+    const client = new ParleyClient();
+    await client.connect();
+    const job = await client.getRoleJob('job-3');
+    expect(job.review_ref).toBeNull();
+    expect(job.scope_kind).toBe('party');
+  });
+});
