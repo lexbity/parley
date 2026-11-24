@@ -17,7 +17,7 @@ describe('Daily S10 deterministic queue view', () => {
   it('renders server order and separate blockers without starting a Coach job', async () => {
     vi.spyOn(parley, 'connect').mockResolvedValue();
     vi.spyOn(parley, 'getDailyQueue').mockResolvedValue(daily);
-    const runCoach = vi.spyOn(parley, 'runCoach');
+    const runCoach = vi.spyOn(parley, 'startWeeklyCoach');
     const wrapper = mount(Daily);
     await flushPromises();
     expect(wrapper.text()).toContain('12');

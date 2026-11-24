@@ -187,19 +187,31 @@ async fn insights(State(state): State<AppState>, headers: HeaderMap) -> Response
     // append-only revision; the original send snapshot remains untouched.
     let mut tx = match state.workspace.pool().begin().await {
         Ok(tx) => tx,
-        Err(e) => return super::command_error(e.into()),
+        Err(_) => {
+            return super::error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "READ_FAILED",
+                "Insights snapshot could not be completed",
+            );
+        }
     };
     let rows: Vec<(String, String, String)> = match sqlx::query_as(
-        "SELECT s.id, coalesce(r.class,'no_outcome'), s.segment_ids_snapshot_json\
-         FROM send s LEFT JOIN outcome_revision r ON r.send_id=s.id\
-         AND r.revision=(SELECT max(r2.revision) FROM outcome_revision r2 WHERE r2.send_id=s.id)\
+        "SELECT s.id, coalesce(r.class,'no_outcome'), s.segment_ids_snapshot_json
+         FROM send s LEFT JOIN outcome_revision r ON r.send_id=s.id
+         AND r.revision=(SELECT max(r2.revision) FROM outcome_revision r2 WHERE r2.send_id=s.id)
          WHERE s.touch_no=1 ORDER BY s.id",
     )
     .fetch_all(&mut *tx)
     .await
     {
         Ok(v) => v,
-        Err(e) => return super::command_error(e.into()),
+        Err(_) => {
+            return super::error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "READ_FAILED",
+                "Insights history could not be read",
+            );
+        }
     };
     let outcomes: Vec<(String,)> = match sqlx::query_as(
         "SELECT r.class FROM outcome_revision r WHERE r.revision=(SELECT max(r2.revision) FROM outcome_revision r2 WHERE r2.send_id=r.send_id) ORDER BY r.class",
@@ -208,7 +220,7 @@ async fn insights(State(state): State<AppState>, headers: HeaderMap) -> Response
     .await
     {
         Ok(v) => v,
-        Err(e) => return super::command_error(e.into()),
+        Err(_) => return super::error(StatusCode::SERVICE_UNAVAILABLE, "READ_FAILED", "Insights history could not be read"),
     };
     let mut counts = std::collections::BTreeMap::<String, u64>::new();
     for (class,) in outcomes {
@@ -247,6 +259,7 @@ async fn insights(State(state): State<AppState>, headers: HeaderMap) -> Response
         })
         .collect();
     let body = json!({
+        "as_of": now_utc(),
         "event_cursor": sqlx::query_scalar::<_,i64>("SELECT coalesce(max(cursor),0) FROM event").fetch_one(&mut *tx).await.unwrap_or(0).to_string(),
         "effective_outcomes":counts.into_iter().map(|(class,count)|json!({"class":class,"count":count})).collect::<Vec<_>>(),
         "rates":[
@@ -549,7 +562,7 @@ async fn answer_question(
         if let Err(e) = tx.commit().await {
             return super::command_error(e.into());
         };
-        crate::jobs::wake(&state.jobs, result["job_id"].as_str().unwrap());
+        state.jobs.notify_one();
         let mut response = (StatusCode::ACCEPTED, Json(result)).into_response();
         super::private_headers(&mut response, state.workspace.epoch());
         return response;
@@ -679,242 +692,252 @@ async fn dismiss_question(
     r
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct CoachPeriod {
-    period: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    period: Option<String>,
 }
+
 async fn get_coach_report(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(r) = authenticate(&headers, &state).await {
         return r.into_response();
     }
-    let row:Option<(String,String,String)>=match sqlx::query_as("SELECT report_json,period,input_digest FROM coach_report ORDER BY created_at DESC,id DESC LIMIT 1").fetch_optional(state.workspace.pool()).await{Ok(v)=>v,Err(e)=>return super::command_error(e.into())};
-    let body = if let Some((report, period, input_digest)) = row {
-        json!({"report":serde_json::from_str::<serde_json::Value>(&report).unwrap_or_default(),"period":period,"input_digest":input_digest})
-    } else {
-        json!({"report":null,"period":null,"input_digest":null})
+    let mut tx = match state.workspace.pool().begin().await {
+        Ok(tx) => tx,
+        Err(error) => return super::command_error(error.into()),
     };
-    let mut r = Json(body).into_response();
-    super::private_headers(&mut r, state.workspace.epoch());
-    r
+    let result = async {
+        let week = coach_week(&mut tx, None, chrono::Utc::now()).await?;
+        let plan = coach_plan(&mut tx, &week).await?;
+        coach_snapshot(&mut tx, state.workspace.epoch(), &week, &plan).await
+    }
+    .await;
+    match result {
+        Ok(body) => coach_response(StatusCode::OK, body, state.workspace.epoch()),
+        Err(response) => response,
+    }
 }
+
+#[allow(clippy::result_large_err)] // Keeps response construction at the HTTP boundary.
+async fn coach_week(
+    conn: &mut sqlx::SqliteConnection,
+    period: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<super::application::coach::Week, Response> {
+    use super::application::coach::{PeriodError, resolve_week};
+    resolve_week(conn, period, now)
+        .await
+        .map_err(|error| match error {
+            PeriodError::Invalid => super::error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "PERIOD_INVALID",
+                "Choose an available ISO week in the owner timezone",
+            ),
+            PeriodError::Database(error) => super::command_error(error.into()),
+        })
+}
+
+#[allow(clippy::result_large_err)] // Keeps response construction at the HTTP boundary.
+async fn coach_plan(
+    conn: &mut sqlx::SqliteConnection,
+    week: &super::application::coach::Week,
+) -> Result<super::application::coach::Plan, Response> {
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        super::application::coach::plan(conn, week),
+    )
+    .await
+    {
+        Err(_) => Err(coach_context_budget()),
+        Ok(Err(super::WorkspaceError::Invalid(code))) if code == "CONTEXT_BUDGET" => {
+            Err(coach_context_budget())
+        }
+        Ok(Err(error)) => Err(super::command_error(error)),
+        Ok(Ok(plan)) => Ok(plan),
+    }
+}
+
+fn coach_context_budget() -> Response {
+    super::error(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "CONTEXT_BUDGET",
+        "Choose a narrower period for the Coach assessment",
+    )
+}
+
+#[allow(clippy::result_large_err)] // Keeps response construction at the HTTP boundary.
+async fn coach_snapshot(
+    conn: &mut sqlx::SqliteConnection,
+    epoch: &str,
+    week: &super::application::coach::Week,
+    plan: &super::application::coach::Plan,
+) -> Result<Value, Response> {
+    let report: Option<(String, String)> = sqlx::query_as(
+        "SELECT report_json,input_digest FROM coach_report WHERE period=?
+         ORDER BY created_at DESC,id DESC LIMIT 1",
+    )
+    .bind(&week.period)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(|error| super::command_error(error.into()))?;
+    let jobs: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id,status FROM durable_job WHERE epoch=? AND role='coach' AND scope_id=?
+         ORDER BY (status IN ('queued','running')) DESC,created_at DESC,id DESC LIMIT 1",
+    )
+    .bind(epoch)
+    .bind(&week.period)
+    .fetch_all(conn)
+    .await
+    .map_err(|error| super::command_error(error.into()))?;
+    let latest = jobs.first();
+    let report_body = report
+        .as_ref()
+        .and_then(|(body, _)| serde_json::from_str::<Value>(body).ok());
+    Ok(json!({
+        "report": report_body, "period": week.period, "as_of": week.as_of,
+        "coverage": plan.coverage, "input_digest": report.map(|(_, digest)| digest),
+        "active_job_id": latest.filter(|(_, status)| matches!(status.as_str(), "queued" | "running")).map(|(id, _)| id),
+        "latest_job_id": latest.map(|(id, _)| id),
+        "observations":plan.seeds.iter().take(5).map(|seed| json!({"reason":seed.reason.kind(),"target":seed.target.wire(),"impact":seed.impact})).collect::<Vec<_>>()
+    }))
+}
+
+fn coach_response(status: StatusCode, value: Value, epoch: &str) -> Response {
+    let mut response = (status, Json(value)).into_response();
+    super::private_headers(&mut response, epoch);
+    response
+}
+
 async fn generate_coach_report(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<CoachPeriod>,
 ) -> Response {
-    if let Err(r) = authenticate(&headers, &state).await {
+    use super::application::coach::{SCHEMA, fingerprint};
+    if let Err(r) = super::authenticate_owner(&headers, &state).await {
         return r.into_response();
     }
-    if request.period.trim().is_empty() || request.period.len() > 20 {
-        return super::error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "PERIOD_INVALID",
-            "A bounded weekly period is required",
-        );
-    }
-    let key = match headers
+    let Some(key) = headers
         .get("idempotency-key")
         .and_then(|v| v.to_str().ok())
-        .filter(|v| !v.is_empty() && v.len() <= 200)
-    {
-        Some(v) => v.to_owned(),
-        None => {
-            return super::error(
-                StatusCode::BAD_REQUEST,
-                "IDEMPOTENCY_KEY_REQUIRED",
-                "Idempotency-Key is required",
-            );
-        }
-    };
-    let canonical = digest(format!("coach-weekly\\0{}", request.period).as_bytes());
-    let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
-        Ok(v) => v,
-        Err(e) => return super::command_error(e.into()),
-    };
-    if let Some(r) =
-        super::assistant::receipt_response(&mut tx, state.workspace.epoch(), &key, &canonical).await
-    {
-        return r;
-    }
-    let cursor: i64 = match sqlx::query_scalar("SELECT coalesce(max(cursor),0) FROM event")
-        .fetch_one(&mut *tx)
-        .await
-    {
-        Ok(v) => v,
-        Err(e) => return super::command_error(e.into()),
-    };
-    let open: i64 =
-        match sqlx::query_scalar("SELECT count(*) FROM coach_question WHERE status='open'")
-            .fetch_one(&mut *tx)
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => return super::command_error(e.into()),
-        };
-    if open >= 5 {
+        .filter(|v| !v.trim().is_empty() && v.len() <= 200)
+    else {
         return super::error(
-            StatusCode::CONFLICT,
-            "COACH_QUESTION_CAP",
-            "Resolve an open Coach question before generating a report",
+            StatusCode::BAD_REQUEST,
+            "IDEMPOTENCY_KEY_REQUIRED",
+            "Idempotency-Key is required",
         );
-    }
-    let segments: Vec<(String, String)> =
-        match sqlx::query_as("SELECT id,name FROM segment ORDER BY id")
-            .fetch_all(&mut *tx)
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => return super::command_error(e.into()),
+    };
+    let canonical =
+        match fingerprint(&json!({"operation":"generateWeeklyCoachReport","body":request})) {
+            Ok(canonical) => canonical,
+            Err(error) => return super::command_error(error),
         };
-    let match_rows:Vec<(String,String,Option<String>)>=match sqlx::query_as("SELECT sp.segment_id,op.opportunity_id,m.shortlist_json FROM segment_party sp JOIN opportunity_party op ON op.party_id=sp.party_id JOIN opportunity o ON o.id=op.opportunity_id AND o.state='open' JOIN entity e ON e.id=op.party_id LEFT JOIN match_run m ON m.id=(SELECT m2.id FROM match_run m2 WHERE m2.opportunity_id=o.id AND m2.recipient_id=e.id AND m2.opportunity_revision=o.revision AND m2.recipient_revision=e.revision ORDER BY m2.created_at DESC,m2.id DESC LIMIT 1) ORDER BY sp.segment_id,op.opportunity_id").fetch_all(&mut *tx).await{Ok(v)=>v,Err(e)=>return super::command_error(e.into())};
-    let mut coverage: std::collections::HashMap<(String, String), (i64, i64)> =
-        std::collections::HashMap::new();
-    for (segment, _, shortlist) in match_rows {
-        let parsed: serde_json::Value = shortlist
-            .as_deref()
-            .and_then(|v| serde_json::from_str(v).ok())
-            .unwrap_or_default();
-        for kind in ["proof", "gift", "artifact"] {
-            let matched = parsed
-                .get("results")
-                .and_then(|v| v.as_array())
-                .is_some_and(|items| {
-                    items
-                        .iter()
-                        .any(|i| i["kind"] == kind && i["no_match"] == false)
+    let epoch = state.workspace.epoch();
+    let pool = state.workspace.pool();
+    let now = chrono::Utc::now();
+    let work = async {
+        let mut read = pool.begin().await.map_err(|e| super::command_error(e.into()))?;
+        if let Some(receipt) = super::assistant::receipt_response(&mut read, epoch, key, &canonical).await {
+            return Ok(receipt);
+        }
+        let week = coach_week(&mut read, request.period.as_deref(), now).await?;
+        let plan = coach_plan(&mut read, &week).await?;
+        read.commit().await.map_err(|e| super::command_error(e.into()))?;
+
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| super::command_error(e.into()))?;
+        if let Some(receipt) = super::assistant::receipt_response(&mut tx, epoch, key, &canonical).await {
+            return Ok(receipt);
+        }
+        if coach_plan(&mut tx, &week).await?.dependencies != plan.dependencies {
+            return Err(super::error(StatusCode::CONFLICT, "STALE_INPUT", "Refresh the weekly assessment and try again"));
+        }
+        let cursor: i64 = sqlx::query_scalar("SELECT coalesce(max(cursor),0) FROM event")
+            .fetch_one(&mut *tx).await.map_err(|e| super::command_error(e.into()))?;
+        let active: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM durable_job WHERE epoch=? AND role='coach' AND scope_id=?
+             AND dependency_digest=? AND status IN ('queued','running') ORDER BY created_at,id LIMIT 1",
+        ).bind(epoch).bind(&week.period).bind(&plan.dependencies).fetch_optional(&mut *tx)
+            .await.map_err(|e| super::command_error(e.into()))?;
+        let (status, result, cursor) = if let Some(job) = active {
+            (StatusCode::ACCEPTED, json!({"job_id":job,"status":"queued"}), cursor)
+        } else {
+            let occupied: i64 = sqlx::query_scalar(
+                "SELECT (SELECT count(*) FROM coach_question WHERE status='open')+
+                    (SELECT count(*) FROM coach_question_hold WHERE epoch=?)",
+            ).bind(epoch).fetch_one(&mut *tx).await.map_err(|e| super::command_error(e.into()))?;
+            let reserved: Vec<String> = sqlx::query_scalar(
+                "SELECT coalesce(semantic_key,question_key) FROM coach_question WHERE status IN ('open','dismissed')
+                 UNION SELECT question_key FROM coach_question_hold WHERE epoch=?",
+            ).bind(epoch).fetch_all(&mut *tx).await.map_err(|e| super::command_error(e.into()))?;
+            let reserved: std::collections::HashSet<_> = reserved.into_iter().collect();
+            let seeds = plan.seeds.iter().filter(|seed| !reserved.contains(&seed.key))
+                .take(5_i64.saturating_sub(occupied).max(0) as usize).cloned().collect::<Vec<_>>();
+            if seeds.is_empty() {
+                (StatusCode::OK, coach_snapshot(&mut tx, epoch, &week, &plan).await?, cursor)
+            } else {
+                let profile: Option<i64> = sqlx::query_scalar(
+                    "SELECT a.profile_revision FROM inference_active_profile a
+                     JOIN inference_qualification q ON q.profile_revision=a.profile_revision AND q.mode='structured_role'
+                     WHERE a.singleton=1 AND q.status='ready' AND q.checked_at >= ?
+                     AND NOT EXISTS(SELECT 1 FROM inference_profile_revocation r WHERE r.profile_revision=a.profile_revision)
+                     ORDER BY q.checked_at DESC LIMIT 1",
+                ).bind(super::now_utc_offset(-300)).fetch_optional(&mut *tx)
+                    .await.map_err(|e| super::command_error(e.into()))?;
+                let Some(profile) = profile else {
+                    return Err(super::error(StatusCode::SERVICE_UNAVAILABLE, "CAPABILITY_UNQUALIFIED",
+                        "Qualify the local structured-output model in Settings to generate questions"));
+                };
+                let live: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM durable_job WHERE status IN ('queued','running')",
+                ).fetch_one(&mut *tx).await.map_err(|e| super::command_error(e.into()))?;
+                if live >= 31 {
+                    let mut response = super::error(StatusCode::TOO_MANY_REQUESTS, "INFERENCE_BUSY", "The local inference queue is full");
+                    response.headers_mut().insert("retry-after", axum::http::HeaderValue::from_static("2"));
+                    return Err(response);
+                }
+                let (prompt_version, prompt): (String, String) = sqlx::query_as(
+                    "SELECT p.version_id,p.prompt_text FROM agent_prompt_active a
+                     JOIN agent_prompt_version p ON p.version_id=a.version_id WHERE a.role='coach'",
+                ).fetch_optional(&mut *tx).await.map_err(|e| super::command_error(e.into()))?
+                    .unwrap_or_else(|| ("coach-v2".into(), super::application::coach::PROMPT.into()));
+                let input = json!({
+                    "week":week, "seeds":seeds,"coverage":plan.coverage,"event_cursor":cursor,
+                    "prompt_version":prompt_version,"prompt":prompt
                 });
-            let row = coverage
-                .entry((segment.clone(), kind.to_owned()))
-                .or_insert((0, 0));
-            row.0 += 1;
-            if matched {
-                row.1 += 1
+                let equivalence = fingerprint(&json!({"period":week.period,"dependencies":plan.dependencies,
+                    "profile":profile,"prompt_version":prompt_version,"schema":digest(SCHEMA.as_bytes())}))
+                    .map_err(super::command_error)?;
+                let job = crate::jobs::enqueue_role_in_tx(
+                    &mut tx, "coach", "owner", &week.period, 1, &input, 3, epoch, None,
+                    Some(&digest(format!("parley-owner:1:{epoch}").as_bytes())),
+                ).await.map_err(super::command_error)?;
+                sqlx::query("UPDATE durable_job SET profile_revision=?,equivalence_key=?,dependency_digest=?,eligible_at=?,queue_deadline_at=? WHERE id=?")
+                    .bind(profile).bind(equivalence).bind(&plan.dependencies).bind(now_utc())
+                    .bind(super::now_utc_offset(300)).bind(&job).execute(&mut *tx).await
+                    .map_err(|e| super::command_error(e.into()))?;
+                for seed in &seeds {
+                    sqlx::query("INSERT INTO coach_question_hold(epoch,question_key,job_id,created_at) VALUES(?,?,?,?)")
+                        .bind(epoch).bind(&seed.key).bind(&job).bind(now_utc())
+                        .execute(&mut *tx).await.map_err(|e| super::command_error(e.into()))?;
+                }
+                let cursor = super::assistant::append_event(&mut tx, &job, "coach.report_requested",
+                    json!({"period":week.period})).await.map_err(super::command_error)?;
+                (StatusCode::ACCEPTED, json!({"job_id":job,"status":"queued"}), cursor)
             }
-        }
-    }
-    let mut candidates = Vec::new();
-    for (segment, name) in segments {
-        for kind in ["proof", "gift", "artifact"] {
-            let (total, covered) = coverage
-                .get(&(segment.clone(), kind.to_owned()))
-                .copied()
-                .unwrap_or_default();
-            let impact = total - covered;
-            if impact > 0 {
-                let qkind = format!("missing_{kind}");
-                candidates.push(json!({"question_key":format!("{qkind}:{segment}"),"kind":qkind,"target_ref":{"segment_id":segment},"answer_schema":{"type":"object","properties":{kind:{"type":"object"}}},"priority":0,"impact":impact,"why_now":format!("{impact} of {total} open opportunities in {name} have no calibrated {kind} match.")}));
-            }
-        }
-    }
-    let unknown_terms: Vec<String> = match sqlx::query_scalar(
-        "SELECT term FROM fluency WHERE status='unknown' ORDER BY term COLLATE NOCASE,term",
-    )
-    .fetch_all(&mut *tx)
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => return super::command_error(e.into()),
-    };
-    for term in unknown_terms {
-        candidates.push(json!({"question_key":format!("jargon_check:{term}"),"kind":"jargon_check","target_ref":{"term":term},"answer_schema":{"type":"object","required":["fluency"],"properties":{"fluency":{"enum":["learning","fluent"]}}},"priority":0,"impact":1,"why_now":format!("Fluency for {term} is currently unknown.")}));
-    }
-    let flagged: i64 =
-        match sqlx::query_scalar("SELECT count(*) FROM template_version WHERE status='flagged'")
-            .fetch_one(&mut *tx)
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => return super::command_error(e.into()),
         };
-    if flagged > 0 {
-        candidates.push(json!({"question_key":"template_review:flagged","kind":"template_review","target_ref":{"status":"flagged"},"answer_schema":{"type":"object","required":["decision"],"properties":{"decision":{"enum":["revise","retire"]}}},"priority":0,"impact":flagged,"why_now":format!("{flagged} template version(s) await review.")}));
+        super::assistant::write_receipt(&mut tx, epoch, key, &canonical, status.as_u16(), &result, cursor)
+            .await.map_err(super::command_error)?;
+        tx.commit().await.map_err(|e| super::command_error(e.into()))?;
+        if status == StatusCode::ACCEPTED {
+            state.jobs.notify_one();
+        }
+        Ok(coach_response(status, result, epoch))
+    }.await;
+    match work {
+        Ok(response) | Err(response) => response,
     }
-    let stale_capacity:i64=match sqlx::query_scalar("SELECT count(*) FROM capacity_ledger WHERE updated_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 days')").fetch_one(&mut *tx).await{Ok(v)=>v,Err(e)=>return super::command_error(e.into())};
-    if stale_capacity > 0 {
-        candidates.push(json!({"question_key":"capacity_update:stale","kind":"capacity_update","target_ref":{"stale_days":30},"answer_schema":{"type":"object","required":["capacity"],"properties":{"capacity":{"type":"object"}}},"priority":0,"impact":1,"why_now":"Capacity has not been reviewed recently."}));
-    }
-    let owner_tags: i64 = match sqlx::query_scalar("SELECT count(*) FROM owner_identity_tag")
-        .fetch_one(&mut *tx)
-        .await
-    {
-        Ok(v) => v,
-        Err(e) => return super::command_error(e.into()),
-    };
-    if owner_tags == 0 {
-        candidates.push(json!({"question_key":"missing_identity:owner","kind":"missing_identity","target_ref":{"scope":"owner"},"answer_schema":{"type":"object","required":["identity"],"properties":{"identity":{"type":"string","minLength":1}}},"priority":0,"impact":1,"why_now":"No owner identity tag is available for a verified shared-identity link."}));
-    }
-    let first_touches: i64 = match sqlx::query_scalar("SELECT count(*) FROM send WHERE touch_no=1")
-        .fetch_one(&mut *tx)
-        .await
-    {
-        Ok(v) => v,
-        Err(e) => return super::command_error(e.into()),
-    };
-    if first_touches > 0 && first_touches < 20 {
-        candidates.push(json!({"question_key":"insight:small_sample","kind":"insight","target_ref":{"first_touch_count":first_touches},"answer_schema":{"type":"object","required":["note"],"properties":{"note":{"type":"string","minLength":1}}},"priority":0,"impact":1,"why_now":format!("Only {first_touches} first touches exist; comparisons remain inconclusive.")}));
-    }
-    candidates.sort_by(|a, b| {
-        b["impact"]
-            .as_i64()
-            .cmp(&a["impact"].as_i64())
-            .then_with(|| a["kind"].as_str().cmp(&b["kind"].as_str()))
-            .then_with(|| a["question_key"].as_str().cmp(&b["question_key"].as_str()))
-    });
-    for (i, c) in candidates.iter_mut().enumerate() {
-        c["priority"] = json!(i)
-    }
-    candidates.truncate((5 - open) as usize);
-    let input = json!({"period":request.period,"event_cursor":cursor.to_string(),"evidence":{"segment_gaps":candidates,"candidate_count":candidates.len()},"candidates":candidates});
-    let job = match crate::jobs::enqueue_role_in_tx(
-        &mut tx,
-        "coach",
-        "owner",
-        "weekly",
-        1,
-        &input,
-        3,
-        state.workspace.epoch(),
-        None,
-        None,
-    )
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => return super::materials::workspace_error(e),
-    };
-    let event_cursor = match super::assistant::append_event(
-        &mut tx,
-        &job,
-        "coach.report_requested",
-        json!({"period":request.period,"event_cursor":cursor}),
-    )
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => return super::materials::workspace_error(e),
-    };
-    let result = json!({"job_id":job,"period":request.period,"event_cursor":cursor.to_string()});
-    if let Err(e) = super::assistant::write_receipt(
-        &mut tx,
-        state.workspace.epoch(),
-        &key,
-        &canonical,
-        202,
-        &result,
-        event_cursor,
-    )
-    .await
-    {
-        return super::materials::workspace_error(e);
-    }
-    if let Err(e) = tx.commit().await {
-        return super::command_error(e.into());
-    }
-    crate::jobs::wake(&state.jobs, result["job_id"].as_str().unwrap());
-    let mut r = (StatusCode::ACCEPTED, Json(result)).into_response();
-    super::private_headers(&mut r, state.workspace.epoch());
-    r
 }
 
 #[derive(Deserialize)]

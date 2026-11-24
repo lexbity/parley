@@ -1,12 +1,18 @@
 import { mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises } from '@vue/test-utils';
-import { parley, type BoardOpportunity, type BoardSnapshot, type ExtractorJob, type GraphEntity, type Material, type OpportunitySummary, type SavedSource } from '../api/client';
+import { parley, type BoardOpportunity, type BoardSnapshot, type ExtractorJob, type GraphEntity, type Material, type OpportunitySummary, type ProviderConfig, type SavedSource } from '../api/client';
 import { commands } from '../api/commands';
 import AppShell from './AppShell.vue';
 import { tabs } from './tabs';
 
 afterEach(() => { vi.restoreAllMocks(); window.history.replaceState(null, '', '/'); });
+
+const configuredProvider: ProviderConfig = {
+  endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024,
+  locale: 'en', profile_revision: 3, pairing: null,
+  structured: { status: 'unqualified', diagnostic: null, checked_at: null, probe_id: null },
+};
 
 function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [], board: BoardSnapshot = {
   lists: [{ id: 'list-default', title: 'Opportunities', position: 0, archived: false, revision: 1 }], cards: [],
@@ -24,9 +30,9 @@ function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [],
   vi.spyOn(parley, 'getQueueSheet').mockResolvedValue({ generation: '1', total: 0, rows: [], phases: [], cursor: null, next_cursor: null });
   vi.spyOn(parley, 'setOpportunityPhase').mockResolvedValue({ row: { opportunity_id: '', title: '', lifecycle: 'open', close_reason: null, pack_id: 'job_search', pack_version: '1.0.0', phase_revision: 1, phase: null, participants: [], next_action: { kind: 'choose', label: 'Choose a next action', reason: '', date: null, thread_id: null, recipient_id: null, recipient_name: null }, other_action_count: 0 }, event_id: 'ev', phase_revision: 1, reverted: false });
   vi.spyOn(parley, 'getDailyQueue').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', pack_id: 'job_search', pack_version: '1.0.0', daily_cap: 12, actionable_count: 0, deferred_count: 0, items: [] });
-  vi.spyOn(parley, 'getInsights').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', period_start: '2026-11-14', period_end: '2026-11-21', pack_id: 'job_search', pack_version: '1.0.0', sample_size: 0, metrics: [], comparisons: [], gaps: [], questions: [] });
+  vi.spyOn(parley, 'getInsights').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', event_cursor: '0', effective_outcomes: [], rates: [], strata: [], comparisons: [] });
   vi.spyOn(parley, 'getOpportunityNotes').mockResolvedValue({ opportunity_id: '', markdown: '', revision: 1, next_task: null, tasks: [] });
-  vi.spyOn(parley, 'getProvider').mockResolvedValue({ endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' });
+  vi.spyOn(parley, 'getProvider').mockResolvedValue(configuredProvider);
   vi.spyOn(parley, 'getAdminOverview').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', workspace_epoch: 'epoch-test', event_cursor: '0', last_verified_backup: null, backups: [], parties: parties.map((party) => ({ id: party.id, kind: party.kind as 'person' | 'org', name: party.name, descriptor: null })) });
   vi.spyOn(parley, 'getQuestionBank').mockResolvedValue({ version_id: 'question-bank-v1', content: { questions: { proof: [], gift: [], artifact: [] } } });
   vi.spyOn(parley, 'listAgentChats').mockResolvedValue([]);
@@ -131,8 +137,8 @@ describe('AppShell', () => {
     await wrapper.get('input[maxlength="40"]').setValue('en');
     await wrapper.get('section[aria-labelledby="settings-heading"] form').trigger('submit');
     await flushPromises();
-    expect(update).toHaveBeenCalledWith({ endpoint: 'http://127.0.0.1:11434', model: 'local:latest', num_ctx: 16384, num_predict: 2048, locale: 'en' });
-    await wrapper.get('section[aria-labelledby="settings-heading"] button[type="button"]').trigger('click');
+    expect(update).toHaveBeenCalledWith({ endpoint: 'http://127.0.0.1:11434', model: 'local:latest', num_ctx: 16384, num_predict: 2048, locale: 'en', expected_profile_revision: 3 });
+    await wrapper.findAll('#settings-provider button').find((button) => button.text() === 'Check local model readiness')!.trigger('click');
     await flushPromises();
     expect(health).toHaveBeenCalledOnce();
     expect(wrapper.text()).toContain('Local model is available');
@@ -227,7 +233,7 @@ describe('AppShell', () => {
     vi.spyOn(parley, 'saveSource').mockResolvedValue(source);
     const getJob = vi.spyOn(parley, 'getExtractorJob').mockResolvedValueOnce(queued).mockResolvedValueOnce(completed).mockResolvedValueOnce(cancelled);
     vi.spyOn(parley, 'getCaptureProposals').mockResolvedValue(queued);
-    const cancel = vi.spyOn(parley, 'cancelExtractorJob').mockResolvedValue();
+    const cancel = vi.spyOn(parley, 'cancelJob').mockResolvedValue();
     const wrapper = mount(AppShell);
     await flushPromises();
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
@@ -264,7 +270,7 @@ describe('AppShell', () => {
     vi.spyOn(parley, 'saveSource').mockResolvedValue(source);
     vi.spyOn(parley, 'getExtractorJob').mockResolvedValueOnce(queued).mockRejectedValueOnce('poll unavailable');
     vi.spyOn(parley, 'getCaptureProposals').mockRejectedValueOnce('review unavailable').mockResolvedValue(queued);
-    vi.spyOn(parley, 'cancelExtractorJob').mockRejectedValue('cancel unavailable');
+    vi.spyOn(parley, 'cancelJob').mockRejectedValue('cancel unavailable');
     vi.spyOn(parley, 'resolveProposals').mockRejectedValue('decision unavailable');
     const wrapper = mount(AppShell);
     await flushPromises();
@@ -287,6 +293,42 @@ describe('AppShell', () => {
     vi.useRealTimers();
   });
 
+  it('submits pairing identity with the observed revision and follows a durable probe', async () => {
+    stubWorkspace();
+    const update = vi.spyOn(parley, 'updateProvider').mockResolvedValue();
+    const poll = vi.mocked(parley.getProvider);
+    const probe = { status: 'queued' as const, diagnostic: null, checked_at: null, probe_id: 'probe-1' };
+    vi.spyOn(parley, 'checkProvider').mockResolvedValue({
+      available: false, model: 'fixture', models: [], message: 'Checking', structured: probe,
+    });
+    const wrapper = mount(AppShell);
+    await flushPromises();
+    await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(5)').trigger('click');
+    await flushPromises();
+    const form = wrapper.get('#settings-provider form');
+    await form.get('fieldset input[type="checkbox"]').setValue(true);
+    const fields = form.findAll('fieldset input[required]');
+    await fields[0]!.setValue('0.23.1');
+    await fields[1]!.setValue('a'.repeat(64));
+    await fields[2]!.setValue('b'.repeat(64));
+    await fields[3]!.setValue('32');
+    await form.trigger('submit');
+    await flushPromises();
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({
+      expected_profile_revision: 3,
+      pairing: { provider_version: '0.23.1', model_digest: 'a'.repeat(64), tokenizer_digest: 'b'.repeat(64), template_tokens: 32 },
+    }));
+    poll.mockResolvedValueOnce({
+      ...configuredProvider,
+      structured: { ...probe, status: 'probe_succeeded', checked_at: '2026-11-23T12:00:00Z' },
+    });
+    await form.findAll('button').find((button) => button.text() === 'Check local model readiness')!.trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).toContain('Structured-output check passed');
+    expect(wrapper.text()).not.toContain('Structured output is ready for Coach.');
+    wrapper.unmount();
+  });
+
   it('reports provider load, save, and health failures in Settings', async () => {
     stubWorkspace();
     vi.spyOn(parley, 'getProvider').mockRejectedValueOnce(new Error('settings unavailable'));
@@ -298,13 +340,15 @@ describe('AppShell', () => {
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(5)').trigger('click');
     await flushPromises();
     expect(wrapper.get('[role="alert"]').text()).toContain('settings unavailable');
+    await wrapper.findAll('#settings-provider button').find((button) => button.text() === 'Reload saved profile')!.trigger('click');
+    await flushPromises();
     await wrapper.get('section[aria-labelledby="settings-heading"] form').trigger('submit'); await flushPromises();
     expect(update).toHaveBeenCalledOnce();
     expect(wrapper.get('[role="alert"]').text()).toContain('save denied');
-    await wrapper.get('section[aria-labelledby="settings-heading"] button[type="button"]').trigger('click'); await flushPromises();
+    await wrapper.findAll('#settings-provider button').find((button) => button.text() === 'Check local model readiness')!.trigger('click'); await flushPromises();
     expect(health).toHaveBeenCalledOnce();
     expect(wrapper.get('[role="alert"]').text()).toContain('Local model is unavailable');
-    await wrapper.get('section[aria-labelledby="settings-heading"] button[type="button"]').trigger('click'); await flushPromises();
+    await wrapper.findAll('#settings-provider button').find((button) => button.text() === 'Check local model readiness')!.trigger('click'); await flushPromises();
     expect(wrapper.text()).toContain('Could not check the local model');
     expect(health).toHaveBeenCalledTimes(2);
     wrapper.unmount();

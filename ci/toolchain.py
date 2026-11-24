@@ -12,6 +12,7 @@ match the sqlx library version resolved in Cargo.lock (major.minor).
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import sys
@@ -68,9 +69,15 @@ def probe_playwright() -> str:
 
 
 def probe_agent_pi() -> str:
-    # First supported agent runner (RFC-0002 BE-09, pi-compatible runner);
-    # pinned in agent/package.json and installed by the pnpm workspace.
-    return _version_probe(["pnpm", "--dir", "agent", "exec", "pi", "--version"], r"(\S+)")
+    # Read the installed SDK pin without launching the coding CLI.
+    path = REPO_ROOT / "agent/node_modules/@earendil-works/pi-ai/package.json"
+    try:
+        version = json.loads(path.read_text(encoding="utf-8"))["version"]
+    except (OSError, ValueError, KeyError) as error:
+        raise VerificationError("install the locked Pi SDK before checking the toolchain") from error
+    if not isinstance(version, str):
+        raise VerificationError("installed Pi SDK has no version")
+    return version
 
 
 def probe_playwright_chromium() -> str:

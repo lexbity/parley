@@ -11,11 +11,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
-use std::{net::IpAddr, sync::Arc, time::Duration};
+use std::{net::IpAddr, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::mpsc,
 };
 
 const PROMPT: &str = include_str!("../roles/extractor/prompt.md");
@@ -24,8 +23,6 @@ const INTERVIEWER_PROMPT: &str = include_str!("../roles/interviewer/prompt.md");
 const INTERVIEWER_SCHEMA: &str = include_str!("../roles/interviewer/schema.json");
 const BRIEFER_PROMPT: &str = include_str!("../roles/briefer/prompt.md");
 const BRIEFER_SCHEMA: &str = include_str!("../roles/briefer/schema.json");
-const COACH_PROMPT: &str = include_str!("../roles/coach/prompt.md");
-const COACH_SCHEMA: &str = include_str!("../roles/coach/schema.json");
 const MATCHER_PROMPT: &str = include_str!("../roles/matcher/prompt.md");
 const MATCHER_SCHEMA: &str = include_str!("../roles/matcher/schema.json");
 const BUILDER_PROMPT: &str = include_str!("../roles/template_builder/prompt.md");
@@ -37,9 +34,6 @@ const LINTER_SCHEMA: &str = include_str!("../roles/linter/schema.json");
 const MAX_BODY: usize = 2_200_000;
 const MAX_CHUNKS: usize = 16;
 const MAX_RETRIES: i64 = 3;
-
-#[derive(Clone)]
-pub(crate) struct Queue(mpsc::Sender<String>);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -128,6 +122,8 @@ pub(crate) struct OllamaMessage {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ProviderUpdate {
+    expected_profile_revision: Option<i64>,
+    pairing: Option<super::inference::profile::ObservedPairing>,
     endpoint: String,
     model: String,
     num_ctx: u32,
@@ -168,15 +164,6 @@ pub(super) fn routes() -> Router<super::AppState> {
         )
 }
 
-pub(super) fn start(
-    workspace: Arc<Workspace>,
-    depth: usize,
-) -> (Queue, tokio::task::JoinHandle<()>) {
-    let (tx, rx) = mpsc::channel(depth);
-    let handle = tokio::spawn(worker(workspace, rx));
-    (Queue(tx), handle)
-}
-
 pub(super) fn role_allowed(role: &str) -> bool {
     matches!(
         role,
@@ -189,10 +176,6 @@ pub(super) fn role_allowed(role: &str) -> bool {
             | "composer"
             | "linter"
     )
-}
-
-pub(crate) fn wake(queue: &Queue, id: &str) {
-    let _ = queue.0.try_send(id.to_owned());
 }
 
 /// Enqueue one assistant job inside the caller's transaction. A registered
@@ -306,22 +289,7 @@ pub(crate) async fn scoped_job_fence(
     }
 }
 
-async fn worker(workspace: Arc<Workspace>, mut rx: mpsc::Receiver<String>) {
-    recover_interrupted(&workspace).await;
-    let mut poll = tokio::time::interval(Duration::from_millis(500));
-    loop {
-        tokio::select! {
-            id = rx.recv() => if id.is_none() { return } else if let Some(job_id)=id { process(&workspace,&job_id).await; },
-            _ = poll.tick() => {
-                let queued: Vec<String> = sqlx::query_scalar("SELECT id FROM durable_job WHERE status='queued' ORDER BY created_at,id LIMIT 1")
-                    .fetch_all(workspace.pool()).await.unwrap_or_default();
-                if let Some(id)=queued.first() { process(&workspace,id).await; }
-            }
-        }
-    }
-}
-
-async fn recover_interrupted(workspace: &Workspace) {
+pub(crate) async fn recover_interrupted(workspace: &Workspace) {
     let Ok(mut tx) = workspace.pool().begin_with("BEGIN IMMEDIATE").await else {
         return;
     };
@@ -363,17 +331,19 @@ async fn recover_interrupted(workspace: &Workspace) {
     let _ = tx.commit().await;
 }
 
-async fn process(workspace: &Workspace, job_id: &str) {
+pub(crate) async fn process(state: &super::AppState, job_id: &str) {
+    let workspace = &state.workspace;
     let role: Option<String> = sqlx::query_scalar("SELECT role FROM durable_job WHERE id=?")
         .bind(job_id)
         .fetch_optional(workspace.pool())
         .await
         .ok()
         .flatten();
+    if role.as_deref() == Some("coach") {
+        super::inference::coach::run(state, job_id).await;
+        return;
+    }
     if let Some(role) = role.as_deref().filter(|role| *role != "extractor") {
-        // One active local inference: delegated runs hold the same permit.
-        let inference = workspace.inference();
-        let _inference = inference.acquire().await;
         if matches!(role, "matcher" | "template_builder" | "composer" | "linter") {
             super::writing_jobs::process_role(workspace, job_id, role).await;
         } else {
@@ -679,7 +649,6 @@ fn role_defaults(role: &str) -> Option<(&'static str, &'static str)> {
         "extractor" => Some((PROMPT, SCHEMA)),
         "interviewer" => Some((INTERVIEWER_PROMPT, INTERVIEWER_SCHEMA)),
         "briefer" => Some((BRIEFER_PROMPT, BRIEFER_SCHEMA)),
-        "coach" => Some((COACH_PROMPT, COACH_SCHEMA)),
         "matcher" => Some((MATCHER_PROMPT, MATCHER_SCHEMA)),
         "template_builder" => Some((BUILDER_PROMPT, BUILDER_SCHEMA)),
         "composer" => Some((COMPOSER_PROMPT, COMPOSER_SCHEMA)),
@@ -787,7 +756,7 @@ async fn save_proposals(
     let injection_suspected = output.injection_suspected;
     let batch_id = new_id(job_id);
     let now = now_utc();
-    sqlx::query("INSERT INTO proposal_batch(id,source_variant_id,job_id,status,created_at) VALUES(?,?,?,'pending',?)").bind(&batch_id).bind(&variant).bind(job_id).bind(&now).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO proposal_batch(id,source_variant_id,job_id,source_occurrence_id,status,created_at) VALUES(?,?,?,?,'pending',?)").bind(&batch_id).bind(&variant).bind(job_id).bind(&occurrence).bind(&now).execute(&mut *tx).await?;
     let mut dropped = output.dropped_items as usize;
     let mut staged_count = 0usize;
     for candidate in output.candidates {
@@ -1124,8 +1093,29 @@ async fn get_provider(State(state): State<super::AppState>, headers: HeaderMap) 
     if let Err(response) = super::authenticate(&headers, &state).await {
         return response.into_response();
     }
-    match provider_config(&state.workspace).await {
-        Ok(config) => Json(config).into_response(),
+    use super::inference::{probe, profile};
+    let result = async {
+        let config = provider_config(&state.workspace).await?;
+        let mut conn = state.workspace.pool().acquire().await?;
+        let settings = profile::get_settings(&mut conn)
+            .await
+            .map_err(|_| WorkspaceError::Invalid("Local inference profile is unavailable".into()))?
+            .ok_or(WorkspaceError::NotFound)?;
+        let structured =
+            probe::status(&mut conn, settings.revision, state.workspace.epoch()).await?;
+        Ok(json!({
+            "endpoint":config.endpoint,"model":config.model,"num_ctx":config.num_ctx,
+            "num_predict":config.num_predict,"locale":config.locale,
+            "profile_revision":settings.revision,"pairing":settings.pairing,"structured":structured
+        }))
+    }
+    .await;
+    match result {
+        Ok(body) => {
+            let mut response = Json(body).into_response();
+            super::private_headers(&mut response, state.workspace.epoch());
+            response
+        }
         Err(error) => super::command_error(error),
     }
 }
@@ -1209,6 +1199,61 @@ async fn update_provider(
         }
         Ok(None) => {}
     }
+    use super::inference::profile::{self, ProfileConfiguration, ProfileError};
+    let latest: i64 =
+        match sqlx::query_scalar("SELECT coalesce(max(revision),0) FROM inference_profile")
+            .fetch_one(&mut *tx)
+            .await
+        {
+            Ok(revision) => revision,
+            Err(error) => return super::command_error(error.into()),
+        };
+    if input.pairing.is_some() && input.expected_profile_revision.is_none() {
+        return super::error(
+            StatusCode::PRECONDITION_FAILED,
+            "PROFILE_CHANGED",
+            "Refresh provider settings before changing the pairing",
+        );
+    }
+    let configuration = ProfileConfiguration {
+        endpoint: input.endpoint.clone(),
+        model: input.model.clone(),
+        num_ctx: i64::from(input.num_ctx),
+        num_predict: i64::from(input.num_predict),
+        locale: input.locale.clone(),
+        pairing: input.pairing.clone(),
+    };
+    match profile::replace_settings(
+        &mut tx,
+        input.expected_profile_revision.unwrap_or(latest),
+        configuration,
+        option_env!("PARLEY_RUNTIME_MANIFEST_SHA256"),
+    )
+    .await
+    {
+        Ok(_) => {}
+        Err(ProfileError::Conflict) => {
+            return super::error(
+                StatusCode::PRECONDITION_FAILED,
+                "PROFILE_CHANGED",
+                "Provider settings changed. Reload them before saving",
+            );
+        }
+        Err(ProfileError::Invalid(_)) => {
+            return super::error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "PROVIDER_CONFIG_INVALID",
+                "Check the local endpoint, model and pairing settings",
+            );
+        }
+        Err(_) => {
+            return super::error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "PERSISTENCE_FAILED",
+                "Provider settings are unavailable",
+            );
+        }
+    }
     let now = now_utc();
     if let Err(error) = sqlx::query("UPDATE agent_provider SET endpoint=?,model=?,model_digest=NULL,num_ctx=?,num_predict=?,locale=?,updated_at=? WHERE singleton=1")
         .bind(input.endpoint).bind(input.model).bind(input.num_ctx as i64).bind(input.num_predict as i64).bind(input.locale).bind(&now)
@@ -1248,6 +1293,57 @@ async fn update_provider(
 async fn provider_health(State(state): State<super::AppState>, headers: HeaderMap) -> Response {
     if let Err(response) = super::authenticate(&headers, &state).await {
         return response.into_response();
+    }
+    use super::inference::{probe, profile};
+    let paired = async {
+        let mut tx = state
+            .workspace
+            .pool()
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(|error| super::command_error(error.into()))?;
+        let settings = profile::get_settings(&mut tx).await.map_err(|_| {
+            super::error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "PERSISTENCE_FAILED",
+                "Provider settings are unavailable",
+            )
+        })?;
+        let Some(settings) = settings.filter(|settings| settings.pairing.is_some()) else {
+            return Ok(None);
+        };
+        if !probe::enqueue(&mut tx, settings.revision, state.workspace.epoch())
+            .await
+            .map_err(|error| super::command_error(error.into()))?
+        {
+            return Err(super::error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "INFERENCE_BUSY",
+                "A local model check is already queued",
+            ));
+        }
+        let structured = probe::status(&mut tx, settings.revision, state.workspace.epoch())
+            .await
+            .map_err(|error| super::command_error(error.into()))?;
+        tx.commit()
+            .await
+            .map_err(|error| super::command_error(error.into()))?;
+        state.jobs.notify_one();
+        let mut response = (
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "available":false,"model":settings.model.unwrap_or_default(),"models":[],
+                "message":"Structured model check queued","structured":structured
+            })),
+        )
+            .into_response();
+        super::private_headers(&mut response, state.workspace.epoch());
+        Ok(Some(response))
+    }
+    .await;
+    match paired {
+        Ok(Some(response)) | Err(response) => return response,
+        Ok(None) => {}
     }
     let config = match provider_config(&state.workspace).await {
         Ok(value) => value,
@@ -1379,6 +1475,33 @@ async fn get_job(
     let Some(row) = row else {
         return super::error(StatusCode::NOT_FOUND, "JOB_NOT_FOUND", "Job does not exist");
     };
+    if row.0 == "coach" {
+        let projection: Result<Option<(i64, String, Option<String>)>, sqlx::Error> =
+            sqlx::query_as(
+                "SELECT j.state_revision, coalesce(r.period,j.scope_id), r.id
+             FROM durable_job j LEFT JOIN coach_report r ON r.job_id=j.id
+             WHERE j.id=? AND j.epoch=?",
+            )
+            .bind(&id)
+            .bind(state.workspace.epoch())
+            .fetch_optional(state.workspace.pool())
+            .await;
+        return match projection {
+            Ok(Some((state_revision, period, report))) => {
+                let mut response = Json(json!({
+                    "id":id,"role":"coach","status":row.1,"state_revision":state_revision,
+                    "attempt_count":row.2,"scope":{"kind":"weekly","period":period},
+                    "progress":null,"error_code":row.4,
+                    "review_ref":report.map(|id| json!({"kind":"coach_report","id":id}))
+                }))
+                .into_response();
+                super::private_headers(&mut response, state.workspace.epoch());
+                response
+            }
+            Ok(None) => super::error(StatusCode::NOT_FOUND, "JOB_NOT_FOUND", "Job does not exist"),
+            Err(e) => super::command_error(e.into()),
+        };
+    }
     let output_json: Option<String> = match sqlx::query_scalar(
         "SELECT output_json FROM job_attempt WHERE job_id=? ORDER BY attempt_no DESC LIMIT 1",
     )
@@ -1489,26 +1612,70 @@ async fn cancel_job(
     if let Err(response) = super::authenticate(&headers, &state).await {
         return response.into_response();
     }
+    let Some(key) = headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+        .filter(|key| !key.trim().is_empty() && key.len() <= 200)
+    else {
+        return super::error(
+            StatusCode::BAD_REQUEST,
+            "IDEMPOTENCY_KEY_REQUIRED",
+            "Idempotency-Key is required",
+        );
+    };
+    let canonical =
+        match super::application::coach::fingerprint(&json!({"operation":"cancelJob","job_id":id}))
+        {
+            Ok(canonical) => canonical,
+            Err(error) => return super::command_error(error),
+        };
+    let epoch = state.workspace.epoch();
     let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
         Ok(tx) => tx,
         Err(error) => return super::command_error(error.into()),
     };
-    let row: Option<(String, i64)> =
-        match sqlx::query_as("SELECT status,current_attempt FROM durable_job WHERE id=?")
-            .bind(&id)
-            .fetch_optional(&mut *tx)
-            .await
-        {
-            Ok(row) => row,
-            Err(error) => {
-                let _ = tx.rollback().await;
-                return super::command_error(error.into());
-            }
-        };
+    let row: Option<(String, i64)> = match sqlx::query_as(
+        "SELECT status,current_attempt FROM durable_job WHERE id=? AND epoch=?",
+    )
+    .bind(&id)
+    .bind(epoch)
+    .fetch_optional(&mut *tx)
+    .await
+    {
+        Ok(row) => row,
+        Err(error) => {
+            let _ = tx.rollback().await;
+            return super::command_error(error.into());
+        }
+    };
     let Some((status, attempt)) = row else {
         let _ = tx.rollback().await;
         return super::error(StatusCode::NOT_FOUND, "JOB_NOT_FOUND", "Job does not exist");
     };
+    let receipt: Option<String> = match sqlx::query_scalar(
+        "SELECT canonical_digest FROM idempotency_receipt WHERE owner_id=1 AND epoch=? AND key=?",
+    )
+    .bind(epoch)
+    .bind(key)
+    .fetch_optional(&mut *tx)
+    .await
+    {
+        Ok(receipt) => receipt,
+        Err(error) => return super::command_error(error.into()),
+    };
+    if let Some(replay) = receipt {
+        return if replay == canonical {
+            let mut response = StatusCode::NO_CONTENT.into_response();
+            super::private_headers(&mut response, epoch);
+            response
+        } else {
+            super::error(
+                StatusCode::CONFLICT,
+                "IDEMPOTENCY_MISMATCH",
+                "Idempotency key was used for a different request",
+            )
+        };
+    }
     if !matches!(status.as_str(), "queued" | "running") {
         let _ = tx.rollback().await;
         return super::error(
@@ -1518,7 +1685,7 @@ async fn cancel_job(
         );
     }
     let now = now_utc();
-    let changed = sqlx::query("UPDATE durable_job SET status='cancelled',last_error_code='CANCELLED',last_error='Owner cancelled Extractor job',updated_at=?,completed_at=? WHERE id=? AND current_attempt=? AND status IN ('queued','running')").bind(&now).bind(&now).bind(&id).bind(attempt).execute(&mut *tx).await;
+    let changed = sqlx::query("UPDATE durable_job SET status='cancelled',last_error_code='CANCELLED',last_error='Owner cancelled job',lease_id=NULL,process_nonce=NULL,updated_at=?,completed_at=? WHERE id=? AND current_attempt=? AND status IN ('queued','running')").bind(&now).bind(&now).bind(&id).bind(attempt).execute(&mut *tx).await;
     match changed {
         Ok(result) if result.rows_affected() == 1 => {}
         Ok(_) => {
@@ -1534,14 +1701,32 @@ async fn cancel_job(
             return super::command_error(error.into());
         }
     }
-    if let Err(error) = sqlx::query("UPDATE job_attempt SET status='cancelled',error_code='CANCELLED',error_message='Owner cancelled Extractor job',finished_at=? WHERE job_id=? AND attempt_no=? AND status='running'").bind(&now).bind(&id).bind(attempt).execute(&mut *tx).await {
+    if let Err(error) = sqlx::query("UPDATE job_attempt SET status='cancelled',error_code='CANCELLED',error_message='Owner cancelled job',finished_at=? WHERE job_id=? AND attempt_no=? AND status='running'").bind(&now).bind(&id).bind(attempt).execute(&mut *tx).await {
         let _ = tx.rollback().await; return super::command_error(error.into());
     }
     if let Err(error) = sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'job',?,?, 'job.cancelled','{}')").bind(new_id(&id)).bind(&now).bind(&id).bind(attempt).execute(&mut *tx).await {
         let _ = tx.rollback().await; return super::command_error(error.into());
     }
+    let cursor = match sqlx::query_scalar("SELECT last_insert_rowid()")
+        .fetch_one(&mut *tx)
+        .await
+    {
+        Ok(cursor) => cursor,
+        Err(error) => return super::command_error(error.into()),
+    };
+    if let Err(error) =
+        super::assistant::write_receipt(&mut tx, epoch, key, &canonical, 204, &json!({}), cursor)
+            .await
+    {
+        return super::command_error(error);
+    }
     match tx.commit().await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(()) => {
+            state.jobs.notify_one();
+            let mut response = StatusCode::NO_CONTENT.into_response();
+            super::private_headers(&mut response, epoch);
+            response
+        }
         Err(error) => super::command_error(error.into()),
     }
 }
@@ -1684,7 +1869,7 @@ async fn apply_proposal_decisions(
         ));
     }
     let source: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT b.source_variant_id,j.source_occurrence_id,j.id FROM proposal_batch b JOIN durable_job j ON j.id=b.job_id WHERE b.id=? AND j.status='succeeded'",
+        "SELECT b.source_variant_id,b.source_occurrence_id,j.id FROM proposal_batch b JOIN inference_record j ON j.id=b.job_id WHERE b.id=? AND b.source_occurrence_id IS NOT NULL AND j.status='succeeded'",
     ).bind(batch_id).fetch_optional(&mut **tx).await.map_err(ReviewFailure::storage)?;
     let Some((variant, occurrence, job)) = source else {
         return Err(ReviewFailure {

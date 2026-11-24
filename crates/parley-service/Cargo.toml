@@ -9,6 +9,9 @@ axum = "0.8.9"
 chrono = "0.4.41"
 chrono-tz = "0.10.4"
 futures-util = "0.3.31"
+http-body-util = "0.1.5"
+hyper = { version = "1.12.0", features = ["client", "http1", "server"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
 tokio-stream = "0.1.19"
 zip = { version = "9.8.1", default-features = false }
 parley-domain.workspace = true
@@ -21,7 +24,7 @@ form_urlencoded = "1.2.1"
 sqlx = { version = "0.9.1", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 jsonschema = "0.26.2"
 thiserror = "2.0.21"
-tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "signal", "time", "net", "io-util", "fs"] }
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "signal", "time", "net", "io-util", "fs", "process"] }
 
 [build-dependencies]
 serde_json = "1.0.154"

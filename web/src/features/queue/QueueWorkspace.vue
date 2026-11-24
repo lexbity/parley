@@ -15,6 +15,7 @@ import {
 } from '../../api/client';
 import { commands, type CommandArgs, type CommandSuccess } from '../../api/commands';
 import { sessionEventReader } from '../../app/commands/events';
+import { inferenceActivity } from '../../app/inference/activity';
 import type { QueuePaletteBinding } from '../../app/commands/context';
 import { opportunityCreateAction, queuePhaseActions, queueTaskAction, registerScoped, useCommandRegistry, type UiCommand } from '../../app/commands/registry';
 import type { OpportunityNotes } from '../../api/client';
@@ -681,7 +682,11 @@ onMounted(async () => {
     sessionEventReader.start({
       epoch: () => parley.workspaceEpoch ?? '',
       onEvents: page => {
-        if (!props.active || !page.items.some(event => event.entity_type === 'opportunity')) return;
+        if (!props.active) return;
+        if (view.value === 'insights' && page.items.some(event =>
+          event.entity_type === 'opportunity' || event.event_type.startsWith('coach.') || event.event_type.startsWith('match.'),
+        )) inferenceActivity.refresh();
+        if (!page.items.some(event => event.entity_type === 'opportunity')) return;
         if (savingId.value) {
           error.value = 'A phase edit is in flight. The sheet will refresh after it finishes.';
           return;
@@ -1341,9 +1346,10 @@ onBeforeUnmount(() => {
     <div v-show="view === 'daily'">
       <Daily @navigate="emit('navigate', $event)" />
     </div>
-    <div v-show="view === 'insights'">
-      <Insights @navigate="emit('navigate', $event)" />
-    </div>
+    <Insights
+      v-if="props.active && view === 'insights'"
+      @navigate="emit('navigate', $event)"
+    />
   </section>
 </template>
 

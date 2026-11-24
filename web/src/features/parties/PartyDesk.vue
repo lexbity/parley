@@ -580,7 +580,7 @@ async function openCaptureReview(source: SavedSource) {
 
 async function cancelExtractor(job: ExtractorJob) {
   busy.value = true; error.value = '';
-  try { await parley.cancelExtractorJob(job.id); reviewJob.value = await parley.getExtractorJob(job.id); status.value = 'Extractor cancellation was recorded; any late result is discarded.'; }
+  try { await parley.cancelJob(job.id); reviewJob.value = await parley.getExtractorJob(job.id); status.value = 'Extractor cancellation was recorded; any late result is discarded.'; }
   catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not cancel this Extractor job.'; }
   finally { busy.value = false; }
 }

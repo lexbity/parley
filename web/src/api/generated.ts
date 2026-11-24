@@ -2635,19 +2635,44 @@ export interface components {
             job_id?: string | null;
             job_status?: string | null;
         };
-        ProviderConfig: {
+        ProviderSettings: {
             endpoint: string;
             model: string;
             num_ctx: number;
             num_predict: number;
             locale: string;
         };
+        ProviderConfig: components["schemas"]["ProviderSettings"] & {
+            profile_revision: number;
+            pairing: components["schemas"]["ProviderPairing"] | null;
+            structured: components["schemas"]["StructuredReadiness"];
+        };
+        ProviderUpdate: components["schemas"]["ProviderSettings"] & {
+            expected_profile_revision: number;
+            pairing?: components["schemas"]["ProviderPairing"];
+        };
+        ProviderPairing: {
+            provider_version: string;
+            model_digest: string;
+            tokenizer_digest: string;
+            template_tokens: number;
+        };
+        StructuredReadiness: {
+            /** @enum {unknown} */
+            status: "unqualified" | "queued" | "running" | "probe_succeeded" | "failed" | "ready";
+            diagnostic: string | null;
+            /** Format: date-time */
+            checked_at: string | null;
+            probe_id: string | null;
+        };
         ProviderHealth: {
             available: boolean;
             model: string;
             models: string[];
             message: string;
+            structured?: components["schemas"]["StructuredReadiness"];
         };
+        ProviderProbeReceipt: components["schemas"]["ProviderHealth"] & Record<string, never>;
         ExtractorProposal: {
             id: string;
             kind: string;
@@ -2656,9 +2681,54 @@ export interface components {
             };
             status: string;
         };
-        ExtractorJob: {
+        OwnerJob: components["schemas"]["ExtractorJob"] | components["schemas"]["CoachJob"] | components["schemas"]["OtherRoleJob"];
+        CoachJob: {
             id: string;
-            role: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            role: "coach";
+            /** @enum {unknown} */
+            status: "queued" | "running" | "succeeded" | "invalid" | "failed" | "cancelled";
+            state_revision: number;
+            attempt_count: number;
+            scope: {
+                /** @constant */
+                kind: "weekly";
+                period: components["schemas"]["CoachPeriod"];
+            };
+            progress: null;
+            error_code: string | null;
+            review_ref: null | {
+                /** @constant */
+                kind: "coach_report";
+                id: string;
+            };
+        };
+        OtherRoleJob: components["schemas"]["JobFields"] & {
+            /** @enum {unknown} */
+            role: "interviewer" | "briefer" | "template_builder" | "matcher" | "composer" | "linter";
+        } & {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            role: "interviewer" | "briefer" | "template_builder" | "matcher" | "composer" | "linter";
+        };
+        ExtractorJob: components["schemas"]["JobFields"] & {
+            /** @constant */
+            role: "extractor";
+            source_occurrence_id: string;
+        } & {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            role: "extractor";
+        };
+        JobFields: {
+            id: string;
             status: string;
             current_attempt: number;
             max_attempts: number;
@@ -2667,9 +2737,14 @@ export interface components {
             injection_suspected: boolean;
             last_error_code?: string | null;
             last_error?: string | null;
-            source_occurrence_id: string;
+            source_occurrence_id: string | null;
+            scope_kind?: string;
+            scope_id?: string;
             proposal_batch_id?: string | null;
             proposals: components["schemas"]["ExtractorProposal"][];
+            result?: {
+                [key: string]: unknown;
+            } | null;
         };
         ProposalResolution: {
             decisions: {
@@ -3337,7 +3412,9 @@ export interface components {
         CoachQuestion: {
             id: string;
             kind: string;
-            target: Record<string, never>;
+            target: {
+                [key: string]: unknown;
+            };
             text: string;
             priority: number;
             impact?: number;
@@ -3354,12 +3431,34 @@ export interface components {
             answer: string;
             interviewer_chat_id: string;
         };
-        CoachReport: {
-            report: Record<string, never> | null;
-            questions: string[];
-            period: string | null;
+        CoachPeriod: string;
+        CoachSnapshot: {
+            report: {
+                [key: string]: unknown;
+            } | null;
+            period: components["schemas"]["CoachPeriod"];
+            /** Format: date-time */
+            as_of: string;
             input_digest: string | null;
+            active_job_id: string | null;
+            latest_job_id: string | null;
+            coverage: {
+                current: number;
+                missing: number;
+                stale: number;
+                no_match: number;
+            };
+            observations: components["schemas"]["CoachObservation"][];
         };
+        CoachObservation: {
+            reason: components["schemas"]["CoachReason"];
+            target: {
+                [key: string]: unknown;
+            };
+            impact: number;
+        };
+        /** @enum {unknown} */
+        CoachReason: "assessment_check" | "missing_proof" | "missing_gift" | "missing_artifact" | "jargon_check" | "template_review" | "capacity_update" | "missing_identity" | "insight";
         RateEstimate: {
             numerator: number;
             denominator: number;
@@ -3369,8 +3468,32 @@ export interface components {
             /** @enum {string} */
             status: "measured" | "insufficient_observations";
         };
+        InsightsInterval: {
+            lower_95: number;
+            upper_95: number;
+        };
+        InsightsMeasure: {
+            k: number;
+            n: number;
+            interval_95: components["schemas"]["InsightsInterval"] | null;
+        };
         InsightsReport: {
-            [key: string]: unknown;
+            /** Format: date-time */
+            as_of: string;
+            event_cursor: string;
+            effective_outcomes: {
+                class: string;
+                count: number;
+            }[];
+            rates: (components["schemas"]["InsightsMeasure"] & {
+                /** @enum {unknown} */
+                metric: "reply_rate" | "advance_rate";
+            })[];
+            strata: {
+                segment_id: string;
+                reply_rate: components["schemas"]["InsightsMeasure"];
+            }[];
+            comparisons: unknown[];
         };
         OutcomeCorrectionInput: {
             expected_revision: number;
@@ -4607,7 +4730,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Local Extractor provider configuration. */
+            /** @description Saved local provider profile and cached structured-output readiness. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -4631,7 +4754,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ProviderConfig"];
+                "application/json": components["schemas"]["ProviderUpdate"];
             };
         };
         responses: {
@@ -4642,6 +4765,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            412: components["responses"]["Error"];
             422: components["responses"]["Error"];
         };
     };
@@ -4683,13 +4807,22 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Local model availability and installed tags. */
+            /** @description Local model connectivity and installed tags. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["ProviderHealth"];
+                };
+            };
+            /** @description Durable structured-output probe queued for the saved profile. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderProbeReceipt"];
                 };
             };
         };
@@ -4714,7 +4847,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ExtractorJob"];
+                    "application/json": components["schemas"]["OwnerJob"];
                 };
             };
             404: components["responses"]["Error"];
@@ -4726,6 +4859,7 @@ export interface operations {
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
                 "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 id: string;
@@ -4741,6 +4875,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            404: components["responses"]["Error"];
             409: components["responses"]["Error"];
         };
     };
@@ -7036,13 +7171,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Latest Coach report and pending questions. */
+            /** @description Current weekly assessment and discoverable Coach job. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CoachReport"];
+                    "application/json": components["schemas"]["CoachSnapshot"];
                 };
             };
         };
@@ -7061,11 +7196,20 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    period: string;
+                    period?: components["schemas"]["CoachPeriod"];
                 };
             };
         };
         responses: {
+            /** @description Current deterministic snapshot when no new wording is needed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoachSnapshot"];
+                };
+            };
             /** @description Bounded Coach job queued from deterministic evidence. */
             202: {
                 headers: {
@@ -7076,6 +7220,9 @@ export interface operations {
                 };
             };
             409: components["responses"]["Error"];
+            422: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+            503: components["responses"]["Error"];
         };
     };
     listCoachQuestions: {
@@ -7153,7 +7300,11 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CoachQuestion"];
+                    "application/json": {
+                        id: string;
+                        /** @constant */
+                        status: "dismissed";
+                    };
                 };
             };
         };

@@ -778,9 +778,9 @@ async fn submit(
                 // Publish the worker wake only after the commit is known
                 // (UCR-001 Q3). A replay of the same job id wakes again;
                 // an idempotent wake is harmless because the durable queue
-                // and its 500 ms poll remain authoritative.
-                if let Some(job_id) = reply.inner.get("job_id").and_then(|v| v.as_str()) {
-                    crate::jobs::wake(&state.jobs, job_id);
+                // and its 250 ms poll remain authoritative.
+                if reply.inner.get("job_id").and_then(|v| v.as_str()).is_some() {
+                    state.jobs.notify_one();
                 }
                 let mut response = Json(json!({
                     "ok": true,

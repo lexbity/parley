@@ -282,7 +282,7 @@ describe('CommandPalette destructive approval (U08)', () => {
     expect(wrapper.text()).toContain('Awaiting approval');
     expect(wrapper.text()).toContain('Gift A');
     await wrapper.findAll('button').find((button) => button.text() === 'Cancel')!.trigger('click');
-    expect(wrapper.get('[role="combobox"]').exists()).toBe(true);
+    expect(wrapper.find('[role="combobox"]').exists()).toBe(true);
     wrapper.unmount();
     vi.useRealTimers();
   });

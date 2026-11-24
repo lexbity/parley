@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Build the exact Linux x86_64 worker bundle from pinned local dependencies."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import tarfile
+import tempfile
+
+
+ROOT = Path(__file__).resolve().parents[1]
+NODE = "26.12.0"
+PI = "1.6.0"
+NODE_ARCHIVE = "fd47865ecd6391ebb431fc815e01b9135bf83ded5cf373247e9331e196b7aded"
+NODE_PREFIX = f"node-v{NODE}-linux-x64"
+SCHEMA_PATH = ROOT / "contract/agent/runtime-v1.schema.json"
+COACH_PATH = ROOT / "crates/parley-service/roles/coach/schema.json"
+KERNEL_CONTROLS = ["user", "net", "pid", "ipc", "uts", "disable_userns", "die_with_parent"]
+
+
+def digest(path):
+    with path.open("rb") as file:
+        return hashlib.file_digest(file, "sha256").hexdigest()
+
+
+def json_file(path, content):
+    path.write_text(json.dumps(content, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def node_files(archive, bundle):
+    if digest(archive) != NODE_ARCHIVE:
+        raise ValueError("Node archive checksum mismatch")
+    with tarfile.open(archive, "r:xz") as tar:
+        for source, dest, mode in [("bin/node", "node", 0o755), ("LICENSE", "licenses/node.txt", 0o644)]:
+            member = tar.getmember(f"{NODE_PREFIX}/{source}")
+            if not member.isfile():
+                raise ValueError("Node archive contains an invalid required member")
+            with tar.extractfile(member) as data, (bundle / dest).open("xb") as file:
+                shutil.copyfileobj(data, file)
+            (bundle / dest).chmod(mode)
+    version = subprocess.check_output([bundle / "node", "--version"], text=True).strip()
+    if version != f"v{NODE}":
+        raise ValueError("Node binary version mismatch")
+
+
+def dependency_licenses(inputs, bundle):
+    packages = {}
+    for member in inputs:
+        path = ROOT / member
+        if "node_modules" not in path.parts:
+            continue
+        for parent in path.parents:
+            if (parent / "package.json").is_file():
+                packages[parent] = json.loads((parent / "package.json").read_text(encoding="utf-8"))
+                break
+
+    index = {}
+    for parent, package in packages.items():
+        name = package["name"]
+        version = package["version"]
+        key = f"{name}@{version}"
+        if key in index:
+            continue
+        names = []
+        prefix = re.sub(r"[^a-zA-Z0-9._-]", "_", key)
+        for source in sorted(parent.iterdir()):
+            if not source.is_file() or not source.name.lower().startswith(("license", "licence", "copying", "notice")):
+                continue
+            dest = "licenses/" + prefix + "-" + source.name
+            shutil.copyfile(source, bundle / dest)
+            names.append(dest)
+        index[key] = {"license": package.get("license"), "files": names}
+    if f"@earendil-works/pi-ai@{PI}" not in index:
+        raise ValueError("Pi backend missing from dependency closure")
+    json_file(bundle / "licenses/index.json", index)
+
+
+def worker_files(bundle, staging):
+    # Esbuild's metafile supplies the exact dependency closure for the license inventory.
+    build_info = staging / "metafile.json"
+    esbuild = ROOT / "agent/node_modules/.bin/esbuild"
+    subprocess.run(
+        [
+            esbuild, "agent/src/main.mjs", "--bundle", "--platform=node", "--target=node26",
+            "--format=esm", "--legal-comments=external",
+            "--banner:js=import {createRequire as bundleCreateRequire} from 'node:module'; const require = bundleCreateRequire(import.meta.url);",
+            f"--outfile={bundle / 'worker.mjs'}", f"--metafile={build_info}",
+        ],
+        cwd=ROOT, check=True, stdout=subprocess.DEVNULL,
+    )
+    outputs = json.loads(build_info.read_text(encoding="utf-8"))
+    dependency_licenses(outputs["inputs"], bundle)
+    shutil.copyfile(SCHEMA_PATH, bundle / "runtime-v1.schema.json")
+    shutil.copyfile(COACH_PATH, bundle / "coach.schema.json")
+    build_digest = digest(bundle / "worker.mjs")
+    (bundle / "worker-build").write_text(build_digest + "\n", encoding="ascii")
+    return build_digest
+
+
+def write_manifest(bundle, worker_build):
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    members = {
+        path.relative_to(bundle).as_posix(): {"bytes": path.stat().st_size, "sha256": digest(path)}
+        for path in bundle.rglob("*") if path.is_file()
+    }
+    json_file(bundle / "runtime-manifest.json", {
+        "platform": "linux-x86_64",
+        "node_version": NODE,
+        "pi_version": PI,
+        "protocol_major": 1,
+        "lockfile_digest": digest(ROOT / "pnpm-lock.yaml"),
+        "build_revision": revision,
+        "worker_build": worker_build,
+        "schema_digest": digest(SCHEMA_PATH),
+        "kernel_controls": KERNEL_CONTROLS,
+        "members": members,
+    })
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--node-archive", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    args = parser.parse_args()
+    if not args.output.is_absolute() or args.output.exists() or args.output.is_symlink():
+        parser.error("--output must be a new absolute directory")
+    os.umask(0o022)
+    with tempfile.TemporaryDirectory(prefix=".build-agent-", dir=args.output.parent) as scratch:
+        staging = Path(scratch)
+        bundle = staging / "bundle"
+        (bundle / "licenses").mkdir(parents=True)
+        node_files(args.node_archive, bundle)
+        worker_build = worker_files(bundle, staging)
+        write_manifest(bundle, worker_build)
+        bundle.rename(args.output)
+    print(digest(args.output / "runtime-manifest.json"))
+
+
+if __name__ == "__main__":
+    main()

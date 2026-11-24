@@ -1,10 +1,11 @@
+import type { ProviderConfig, ProviderPairing } from '../src/api/client';
 import { allowedAssertion } from '../src/features/parties/relations.ts';
 import { parsePartyCsv, previewCsv, importDigest, maxImportRows, maxImportBytes } from '../mock/party-import.ts';
 import type { PartyImportMapping, PartyImportPreview } from '../src/api/client';
 import { createHash, randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
-import { buildDailyQueue, buildInsights, PACK_DOCUMENTS, validatePackDocument } from '../mock/coach.ts';
+import { buildDailyQueue, buildInsights, isWeekPeriod, PACK_DOCUMENTS, validatePackDocument, weekPeriod } from '../mock/coach.ts';
 import { adminImpact, adminOverview, adminPreview as encodeAdminPreview, type AdminBackupRecord, type AdminOperation } from '../mock/admin.ts';
 
 /**
@@ -101,7 +102,7 @@ export interface MockApi {
   issueBootstrap(): string;
 }
 
-export function createMockApi({ pauseExtractor = false } = {}): MockApi {
+export function createMockApi({ pauseExtractor = false, coachOnline = false } = {}): MockApi {
   let epoch = 'ffeeddccbbaa99887766554433221100';
   const bootstraps = new Map<string, number>();
   const sessions = new Map<string, string>();
@@ -153,6 +154,13 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
   const resolutions = new Map<string, RecordData>();
   const capacityLedger = new Map<string, RecordData>();
   const coachQuestions = new Map<string, RecordData>();
+  const coachJobs = new Map<string, RecordData>();
+  const coachReports = new Map<string, { report: RecordData; input_digest: string }>();
+  const coachTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  function clearCoachTimers() {
+    for (const timer of coachTimers.values()) clearTimeout(timer);
+    coachTimers.clear();
+  }
   const validatedPacks = new Map<string, RecordData>();
   let activePackId = PACK_DOCUMENTS[0]!.id;
   let activePackVersion = PACK_DOCUMENTS[0]!.version;
@@ -164,7 +172,12 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
   ];
   const placements = new Map<string, { list_id: string; position: number; placement_revision: number }>();
   const notesByOpportunity = new Map<string, { markdown: string; revision: number }>();
-  let provider = { endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' };
+  const defaultProvider = (): ProviderConfig => ({
+    endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en',
+    profile_revision: 1, pairing: null,
+    structured: { status: 'unqualified', diagnostic: null, checked_at: null, probe_id: null },
+  });
+  let provider = defaultProvider();
   const receipts = new Map<string, { digest: string; result: RecordData; status?: number }>();
   // U02 authoritative run and turn rows survive snapshots; worker timers,
   // replay keys and pending leases are transient and are scrubbed on restore.
@@ -232,10 +245,15 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       else if (Array.isArray(current) && Array.isArray(saved)) current.splice(0, current.length, ...deepClone(saved));
     }
     clearAgentTimers();
+    clearCoachTimers();
+    coachJobs.clear();
+    coachQuestions.clear();
+    coachReports.clear();
     agentStartKeys.clear();
     agentCancelKeys.clear();
     const owner = snapshot.owner as RecordData;
     provider = deepClone(owner.provider as typeof provider);
+    provider.structured = defaultProvider().structured;
     Object.assign(questionBank, deepClone(owner.questionBank as typeof questionBank));
     prompts.clear(); for (const [key, value] of owner.prompts as Map<string, RecordData>) prompts.set(key, deepClone(value));
     embeddingModel = String(owner.embeddingModel);
@@ -1828,8 +1846,9 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
           if (value instanceof Map) value.clear(); else if (Array.isArray(value)) value.splice(0, value.length);
         }
         directory.clear(); opportunities.clear(); sends.clear(); threads.clear(); outcomes.clear(); resolutions.clear(); adminBackups.splice(0, adminBackups.length);
+        clearCoachTimers(); coachJobs.clear(); coachReports.clear();
         partySuppression.clear(); receipts.clear(); adminPreviews.clear(); adminJobs.clear();
-        provider = { endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' };
+        provider = defaultProvider();
         Object.assign(questionBank, { version_id: 'question-bank-v1', content: { version: 1, questions: { proof: [{ id: 'result', text: 'What changed, and how did you measure the result?' }], gift: [{ id: 'offer', text: 'What useful thing could you offer?' }], artifact: [{ id: 'artifact', text: 'What have you made?' }] } } });
         prompts.clear();
         prompts.set('interviewer', { role: 'interviewer', version_id: 'interviewer-v1', version: 1, content: 'Bundled Interviewer policy', sha256: 'a'.repeat(64) });
@@ -2397,22 +2416,82 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       return json(response, 200, { ...result, items });
     }
     if (url.pathname === '/api/v1/insights' && request.method === 'GET') {
-      const end = new Date(testClock);
-      const start = new Date(end);
-      start.setUTCDate(start.getUTCDate() - ((start.getUTCDay() + 6) % 7));
-      const periodStart = start.toISOString().slice(0, 10);
-      const periodEndDate = new Date(start); periodEndDate.setUTCDate(periodEndDate.getUTCDate() + 6);
-      return json(response, 200, buildInsights([...sends.values()], outcomes, resolutions, periodStart, periodEndDate.toISOString().slice(0, 10), now(), activePackId, activePackVersion, [...coachQuestions.values()]));
+      return json(response, 200, buildInsights([...sends.values()], outcomes, now(), String(events.length)));
     }
-    if (url.pathname === '/api/v1/coach/run' && request.method === 'POST') {
-      const open = [...coachQuestions.values()].filter((question) => question.state === 'open');
-      if (!open.length && opportunities.size && [...materialRecords.values()].filter((material) => material.status === 'approved').length === 0) {
+    if (url.pathname === '/api/v1/coach/weekly') {
+      const currentPeriod = weekPeriod(new Date(testClock));
+      const snapshot = (period: string) => {
+        const jobs = [...coachJobs.values()].filter((job) => (job.scope as RecordData).period === period);
+        const report = coachReports.get(period);
+        return {
+          period,
+          as_of: new Date(testClock).toISOString(),
+          report: report?.report ?? null,
+          input_digest: report?.input_digest ?? null,
+          active_job_id: jobs.find((job) => job.status === 'queued' || job.status === 'running')?.id ?? null,
+          latest_job_id: jobs.at(-1)?.id ?? null,
+          coverage: { current: 0, missing: opportunities.size, stale: 0, no_match: 0 },
+          observations: [{ reason: 'missing_identity', target: { scope: 'owner' }, impact: 1 }],
+        };
+      };
+      if (request.method === 'GET') return json(response, 200, snapshot(currentPeriod));
+      if (request.method === 'POST') {
+        let input: RecordData;
+        try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+        const period = 'period' in input ? input.period : currentPeriod;
+        if (!isWeekPeriod(period) || period > currentPeriod || Object.keys(input).some((key) => key !== 'period')) {
+          return fail(response, 422, 'PERIOD_INVALID', 'Select a valid current or historical ISO week.');
+        }
+        const key = request.headers['idempotency-key'];
+        if (typeof key !== 'string' || !key || key.length > 200) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+        const digest = createHash('sha256').update(JSON.stringify([url.pathname, input])).digest('hex');
+        const prior = receipts.get(key);
+        if (prior) {
+          return prior.digest === digest ? json(response, prior.status ?? 200, prior.result)
+            : fail(response, 409, 'IDEMPOTENCY_MISMATCH', 'Use a fresh key for a different request.');
+        }
+        const current = snapshot(period);
+        const save = (status: number, result: RecordData) => {
+          receipts.set(key, { digest, result, status });
+          return json(response, status, result);
+        };
+        if (current.active_job_id) return save(202, { job_id: current.active_job_id, status: 'queued', period });
+        if (coachQuestions.size >= 5 || [...coachQuestions.values()].some((question) => question.kind === 'missing_identity')) return save(200, current);
+        if (!coachOnline) return fail(response, 503, 'CAPABILITY_UNQUALIFIED', 'A qualified local model is required.');
         const id = randomHex();
-        coachQuestions.set(id, { id, kind: 'missing_material', text: 'Which useful material could be prepared for an active opportunity?', target_kind: 'opportunity', target_id: String(opportunities.keys().next().value), impact: opportunities.size, state: 'open' });
+        const admittedEpoch = epoch;
+        const job = {
+          id, role: 'coach', status: 'queued', state_revision: 1, attempt_count: 0, scope: { kind: 'weekly', period },
+          progress: null, error_code: null as string | null, review_ref: null as RecordData | null,
+        };
+        coachJobs.set(id, job);
+        job.status = 'running';
+        job.state_revision += 1;
+        job.attempt_count += 1;
+        const timer = setTimeout(() => {
+          coachTimers.delete(id);
+          if (epoch !== admittedEpoch || job.status !== 'running') return;
+          const questionId = randomHex();
+          const reportId = randomHex();
+          coachQuestions.set(questionId, {
+            id: questionId, kind: 'missing_identity', text: 'Which professional interests do you share with the people you work with?',
+            target: { scope: 'owner' }, impact: 1, priority: 0, status: 'open',
+          });
+          coachReports.set(period, { report: { question_count: 1 }, input_digest: digest });
+          job.state_revision += 1;
+          job.status = 'succeeded';
+          job.review_ref = { kind: 'coach_report', id: reportId };
+          pushEvent({ event_id: randomHex(), entity_type: 'coach_report', entity_id: reportId, revision: 1, event_type: 'coach.report_generated', payload: {} });
+        }, 6_000);
+        timer.unref();
+        coachTimers.set(id, timer);
+        return save(202, { job_id: id, status: 'queued', period });
       }
-      const jobId = randomHex();
-      roleJobs.set(jobId, { id: jobId, role: 'coach', status: 'succeeded', result: { snapshot: now() }, last_error: null });
-      return json(response, 202, { job_id: jobId, status: 'queued' });
+    }
+    if (url.pathname === '/api/v1/coach/questions' && request.method === 'GET') {
+      const items = [...coachQuestions.values()].filter((question) => question.status === 'open')
+        .sort((a, b) => Number(a.priority) - Number(b.priority) || Number(b.impact) - Number(a.impact));
+      return json(response, 200, { items, open_count: items.length, max_open: 5 });
     }
     if (url.pathname === '/api/v1/settings' && request.method === 'GET') {
       const available = PACK_DOCUMENTS.map((pack) => ({ ...pack }));
@@ -2438,12 +2517,20 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       activePackId = String(input.pack_id); activePackVersion = String(input.version); activePackDocument = validated.normalized_document as string; packSettingsRevision += 1;
       return json(response, 200, { revision: packSettingsRevision, active_pack_id: activePackId, active_pack_version: activePackVersion, active_document: activePackDocument, available_packs: [...PACK_DOCUMENTS.map((pack) => ({ ...pack })), ...(PACK_DOCUMENTS.some((pack) => pack.id === activePackId && pack.version === activePackVersion) ? [] : [{ id: activePackId, name: activePackId, version: activePackVersion, document: activePackDocument }])] });
     }
-    const questionDismissMatch = /^\/api\/v1\/questions\/([^/]+)\/dismiss$/.exec(url.pathname);
+    const questionDismissMatch = /^\/api\/v1\/coach\/questions\/([^/]+)\/dismiss$/.exec(url.pathname);
     if (questionDismissMatch && request.method === 'POST') {
-      const question = coachQuestions.get(questionDismissMatch[1]!);
-      if (!question) return fail(response, 404, 'QUESTION_NOT_FOUND', 'Coach question does not exist');
-      question.state = 'dismissed';
-      return json(response, 200, { id: question.id, state: question.state });
+      const id = questionDismissMatch[1]!;
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+      const digest = createHash('sha256').update(url.pathname).digest('hex');
+      const prior = receipts.get(key);
+      if (prior) return prior.digest === digest ? json(response, 200, prior.result) : fail(response, 409, 'IDEMPOTENCY_MISMATCH', 'Use a fresh key.');
+      const question = coachQuestions.get(id);
+      if (question?.status !== 'open') return fail(response, 409, 'QUESTION_CLOSED', 'Question is absent or already closed');
+      question.status = 'dismissed';
+      const result = { id, status: 'dismissed' };
+      receipts.set(key, { digest, result });
+      return json(response, 200, result);
     }
     // --- Resource board (R01) ---
     if (url.pathname === '/api/v1/resource-board' && request.method === 'GET') {
@@ -3367,15 +3454,29 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
 
     const jobMatch = /^\/api\/v1\/jobs\/([^/]+)$/.exec(url.pathname);
     if (jobMatch && request.method === 'GET') {
-      const job = extractorJobs.get(jobMatch[1]!);
-      return job ? json(response, 200, job) : fail(response, 404, 'NOT_FOUND', 'Extractor job does not exist');
+      const job = extractorJobs.get(jobMatch[1]!) ?? coachJobs.get(jobMatch[1]!);
+      return job ? json(response, 200, job) : fail(response, 404, 'JOB_NOT_FOUND', 'Job does not exist');
     }
     if (jobMatch && request.method === 'POST') {
-      const job = extractorJobs.get(jobMatch[1]!);
-      if (!job) return fail(response, 404, 'NOT_FOUND', 'Extractor job does not exist');
+      const id = jobMatch[1]!;
+      const job = extractorJobs.get(id) ?? coachJobs.get(id);
+      if (!job) return fail(response, 404, 'JOB_NOT_FOUND', 'Job does not exist');
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key || key.length > 200) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+      const digest = createHash('sha256').update(url.pathname).digest('hex');
+      const prior = receipts.get(key);
+      if (prior) return prior.digest === digest ? json(response, 204, null) : fail(response, 409, 'IDEMPOTENCY_MISMATCH', 'Use a fresh key.');
       if (!['queued', 'running'].includes(String(job.status))) return fail(response, 409, 'JOB_TERMINAL', 'Terminal jobs cannot be cancelled');
       job.status = 'cancelled';
-      job.last_error = 'Cancelled by owner';
+      if (job.role === 'coach') {
+        clearTimeout(coachTimers.get(id));
+        coachTimers.delete(id);
+        job.state_revision = Number(job.state_revision) + 1;
+        job.error_code = 'CANCELLED';
+      } else {
+        job.last_error = 'Cancelled by owner';
+      }
+      receipts.set(key, { digest, result: {}, status: 204 });
       return json(response, 204, null);
     }
     const resolveMatch = /^\/api\/v1\/proposals\/([^/]+)\/resolve$/.exec(url.pathname);
@@ -3395,11 +3496,59 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
 
     if (url.pathname === '/api/v1/agent/provider' && request.method === 'GET') return json(response, 200, provider);
     if (url.pathname === '/api/v1/agent/provider' && request.method === 'PUT') {
-      provider = await readBody(request) as typeof provider;
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      if (input.expected_profile_revision !== provider.profile_revision) return fail(response, 412, 'PROFILE_CHANGED', 'The saved model profile changed.');
+      const fields = ['endpoint', 'model', 'num_ctx', 'num_predict', 'locale', 'pairing', 'expected_profile_revision'];
+      if (Object.keys(input).some((key) => !fields.includes(key))
+        || typeof input.endpoint !== 'string' || !/^http:\/\/(?:127\.0\.0\.1|\[::1\]):[1-9][0-9]{0,4}$/.test(input.endpoint)
+        || typeof input.model !== 'string' || typeof input.num_ctx !== 'number' || !Number.isInteger(input.num_ctx)
+        || input.num_ctx < 1024 || input.num_ctx > 131072
+        || typeof input.num_predict !== 'number' || !Number.isInteger(input.num_predict)
+        || input.num_predict < 64 || input.num_predict > 8192 || typeof input.locale !== 'string') {
+        return fail(response, 422, 'PROFILE_INVALID', 'Review the local endpoint and context settings.');
+      }
+      let pairing: ProviderPairing | null = null;
+      if (input.pairing !== undefined) {
+        const details = input.pairing as RecordData | null;
+        const digest = /^[0-9a-f]{64}$/;
+        const maxTokens = input.num_ctx - Math.ceil(input.num_ctx / 10) - input.num_predict;
+        if (!details || typeof details !== 'object' || Object.keys(details).length !== 4
+          || typeof details.provider_version !== 'string' || !details.provider_version.trim()
+          || typeof details.model_digest !== 'string' || !digest.test(details.model_digest)
+          || typeof details.tokenizer_digest !== 'string' || !digest.test(details.tokenizer_digest)
+          || typeof details.template_tokens !== 'number' || !Number.isInteger(details.template_tokens)
+          || details.template_tokens < 0 || details.template_tokens >= maxTokens) {
+          return fail(response, 422, 'PROFILE_INVALID', 'Review the provisioned pairing identity and token allowance.');
+        }
+        pairing = {
+          provider_version: details.provider_version, model_digest: details.model_digest,
+          tokenizer_digest: details.tokenizer_digest, template_tokens: details.template_tokens,
+        };
+      }
+      provider = {
+        endpoint: input.endpoint, model: input.model, num_ctx: input.num_ctx, num_predict: input.num_predict, locale: input.locale,
+        profile_revision: provider.profile_revision + 1, pairing, structured: defaultProvider().structured,
+      };
       return json(response, 204, null);
     }
     if (url.pathname === '/api/v1/agent/provider/health' && request.method === 'POST') {
-      return json(response, 200, { available: false, model: provider.model, models: [], message: 'Local provider is unavailable in the mock workspace.' });
+      if (!provider.pairing) {
+        return json(response, 200, { available: false, model: provider.model, models: [], message: 'Local provider is unavailable in the mock workspace.' });
+      }
+      if (provider.structured.status !== 'queued' && provider.structured.status !== 'running') {
+        const profile = provider;
+        const admittedEpoch = epoch;
+        profile.structured = { status: 'queued', diagnostic: null, checked_at: null, probe_id: randomHex() };
+        const timer = setTimeout(() => {
+          if (epoch !== admittedEpoch || provider !== profile) return;
+          const status = coachOnline ? 'probe_succeeded' : 'failed';
+          const diagnostic = coachOnline ? null : 'MODEL_UNAVAILABLE';
+          profile.structured = { ...profile.structured, status, diagnostic, checked_at: now() };
+        }, 150);
+        timer.unref();
+      }
+      return json(response, 202, { available: false, model: provider.model, models: [], message: 'Structured-output check in progress.', structured: provider.structured });
     }
     return fail(response, 404, 'NOT_FOUND', 'Endpoint does not exist');
   }

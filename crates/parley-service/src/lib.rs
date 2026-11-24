@@ -240,6 +240,7 @@ mod blob;
 mod board;
 mod commands;
 mod generation;
+mod inference;
 mod jobs;
 mod maintenance;
 mod parties;
@@ -527,8 +528,6 @@ pub struct Workspace {
     /// Adopted-operation generation token. A generation publisher holds the
     /// exclusive lock; writer jobs hold the shared lock.
     generation: Arc<tokio::sync::RwLock<u64>>,
-    /// One active local inference across fixed roles and delegated runs.
-    inference: Arc<tokio::sync::Semaphore>,
 }
 
 impl Workspace {
@@ -627,7 +626,6 @@ impl Workspace {
             database_path: path.to_path_buf(),
             command_secret,
             generation,
-            inference: Arc::new(tokio::sync::Semaphore::new(1)),
         };
         maintenance::initialize_settings(&workspace).await?;
         maintenance::complete_startup_operations(&workspace, removed_generation_bytes).await?;
@@ -698,12 +696,6 @@ impl Workspace {
 
     pub async fn generation_token(&self) -> u64 {
         *self.generation.read().await
-    }
-
-    /// The single local inference lane. Fixed-role jobs and delegated runs
-    /// share this permit; waiting runs release it while awaiting owner input.
-    pub(crate) fn inference(&self) -> Arc<tokio::sync::Semaphore> {
-        self.inference.clone()
     }
 
     pub async fn bump_generation(&self) {
@@ -2141,7 +2133,7 @@ pub(crate) struct AppState {
     authority: String,
     bootstrap: Arc<Mutex<HashMap<String, Instant>>>,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
-    pub(crate) jobs: jobs::Queue,
+    pub(crate) jobs: Arc<tokio::sync::Notify>,
     pub(crate) restart: tokio::sync::watch::Sender<bool>,
     pub(crate) registry: Arc<commands::Registry>,
     pub(crate) writer: Arc<application::writer::Writer>,
@@ -2183,7 +2175,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
     let _ = workspace.reconcile_deadlines(&now_utc()).await;
     let (restart_sender, restart_receiver) = tokio::sync::watch::channel(false);
     let restart_wait = restart_receiver.clone();
-    let (jobs, job_task) = jobs::start(workspace.clone(), 32);
+    let jobs = Arc::new(tokio::sync::Notify::new());
     // One owner session polls the same writer; the delegated runtime starts
     // after AppState construction below so it can dispatch through the
     // registry with a server-derived actor.
@@ -2239,7 +2231,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         notify,
         sse_connections,
     };
-    let agent_task = agent_runtime::start(Arc::new(state.clone()));
+    let inference_task = inference::dispatch::start(Arc::new(state.clone()));
     let bootstrap_shared = state.bootstrap.clone();
     let mut shell = Router::new().route("/", get(index));
     for tab in [
@@ -2311,13 +2303,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         task,
         restart: restart_wait,
         restart_sender,
-        background: vec![
-            job_task,
-            writer_task,
-            reconcile_task,
-            backup_task,
-            agent_task,
-        ],
+        background: vec![inference_task, writer_task, reconcile_task, backup_task],
     })
 }
 
@@ -3684,8 +3670,8 @@ async fn save_capture(
         .await
     {
         Ok((job_id, full)) => {
-            if let Some(job_id) = &job_id {
-                jobs::wake(&state.jobs, job_id);
+            if job_id.is_some() {
+                state.jobs.notify_one();
             }
             let mut response = (StatusCode::CREATED, Json(full)).into_response();
             private_headers(&mut response, state.workspace.epoch());

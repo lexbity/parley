@@ -2,11 +2,7 @@ packages:
   - agent
   - web
 
-# Dependency build-script policy (pnpm 12 `allowBuilds`; true allows the
-# package's lifecycle scripts, false denies them). esbuild is the only
-# approved build script. The pi agent's transitive postinstalls are
-# deliberately denied — upstream documents installing pi with
-# `--ignore-scripts`, so we match that guidance instead of approving scripts.
+# Esbuild is the sole production build script authorized by the workspace.
 allowBuilds:
   esbuild: true
   '@google/genai': false

@@ -23,7 +23,9 @@ SLICE_ORDER = (
     [f"s{n:02d}" for n in range(1, 13)]
     + [f"p{n:02d}" for n in range(1, 5)]
     + [f"r{n:02d}" for n in range(1, 5)]
-    + [f"u{n:02d}" for n in range(1, 10)]
+    + [f"u{n:02d}" for n in range(1, 8)]
+    + [f"ar{n:02d}" for n in range(1, 10)]
+    + [f"u{n:02d}" for n in range(8, 10)]
 )
 
 

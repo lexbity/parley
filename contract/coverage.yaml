@@ -2070,3 +2070,32 @@ slices:
       owner_role: owner
       package_target: mock
       evidence_path: evidence/u08.md
+  ar01:
+    - requirement: FR-1
+      operationId: generateWeeklyCoachReport
+      test_id: ar01_weekly_coach_starts_cancels_and_recovers
+      fixture_id: coach
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar01.md
+    - requirement: FR-2
+      operationId: getWeeklyCoachReport
+      test_id: ar01_offline_coach_retains_deterministic_insights
+      fixture_id: coach
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar01.md
+    - requirement: FR-9
+      operationId: cancelJob
+      test_id: ar01_weekly_coach_starts_cancels_and_recovers
+      fixture_id: coach
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar01.md
+    - requirement: FR-12
+      operationId: checkAgentProvider
+      test_id: ar01_probe_capacity_and_activation_are_database_fenced
+      fixture_id: coach
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar01.md

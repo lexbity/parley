@@ -62,7 +62,7 @@ function stub(initialPhases: Record<string, SheetPhase> = {}) {
     return { ...sheetResponse, rows, total: rows.length };
   });
   vi.spyOn(parley, 'getDailyQueue').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', pack_id: 'job_search', pack_version: '1.0.0', daily_cap: 12, actionable_count: 0, deferred_count: 0, items: [] });
-  vi.spyOn(parley, 'getInsights').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', period_start: '2026-11-14', period_end: '2026-11-21', pack_id: 'job_search', pack_version: '1.0.0', sample_size: 0, metrics: [], comparisons: [], gaps: [], questions: [] });
+  vi.spyOn(parley, 'getInsights').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', event_cursor: '0', effective_outcomes: [], rates: [], strata: [], comparisons: [] });
   vi.spyOn(parley, 'createOpportunity').mockResolvedValue({ id: 'o3', title: 'Created', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: [] });
   vi.spyOn(parley, 'setOpportunityPhase').mockImplementation(async (id: string, input: { expected_phase_revision: number; target_stage_id: string; original_event_id?: string | null }): Promise<SetPhaseResult> => {
     const current = phaseState.get(id) ?? null;
@@ -195,7 +195,7 @@ describe('QueueWorkspace sheet: search, phase edit, undo', () => {
     vi.spyOn(parley, 'connect').mockResolvedValue();
     vi.spyOn(parley, 'getQueueSheet').mockRejectedValueOnce(new Error('read failed')).mockResolvedValue(sheetResponse);
     vi.spyOn(parley, 'getDailyQueue').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', pack_id: 'job_search', pack_version: '1.0.0', daily_cap: 12, actionable_count: 0, deferred_count: 0, items: [] });
-    vi.spyOn(parley, 'getInsights').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', period_start: '2026-11-14', period_end: '2026-11-21', pack_id: 'job_search', pack_version: '1.0.0', sample_size: 0, metrics: [], comparisons: [], gaps: [], questions: [] });
+    vi.spyOn(parley, 'getInsights').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', event_cursor: '0', effective_outcomes: [], rates: [], strata: [], comparisons: [] });
     const wrapper = mount(QueueWorkspace, { props: { parties, outputs: [] } });
     await flushPromises();
     expect(wrapper.text()).toContain('Could not load scenarios');
@@ -215,7 +215,7 @@ describe('QueueWorkspace sheet: search, phase edit, undo', () => {
       rows: [sheetResponse.rows[1]!, sheetResponse.rows[0]!],
     });
     vi.spyOn(parley, 'getDailyQueue').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', pack_id: 'job_search', pack_version: '1.0.0', daily_cap: 12, actionable_count: 0, deferred_count: 0, items: [] });
-    vi.spyOn(parley, 'getInsights').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', period_start: '2026-11-14', period_end: '2026-11-21', pack_id: 'job_search', pack_version: '1.0.0', sample_size: 0, metrics: [], comparisons: [], gaps: [], questions: [] });
+    vi.spyOn(parley, 'getInsights').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', event_cursor: '0', effective_outcomes: [], rates: [], strata: [], comparisons: [] });
     const wrapper = mount(QueueWorkspace, { props: { parties, outputs: [] } });
     await flushPromises();
     expect((wrapper.get('input[aria-label="Find scenario"]').element as HTMLInputElement).value).toBe('fixture');
@@ -259,7 +259,7 @@ describe('QueueWorkspace sheet: search, phase edit, undo', () => {
     vi.spyOn(parley, 'connect').mockResolvedValue();
     vi.spyOn(parley, 'getQueueSheet').mockResolvedValue(dated);
     vi.spyOn(parley, 'getDailyQueue').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', pack_id: 'job_search', pack_version: '1.0.0', daily_cap: 12, actionable_count: 0, deferred_count: 0, items: [] });
-    vi.spyOn(parley, 'getInsights').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', period_start: '2026-11-14', period_end: '2026-11-21', pack_id: 'job_search', pack_version: '1.0.0', sample_size: 0, metrics: [], comparisons: [], gaps: [], questions: [] });
+    vi.spyOn(parley, 'getInsights').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', event_cursor: '0', effective_outcomes: [], rates: [], strata: [], comparisons: [] });
     const wrapper = mount(QueueWorkspace, { props: { parties, outputs: [] } });
     await flushPromises();
     const cells = wrapper.findAll('td.date');
@@ -276,7 +276,7 @@ describe('QueueWorkspace sheet: search, phase edit, undo', () => {
       .mockResolvedValueOnce({ ...sheetResponse, rows: sheetResponse.rows, total: 2, next_cursor: null });
     void sheet;
     vi.spyOn(parley, 'getDailyQueue').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', pack_id: 'job_search', pack_version: '1.0.0', daily_cap: 12, actionable_count: 0, deferred_count: 0, items: [] });
-    vi.spyOn(parley, 'getInsights').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', period_start: '2026-11-14', period_end: '2026-11-21', pack_id: 'job_search', pack_version: '1.0.0', sample_size: 0, metrics: [], comparisons: [], gaps: [], questions: [] });
+    vi.spyOn(parley, 'getInsights').mockResolvedValue({ as_of: '2026-11-21T12:00:00Z', event_cursor: '0', effective_outcomes: [], rates: [], strata: [], comparisons: [] });
     const wrapper = mount(QueueWorkspace, { props: { parties, outputs: [] } });
     await flushPromises();
     expect(wrapper.findAll('tbody tr[data-opportunity-id]')).toHaveLength(1);

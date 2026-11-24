@@ -52,19 +52,55 @@ export function wilson(k: number, n: number) {
   return { rate: p, lower: Math.max(0, center - half), upper: Math.min(1, center + half), state: 'measured' as const };
 }
 
-export function buildInsights(sends: Row[], outcomes: Map<string, Row>, resolutions: Map<string, Row>, periodStart: string, periodEnd: string, asOf: string, packId: string, packVersion: string, questions: Row[] = []) {
+export function buildInsights(sends: Row[], outcomes: Map<string, Row>, asOf: string, eventCursor: string) {
   const firstTouches = sends.filter((send) => Number(send.touch_no) === 1);
-  const replyCount = firstTouches.filter((send) => {
-    const outcome = outcomes.get(String(send.id));
-    return !!outcome && !['no_reply'].includes(String(outcome.class));
-  }).length;
-  const advanceCount = firstTouches.filter((send) => ['rung_accepted', 'call_scheduled'].includes(String(outcomes.get(String(send.id))?.class))).length;
-  const closed = [...resolutions.values()];
-  const mutualCount = closed.filter((resolution) => resolution.result === 'mutual_win').length;
-  const makeMetric = (id: string, label: string, k: number, n: number) => ({ id, label, numerator: k, denominator: n, ...wilson(k, n) });
-  const metrics = [makeMetric('reply_rate', 'Reply rate · first touches', replyCount, firstTouches.length), makeMetric('advance_rate', 'Advance rate · first touches', advanceCount, firstTouches.length), makeMetric('mutual_win_rate', 'Owner-reported mutual wins', mutualCount, closed.length)];
-  const gaps = questions.filter((question) => question.state === 'open').map((question) => ({ id: String(question.id), label: String(question.text), covered: 0, total: Math.max(1, Number(question.impact)), blocked_count: Number(question.impact), suggested_kind: String(question.kind) }));
-  return { as_of: asOf, period_start: periodStart, period_end: periodEnd, pack_id: packId, pack_version: packVersion, sample_size: firstTouches.length, metrics, comparisons: [], gaps, questions: questions.map((question) => ({ id: String(question.id), kind: String(question.kind), text: String(question.text), target_kind: String(question.target_kind), target_id: String(question.target_id), impact: Number(question.impact), state: String(question.state) })) };
+  const effectiveClass = (send: Row) => String(outcomes.get(String(send.id))?.class ?? 'no_outcome');
+  const replied = (send: Row) => !['no_outcome', 'no_reply'].includes(effectiveClass(send));
+  const advances = firstTouches.filter((send) => ['rung_accepted', 'call_scheduled'].includes(effectiveClass(send)));
+  const measure = (k: number, n: number) => {
+    const { lower, upper } = wilson(k, n);
+    return { k, n, interval_95: lower === null ? null : { lower_95: lower, upper_95: upper } };
+  };
+  const strata = new Map<string, Row[]>();
+  for (const send of firstTouches) {
+    if (!Array.isArray(send.segment_ids_snapshot)) continue;
+    for (const id of send.segment_ids_snapshot) {
+      if (typeof id === 'string') strata.set(id, [...(strata.get(id) ?? []), send]);
+    }
+  }
+  const counts = new Map<string, number>();
+  for (const outcome of outcomes.values()) {
+    const kind = String(outcome.class);
+    counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  }
+  return {
+    as_of: asOf,
+    event_cursor: eventCursor,
+    effective_outcomes: Array.from(counts).sort(([a], [b]) => a.localeCompare(b))
+      .map(([kind, count]) => ({ class: kind, count })),
+    rates: [
+      { metric: 'reply_rate', ...measure(firstTouches.filter(replied).length, firstTouches.length) },
+      { metric: 'advance_rate', ...measure(advances.length, firstTouches.length) },
+    ],
+    strata: Array.from(strata).sort(([a], [b]) => a.localeCompare(b))
+      .map(([segment_id, matches]) => ({ segment_id, reply_rate: measure(matches.filter(replied).length, matches.length) })),
+    comparisons: [],
+  };
+}
+
+export function weekPeriod(date: Date): string {
+  const thursday = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  thursday.setUTCDate(thursday.getUTCDate() + 3 - ((thursday.getUTCDay() + 6) % 7));
+  const year = thursday.getUTCFullYear();
+  const yearStart = Date.UTC(year, 0, 1);
+  const week = Math.ceil(((thursday.getTime() - yearStart) / 86_400_000 + 1) / 7);
+  return `${year}-W${String(week).padStart(2, '0')}`;
+}
+
+export function isWeekPeriod(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const match = /^(\d{4})-W(0[1-9]|[1-4][0-9]|5[0-3])$/.exec(value);
+  return Boolean(match && weekPeriod(new Date(`${match[1]}-12-28T00:00:00Z`)) >= value);
 }
 
 export function validatePackDocument(document: string) {

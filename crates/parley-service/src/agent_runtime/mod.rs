@@ -16,36 +16,9 @@ pub(crate) const LEASE_SECONDS: i64 = turn::LEASE_SECONDS;
 
 use axum::Router;
 use serde_json::{Value, json};
-use std::{sync::Arc, time::Duration};
-use tokio::task::JoinHandle;
 
 pub(super) fn routes() -> Router<crate::AppState> {
     http::routes()
-}
-
-/// Recover interrupted turns at startup and run the bounded scan loop. A
-/// waiting run holds no lease; a lost wake is recovered by the 250 ms scan.
-pub(super) fn start(state: Arc<crate::AppState>) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut stop = state.restart.subscribe();
-        recover(&state.workspace).await;
-        loop {
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_millis(250)) => {}
-                _ = stop.changed() => break,
-            }
-            let candidates: Vec<String> = sqlx::query_scalar(
-                "SELECT run_id FROM agent_run WHERE epoch=? AND state IN ('queued','waiting_owner','waiting_job') ORDER BY created_at, run_id LIMIT 4",
-            )
-            .bind(state.workspace.epoch())
-            .fetch_all(state.workspace.pool())
-            .await
-            .unwrap_or_default();
-            for run_id in candidates {
-                process_run(&state, &run_id).await;
-            }
-        }
-    })
 }
 
 pub(crate) async fn recover(workspace: &crate::Workspace) {
@@ -59,7 +32,7 @@ pub(crate) async fn recover(workspace: &crate::Workspace) {
     .await;
 }
 
-async fn process_run(state: &crate::AppState, run_id: &str) {
+pub(crate) async fn process_run(state: &crate::AppState, run_id: &str) {
     let epoch = state.workspace.epoch().to_owned();
     let secret = state.workspace.command_secret();
     let actor = {
@@ -88,11 +61,6 @@ async fn process_run(state: &crate::AppState, run_id: &str) {
         .unwrap_or(None);
         row.unwrap_or((0, false))
     };
-
-    // Hold the single inference lane for this turn; discarded when the run
-    // ends or waits, so queued runs and fixed roles alternate fairly.
-    let inference = state.workspace.inference();
-    let _inference = inference.acquire().await;
 
     // U08: re-dispatch tool intents that were parked on an owner approval.
     // A run resumed from `waiting_owner` must replay its exact durable
@@ -184,7 +152,6 @@ async fn process_run(state: &crate::AppState, run_id: &str) {
     if parked_again {
         // The approval is still pending: drop the inference lane and stay
         // parked until the scan observes a grant.
-        drop(_inference);
         return;
     }
     // If the drain completed or denied a parked intent, re-check the run
@@ -200,7 +167,6 @@ async fn process_run(state: &crate::AppState, run_id: &str) {
             state_name.as_str(),
             "waiting_owner" | "waiting_job" | "cancelled" | "failed" | "succeeded" | "expired"
         ) {
-            drop(_inference);
             return;
         }
     }
@@ -353,7 +319,6 @@ async fn process_run(state: &crate::AppState, run_id: &str) {
             }
         }
         if parked_on_approval {
-            drop(_inference);
             return;
         }
         record_assistant(state, &actor, turn_no, &assistant_message).await;

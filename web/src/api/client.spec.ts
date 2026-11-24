@@ -156,6 +156,8 @@ describe('ParleyClient S04 local Extractor commands', () => {
 
   it('calls provider, capture review, cancellation, and proposal commands with session authority', async () => {
     const provider = { endpoint: 'http://127.0.0.1:11434', model: 'local:latest', num_ctx: 8192, num_predict: 512, locale: 'en' };
+    const saved = { ...provider, profile_revision: 9, pairing: null, structured: { status: 'unqualified', diagnostic: null, checked_at: null, probe_id: null } };
+    const probe = { status: 'queued', diagnostic: null, checked_at: null, probe_id: 'probe-id' };
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(sessionResponse())
       .mockResolvedValueOnce(response({ ...source, job_id: 'job-1', job_status: 'queued' }, 201))
@@ -163,18 +165,20 @@ describe('ParleyClient S04 local Extractor commands', () => {
       .mockResolvedValueOnce(response(job))
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
       .mockResolvedValueOnce(response({ status: 'partially_applied' }))
-      .mockResolvedValueOnce(response(provider))
+      .mockResolvedValueOnce(response(saved))
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
-      .mockResolvedValueOnce(response({ available: true, model: 'local:latest', models: ['local:latest'], message: 'Available' }));
+      .mockResolvedValueOnce(response({ available: false, model: 'local:latest', models: [], message: 'Queued', structured: probe }, 202));
     const client = new ParleyClient(); await client.connect();
     expect(await client.saveSource({ text: 'Hiring update.', title: null, url: null })).toMatchObject({ job_id: 'job-1', job_status: 'queued' });
     expect(await client.getExtractorJob('job/1')).toEqual(job);
     expect(await client.getCaptureProposals('occ/1')).toEqual(job);
-    await client.cancelExtractorJob('job/1');
+    await client.cancelJob('job/1', 'cancel-op');
+    expect(new Headers(fetchMock.mock.calls[4]?.[1]?.headers).get('Idempotency-Key')).toBe('cancel-op');
     expect(await client.resolveProposals('batch/1', [{ item_id: 'proposal-1', action: 'unresolved' }], 'op-1')).toEqual({ status: 'partially_applied' });
-    expect(await client.getProvider()).toEqual(provider);
-    await client.updateProvider(provider);
-    expect(await client.checkProvider()).toMatchObject({ available: true, message: 'Available' });
+    expect(await client.getProvider()).toEqual(saved);
+    await client.updateProvider({ ...provider, expected_profile_revision: 9 });
+    expect(await client.checkProvider()).toMatchObject({ available: false, structured: probe });
+    expect(JSON.parse(String(fetchMock.mock.calls[7]?.[1]?.body))).toEqual({ ...provider, expected_profile_revision: 9 });
     expect(fetchMock.mock.calls.map(([url]) => url).slice(1)).toEqual([
       '/api/v1/captures', '/api/v1/jobs/job%2F1', '/api/v1/captures/occ%2F1/proposals', '/api/v1/jobs/job%2F1',
       '/api/v1/proposals/batch%2F1/resolve', '/api/v1/agent/provider', '/api/v1/agent/provider', '/api/v1/agent/provider/health',

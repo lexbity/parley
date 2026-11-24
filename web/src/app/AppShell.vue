@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /* global MouseEvent, HTMLElement, EventTarget, KeyboardEvent */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { parley, type AdminOperation, type ContactThread, type GraphEntity, type Material, type OpportunitySummary, type ProviderConfig, type ReleasedMaterial, type Resource, type SavedSource } from '../api/client';
+import { ApiError, parley, type AdminOperation, type ContactThread, type GraphEntity, type Material, type OpportunitySummary, type ProviderConfig, type ProviderPairing, type ProviderSettings, type StructuredReadiness, type ReleasedMaterial, type Resource, type SavedSource } from '../api/client';
 import type { CommandDescriptor, CommandManifest, CommandSuccess } from '../api/commands';
 import { tabs } from './tabs';
 import { resolveRoute, routeForTab } from './router';
@@ -9,6 +9,7 @@ import CommandPalette from './CommandPalette.vue';
 import { deriveContext, type QueuePaletteBinding } from './commands/context';
 import { CommandManifestSource } from './commands/manifest';
 import { sessionEventReader } from './commands/events';
+import { inferenceActivity } from './inference/activity';
 import { builtInNavigationCommands, createCommandRegistry, installCommandRegistry, mergeDescriptors, registerScoped } from './commands/registry';
 import ResourcesWorkspace from '../features/resources/ResourcesWorkspace.vue';
 import InterviewerWorkspace from '../features/resources/InterviewerWorkspace.vue';
@@ -78,8 +79,24 @@ const status = ref('');
 const error = ref('');
 const busy = ref(false);
 const connected = ref(false);
-const provider = ref<ProviderConfig>({ endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' });
+const provider = ref<ProviderSettings>({ endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' });
+const pairing = ref<ProviderPairing>({ provider_version: '', model_digest: '', tokenizer_digest: '', template_tokens: 0 });
+const configurePairing = ref(false);
 const providerHealth = ref('');
+const structuredReadiness = ref<StructuredReadiness | null>(null);
+const profileRevision = ref<number | null>(null);
+const maxTemplateTokens = computed(() => provider.value.num_ctx - Math.ceil(provider.value.num_ctx / 10) - provider.value.num_predict - 1);
+const providerChecking = computed(() => structuredReadiness.value?.status === 'queued' || structuredReadiness.value?.status === 'running');
+const providerStatus: Readonly<Record<StructuredReadiness['status'], string>> = {
+  unqualified: 'Coach requires a qualified local pairing.',
+  queued: 'Structured-output check queued.',
+  running: 'Checking structured output.',
+  probe_succeeded: 'Structured-output check passed. Follow the setup instructions to finish qualification.',
+  failed: 'Structured-output check failed. Review the local installation and pairing.',
+  ready: 'Structured output is ready for Coach.',
+};
+let providerRequest: InstanceType<typeof globalThis.AbortController> | undefined;
+let stopProviderProbe: (() => void) | undefined;
 const workspaceRefreshRequired = ref(false);
 const settingsSections = [
   { id: 'settings-provider', label: 'Local provider' },
@@ -383,21 +400,77 @@ function closeMaterial() {
   });
 }
 
+function observeProvider(profile: Pick<ProviderConfig, 'profile_revision' | 'structured'>) {
+  stopProviderProbe?.();
+  structuredReadiness.value = profile.structured;
+  if (!providerChecking.value) return;
+  stopProviderProbe = inferenceActivity.watchStructuredProbe(
+    profile.profile_revision,
+    next => {
+      structuredReadiness.value = next;
+      providerHealth.value = '';
+    },
+    () => {
+      structuredReadiness.value = null;
+      error.value = 'The saved profile changed in another session. Reload the saved profile to review it.';
+    },
+    () => { providerHealth.value = 'The probe status is temporarily unavailable.'; },
+  );
+}
+
 async function loadProvider() {
-  try { provider.value = await parley.getProvider(); } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not load provider settings.'; }
+  providerRequest?.abort();
+  const request = new globalThis.AbortController();
+  providerRequest = request;
+  const epoch = parley.workspaceEpoch;
+  try {
+    const profile = await parley.getProvider(request.signal);
+    if (request.signal.aborted || epoch !== parley.workspaceEpoch || active.value !== 'Settings') return;
+    const { profile_revision, structured, pairing: selectedPairing, ...fields } = profile;
+    provider.value = fields;
+    pairing.value = selectedPairing ?? { provider_version: '', model_digest: '', tokenizer_digest: '', template_tokens: 0 };
+    configurePairing.value = selectedPairing !== null;
+    profileRevision.value = profile_revision;
+    providerHealth.value = '';
+    observeProvider({ profile_revision, structured });
+  } catch (reason) {
+    if (!request.signal.aborted) error.value = reason instanceof Error ? reason.message : 'Could not load provider settings.';
+  }
 }
 
 async function saveProvider() {
+  if (profileRevision.value === null || busy.value) return;
   busy.value = true; error.value = ''; providerHealth.value = '';
-  try { await parley.updateProvider(provider.value); status.value = 'Local Extractor provider settings saved. Check model health before using extraction.'; }
-  catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not save provider settings.'; }
-  finally { busy.value = false; }
+  try {
+    await parley.updateProvider({
+      ...provider.value,
+      expected_profile_revision: profileRevision.value,
+      ...(configurePairing.value ? { pairing: pairing.value } : {}),
+    });
+    await loadProvider();
+    status.value = 'Local provider settings saved. Check model readiness before starting inference.';
+  } catch (reason) {
+    error.value = reason instanceof ApiError && reason.status === 412
+      ? 'The saved profile changed in another session. Reload the saved profile to review it.'
+      : reason instanceof Error ? reason.message : 'Could not save provider settings.';
+  } finally { busy.value = false; }
 }
 
 async function checkProvider() {
-  busy.value = true; error.value = '';
-  try { const result = await parley.checkProvider(); providerHealth.value = result.message; if (!result.available) error.value = result.message; }
-  catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not check the local model.'; }
+  if (profileRevision.value === null || busy.value || providerChecking.value) return;
+  busy.value = true; error.value = ''; providerHealth.value = '';
+  const revision = profileRevision.value;
+  const epoch = parley.workspaceEpoch;
+  try {
+    const result = await parley.checkProvider();
+    if (active.value !== 'Settings' || revision !== profileRevision.value || epoch !== parley.workspaceEpoch) return;
+    if (result.structured) {
+      observeProvider({ profile_revision: revision, structured: result.structured });
+    } else {
+      providerHealth.value = result.message;
+      if (!result.available) error.value = result.message;
+    }
+  } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not check the local model.'; }
   finally { busy.value = false; }
 }
 
@@ -469,9 +542,15 @@ onBeforeUnmount(() => {
   globalThis.removeEventListener('parley:workspace-reloaded', onWorkspaceReloaded);
   if (outputThreadTimer) globalThis.clearInterval(outputThreadTimer);
   adminChannel?.close();
+  stopProviderProbe?.();
+  providerRequest?.abort();
 });
 watch([connected, active], async ([ready, tab]) => {
   if (!ready) return;
+  if (tab !== 'Settings') {
+    stopProviderProbe?.();
+    providerRequest?.abort();
+  }
   error.value = '';
   await refreshTab(tab);
   if (active.value === tab) void focusRouteLocation();
@@ -614,7 +693,7 @@ watch(route, (current, previous) => {
             <h2 id="settings-heading">
               Local provider
             </h2>
-            <p>Configure the Extractor’s local model and check its connection.</p>
+            <p>Configure the local model. Coach requires a qualified structured-output pairing.</p>
             <form @submit.prevent="saveProvider">
               <label>Local endpoint<input
                 v-model="provider.endpoint"
@@ -645,22 +724,72 @@ watch(route, (current, previous) => {
                 required
                 maxlength="40"
               ></label>
+              <fieldset class="provider-pairing">
+                <legend>Coach pairing</legend>
+                <label><input
+                  v-model="configurePairing"
+                  type="checkbox"
+                > Configure structured output</label>
+                <template v-if="configurePairing">
+                  <p>Use the provisioned model and tokenizer identities from local setup.</p>
+                  <label>Ollama version<input
+                    v-model.trim="pairing.provider_version"
+                    required
+                    autocomplete="off"
+                  ></label>
+                  <label>Model digest<input
+                    v-model.trim="pairing.model_digest"
+                    pattern="[a-f0-9]{64}"
+                    required
+                    autocomplete="off"
+                  ></label>
+                  <label>Tokenizer digest<input
+                    v-model.trim="pairing.tokenizer_digest"
+                    pattern="[a-f0-9]{64}"
+                    required
+                    autocomplete="off"
+                  ></label>
+                  <label>Chat template token allowance<input
+                    v-model.number="pairing.template_tokens"
+                    type="number"
+                    min="0"
+                    :max="maxTemplateTokens"
+                    required
+                  ></label>
+                </template>
+              </fieldset>
               <div class="provider-actions">
                 <button
                   class="primary"
                   type="submit"
-                  :disabled="busy"
+                  :disabled="busy || profileRevision === null"
                 >
                   Save provider
                 </button>
                 <button
                   type="button"
-                  :disabled="busy"
+                  :disabled="busy || profileRevision === null || providerChecking"
                   @click="checkProvider"
                 >
-                  Check local model
+                  Check local model readiness
+                </button>
+                <button
+                  type="button"
+                  :disabled="busy"
+                  @click="loadProvider"
+                >
+                  Reload saved profile
                 </button>
               </div>
+              <p
+                v-if="structuredReadiness"
+                class="provider-health"
+                role="status"
+              >
+                {{ providerStatus[structuredReadiness.status] }}
+                <span v-if="structuredReadiness.diagnostic"> {{ structuredReadiness.diagnostic }}</span>
+                <span v-if="structuredReadiness.checked_at"> Checked {{ structuredReadiness.checked_at }}.</span>
+              </p>
               <p
                 v-if="providerHealth"
                 class="provider-health"
@@ -1101,7 +1230,9 @@ small { color: #58665f; } .record-card { margin: .55rem 0; overflow-wrap: anywhe
 #settings-provider label:first-child { grid-column: 1 / -1; }
 #settings-provider input, #settings-provider button { min-height: 2.5rem; }
 .provider-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: .45rem; }
-.provider-health { grid-column: 1 / -1; }
+.provider-health, .provider-pairing { grid-column: 1 / -1; }
+.provider-pairing { display: grid; gap: .5rem; min-width: 0; }
+.provider-pairing input[type="checkbox"] { min-height: auto; }
 @media (max-width: 1020px) {
   .output-layout { grid-template-columns: minmax(0, 1fr); }
   .output-layout:not(.review-open) .output-review, .output-layout.review-open .registry { display: none; }

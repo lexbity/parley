@@ -704,7 +704,7 @@ paths:
       - $ref: '#/components/parameters/Epoch'
       responses:
         '200':
-          description: Local Extractor provider configuration.
+          description: Saved local provider profile and cached structured-output readiness.
           content:
             application/json:
               schema:
@@ -723,10 +723,12 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ProviderConfig'
+              $ref: '#/components/schemas/ProviderUpdate'
       responses:
         '204':
           description: Provider configuration saved; health must be checked explicitly.
+        '412':
+          $ref: '#/components/responses/Error'
         '422':
           $ref: '#/components/responses/Error'
   /captures/{occurrence_id}/proposals:
@@ -760,11 +762,17 @@ paths:
       - $ref: '#/components/parameters/Epoch'
       responses:
         '200':
-          description: Local model availability and installed tags.
+          description: Local model connectivity and installed tags.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProviderHealth'
+        '202':
+          description: Durable structured-output probe queued for the saved profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderProbeReceipt'
   /jobs/{id}:
     parameters:
     - name: id
@@ -785,7 +793,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ExtractorJob'
+                $ref: '#/components/schemas/OwnerJob'
         '404':
           $ref: '#/components/responses/Error'
     post:
@@ -795,9 +803,12 @@ paths:
       parameters:
       - $ref: '#/components/parameters/MutationToken'
       - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '204':
           description: Cancellation fenced against any late worker completion.
+        '404':
+          $ref: '#/components/responses/Error'
         '409':
           $ref: '#/components/responses/Error'
   /proposals/{batch_id}/resolve:
@@ -2544,16 +2555,20 @@ paths:
       security: [{sessionCookie: []}]
       parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}]
       responses:
-        '200': {description: Latest Coach report and pending questions., content: {application/json: {schema: {$ref: '#/components/schemas/CoachReport'}}}}
+        '200': {description: Current weekly assessment and discoverable Coach job., content: {application/json: {schema: {$ref: '#/components/schemas/CoachSnapshot'}}}}
     post:
       operationId: generateWeeklyCoachReport
       security: [{sessionCookie: []}]
       parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
         required: true
-        content: {application/json: {schema: {type: object, required: [period], properties: {period: {type: string}}, additionalProperties: false}}}
+        content: {application/json: {schema: {type: object, properties: {period: {$ref: '#/components/schemas/CoachPeriod'}}, additionalProperties: false}}}
       responses:
+        '200': {description: Current deterministic snapshot when no new wording is needed., content: {application/json: {schema: {$ref: '#/components/schemas/CoachSnapshot'}}}}
         '202': {description: Bounded Coach job queued from deterministic evidence., content: {application/json: {schema: {$ref: '#/components/schemas/QueuedJob'}}}}
+        '422': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
   /coach/questions:
     get:
@@ -2579,7 +2594,7 @@ paths:
       security: [{sessionCookie: []}]
       parameters: [{in: path, name: id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
       responses:
-        '200': {description: Question disposition recorded., content: {application/json: {schema: {$ref: '#/components/schemas/CoachQuestion'}}}}
+        '200': {description: Question disposition recorded., content: {application/json: {schema: {type: object, required: [id, status], properties: {id: {type: string}, status: {const: dismissed}}, additionalProperties: false}}}}
   /sends:
     get:
       operationId: listSends
@@ -4493,7 +4508,7 @@ components:
           type: string
           nullable: true
       additionalProperties: false
-    ProviderConfig:
+    ProviderSettings:
       type: object
       required: [endpoint, model, num_ctx, num_predict, locale]
       properties:
@@ -4502,6 +4517,45 @@ components:
         num_ctx: {type: integer, minimum: 1024, maximum: 131072}
         num_predict: {type: integer, minimum: 64, maximum: 8192}
         locale: {type: string}
+    ProviderConfig:
+      allOf:
+      - $ref: '#/components/schemas/ProviderSettings'
+      - type: object
+        required: [profile_revision, pairing, structured]
+        properties:
+          profile_revision: {type: integer, minimum: 0}
+          pairing:
+            oneOf:
+            - $ref: '#/components/schemas/ProviderPairing'
+            - type: 'null'
+          structured: {$ref: '#/components/schemas/StructuredReadiness'}
+      unevaluatedProperties: false
+    ProviderUpdate:
+      allOf:
+      - $ref: '#/components/schemas/ProviderSettings'
+      - type: object
+        required: [expected_profile_revision]
+        properties:
+          expected_profile_revision: {type: integer, minimum: 0}
+          pairing: {$ref: '#/components/schemas/ProviderPairing'}
+      unevaluatedProperties: false
+    ProviderPairing:
+      type: object
+      required: [provider_version, model_digest, tokenizer_digest, template_tokens]
+      properties:
+        provider_version: {type: string, minLength: 1}
+        model_digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        tokenizer_digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+        template_tokens: {type: integer, minimum: 0}
+      additionalProperties: false
+    StructuredReadiness:
+      type: object
+      required: [status, diagnostic, checked_at, probe_id]
+      properties:
+        status: {enum: [unqualified, queued, running, probe_succeeded, failed, ready]}
+        diagnostic: {type: [string, 'null']}
+        checked_at: {type: [string, 'null'], format: date-time}
+        probe_id: {type: [string, 'null']}
       additionalProperties: false
     ProviderHealth:
       type: object
@@ -4513,7 +4567,13 @@ components:
           type: array
           items: {type: string}
         message: {type: string}
+        structured: {$ref: '#/components/schemas/StructuredReadiness'}
       additionalProperties: false
+    ProviderProbeReceipt:
+      allOf:
+      - $ref: '#/components/schemas/ProviderHealth'
+      - type: object
+        required: [structured]
     ExtractorProposal:
       type: object
       required: [id, kind, candidate, status]
@@ -4525,12 +4585,70 @@ components:
           additionalProperties: true
         status: {type: string}
       additionalProperties: false
-    ExtractorJob:
+    OwnerJob:
+      oneOf:
+      - $ref: '#/components/schemas/ExtractorJob'
+      - $ref: '#/components/schemas/CoachJob'
+      - $ref: '#/components/schemas/OtherRoleJob'
+      discriminator:
+        propertyName: role
+        mapping:
+          extractor: '#/components/schemas/ExtractorJob'
+          coach: '#/components/schemas/CoachJob'
+          interviewer: '#/components/schemas/OtherRoleJob'
+          briefer: '#/components/schemas/OtherRoleJob'
+          template_builder: '#/components/schemas/OtherRoleJob'
+          matcher: '#/components/schemas/OtherRoleJob'
+          composer: '#/components/schemas/OtherRoleJob'
+          linter: '#/components/schemas/OtherRoleJob'
+    CoachJob:
       type: object
-      required: [id, role, status, current_attempt, max_attempts, progress_current, progress_total, injection_suspected, source_occurrence_id, proposals]
+      required: [id, role, status, state_revision, attempt_count, scope, progress, error_code, review_ref]
       properties:
         id: {type: string}
-        role: {type: string}
+        role: {const: coach}
+        status: {enum: [queued, running, succeeded, invalid, failed, cancelled]}
+        state_revision: {type: integer, minimum: 0}
+        attempt_count: {type: integer, minimum: 0}
+        scope:
+          type: object
+          required: [kind, period]
+          properties:
+            kind: {const: weekly}
+            period: {$ref: '#/components/schemas/CoachPeriod'}
+          additionalProperties: false
+        progress: {type: 'null'}
+        error_code: {type: [string, 'null']}
+        review_ref:
+          oneOf:
+          - type: 'null'
+          - type: object
+            required: [kind, id]
+            properties:
+              kind: {const: coach_report}
+              id: {type: string}
+            additionalProperties: false
+      additionalProperties: false
+    OtherRoleJob:
+      allOf:
+      - $ref: '#/components/schemas/JobFields'
+      - type: object
+        required: [role]
+        properties:
+          role: {enum: [interviewer, briefer, template_builder, matcher, composer, linter]}
+    ExtractorJob:
+      allOf:
+      - $ref: '#/components/schemas/JobFields'
+      - type: object
+        required: [role, source_occurrence_id]
+        properties:
+          role: {const: extractor}
+          source_occurrence_id: {type: string}
+    JobFields:
+      type: object
+      required: [id, status, current_attempt, max_attempts, progress_current, progress_total, injection_suspected, source_occurrence_id, proposals]
+      properties:
+        id: {type: string}
         status: {type: string}
         current_attempt: {type: integer}
         max_attempts: {type: integer}
@@ -4539,12 +4657,14 @@ components:
         injection_suspected: {type: boolean}
         last_error_code: {type: string, nullable: true}
         last_error: {type: string, nullable: true}
-        source_occurrence_id: {type: string}
+        source_occurrence_id: {type: string, nullable: true}
+        scope_kind: {type: string}
+        scope_id: {type: string}
         proposal_batch_id: {type: string, nullable: true}
         proposals:
           type: array
           items: {$ref: '#/components/schemas/ExtractorProposal'}
-      additionalProperties: false
+        result: {type: [object, 'null'], additionalProperties: true}
     ProposalResolution:
       type: object
       required: [decisions]
@@ -5913,7 +6033,7 @@ components:
       properties:
         id: {type: string}
         kind: {type: string}
-        target: {type: object}
+        target: {type: object, additionalProperties: true}
         text: {type: string}
         priority: {type: integer}
         impact: {type: integer, minimum: 0}
@@ -5934,15 +6054,43 @@ components:
         answer: {type: string, minLength: 1, maxLength: 12000}
         interviewer_chat_id: {type: string}
       additionalProperties: false
-    CoachReport:
+    CoachPeriod:
+      type: string
+      pattern: '^\d{4}-W(?:0[1-9]|[1-4][0-9]|5[0-3])$'
+    CoachSnapshot:
       type: object
-      required: [report, questions, period, input_digest]
+      required: [report, period, as_of, input_digest, active_job_id, latest_job_id, coverage, observations]
       properties:
-        report: {type: [object, 'null']}
-        questions: {type: array, items: {type: string}}
-        period: {type: [string, 'null']}
+        report: {type: [object, 'null'], additionalProperties: true}
+        period: {$ref: '#/components/schemas/CoachPeriod'}
+        as_of: {type: string, format: date-time}
         input_digest: {type: [string, 'null']}
+        active_job_id: {type: [string, 'null']}
+        latest_job_id: {type: [string, 'null']}
+        coverage:
+          type: object
+          required: [current, missing, stale, no_match]
+          properties:
+            current: {type: integer, minimum: 0}
+            missing: {type: integer, minimum: 0}
+            stale: {type: integer, minimum: 0}
+            no_match: {type: integer, minimum: 0}
+          additionalProperties: false
+        observations:
+          type: array
+          maxItems: 5
+          items: {$ref: '#/components/schemas/CoachObservation'}
       additionalProperties: false
+    CoachObservation:
+      type: object
+      required: [reason, target, impact]
+      properties:
+        reason: {$ref: '#/components/schemas/CoachReason'}
+        target: {type: object, additionalProperties: true}
+        impact: {type: integer, minimum: 0}
+      additionalProperties: false
+    CoachReason:
+      enum: [assessment_check, missing_proof, missing_gift, missing_artifact, jargon_check, template_review, capacity_update, missing_identity, insight]
     RateEstimate:
       type: object
       required: [numerator, denominator, rate, lower_95, upper_95, status]
@@ -5954,9 +6102,58 @@ components:
         upper_95: {type: number, nullable: true, minimum: 0, maximum: 1}
         status: {type: string, enum: [measured, insufficient_observations]}
       additionalProperties: false
+    InsightsInterval:
+      type: object
+      required: [lower_95, upper_95]
+      properties:
+        lower_95: {type: number, minimum: 0, maximum: 1}
+        upper_95: {type: number, minimum: 0, maximum: 1}
+      additionalProperties: false
+    InsightsMeasure:
+      type: object
+      required: [k, n, interval_95]
+      properties:
+        k: {type: integer, minimum: 0}
+        n: {type: integer, minimum: 0}
+        interval_95:
+          oneOf:
+          - $ref: '#/components/schemas/InsightsInterval'
+          - type: 'null'
     InsightsReport:
       type: object
-      additionalProperties: true
+      required: [as_of, event_cursor, effective_outcomes, rates, strata, comparisons]
+      properties:
+        as_of: {type: string, format: date-time}
+        event_cursor: {type: string}
+        effective_outcomes:
+          type: array
+          items:
+            type: object
+            required: [class, count]
+            properties:
+              class: {type: string}
+              count: {type: integer, minimum: 0}
+            additionalProperties: false
+        rates:
+          type: array
+          items:
+            allOf:
+            - $ref: '#/components/schemas/InsightsMeasure'
+            - type: object
+              required: [metric]
+              properties:
+                metric: {enum: [reply_rate, advance_rate]}
+        strata:
+          type: array
+          items:
+            type: object
+            required: [segment_id, reply_rate]
+            properties:
+              segment_id: {type: string}
+              reply_rate: {$ref: '#/components/schemas/InsightsMeasure'}
+            additionalProperties: false
+        comparisons: {type: array, maxItems: 0}
+      additionalProperties: false
     OutcomeCorrectionInput:
       type: object
       required: [expected_revision, class, reason]
