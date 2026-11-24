@@ -32,6 +32,7 @@ use super::phase::{PhaseCommand, RunError as PhaseRunError, run as run_phase};
 use super::policy::Effect;
 use super::resource::{ResourceCommand, RunError as ResourceRunError};
 use super::task::{self, RunError as TaskRunError, run as run_task};
+use super::writing::{RunError as WritingRunError, WritingCommand};
 use super::{Actor, ActorKind, Registry, audit_args, validator_for};
 use crate::application::brief::BriefError;
 use crate::application::opportunity::CreateError;
@@ -69,6 +70,7 @@ enum Execution {
     Task,
     Brief,
     Resource(ResourceCommand),
+    Writing(WritingCommand),
 }
 
 enum OperationError {
@@ -78,6 +80,7 @@ enum OperationError {
     Task(TaskRunError),
     Jobs(JobRunError),
     Resource(ResourceRunError),
+    Writing(WritingRunError),
 }
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -1355,6 +1358,8 @@ async fn pipeline(
         Execution::Brief
     } else if let Some(command) = ResourceCommand::for_id(command_id) {
         Execution::Resource(command)
+    } else if let Some(command) = WritingCommand::for_id(command_id) {
+        Execution::Writing(command)
     } else {
         finalize_attempt(
             tx,
@@ -1421,6 +1426,9 @@ async fn pipeline(
         Execution::Resource(command) => super::resource::run(tx, command, args, key_digest)
             .await
             .map_err(OperationError::Resource),
+        Execution::Writing(command) => super::writing::run(command, tx, args, actor)
+            .await
+            .map_err(OperationError::Writing),
     };
     // A storage failure is not a domain conflict: abandon the transaction and
     // let admission record the terminal audit outcome with no effect.
@@ -1718,6 +1726,102 @@ async fn pipeline(
                     "Subtype is not a material resource subtype".to_string(),
                     vec![json!({"path": "/subtype", "problem": "unknown_subtype"})],
                 ),
+                OperationError::Writing(WritingRunError::InvalidArgs) => (
+                    422,
+                    "invalid_args",
+                    "Arguments do not match the command rules".to_string(),
+                    vec![json!({"path": "", "problem": "invalid_args"})],
+                ),
+                OperationError::Writing(WritingRunError::Match(
+                    crate::application::match_start::MatchStartError::NotFound,
+                ))
+                | OperationError::Writing(WritingRunError::Match(
+                    crate::application::match_start::MatchStartError::TargetNotGranted,
+                )) => (
+                    404,
+                    "target_unavailable",
+                    "Target record is not available".to_string(),
+                    vec![],
+                ),
+                OperationError::Writing(WritingRunError::Match(
+                    crate::application::match_start::MatchStartError::StaleRevision,
+                ))
+                | OperationError::Writing(WritingRunError::Compose(
+                    crate::application::compose_start::ComposeStartError::StaleRevision,
+                )) => (
+                    409,
+                    "version_mismatch",
+                    "Expected revision is stale; reload and create a new intent".to_string(),
+                    vec![],
+                ),
+                OperationError::Writing(WritingRunError::Match(
+                    crate::application::match_start::MatchStartError::RecipientInvalid,
+                ))
+                | OperationError::Writing(WritingRunError::Match(
+                    crate::application::match_start::MatchStartError::NeedMissing,
+                ))
+                | OperationError::Writing(WritingRunError::Compose(
+                    crate::application::compose_start::ComposeStartError::RecipientInvalid,
+                ))
+                | OperationError::Writing(WritingRunError::Compose(
+                    crate::application::compose_start::ComposeStartError::TemplateInvalid,
+                ))
+                | OperationError::Writing(WritingRunError::Compose(
+                    crate::application::compose_start::ComposeStartError::ExchangeMissing,
+                ))
+                | OperationError::Writing(WritingRunError::Compose(
+                    crate::application::compose_start::ComposeStartError::ExchangeNotReviewed,
+                ))
+                | OperationError::Writing(WritingRunError::Compose(
+                    crate::application::compose_start::ComposeStartError::SlotInvalid,
+                ))
+                | OperationError::Writing(WritingRunError::Compose(
+                    crate::application::compose_start::ComposeStartError::ResourceInvalid,
+                ))
+                | OperationError::Writing(WritingRunError::Compose(
+                    crate::application::compose_start::ComposeStartError::MatchSelectionInvalid,
+                )) => (
+                    422,
+                    "invalid_args",
+                    "Arguments do not match the composition rules".to_string(),
+                    vec![],
+                ),
+                OperationError::Writing(WritingRunError::Compose(
+                    crate::application::compose_start::ComposeStartError::MatchShortlistMissing,
+                )) => (
+                    409,
+                    "conflict",
+                    "Run matching for this recipient before selecting matched resources"
+                        .to_string(),
+                    vec![],
+                ),
+                OperationError::Writing(WritingRunError::Compose(
+                    crate::application::compose_start::ComposeStartError::TargetNotGranted,
+                )) => (
+                    404,
+                    "target_unavailable",
+                    "Target record is not available".to_string(),
+                    vec![],
+                ),
+                OperationError::Writing(WritingRunError::Match(
+                    crate::application::match_start::MatchStartError::QueueAtCapacity,
+                ))
+                | OperationError::Writing(WritingRunError::Compose(
+                    crate::application::compose_start::ComposeStartError::QueueAtCapacity,
+                )) => (
+                    429,
+                    "budget_exceeded",
+                    "The job queue is at capacity".to_string(),
+                    vec![],
+                ),
+                OperationError::Writing(WritingRunError::Match(
+                    crate::application::match_start::MatchStartError::Database,
+                ))
+                | OperationError::Writing(WritingRunError::Compose(
+                    crate::application::compose_start::ComposeStartError::Database,
+                )) => {
+                    return Err(crate::application::writer::Failure::Unavailable);
+                }
                 OperationError::Create(CreateRunError::Create(CreateError::Database)) => {
                     return Err(crate::application::writer::Failure::Unavailable);
                 }

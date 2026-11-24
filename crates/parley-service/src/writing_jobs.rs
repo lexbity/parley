@@ -769,6 +769,12 @@ async fn complete_if_current(
     ensure_scope_current(&mut tx, job_id, input)
         .await
         .map_err(|failure| failure.message)?;
+    // A delegated job must not publish after its initiating run is cancelled
+    // or the workspace epoch rotated (UCR-001 U05/U07). Owner-launched jobs
+    // pass the fence unchanged.
+    crate::jobs::scoped_job_fence(&mut tx, job_id)
+        .await
+        .map_err(|_| "the initiating run is no longer active".to_owned())?;
     if result.get("model_digest").is_some() && result.get("results").is_some() {
         let opportunity = result
             .get("opportunity_id")

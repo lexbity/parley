@@ -1956,3 +1956,60 @@ slices:
       owner_role: owner
       package_target: rust+mock
       evidence_path: evidence/u06.md
+  u07:
+    - requirement: UCR-FR-9
+      operationId: runCommand
+      test_id: u07_scoped_end_to_end_match_compose_review_save_gate_release
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u07.md
+    - requirement: UCR-FR-3
+      operationId: runCommand
+      test_id: u07_hidden_resources_cannot_reach_a_scoped_run
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u07.md
+    - requirement: UCR-FR-2
+      operationId: runCommand
+      test_id: u07_stale_resource_content_fences_compose_completion
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u07.md
+    - requirement: UCR-FR-9
+      operationId: runCommand
+      test_id: u07_malformed_provider_output_remains_plain_data
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u07.md
+    - requirement: UCR-FR-5
+      operationId: runCommand
+      test_id: u07_compose_stale_denials_have_zero_effects
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u07.md
+    - requirement: UCR-FR-2
+      operationId: runCommand
+      test_id: u07_gate_conceals_and_binds_version
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u07.md
+    - requirement: UCR-FR-6
+      operationId: runCommand
+      test_id: u07_delegated_writing_grants_are_visible_but_concealed_from_the_owner_palette
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u07.md
+    - requirement: UCR-FR-7
+      operationId: runCommand
+      test_id: u07_delegated_writing_run_reports_waiting_and_opens_output_review
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u07.md

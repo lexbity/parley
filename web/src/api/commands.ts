@@ -379,7 +379,7 @@ export const RUN_STATES = ['queued', 'running', 'waiting_owner', 'waiting_job', 
 export type RunState = typeof RUN_STATES[number];
 export const RUN_TARGET_KINDS = ['party', 'opportunity', 'resource', 'material', 'segment'] as const;
 export type RunTargetKind = typeof RUN_TARGET_KINDS[number];
-export const RUN_PERMISSIONS = ['party.read', 'opportunity.read', 'opportunity.create', 'opportunity.phase.edit', 'party.edit', 'opportunity.task.edit', 'brief.start', 'job.read'] as const;
+export const RUN_PERMISSIONS = ['party.read', 'opportunity.read', 'opportunity.create', 'opportunity.phase.edit', 'party.edit', 'opportunity.task.edit', 'brief.start', 'job.read', 'match.start', 'material.compose', 'material.gate'] as const;
 export type RunPermission = typeof RUN_PERMISSIONS[number];
 export const RUN_TRANSCRIPT_SPEAKERS = ['owner', 'assistant', 'tool', 'system'] as const;
 

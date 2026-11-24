@@ -28,6 +28,12 @@ pub(crate) enum Permission {
     ResourceRead,
     #[serde(rename = "resource.write")]
     ResourceWrite,
+    #[serde(rename = "match.start")]
+    MatchStart,
+    #[serde(rename = "material.compose")]
+    MaterialCompose,
+    #[serde(rename = "material.gate")]
+    MaterialGate,
 }
 
 impl Permission {
@@ -43,6 +49,9 @@ impl Permission {
             Permission::JobRead => "job.read",
             Permission::ResourceRead => "resource.read",
             Permission::ResourceWrite => "resource.write",
+            Permission::MatchStart => "match.start",
+            Permission::MaterialCompose => "material.compose",
+            Permission::MaterialGate => "material.gate",
         }
     }
 
@@ -59,6 +68,9 @@ impl Permission {
             Permission::JobRead,
             Permission::ResourceRead,
             Permission::ResourceWrite,
+            Permission::MatchStart,
+            Permission::MaterialCompose,
+            Permission::MaterialGate,
         ]
     }
 
@@ -82,6 +94,9 @@ pub(crate) const PERMISSION_ALLOWLIST: &[&str] = &[
     "job.read",
     "resource.read",
     "resource.write",
+    "match.start",
+    "material.compose",
+    "material.gate",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

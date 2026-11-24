@@ -33,6 +33,9 @@ const permissionHelp: Record<RunPermission, string> = {
   'opportunity.task.edit': 'change the checked state of a task in a granted opportunity notes',
   'brief.start': 'queue a reviewable brief about a granted party',
   'job.read': 'read the status of jobs this run started',
+  'match.start': 'queue a scoped match using granted resources',
+  'material.compose': 'queue a reviewable material draft from granted inputs',
+  'material.gate': 'assess the deterministic release gates of a granted material',
 };
 
 const stateLabel: Record<RunState, string> = {
@@ -266,6 +269,13 @@ function openReview(row: RunListItem) {
   const status = runStatuses.value[row.run_id];
   const review = status?.review;
   if (!review || !props.navigate) return;
+  // A writing review (match/compose) is scoped to its opportunity: open the
+  // Output workspace on that opportunity's record so the owner continues at
+  // the review surface (UCR-001 U07).
+  if (review.scope_kind === 'opportunity') {
+    props.navigate(`/output/${encodeURIComponent(review.scope_id)}`);
+    return;
+  }
   // Reopen the party desk on the reviewed party with the Brief (chat) pane
   // active, using the same session preference the desk persists and an
   // explicit hand-off flag for an already-mounted desk instance.

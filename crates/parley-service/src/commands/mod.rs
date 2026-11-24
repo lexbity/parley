@@ -12,6 +12,7 @@ pub(crate) mod policy;
 pub(crate) mod read;
 pub(crate) mod resource;
 pub(crate) mod task;
+pub(crate) mod writing;
 
 use std::collections::HashMap;
 
@@ -55,6 +56,7 @@ impl Registry {
         descriptors.extend(task::descriptors().into_iter().cloned());
         descriptors.extend(jobs::descriptors().into_iter().cloned());
         descriptors.extend(resource::descriptors().into_iter().cloned());
+        descriptors.extend(writing::descriptors().into_iter().cloned());
         descriptor::validate_registry(&descriptors)?;
         let mut by_id = HashMap::with_capacity(descriptors.len());
         for (index, item) in descriptors.iter().enumerate() {
@@ -207,6 +209,7 @@ impl Registry {
         let (task_valid, task_invalid) = task::validation_samples();
         let (jobs_valid, jobs_invalid) = jobs::validation_samples();
         let (resource_valid, resource_invalid) = resource::validation_samples();
+        let (writing_valid, writing_invalid) = writing::validation_samples();
         let valid = [
             phase_valid,
             opportunity_valid,
@@ -215,6 +218,7 @@ impl Registry {
             task_valid,
             jobs_valid,
             resource_valid,
+            writing_valid,
         ]
         .concat();
         let invalid = [
@@ -225,6 +229,7 @@ impl Registry {
             task_invalid,
             jobs_invalid,
             resource_invalid,
+            writing_invalid,
         ]
         .concat();
         for sample in valid {
@@ -260,6 +265,9 @@ impl Registry {
                     .map_err(|error| format!("{}: {error}", sample.command))?;
             } else if let Some(command_kind) = resource::ResourceCommand::for_id(&sample.command) {
                 resource::parse_wire_args(command_kind, &sample.args)
+                    .map_err(|error| format!("{}: {error}", sample.command))?;
+            } else if let Some(command_kind) = writing::WritingCommand::for_id(&sample.command) {
+                writing::parse_wire_args(command_kind, &sample.args)
                     .map_err(|error| format!("{}: {error}", sample.command))?;
             } else {
                 return Err(format!(
@@ -307,6 +315,10 @@ pub(crate) fn audit_args(
             (jobs::args_allowlist(), jobs::args_sensitive())
         } else if resource::ResourceCommand::for_id(command_id).is_some() {
             (resource::args_allowlist(), resource::args_sensitive())
+        } else if writing::WritingCommand::for_id(command_id).is_some()
+            || command_id == writing::GATE_CHECK_ID
+        {
+            (writing::args_allowlist(), writing::args_sensitive())
         } else {
             (&[], &[])
         };

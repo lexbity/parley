@@ -6,7 +6,10 @@
 //! writer executor; it never sees HTTP types, keys or transport envelopes.
 
 pub(crate) mod brief;
+pub(crate) mod compose_start;
 pub(crate) mod job_status;
+pub(crate) mod match_start;
+pub(crate) mod material_gate;
 pub(crate) mod opportunity;
 pub(crate) mod opportunity_summary;
 pub(crate) mod opportunity_task;

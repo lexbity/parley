@@ -330,15 +330,27 @@ pub(crate) async fn dispatch(
     // A job-start command parks the run until its job reaches a terminal
     // state: the lease is released, the wake condition is persisted and the
     // runtime scan resumes the run after the worker publishes a reviewable
-    // proposal or a terminal failure (UCR-001 U05). Tier 2 commands arrive
+    // proposal or a terminal failure (UCR-001 U05/U07). Tier 2 commands arrive
     // through the commands__run meta-tool, so the inner id is read from its
     // arguments.
-    let is_brief_start = if id == RUN_TOOL {
-        args.get("id").and_then(Value::as_str) == Some(crate::commands::jobs::BRIEF_START_ID)
+    let is_job_start = if id == RUN_TOOL {
+        args.get("id").and_then(Value::as_str).is_some_and(|inner| {
+            matches!(
+                inner,
+                crate::commands::jobs::BRIEF_START_ID
+                    | crate::commands::writing::MATCH_START_ID
+                    | crate::commands::writing::COMPOSE_DRAFT_ID
+            )
+        })
     } else {
-        id == crate::commands::jobs::BRIEF_START_ID
+        matches!(
+            id.as_str(),
+            crate::commands::jobs::BRIEF_START_ID
+                | crate::commands::writing::MATCH_START_ID
+                | crate::commands::writing::COMPOSE_DRAFT_ID
+        )
     };
-    if is_brief_start {
+    if is_job_start {
         let job_id = result
             .get("result")
             .and_then(|value| value.get("job_id"))

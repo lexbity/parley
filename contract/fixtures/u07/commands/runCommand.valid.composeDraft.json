@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/CommandRunSuccess","body":{"ok":true,"command_version":1,"audit_id":"aud_u07_compose_draft_01","original_audit_id":null,"replayed":false,"dry_run":false,"result":{"job_id":"job_u07_compose_01","role":"composer","scope_kind":"opportunity","scope_id":"opp_u07_01","state":"queued","event_cursor":902}}}

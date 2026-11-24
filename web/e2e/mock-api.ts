@@ -388,6 +388,9 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
   const COMMAND_TASK = 'opportunity.set_task_done';
   const COMMAND_CREATE_DRAFT = 'resource.create_draft';
   const COMMAND_MARK_READY = 'resource.mark_ready';
+  const COMMAND_MATCH_START = 'match.start';
+  const COMMAND_COMPOSE_DRAFT = 'material.compose_draft';
+  const COMMAND_GATE_CHECK = 'material.check_gate';
   const COMMAND_ARG_FIELDS: Record<string, string[]> = {
     [COMMAND_CREATE]: ['title', 'primary_party_id'],
     [COMMAND_SET]: ['opportunity_id', 'expected_phase_revision', 'expected_pack_id', 'expected_pack_version', 'stage_id'],
@@ -397,6 +400,9 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     [COMMAND_TASK]: ['opportunity_id', 'expected_notes_revision', 'byte_start', 'byte_end', 'line_sha256', 'checked'],
     [COMMAND_CREATE_DRAFT]: ['title', 'subtype'],
     [COMMAND_MARK_READY]: ['resource_id', 'expected_content_revision'],
+    [COMMAND_MATCH_START]: ['opportunity_id', 'recipient_id', 'expected_opportunity_revision', 'expected_recipient_revision'],
+    [COMMAND_COMPOSE_DRAFT]: ['opportunity_id', 'recipient_id', 'expected_opportunity_revision', 'expected_recipient_revision', 'template_version_id', 'exchange_version', 'kind', 'slot_fills', 'selected_match_ids'],
+    [COMMAND_GATE_CHECK]: ['material_id', 'expected_version'],
   };
   const commandDescriptors: RecordData[] = [
     {
@@ -487,6 +493,39 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       result_schema: { type: 'object', additionalProperties: false },
       palette: { context_fields: ['route', 'selection.resource'], prompts: [] },
     },
+    {
+      id: COMMAND_MATCH_START, version: 1, title: 'Start resource matching',
+      summary: 'Queue a scoped match against the granted opportunity and resources',
+      description: 'Starts a matcher job for the selected open opportunity and recipient using only ready resources inside the run grant.',
+      keywords: ['match', 'resource', 'shortlist', 'writing'], effect: 'write', requires_permission: 'match.start',
+      surfaces: ['agent'], agent_tier: 2, supports_dry_run: false,
+      when: null,
+      args_schema: { type: 'object', additionalProperties: false, required: COMMAND_ARG_FIELDS[COMMAND_MATCH_START], properties: {} },
+      result_schema: { type: 'object', additionalProperties: false },
+      palette: { context_fields: [], prompts: [] },
+    },
+    {
+      id: COMMAND_COMPOSE_DRAFT, version: 1, title: 'Compose a material draft',
+      summary: 'Queue a reviewable draft from the active template and granted inputs',
+      description: 'Starts a composer job for the selected opportunity, recipient, active template and attested exchange, persisting one review candidate.',
+      keywords: ['compose', 'draft', 'material', 'writing'], effect: 'write', requires_permission: 'material.compose',
+      surfaces: ['agent'], agent_tier: 2, supports_dry_run: false,
+      when: null,
+      args_schema: { type: 'object', additionalProperties: false, required: COMMAND_ARG_FIELDS[COMMAND_COMPOSE_DRAFT], properties: {} },
+      result_schema: { type: 'object', additionalProperties: false },
+      palette: { context_fields: [], prompts: [] },
+    },
+    {
+      id: COMMAND_GATE_CHECK, version: 1, title: 'Check material gate',
+      summary: 'Assess the deterministic release gates of one material version',
+      description: 'Evaluates the deterministic content gates of one material version and returns bounded check codes, severities and a summary.',
+      keywords: ['material', 'gate', 'release', 'check'], effect: 'read', requires_permission: 'material.gate',
+      surfaces: ['agent'], agent_tier: 2, supports_dry_run: false,
+      when: null,
+      args_schema: { type: 'object', additionalProperties: false, required: COMMAND_ARG_FIELDS[COMMAND_GATE_CHECK], properties: {} },
+      result_schema: { type: 'object', additionalProperties: false },
+      palette: { context_fields: [], prompts: [] },
+    },
   ];
   const commandManifestVersion = `sha256:${createHash('sha256').update(JSON.stringify(commandDescriptors)).digest('hex')}`;
   const commandReceipts = new Map<string, { digest: string; status: number; body: RecordData; audit_id: string }>();
@@ -528,9 +567,14 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     for (const field of fields) {
       const value = args[field];
       if (field === 'expected_phase_revision' || field === 'expected_card_revision' || field === 'expected_notes_revision'
-        || field === 'expected_content_revision') {
+        || field === 'expected_content_revision' || field === 'expected_opportunity_revision'
+        || field === 'expected_recipient_revision' || field === 'exchange_version' || field === 'expected_version') {
         if (!Number.isSafeInteger(value) || Number(value) < 1) {
           return { path: `/${field}`, problem: 'expected a positive integer' };
+        }
+      } else if (field === 'slot_fills' || field === 'selected_match_ids') {
+        if (!Array.isArray(value)) {
+          return { path: `/${field}`, problem: 'expected an array' };
         }
       } else if (field === 'byte_start' || field === 'byte_end') {
         if (!Number.isSafeInteger(value) || Number(value) < 0) {
@@ -728,6 +772,41 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
         },
       };
     }
+    if (id === COMMAND_MATCH_START || id === COMMAND_COMPOSE_DRAFT) {
+      const opportunityId = String(args.opportunity_id);
+      const opportunity = opportunities.get(opportunityId);
+      if (!opportunity) {
+        return { status: 404, body: { code: 'target_unavailable', message: 'Target record is not available', details: [] } };
+      }
+      if (Number(args.expected_opportunity_revision) !== Number(opportunity.revision)) {
+        return { status: 409, body: { code: 'version_mismatch', message: 'Expected revision is stale; reload and create a new intent', details: [] } };
+      }
+      const role = id === COMMAND_MATCH_START ? 'matcher' : 'composer';
+      const jobId = `mock-${role}-${randomHex()}`;
+      return {
+        status: 200,
+        body: {
+          job_id: jobId, role, scope_kind: 'opportunity', scope_id: opportunityId,
+          state: 'queued', event_cursor: String(events.length),
+        },
+      };
+    }
+    if (id === COMMAND_GATE_CHECK) {
+      const materialId = String(args.material_id);
+      const material = materialRecords.get(materialId);
+      if (!material || Number(args.expected_version) !== Number(material.version)) {
+        return { status: 404, body: { code: 'target_unavailable', message: 'Target record is not available', details: [] } };
+      }
+      const checks = ['H1 EXCH_COMPLETE', 'H2 FAIR_ATTESTED', 'H3 GROUNDED', 'H4 SLOTS_PRESERVED', 'S1 GIVE_FIRST', 'S2 ANCHOR']
+        .map((code) => ({ code, severity: code.startsWith('H') ? 'hard' : 'soft', pass: true }));
+      return {
+        status: 200,
+        body: {
+          material_id: materialId, version: Number(material.version), checks,
+          copy_enabled: true, summary: 'All content gates pass',
+        },
+      };
+    }
     const opportunity = opportunities.get(String(args.opportunity_id));
     if (!opportunity) return { status: 404, body: { code: 'unknown_command', message: 'Opportunity does not exist', details: [] } };
     const current = opportunityPhases.get(String(opportunity.id)) ?? { stage_id: null, pack_id: activePackId, pack_version: activePackVersion, revision: 1, event_id: '' };
@@ -788,7 +867,7 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
   // its worker, lease or provider state.
   const AGENT_STATES = ['queued', 'running', 'waiting_owner', 'waiting_job', 'succeeded', 'failed', 'cancelled', 'expired'];
   const AGENT_TARGET_KINDS = ['party', 'opportunity', 'resource', 'material', 'segment'];
-  const AGENT_PERMISSIONS = ['party.read', 'opportunity.read', 'opportunity.create', 'opportunity.phase.edit', 'party.edit', 'opportunity.task.edit', 'brief.start', 'job.read'];
+  const AGENT_PERMISSIONS = ['party.read', 'opportunity.read', 'opportunity.create', 'opportunity.phase.edit', 'party.edit', 'opportunity.task.edit', 'brief.start', 'job.read', 'match.start', 'material.compose', 'material.gate'];
 
   function agentTargetLabel(target: AgentRunTarget): string {
     if (target.kind === 'party') return directory.get(target.id)?.name ?? target.id;
@@ -814,6 +893,8 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     const run = agentRuns.get(runId);
     if (!run || run.state !== 'queued') return;
     const brief = run.permissions.includes('brief.start');
+    const writing = run.permissions.includes('match.start') || run.permissions.includes('material.compose');
+    const gate = run.permissions.includes('material.gate');
     const hang = run.task.includes('hang');
     scheduleAgent(runId, () => {
       if (run.state !== 'queued' || run.epoch !== epoch) return;
@@ -821,7 +902,7 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       if (hang) return; // A hung provider keeps the run claimed and running.
       scheduleAgent(runId, () => {
         if (run.state !== 'running') return;
-        if (!brief) {
+        if (!brief && !writing && !gate) {
           const names = run.targets.map(agentTargetLabel).join(', ') || 'no targets';
           addAgentTurn(run, { turn_no: 2, speaker: 'tool', ordinal: 1, text: `Scoped read of ${names} via party.get_summary / opportunity.get_summary` });
           scheduleAgent(runId, () => {
@@ -831,22 +912,41 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
           }, 600);
           return;
         }
-        // A delegated brief run: start the job, park in waiting_job, then
-        // resume with a review reference once the job is ready.
+        if (gate && !writing && !brief) {
+          // A direct gate read: the tool result carries bounded check codes.
+          const materialId = run.targets.find((target) => target.kind === 'material')?.id ?? '';
+          const checks = ['H1 EXCH_COMPLETE', 'H2 FAIR_ATTESTED', 'H3 GROUNDED', 'H4 SLOTS_PRESERVED', 'S1 GIVE_FIRST', 'S2 ANCHOR']
+            .map((code) => ({ code, severity: code.startsWith('H') ? 'hard' : 'soft', pass: true }));
+          addAgentTurn(run, {
+            turn_no: 2, speaker: 'tool', ordinal: 1,
+            text: JSON.stringify({ ok: true, command_version: 1, replayed: false, dry_run: false, audit_id: `aud-mock-${run.run_id}`, original_audit_id: null, result: { material_id: materialId, version: 1, checks, copy_enabled: true, summary: 'All content gates pass' } }),
+          });
+          scheduleAgent(runId, () => {
+            if (run.state !== 'running') return;
+            addAgentTurn(run, { turn_no: 2, speaker: 'assistant', ordinal: 0, text: 'The gate report is complete.' });
+            setAgentState(run, 'succeeded', 'completed');
+          }, 600);
+          return;
+        }
+        // A delegated job-start run (brief or writing): start the job, park
+        // in waiting_job, then resume with a review reference once the job is
+        // ready. Writing reviews are scoped to the opportunity.
         const target = run.targets[0];
         if (!target) return;
         const jobId = `mock-job-${run.run_id}`;
+        const scopeKind = writing ? 'opportunity' : target.kind;
+        const role = brief ? 'briefer' : (run.permissions.includes('match.start') ? 'matcher' : 'composer');
         addAgentTurn(run, {
           turn_no: 2, speaker: 'tool', ordinal: 1,
-          text: JSON.stringify({ ok: true, command_version: 1, replayed: false, dry_run: false, audit_id: `aud-mock-${run.run_id}`, original_audit_id: null, result: { job_id: jobId, scope_kind: target.kind, scope_id: target.id, state: 'queued', event_cursor: '1' } }),
+          text: JSON.stringify({ ok: true, command_version: 1, replayed: false, dry_run: false, audit_id: `aud-mock-${run.run_id}`, original_audit_id: null, result: { job_id: jobId, role, scope_kind: scopeKind, scope_id: scopeKind === 'opportunity' ? String(target.id) : target.id, state: 'queued', event_cursor: '1' } }),
         });
         scheduleAgent(runId, () => {
           if (run.state !== 'running') return;
           setAgentState(run, 'waiting_job', jobId);
           scheduleAgent(runId, () => {
             if (run.state !== 'waiting_job') return;
-            addAgentTurn(run, { turn_no: 3, speaker: 'assistant', ordinal: 0, text: 'The brief proposal is ready for owner review.' });
-            run.review = { job_id: jobId, scope_kind: target.kind, scope_id: target.id };
+            addAgentTurn(run, { turn_no: 3, speaker: 'assistant', ordinal: 0, text: writing ? 'The material draft is ready for owner review.' : 'The brief proposal is ready for owner review.' });
+            run.review = { job_id: jobId, scope_kind: scopeKind, scope_id: scopeKind === 'opportunity' ? String(target.id) : target.id };
             setAgentState(run, 'succeeded', 'completed');
           }, 2000);
         }, 600);
@@ -1141,6 +1241,7 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
         return fail(response, 400, 'malformed_request', 'Context key is not allowlisted');
       }
       const commandsForContext = commandDescriptors.filter((descriptor) => {
+        if (!Array.isArray(descriptor.surfaces) || !descriptor.surfaces.includes('palette')) return false;
         const when = String(descriptor.when ?? '');
         if (!when) return true;
         const routeMatch = /route == "([a-z.]+)"/.exec(when);
@@ -1166,6 +1267,7 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       if (Object.keys(context).some((key) => !commandContextAllowed(key))) return fail(response, 400, 'malformed_request', 'Context key is not allowlisted');
       const needle = input.query.trim().toLocaleLowerCase();
       const items = commandDescriptors
+        .filter((descriptor) => Array.isArray(descriptor.surfaces) && descriptor.surfaces.includes('palette'))
         .map((descriptor) => ({ descriptor, score: commandRank(descriptor, needle) }))
         .filter((entry) => entry.score[0] < 4)
         .sort((left, right) => left.score[0] - right.score[0] || left.score[1] - right.score[1] || String(left.descriptor.id).localeCompare(String(right.descriptor.id)))
@@ -1180,13 +1282,17 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     const commandDescribe = /^\/api\/v1\/commands\/([^/]+)$/.exec(url.pathname);
     if (commandDescribe && request.method === 'GET') {
       const descriptor = commandDescriptors.find((item) => item.id === decodeURIComponent(commandDescribe[1]!));
-      if (!descriptor) return fail(response, 404, 'unknown_command', 'Command is not available');
+      if (!descriptor || !Array.isArray(descriptor.surfaces) || !descriptor.surfaces.includes('palette')) {
+        return fail(response, 404, 'unknown_command', 'Command is not available');
+      }
       return json(response, 200, descriptor);
     }
     if (commandDescribe && request.method === 'POST') {
       const id = decodeURIComponent(commandDescribe[1]!);
       const descriptor = commandDescriptors.find((item) => item.id === id);
-      if (!descriptor) return fail(response, 404, 'unknown_command', 'Command is not available');
+      if (!descriptor || !Array.isArray(descriptor.surfaces) || !descriptor.surfaces.includes('palette')) {
+        return fail(response, 404, 'unknown_command', 'Command is not available');
+      }
       const key = request.headers['idempotency-key'];
       if (typeof key !== 'string' || !key.trim()) return fail(response, 400, 'INVALID_KEY', 'An Idempotency-Key is required');
       let input: RecordData;

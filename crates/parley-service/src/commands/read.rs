@@ -21,6 +21,7 @@ pub(crate) const PARTY_SUMMARY_ID: &str = "party.get_summary";
 pub(crate) const OPPORTUNITY_SUMMARY_ID: &str = "opportunity.get_summary";
 pub(crate) const JOB_STATUS_ID: &str = "job.get_status";
 pub(crate) const RESOURCE_SUMMARY_ID: &str = "resource.get_summary";
+pub(crate) const GATE_CHECK_ID: &str = "material.check_gate";
 
 static PARTY_ARGS_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
     json!({
@@ -91,6 +92,17 @@ static RESOURCE_RESULT_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
             "title": {"type": "string"},
             "readiness": {"type": "string"},
             "content_revision": {"type": "integer", "minimum": 1}
+        }
+    })
+});
+static GATE_ARGS_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["material_id", "expected_version"],
+        "properties": {
+            "material_id": {"type": "string", "minLength": 1, "maxLength": 200, "x-sensitive": true},
+            "expected_version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991i64}
         }
     })
 });
@@ -165,6 +177,7 @@ pub(crate) enum ReadCommand {
     Opportunity,
     JobStatus,
     Resource,
+    MaterialGate,
 }
 
 impl ReadCommand {
@@ -174,6 +187,7 @@ impl ReadCommand {
             OPPORTUNITY_SUMMARY_ID => Some(Self::Opportunity),
             JOB_STATUS_ID => Some(Self::JobStatus),
             RESOURCE_SUMMARY_ID => Some(Self::Resource),
+            GATE_CHECK_ID => Some(Self::MaterialGate),
             _ => None,
         }
     }
@@ -185,6 +199,7 @@ impl ReadCommand {
             Self::Opportunity => &OPPORTUNITY_ARGS_SCHEMA,
             Self::JobStatus => &JOB_STATUS_ARGS_SCHEMA,
             Self::Resource => &RESOURCE_ARGS_SCHEMA,
+            Self::MaterialGate => &GATE_ARGS_SCHEMA,
         }
     }
 }
@@ -211,6 +226,13 @@ struct JobArgs {
 #[serde(deny_unknown_fields)]
 struct ResourceArgs {
     resource_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MaterialGateArgs {
+    material_id: String,
+    expected_version: i64,
 }
 
 #[derive(Debug)]
@@ -264,6 +286,28 @@ pub(crate) async fn run(
                 .ok_or(RunError::NotFound)?;
             Ok(serde_json::to_value(result).map_err(|_| RunError::NotFound)?)
         }
+        ReadCommand::MaterialGate => {
+            let parsed: MaterialGateArgs =
+                serde_json::from_value(args.clone()).map_err(|_| RunError::InvalidArgs)?;
+            let result = crate::application::material_gate::check(
+                tx,
+                &crate::application::material_gate::MaterialGateInput {
+                    material_id: parsed.material_id,
+                    expected_version: parsed.expected_version,
+                },
+            )
+            .await
+            .map_err(|error| match error {
+                crate::application::material_gate::MaterialGateError::NotFound
+                | crate::application::material_gate::MaterialGateError::StaleVersion => {
+                    RunError::NotFound
+                }
+                crate::application::material_gate::MaterialGateError::Database => {
+                    RunError::NotFound
+                }
+            })?;
+            Ok(serde_json::to_value(result).map_err(|_| RunError::NotFound)?)
+        }
     }
 }
 
@@ -274,6 +318,9 @@ pub(crate) fn parse_wire_args(command: ReadCommand, args: &Value) -> Result<(), 
         ReadCommand::Opportunity => serde_json::from_value::<OpportunityArgs>(args.clone()).is_ok(),
         ReadCommand::JobStatus => serde_json::from_value::<JobArgs>(args.clone()).is_ok(),
         ReadCommand::Resource => serde_json::from_value::<ResourceArgs>(args.clone()).is_ok(),
+        ReadCommand::MaterialGate => {
+            serde_json::from_value::<MaterialGateArgs>(args.clone()).is_ok()
+        }
     };
     if ok {
         Ok(())
@@ -291,15 +338,29 @@ fn command_id(command: ReadCommand) -> &'static str {
         ReadCommand::Opportunity => OPPORTUNITY_SUMMARY_ID,
         ReadCommand::JobStatus => JOB_STATUS_ID,
         ReadCommand::Resource => RESOURCE_SUMMARY_ID,
+        ReadCommand::MaterialGate => GATE_CHECK_ID,
     }
 }
 
 pub(crate) fn args_allowlist() -> &'static [&'static str] {
-    &["party_id", "opportunity_id", "job_id", "resource_id"]
+    &[
+        "party_id",
+        "opportunity_id",
+        "job_id",
+        "resource_id",
+        "material_id",
+        "expected_version",
+    ]
 }
 
 pub(crate) fn args_sensitive() -> &'static [&'static str] {
-    &["party_id", "opportunity_id", "job_id", "resource_id"]
+    &[
+        "party_id",
+        "opportunity_id",
+        "job_id",
+        "resource_id",
+        "material_id",
+    ]
 }
 
 pub(crate) fn validation_samples() -> (Vec<super::SampleArgs>, Vec<super::SampleArgs>) {
@@ -320,6 +381,10 @@ pub(crate) fn validation_samples() -> (Vec<super::SampleArgs>, Vec<super::Sample
             command: RESOURCE_SUMMARY_ID.to_string(),
             args: json!({"resource_id": "res_sample"}),
         },
+        super::SampleArgs {
+            command: GATE_CHECK_ID.to_string(),
+            args: json!({"material_id": "mat_sample", "expected_version": 1}),
+        },
     ];
     let invalid = vec![
         super::SampleArgs {
@@ -337,6 +402,14 @@ pub(crate) fn validation_samples() -> (Vec<super::SampleArgs>, Vec<super::Sample
         super::SampleArgs {
             command: RESOURCE_SUMMARY_ID.to_string(),
             args: json!({"resource_id": "res_sample", "notes": "private"}),
+        },
+        super::SampleArgs {
+            command: GATE_CHECK_ID.to_string(),
+            args: json!({"material_id": "mat_sample"}),
+        },
+        super::SampleArgs {
+            command: GATE_CHECK_ID.to_string(),
+            args: json!({"material_id": "mat_sample", "expected_version": 0}),
         },
     ];
     (valid, invalid)

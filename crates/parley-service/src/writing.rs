@@ -15,8 +15,6 @@ use serde_json::{Value, json};
 use sqlx::{FromRow, Sqlite, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
-type ReadyResourceRow = (String, String, String, String, i64, f64);
-
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
         .route(
@@ -698,6 +696,9 @@ async fn start_match(
             "Select one recipient in this opportunity.",
         );
     }
+    // Owner wire preconditions are resolved here so the published error codes
+    // stay stable; the shared operation re-checks them under the transaction
+    // and owns the canonical resource/recipient snapshot (UCR-001 U07).
     let revision: Option<i64> =
         match sqlx::query_scalar("SELECT revision FROM opportunity WHERE id=? AND state='open'")
             .bind(&opportunity_id)
@@ -729,93 +730,6 @@ async fn start_match(
             "Recipient must be a person or organization.",
         );
     }
-    let interests: Result<Vec<(String,String)>,sqlx::Error> = sqlx::query_as("SELECT side,statement FROM opportunity_interest WHERE opportunity_id=? AND party_id=? AND status='active' ORDER BY created_at,id").bind(&opportunity_id).bind(&input.recipient_id).fetch_all(state.workspace.pool()).await;
-    let interests = match interests {
-        Ok(value) => value,
-        Err(error) => return command_error(error.into()),
-    };
-    let need_text = interests
-        .iter()
-        .filter(|(side, _)| side == "them")
-        .map(|(_, text)| text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    if need_text.trim().is_empty() {
-        return err(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "MATCH_NEED_MISSING",
-            "Add an active, recipient-specific need before matching resources.",
-        );
-    }
-    let resources: Result<Vec<ReadyResourceRow>, sqlx::Error> = sqlx::query_as(
-        "SELECT id,subtype,name,body_json,resource_content_revision,max(0.0,(julianday('now')-julianday(created_at))/30.4375) FROM entity WHERE subtype IN ('gift','proof','artifact') AND readiness='ready' AND retired_at IS NULL ORDER BY id",
-    )
-    .fetch_all(state.workspace.pool())
-    .await;
-    let resources = match resources {
-        Ok(value) => value,
-        Err(error) => return command_error(error.into()),
-    };
-    let mut resource_inputs = Vec::with_capacity(resources.len());
-    for (id, kind, title, body_json, revision, age_months) in resources {
-        let body: Value = match serde_json::from_str(&body_json) {
-            Ok(value) => value,
-            Err(error) => {
-                return err(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "RESOURCE_CORRUPT",
-                    &format!("Ready resource {id} has invalid stored content: {error}"),
-                );
-            }
-        };
-        let tags = body
-            .get("tags")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        resource_inputs.push(json!({"resource_id":id,"kind":kind,"title":title,"revision":revision,"age_months":age_months,"body":body,"tags":tags,"advances":0,"sends_using_asset":0}));
-    }
-    let settings_json: String =
-        match sqlx::query_scalar("SELECT settings_json FROM owner_profile WHERE id=1")
-            .fetch_one(state.workspace.pool())
-            .await
-        {
-            Ok(value) => value,
-            Err(error) => return command_error(error.into()),
-        };
-    let settings: Value = match serde_json::from_str(&settings_json) {
-        Ok(value) => value,
-        Err(error) => {
-            return err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "OWNER_SETTINGS_CORRUPT",
-                &error.to_string(),
-            );
-        }
-    };
-    let proof_half_life_months = settings
-        .pointer("/pack/limits/proof_half_life_months")
-        .and_then(Value::as_f64)
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .unwrap_or(24.0);
-    let weights = settings
-        .pointer("/matcher/weights")
-        .cloned()
-        .unwrap_or(json!({"cosine":0.5,"tags":0.25,"recency":0.15,"track":0.1}));
-    let scoring_config_digest = match scoring_config_digest(&weights, proof_half_life_months) {
-        Ok(value) => value,
-        Err(error) => {
-            return err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "MATCH_CONFIG_SERIALIZE_FAILED",
-                &error,
-            );
-        }
-    };
-    let input_json = json!({"opportunity_id":opportunity_id,"recipient_id":input.recipient_id,"opportunity_revision":opportunity_revision,"recipient_revision":recipient_revision,"need_text":need_text,"party_fields":{"need_text":need_text},"party_tags":[],"resources":resource_inputs,"proof_half_life_months":proof_half_life_months,"weights":weights,"scoring_config_digest":scoring_config_digest,"requested_at":now_utc()});
     let key = match command_key(&headers) {
         Ok(value) => value,
         Err(response) => return response,
@@ -827,27 +741,110 @@ async fn start_match(
         Ok(value) => value,
         Err(response) => return response,
     };
-    match enqueue_role_command(
-        &state,
-        &key,
-        &canonical,
-        "matcher",
-        "opportunity",
-        &opportunity_id,
-        opportunity_revision,
-        &input_json,
-        2,
+    let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
+        Ok(tx) => tx,
+        Err(error) => return command_error(error.into()),
+    };
+    if let Some(response) = match receipt_replay(&mut tx, &state.workspace, &key, &canonical).await
+    {
+        Ok(response) => response,
+        Err(response) => return response,
+    } {
+        let _ = tx.commit().await;
+        return response;
+    }
+    let outcome = match super::application::match_start::start(
+        &mut tx,
+        &super::application::match_start::MatchStartInput {
+            opportunity_id: opportunity_id.clone(),
+            recipient_id: input.recipient_id.clone(),
+            expected_opportunity_revision: opportunity_revision,
+            expected_recipient_revision: recipient_revision,
+            epoch: state.workspace.epoch().to_string(),
+            run_id: None,
+            owner_pseudonym: None,
+            granted_targets: Vec::new(),
+        },
     )
     .await
     {
-        Ok(EnqueueOutcome::Replay(response)) => response,
-        Ok(EnqueueOutcome::New(job_id)) => (
-            StatusCode::ACCEPTED,
-            Json(json!({"job_id":job_id,"role":"matcher"})),
-        )
-            .into_response(),
-        Err(response) => response,
+        Ok(outcome) => outcome,
+        Err(super::application::match_start::MatchStartError::NotFound) => {
+            let _ = tx.rollback().await;
+            return err(
+                StatusCode::NOT_FOUND,
+                "OPPORTUNITY_NOT_OPEN",
+                "Matching requires an open opportunity.",
+            );
+        }
+        Err(super::application::match_start::MatchStartError::RecipientInvalid) => {
+            let _ = tx.rollback().await;
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "RECIPIENT_NOT_PARTICIPANT",
+                "Recipient must be an explicit participant in this opportunity.",
+            );
+        }
+        Err(super::application::match_start::MatchStartError::NeedMissing) => {
+            let _ = tx.rollback().await;
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "MATCH_NEED_MISSING",
+                "Add an active, recipient-specific need before matching resources.",
+            );
+        }
+        Err(super::application::match_start::MatchStartError::StaleRevision) => {
+            let _ = tx.rollback().await;
+            return err(
+                StatusCode::CONFLICT,
+                "STALE_REVISION",
+                "The opportunity or recipient changed; reload and retry with a fresh request.",
+            );
+        }
+        Err(super::application::match_start::MatchStartError::QueueAtCapacity) => {
+            let _ = tx.rollback().await;
+            return err(
+                StatusCode::TOO_MANY_REQUESTS,
+                "BUDGET_EXCEEDED",
+                "The job queue is at capacity.",
+            );
+        }
+        Err(super::application::match_start::MatchStartError::TargetNotGranted) => {
+            let _ = tx.rollback().await;
+            return err(
+                StatusCode::NOT_FOUND,
+                "TARGET_UNAVAILABLE",
+                "Target record is not available.",
+            );
+        }
+        Err(super::application::match_start::MatchStartError::Database) => {
+            let _ = tx.rollback().await;
+            return command_error(super::WorkspaceError::Database(sqlx::Error::Protocol(
+                "storage failure".into(),
+            )));
+        }
+    };
+    let result = json!({"job_id": outcome.job_id, "role": outcome.role});
+    if let Err(failure) = receipt_store(
+        &mut tx,
+        &state.workspace,
+        &key,
+        &canonical,
+        StatusCode::ACCEPTED,
+        &result,
+    )
+    .await
+    {
+        let _ = tx.rollback().await;
+        return command_error(failure);
     }
+    if tx.commit().await.is_err() {
+        return command_error(super::WorkspaceError::Database(sqlx::Error::Protocol(
+            "commit failure".into(),
+        )));
+    }
+    super::jobs::wake(&state.jobs, &outcome.job_id);
+    (StatusCode::ACCEPTED, Json(result)).into_response()
 }
 
 async fn get_match(
@@ -1228,17 +1225,6 @@ async fn compose_material(
     if let Err(response) = authenticate(&headers, &state).await {
         return response.into_response();
     }
-    let key = match command_key(&headers) {
-        Ok(value) => value,
-        Err(response) => return response,
-    };
-    let canonical = match canonical_command(
-        &format!("POST /api/v1/opportunities/{opportunity_id}/materials/compose"),
-        &input,
-    ) {
-        Ok(value) => value,
-        Err(response) => return response,
-    };
     if !matches!(input.kind.as_str(), "outreach" | "followup" | "handoff")
         || input.exchange_version <= 0
     {
@@ -1248,6 +1234,9 @@ async fn compose_material(
             "Composition requires a supported material kind and exchange version.",
         );
     }
+    // Owner wire preconditions are resolved here so the published error codes
+    // stay stable; the shared operation re-checks them under the transaction
+    // and owns the canonical snapshot (UCR-001 U07).
     let context = sqlx::query_as::<_,(i64,i64,String,String)>("SELECT o.revision,e.revision,o.state,e.kind FROM opportunity o JOIN opportunity_party p ON p.opportunity_id=o.id JOIN entity e ON e.id=p.party_id WHERE o.id=? AND p.party_id=?").bind(&opportunity_id).bind(&input.recipient_id).fetch_optional(state.workspace.pool()).await;
     let Some((opp_revision, recipient_revision, state_value, kind)) = (match context {
         Ok(value) => value,
@@ -1297,157 +1286,174 @@ async fn compose_material(
             "The recipient's exchange must be complete and explicitly attested before composition.",
         );
     }
-    let slots = match sqlx::query_as::<_, (String, String, String)>(
-        "SELECT body,fallbacks_json,status FROM template_version WHERE id=?",
-    )
-    .bind(&input.template_version_id)
-    .fetch_one(state.workspace.pool())
-    .await
-    {
+    let key = match command_key(&headers) {
         Ok(value) => value,
+        Err(response) => return response,
+    };
+    let canonical = match canonical_command(
+        &format!("POST /api/v1/opportunities/{opportunity_id}/materials/compose"),
+        &input,
+    ) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
+        Ok(tx) => tx,
         Err(error) => return command_error(error.into()),
     };
-    let fallback: Value = serde_json::from_str(&slots.1).unwrap_or(Value::Null);
-    let declared = template::validate(&slots.0, fallback.get("proof").and_then(Value::as_str));
-    if !declared.errors.is_empty() {
-        return err(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "TEMPLATE_INVALID",
-            "Active template failed deterministic validation.",
-        );
-    }
-    let declared_slots = declared.slots.into_iter().collect::<BTreeSet<_>>();
-    let provided = input
-        .slot_fills
-        .iter()
-        .map(|fill| fill.slot.clone())
-        .collect::<BTreeSet<_>>();
-    if declared_slots != provided
-        || input
-            .slot_fills
-            .iter()
-            .any(|fill| fill.value.trim().is_empty())
+    if let Some(response) = match receipt_replay(&mut tx, &state.workspace, &key, &canonical).await
     {
-        return err(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "SLOT_SELECTION_INVALID",
-            "Choose exactly one non-empty owner-approved value for each active slot.",
-        );
+        Ok(response) => response,
+        Err(response) => return response,
+    } {
+        let _ = tx.commit().await;
+        return response;
     }
-    let mut resource_revisions = BTreeMap::new();
-    for fill in &input.slot_fills {
-        if let Some(resource_id) = fill.resource_id.as_deref() {
-            let ready: Option<(String, i64)> = match sqlx::query_as(
-                "SELECT subtype,resource_content_revision FROM entity WHERE id=? AND readiness='ready' AND retired_at IS NULL",
-            )
-            .bind(resource_id)
-            .fetch_optional(state.workspace.pool())
-            .await
-            {
-                Ok(value) => value,
-                Err(error) => return command_error(error.into()),
-            };
-            let Some((resource_kind, revision)) = ready else {
-                return err(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "RESOURCE_NOT_READY",
-                    "A selected resource is missing or not ready.",
-                );
-            };
-            let slot_kind = fill.slot.split_once(':').map(|value| value.0).unwrap_or("");
-            if slot_kind != resource_kind {
-                return err(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "RESOURCE_KIND_MISMATCH",
-                    "Selected resource kind does not match its slot.",
-                );
-            }
-            resource_revisions.insert(resource_id.to_owned(), revision);
+    let outcome = match super::application::compose_start::start(
+        &mut tx,
+        &super::application::compose_start::ComposeStartInput {
+            opportunity_id: opportunity_id.clone(),
+            recipient_id: input.recipient_id.clone(),
+            expected_opportunity_revision: opp_revision,
+            expected_recipient_revision: recipient_revision,
+            kind: input.kind.clone(),
+            template_version_id: input.template_version_id.clone(),
+            exchange_version: input.exchange_version,
+            slot_fills: input
+                .slot_fills
+                .iter()
+                .map(|fill| super::application::compose_start::SlotFill {
+                    slot: fill.slot.clone(),
+                    value: fill.value.clone(),
+                    resource_id: fill.resource_id.clone(),
+                })
+                .collect(),
+            selected_match_ids: input.selected_match_ids.clone(),
+            epoch: state.workspace.epoch().to_string(),
+            run_id: None,
+            owner_pseudonym: None,
+            granted_targets: Vec::new(),
+        },
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(super::application::compose_start::ComposeStartError::RecipientInvalid) => {
+            let _ = tx.rollback().await;
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "COMPOSER_RECIPIENT_INVALID",
+                "Recipient must be a participant in the opportunity.",
+            );
         }
-    }
-    let selected = input.selected_match_ids.iter().collect::<BTreeSet<_>>();
-    if selected.len() != input.selected_match_ids.len() {
-        return err(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "MATCH_SELECTION_DUPLICATE",
-            "Selected match ids must be unique.",
-        );
-    }
-    for resource_id in &input.selected_match_ids {
-        if !resource_revisions.contains_key(resource_id) {
+        Err(super::application::compose_start::ComposeStartError::StaleRevision) => {
+            let _ = tx.rollback().await;
+            return err(
+                StatusCode::CONFLICT,
+                "STALE_REVISION",
+                "The opportunity or recipient changed; reload and retry with a fresh request.",
+            );
+        }
+        Err(super::application::compose_start::ComposeStartError::TemplateInvalid) => {
+            let _ = tx.rollback().await;
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "TEMPLATE_NOT_ACTIVE",
+                "Only an active immutable template version can be composed.",
+            );
+        }
+        Err(super::application::compose_start::ComposeStartError::ExchangeMissing) => {
+            let _ = tx.rollback().await;
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "EXCHANGE_MISSING",
+                "Selected recipient exchange version does not exist.",
+            );
+        }
+        Err(super::application::compose_start::ComposeStartError::ExchangeNotReviewed) => {
+            let _ = tx.rollback().await;
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "EXCHANGE_NOT_REVIEWED",
+                "The recipient's exchange must be complete and explicitly attested before composition.",
+            );
+        }
+        Err(super::application::compose_start::ComposeStartError::SlotInvalid) => {
+            let _ = tx.rollback().await;
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "SLOT_SELECTION_INVALID",
+                "Choose exactly one non-empty owner-approved value for each active slot.",
+            );
+        }
+        Err(super::application::compose_start::ComposeStartError::ResourceInvalid) => {
+            let _ = tx.rollback().await;
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "RESOURCE_NOT_READY",
+                "A selected resource is missing or not ready.",
+            );
+        }
+        Err(super::application::compose_start::ComposeStartError::MatchSelectionInvalid) => {
+            let _ = tx.rollback().await;
             return err(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "MATCH_SELECTION_UNBOUND",
-                "Selected Matcher ids must also appear in the slot fills.",
+                "Selected Matcher ids must also appear in the slot fills and the current shortlist.",
             );
         }
-    }
-    if !input.selected_match_ids.is_empty() {
-        let latest: Option<String> = match sqlx::query_scalar("SELECT shortlist_json FROM match_run WHERE opportunity_id=? AND recipient_id=? ORDER BY created_at DESC,id DESC LIMIT 1").bind(&opportunity_id).bind(&input.recipient_id).fetch_optional(state.workspace.pool()).await { Ok(value)=>value,Err(error)=>return command_error(error.into()) };
-        let Some(latest) = latest else {
+        Err(super::application::compose_start::ComposeStartError::MatchShortlistMissing) => {
+            let _ = tx.rollback().await;
             return err(
                 StatusCode::CONFLICT,
                 "MATCH_SHORTLIST_MISSING",
                 "Run matching for this recipient before selecting matched resources.",
             );
-        };
-        let shortlist: Value = match serde_json::from_str(&latest) {
-            Ok(value) => value,
-            Err(error) => {
-                return err(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "MATCH_RESULT_CORRUPT",
-                    &error.to_string(),
-                );
-            }
-        };
-        let allowed = shortlist
-            .get("results")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .flat_map(|kind| {
-                kind.get("candidates")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-            })
-            .filter_map(|candidate| candidate.get("id").and_then(Value::as_str))
-            .collect::<BTreeSet<_>>();
-        if input
-            .selected_match_ids
-            .iter()
-            .any(|id| !allowed.contains(id.as_str()))
-        {
+        }
+        Err(super::application::compose_start::ComposeStartError::TargetNotGranted) => {
+            let _ = tx.rollback().await;
             return err(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "MATCH_SELECTION_NOT_SHORTLISTED",
-                "Selected resource is not in the current server-computed shortlist for this recipient.",
+                StatusCode::NOT_FOUND,
+                "TARGET_UNAVAILABLE",
+                "Target record is not available.",
             );
         }
-    }
-    let input_json = json!({"opportunity_id":opportunity_id,"opportunity_revision":opp_revision,"recipient_id":input.recipient_id,"recipient_revision":recipient_revision,"kind":input.kind,"template_version_id":input.template_version_id,"exchange_version":input.exchange_version,"slot_fills":input.slot_fills,"selected_match_ids":input.selected_match_ids,"resource_revisions":resource_revisions});
-    match enqueue_role_command(
-        &state,
+        Err(super::application::compose_start::ComposeStartError::QueueAtCapacity) => {
+            let _ = tx.rollback().await;
+            return err(
+                StatusCode::TOO_MANY_REQUESTS,
+                "BUDGET_EXCEEDED",
+                "The job queue is at capacity.",
+            );
+        }
+        Err(super::application::compose_start::ComposeStartError::Database) => {
+            let _ = tx.rollback().await;
+            return command_error(super::WorkspaceError::Database(sqlx::Error::Protocol(
+                "storage failure".into(),
+            )));
+        }
+    };
+    let result = json!({"job_id": outcome.job_id, "role": outcome.role});
+    if let Err(failure) = receipt_store(
+        &mut tx,
+        &state.workspace,
         &key,
         &canonical,
-        "composer",
-        "opportunity",
-        &opportunity_id,
-        opp_revision,
-        &input_json,
-        3,
+        StatusCode::ACCEPTED,
+        &result,
     )
     .await
     {
-        Ok(EnqueueOutcome::Replay(response)) => response,
-        Ok(EnqueueOutcome::New(job_id)) => (
-            StatusCode::ACCEPTED,
-            Json(json!({"job_id":job_id,"role":"composer"})),
-        )
-            .into_response(),
-        Err(response) => response,
+        let _ = tx.rollback().await;
+        return command_error(failure);
     }
+    if tx.commit().await.is_err() {
+        return command_error(super::WorkspaceError::Database(sqlx::Error::Protocol(
+            "commit failure".into(),
+        )));
+    }
+    super::jobs::wake(&state.jobs, &outcome.job_id);
+    (StatusCode::ACCEPTED, Json(result)).into_response()
 }
 
 async fn save_composer_candidate(
@@ -1539,10 +1545,6 @@ async fn save_composer_candidate(
             );
         }
     };
-    let proposed_body = proposal
-        .get("body")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
     let fills = job_input
         .get("slot_fills")
         .and_then(Value::as_array)
@@ -1660,8 +1662,77 @@ async fn save_composer_candidate(
         .get("sentences")
         .cloned()
         .unwrap_or(Value::Array(Vec::new()));
-    let sentence_bindings = json!({"sentences":sentence_audit,"status":if input.body==proposed_body{"proposal_unedited"}else{"owner_edited_unreviewed"},"requires_owner_review":true});
-    if let Err(error)=sqlx::query("INSERT INTO material_version(material_id,version_no,opportunity_id,recipient_id,template_version_id,exchange_version,body,slot_fills_json,sentence_bindings_json,content_sha256,created_at,job_id,prompt_id,prompt_sha256) VALUES(?,1,?,?,?,?,?,?,?,?,?,?,?,?)").bind(&material_id).bind(&opportunity_id).bind(recipient).bind(template_id).bind(exchange).bind(&input.body).bind(fill_json).bind(sentence_bindings.to_string()).bind(&content_hash).bind(&now).bind(&job_id).bind(proposal.get("prompt_id").and_then(Value::as_str)).bind(&prompt_sha).execute(&mut *tx).await{let _=tx.rollback().await;return command_error(error.into());}
+    // Convert the worker's sentence-level claim audit into typed owner-review
+    // bindings. Each sentence receives exactly one binding whose approved
+    // wording is this exact sentence; the typed binding set is what the gate
+    // and release checks evaluate (UCR-001 U07).
+    let sentence_list = super::materials::split_sentences(&input.body);
+    let mut sentence_bindings: Vec<super::materials::SentenceBinding> = Vec::new();
+    for (index, sentence) in sentence_list.iter().enumerate() {
+        let claims = sentence_audit
+            .get(index)
+            .and_then(Value::as_object)
+            .and_then(|object| object.get("claims"))
+            .and_then(Value::as_array);
+        let claim = claims.and_then(|items| items.first()).cloned();
+        let claim_type = claim
+            .as_ref()
+            .and_then(|value| value.get("type"))
+            .and_then(Value::as_str)
+            .filter(|kind| {
+                matches!(
+                    *kind,
+                    "generic"
+                        | "offer"
+                        | "self_fact"
+                        | "other_fact"
+                        | "question"
+                        | "ask"
+                        | "identity"
+                        | "hook"
+                )
+            })
+            .unwrap_or("generic")
+            .to_owned();
+        let (ref_kind, ref_id) = if claim_type == "generic" {
+            (None, None)
+        } else {
+            let kind = match claim_type.as_str() {
+                "offer" | "self_fact" => Some("resource".to_owned()),
+                "other_fact" => Some("claim".to_owned()),
+                "question" => Some("interest".to_owned()),
+                "ask" => Some("ladder".to_owned()),
+                "hook" | "identity" => None,
+                _ => None,
+            };
+            (
+                kind,
+                claim
+                    .as_ref()
+                    .and_then(|value| value.get("ref"))
+                    .and_then(|value| value.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            )
+        };
+        sentence_bindings.push(super::materials::SentenceBinding {
+            sentence_index: index,
+            claim_type,
+            ref_kind,
+            ref_id,
+            ref_revision: None,
+            approved_wording: Some(sentence.clone()),
+            ask_rung: None,
+        });
+    }
+    let sentence_bindings_json = match serde_json::to_string(&sentence_bindings) {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = tx.rollback().await;
+            return command_error(super::WorkspaceError::Invalid(error.to_string()));
+        }
+    };
+    if let Err(error)=sqlx::query("INSERT INTO material_version(material_id,version_no,opportunity_id,recipient_id,template_version_id,exchange_version,body,slot_fills_json,sentence_bindings_json,content_sha256,created_at,job_id,prompt_id,prompt_sha256) VALUES(?,1,?,?,?,?,?,?,?,?,?,?,?,?)").bind(&material_id).bind(&opportunity_id).bind(recipient).bind(template_id).bind(exchange).bind(&input.body).bind(fill_json).bind(sentence_bindings_json).bind(&content_hash).bind(&now).bind(&job_id).bind(proposal.get("prompt_id").and_then(Value::as_str)).bind(&prompt_sha).execute(&mut *tx).await{let _=tx.rollback().await;return command_error(error.into());}
     let deps = [
         (
             "opportunity",
