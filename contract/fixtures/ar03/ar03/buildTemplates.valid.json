@@ -1,0 +1,12 @@
+{
+  "context": {
+    "scope": {"kind": "party", "id": "p_1", "revision": 1}
+  },
+  "stage_class": "prepared",
+  "rungs": [1],
+  "rules": ["R1"],
+  "optional_rules": [],
+  "channel": "email",
+  "max_chars": 1200,
+  "voice_sample_ids": []
+}

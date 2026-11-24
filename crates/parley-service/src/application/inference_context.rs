@@ -37,6 +37,8 @@ pub(crate) struct ContextRequest {
     pub(crate) evidence: Vec<EvidenceSelection>,
     #[serde(default)]
     pub(crate) resource_ids: Vec<String>,
+    #[serde(default)]
+    pub(crate) voice_sample_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -53,7 +55,7 @@ pub(crate) async fn authorize(
     conn: &mut SqliteConnection,
     request: &ContextRequest,
 ) -> Result<(), WorkspaceError> {
-    let (party_id, opportunity_id) = match &request.scope {
+    let (party_id, _opportunity_id) = match &request.scope {
         ScopeSelection::Party { id, .. } => {
             let exists: Option<String> = sqlx::query_scalar(
                 "SELECT id FROM entity WHERE id=? AND kind IN ('person','org') AND retired_at IS NULL",
@@ -111,7 +113,20 @@ pub(crate) async fn authorize(
         .bind(resource_id)
         .fetch_optional(&mut *conn)
         .await?;
-        if eligible.is_none() || opportunity_id.is_none() {
+        if eligible.is_none() {
+            return Err(WorkspaceError::NotFound);
+        }
+    }
+    if request.voice_sample_ids.len() > 5 {
+        return Err(WorkspaceError::Invalid("VOICE_SAMPLE_LIMIT".into()));
+    }
+    for voice_sample_id in &request.voice_sample_ids {
+        let active: Option<String> =
+            sqlx::query_scalar("SELECT id FROM voice_sample WHERE id=? AND status='active'")
+                .bind(voice_sample_id)
+                .fetch_optional(&mut *conn)
+                .await?;
+        if active.is_none() {
             return Err(WorkspaceError::NotFound);
         }
     }
@@ -143,12 +158,12 @@ pub(crate) async fn snapshot(
             "DUPLICATE_CONTEXT_REFERENCE".into(),
         ));
     }
-    let (party_id, party_revision, scope_projection, opportunity_ref) = match &request.scope {
+    let (party_id, party_revision, scope_projection, opportunity_ref, recipient_name) = match &request.scope {
         ScopeSelection::Party { id, revision } => {
-            let current: Option<(String, i64, String)> = sqlx::query_as(
-                "SELECT id,revision,kind FROM entity WHERE id=? AND kind IN ('person','org') AND retired_at IS NULL",
+            let current: Option<(String, i64, String, String)> = sqlx::query_as(
+                "SELECT id,revision,kind,name FROM entity WHERE id=? AND kind IN ('person','org') AND retired_at IS NULL",
             ).bind(id).fetch_optional(&mut *conn).await?;
-            let Some((found, current_revision, _kind)) = current.filter(|row| row.1 == *revision)
+            let Some((found, current_revision, _kind, name)) = current.filter(|row| row.1 == *revision)
             else {
                 return Err(WorkspaceError::StaleRevision);
             };
@@ -157,6 +172,7 @@ pub(crate) async fn snapshot(
                 current_revision,
                 json!({"kind":"party","id":found,"revision":current_revision}),
                 None,
+                name,
             )
         }
         ScopeSelection::Opportunity {
@@ -165,12 +181,12 @@ pub(crate) async fn snapshot(
             recipient_id,
             recipient_revision,
         } => {
-            let current: Option<(i64, i64, String)> = sqlx::query_as(
-                "SELECT o.revision,e.revision,o.state FROM opportunity o
+            let current: Option<(i64, i64, String, String)> = sqlx::query_as(
+                "SELECT o.revision,e.revision,o.state,e.name FROM opportunity o
                  JOIN opportunity_party op ON op.opportunity_id=o.id AND op.party_id=?
                  JOIN entity e ON e.id=op.party_id WHERE o.id=? AND e.kind IN ('person','org') AND e.retired_at IS NULL",
             ).bind(recipient_id).bind(id).fetch_optional(&mut *conn).await?;
-            let Some((op_revision, recipient_rev, state)) = current else {
+            let Some((op_revision, recipient_rev, state, name)) = current else {
                 return Err(WorkspaceError::NotFound);
             };
             if op_revision != *revision || recipient_rev != *recipient_revision || state != "open" {
@@ -181,6 +197,7 @@ pub(crate) async fn snapshot(
                 recipient_rev,
                 json!({"kind":"opportunity","id":id,"revision":op_revision,"recipient_id":recipient_id,"recipient_revision":recipient_rev}),
                 Some((id.clone(), op_revision)),
+                name,
             )
         }
     };
@@ -325,8 +342,76 @@ pub(crate) async fn snapshot(
             json!({"kind":"eligible_shortlist","id":match_id,"revision":fingerprint(&shortlist)?}),
         );
     }
+    let mut voice_samples = Vec::with_capacity(request.voice_sample_ids.len());
+    if !request.voice_sample_ids.is_empty() {
+        let unique = request
+            .voice_sample_ids
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        if unique.len() != request.voice_sample_ids.len() {
+            return Err(WorkspaceError::Invalid(
+                "DUPLICATE_VOICE_SAMPLE".into(),
+            ));
+        }
+        let ids_json = serde_json::to_string(&request.voice_sample_ids)
+            .map_err(|_| WorkspaceError::Invalid("VOICE_SAMPLE_INVALID".into()))?;
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT id,text,revision FROM voice_sample
+             WHERE id IN (SELECT value FROM json_each(?)) AND status='active' ORDER BY id",
+        )
+        .bind(&ids_json)
+        .fetch_all(&mut *conn)
+        .await?;
+        if rows.len() != unique.len() {
+            return Err(WorkspaceError::NotFound);
+        }
+        for (id, text, revision) in rows {
+            voice_samples.push(json!({"id":id,"text":text,"revision":revision}));
+            deps.push(json!({"kind":"voice_sample","id":id,"revision":revision}));
+        }
+    }
+    // Eligible accepted hooks for the selected recipient. An R5 hook fill
+    // must be an accepted current claim revision scoped to this recipient,
+    // with professional publicness, approved wording, verified provenance
+    // tier and the pack freshness bound.
+    let pack: Value = sqlx::query_scalar("SELECT settings_json FROM owner_profile WHERE id=1")
+        .fetch_optional(&mut *conn)
+        .await?
+        .and_then(|settings: String| serde_json::from_str(&settings).ok())
+        .unwrap_or_default();
+    let hook_days = pack
+        .pointer("/pack_policy/limits/hook_max_age_days")
+        .and_then(Value::as_i64)
+        .unwrap_or(90);
+    let cutoff = (chrono::Utc::now() - chrono::Duration::days(hook_days))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let hooks: Vec<(String, i64, String)> = sqlx::query_as(
+        "SELECT c.id,cr.revision,cr.approved_wording FROM accepted_hook h
+         JOIN claim c ON c.id=h.claim_id
+         JOIN claim_revision cr ON cr.claim_id=h.claim_id AND cr.revision=h.claim_revision
+         WHERE c.subject_id=? AND h.publicness='professional_public' AND h.published_at>=?
+           AND c.current_revision=h.claim_revision AND cr.tier IN (1,3)
+           AND cr.approved_wording IS NOT NULL AND cr.knowledge_kind<>'hypothesis'
+         ORDER BY c.id,cr.revision",
+    )
+    .bind(&party_id)
+    .bind(&cutoff)
+    .fetch_all(&mut *conn)
+    .await?;
     deps.sort_by_key(|left| left.to_string());
-    let projection = json!({"scope":scope_projection,"segment":segment,"evidence":evidence,"resources":resources});
+    let mut projection = json!({"scope":scope_projection,"segment":segment,"evidence":evidence,"resources":resources,"voice_samples":voice_samples,"recipient_name":recipient_name});
+    if !hooks.is_empty() {
+        let hook_refs = hooks
+            .into_iter()
+            .map(|(claim_id, revision, wording)| {
+                json!({"claim_id":claim_id,"revision":revision,"wording":wording})
+            })
+            .collect::<Vec<_>>();
+        let projection_map = projection
+            .as_object_mut()
+            .ok_or_else(|| WorkspaceError::Invalid("CONTEXT_INVALID".into()))?;
+        projection_map.insert("hooks".into(), Value::Array(hook_refs));
+    }
     Ok(ContextSnapshot {
         dependency_json: Value::Array(deps),
         projection,

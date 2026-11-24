@@ -65,7 +65,7 @@ describe('InterviewerWorkspace', () => {
       vi.spyOn(parley, 'createAgentChat').mockResolvedValue(chat);
       vi.spyOn(parley, 'getAgentChat').mockImplementation(async (id: string) => (id === 'chat-2' ? secondChat : chat));
       vi.spyOn(parley, 'addAgentTurn').mockResolvedValue({ chat_id: 'chat-1', turn_id: 'turn-1', job_id: 'job-1', revision: 1 });
-      vi.spyOn(parley, 'getRoleJob').mockResolvedValue({ id: 'job-1', role: 'interviewer', status: 'failed', result: null, last_error: 'simulated failure' });
+      vi.spyOn(parley, 'getRoleJob').mockResolvedValue({ id: 'job-1', role: 'interviewer', status: 'failed', result: null, last_error: 'simulated failure', review_ref: null });
       const wrapper = mount(InterviewerWorkspace);
       await vi.advanceTimersByTimeAsync(0);
       await wrapper.findAll('button').find((button) => button.text() === 'Start Interviewer')!.trigger('click');

@@ -1,4 +1,4 @@
-import { ApiError, parley, type CoachJob, type CoachSnapshot, type StructuredReadiness } from '../../api/client';
+import { ApiError, parley, type CoachJob, type CoachSnapshot, type RoleJob, type StructuredReadiness } from '../../api/client';
 
 interface WeeklyCoachRead {
   snapshot: CoachSnapshot;
@@ -12,6 +12,71 @@ interface WeeklyCoachListener {
 
 export function jobIsActive(job: CoachJob | null): boolean {
   return job?.status === 'queued' || job?.status === 'running';
+}
+
+/**
+ * Session-owned reconciler for one durable role job (AR-001 AR04). The host
+ * polls the job only while it is active; the read is aborted on unmount,
+ * epoch change and hidden tabs. `update` fires for every observation,
+ * `terminal` exactly once when the job leaves queued/running.
+ */
+export function observeRoleJob(
+  id: string,
+  update: (job: RoleJob) => void,
+  terminal: (job: RoleJob) => void,
+  failed: (reason: unknown) => void,
+): () => void {
+  const epoch = parley.workspaceEpoch;
+  let stopped = false;
+  let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
+  let request: AbortController | undefined;
+
+  function pause() {
+    globalThis.clearTimeout(timer);
+    request?.abort();
+    request = undefined;
+  }
+
+  function stop() {
+    stopped = true;
+    pause();
+    globalThis.removeEventListener('focus', refresh);
+    globalThis.document.removeEventListener('visibilitychange', refresh);
+  }
+
+  async function read() {
+    if (stopped || globalThis.document.visibilityState === 'hidden') return;
+    if (epoch !== parley.workspaceEpoch) { stop(); return; }
+    const active = new AbortController();
+    request = active;
+    try {
+      const job = await parley.getRoleJob(id, active.signal);
+      if (active.signal.aborted || stopped || epoch !== parley.workspaceEpoch) return;
+      update(job);
+      if (job.status === 'queued' || job.status === 'running') {
+        timer = globalThis.setTimeout(() => { void read(); }, 2_000);
+      } else {
+        stop();
+        terminal(job);
+      }
+    } catch (reason) {
+      if (active.signal.aborted || stopped || epoch !== parley.workspaceEpoch) return;
+      failed(reason);
+      timer = globalThis.setTimeout(() => { void read(); }, 8_000);
+    } finally {
+      if (request === active) request = undefined;
+    }
+  }
+
+  function refresh() {
+    pause();
+    if (!stopped && globalThis.document.visibilityState !== 'hidden') void read();
+  }
+
+  globalThis.addEventListener('focus', refresh);
+  globalThis.document.addEventListener('visibilitychange', refresh);
+  void read();
+  return stop;
 }
 
 class InferenceActivity {

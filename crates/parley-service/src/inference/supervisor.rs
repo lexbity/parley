@@ -263,6 +263,9 @@ impl Supervisor {
                 "worker.mjs",
                 "worker-build",
                 "coach.schema.json",
+                "template_builder.schema.json",
+                "interviewer.schema.json",
+                "briefer.schema.json",
                 "runtime-v1.schema.json",
                 "licenses/node.txt",
                 "licenses/index.json",
@@ -582,14 +585,19 @@ fn validate_completion(request: &Execute, result: &Completion) -> Result<(), Run
     }
     if let (
         Execute::StructuredRole {
-            role: protocol::Role::Coach,
+            role,
             schema_digest,
             ..
         },
         Completion::StructuredRole { candidate, .. },
     ) = (request, result)
     {
-        let schema = crate::inference::coach_schema();
+        let schema = match role {
+            protocol::Role::Coach => crate::inference::coach_schema(),
+            protocol::Role::TemplateBuilder => crate::inference::builder_schema(),
+            protocol::Role::Interviewer => crate::inference::interviewer_schema(),
+            protocol::Role::Briefer => crate::inference::briefer_schema(),
+        };
         if digest(schema) != *schema_digest {
             return Err(RunError::ProtocolMismatch);
         }

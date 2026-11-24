@@ -33,6 +33,9 @@ pub struct Profile {
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     Coach,
+    TemplateBuilder,
+    Interviewer,
+    Briefer,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

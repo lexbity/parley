@@ -31,6 +31,18 @@ const COMPOSER_PROMPT: &str = include_str!("../roles/composer/prompt.md");
 const COMPOSER_SCHEMA: &str = include_str!("../roles/composer/schema.json");
 const LINTER_PROMPT: &str = include_str!("../roles/linter/prompt.md");
 const LINTER_SCHEMA: &str = include_str!("../roles/linter/schema.json");
+
+pub(crate) fn interviewer_prompt() -> &'static str {
+    INTERVIEWER_PROMPT
+}
+
+pub(crate) fn interviewer_schema() -> &'static str {
+    INTERVIEWER_SCHEMA
+}
+
+pub(crate) fn briefer_schema() -> &'static str {
+    BRIEFER_SCHEMA
+}
 const MAX_BODY: usize = 2_200_000;
 const MAX_CHUNKS: usize = 16;
 const MAX_RETRIES: i64 = 3;
@@ -343,11 +355,26 @@ pub(crate) async fn process(state: &super::AppState, job_id: &str) {
         super::inference::coach::run(state, job_id).await;
         return;
     }
+    if role.as_deref() == Some("template_builder") {
+        super::inference::template_builder::run(state, job_id).await;
+        return;
+    }
     if let Some(role) = role.as_deref().filter(|role| *role != "extractor") {
-        if matches!(role, "matcher" | "template_builder" | "composer" | "linter") {
+        if matches!(role, "matcher" | "composer" | "linter") {
             super::writing_jobs::process_role(workspace, job_id, role).await;
+        } else if matches!(role, "interviewer" | "briefer") {
+            super::inference::roles::run(workspace, job_id, role).await;
+        } else if matches!(role, "template_builder") {
+            super::inference::template_builder::run(state, job_id).await;
         } else {
-            super::assistant::process_role(workspace, job_id, role).await;
+            finish_job_error(
+                workspace,
+                job_id,
+                "ROLE_UNSUPPORTED",
+                "This role is not registered by any execution runtime",
+                "failed",
+            )
+            .await;
         }
         return;
     }
@@ -1502,6 +1529,32 @@ async fn get_job(
             Err(e) => super::command_error(e.into()),
         };
     }
+    if row.0 == "template_builder" {
+        let projection: Result<Option<(i64, Option<String>)>, sqlx::Error> = sqlx::query_as(
+            "SELECT j.state_revision, (SELECT c.id FROM template_build_candidate c
+              WHERE c.job_id=j.id ORDER BY c.variant_no LIMIT 1)
+             FROM durable_job j WHERE j.id=? AND j.epoch=?",
+        )
+        .bind(&id)
+        .bind(state.workspace.epoch())
+        .fetch_optional(state.workspace.pool())
+        .await;
+        return match projection {
+            Ok(Some((state_revision, candidate))) => {
+                let mut response = Json(json!({
+                    "id":id,"role":"template_builder","status":row.1,"state_revision":state_revision,
+                    "attempt_count":row.2,"scope":{"kind":row.7,"id":row.8},
+                    "progress":null,"error_code":row.4,
+                    "review_ref":candidate.map(|id| json!({"kind":"template_build_candidate","id":id}))
+                }))
+                .into_response();
+                super::private_headers(&mut response, state.workspace.epoch());
+                response
+            }
+            Ok(None) => super::error(StatusCode::NOT_FOUND, "JOB_NOT_FOUND", "Job does not exist"),
+            Err(e) => super::command_error(e.into()),
+        };
+    }
     let output_json: Option<String> = match sqlx::query_scalar(
         "SELECT output_json FROM job_attempt WHERE job_id=? ORDER BY attempt_no DESC LIMIT 1",
     )
@@ -1512,6 +1565,68 @@ async fn get_job(
         Ok(value) => value.flatten(),
         Err(error) => return super::command_error(error.into()),
     };
+    if row.0 == "interviewer" {
+        type Projection = (i64, Option<String>, Option<String>, Option<String>);
+        let projection: Result<Option<Projection>, sqlx::Error> = sqlx::query_as(
+            "SELECT j.state_revision, j.last_error_code, j.last_error,
+                    (SELECT c.id FROM interviewer_candidate c WHERE c.job_id=j.id
+                     ORDER BY c.created_at DESC LIMIT 1)
+             FROM durable_job j WHERE j.id=?",
+        )
+        .bind(&id)
+        .fetch_optional(state.workspace.pool())
+        .await;
+        return match projection {
+            Ok(Some((state_revision, error_code, last_error, candidate))) => {
+                let mut response = Json(json!({
+                    "id":id,"role":"interviewer","status":row.1,"state_revision":state_revision,
+                    "attempt_count":row.2,"current_attempt":row.2,"max_attempts":row.3,
+                    "progress_current":row.9,"progress_total":row.10,
+                    "injection_suspected":false,
+                    "last_error_code":error_code,"last_error":last_error,
+                    "source_occurrence_id":null,"scope_kind":"owner","scope_id":row.8,
+                    "proposal_batch_id":null,"proposals":[],
+                    "result":output_json.and_then(|value| serde_json::from_str::<Value>(&value).ok()),
+                    "review_ref":candidate.map(|candidate| json!({"kind":"interviewer_candidate","id":candidate}))
+                }))
+                .into_response();
+                super::private_headers(&mut response, state.workspace.epoch());
+                response
+            }
+            Ok(None) => super::error(StatusCode::NOT_FOUND, "JOB_NOT_FOUND", "Job does not exist"),
+            Err(e) => super::command_error(e.into()),
+        };
+    }
+    if row.0 == "briefer" {
+        type Projection = (i64, Option<String>, Option<String>);
+        let projection: Result<Option<Projection>, sqlx::Error> = sqlx::query_as(
+            "SELECT j.state_revision, j.last_error_code, j.last_error
+             FROM durable_job j WHERE j.id=?",
+        )
+        .bind(&id)
+        .fetch_optional(state.workspace.pool())
+        .await;
+        return match projection {
+            Ok(Some((state_revision, error_code, last_error))) => {
+                let mut response = Json(json!({
+                    "id":id,"role":"briefer","status":row.1,"state_revision":state_revision,
+                    "attempt_count":row.2,"current_attempt":row.2,"max_attempts":row.3,
+                    "progress_current":row.9,"progress_total":row.10,
+                    "injection_suspected":false,
+                    "last_error_code":error_code,"last_error":last_error,
+                    "source_occurrence_id":null,"scope_kind":row.7,"scope_id":row.8,
+                    "proposal_batch_id":null,"proposals":[],
+                    "result":output_json.and_then(|value| serde_json::from_str::<Value>(&value).ok()),
+                    "review_ref":json!({"kind":"brief_scope","id":row.8})
+                }))
+                .into_response();
+                super::private_headers(&mut response, state.workspace.epoch());
+                response
+            }
+            Ok(None) => super::error(StatusCode::NOT_FOUND, "JOB_NOT_FOUND", "Job does not exist"),
+            Err(e) => super::command_error(e.into()),
+        };
+    }
     let injection_suspected = output_json
         .as_deref()
         .and_then(|value| serde_json::from_str::<Value>(value).ok())

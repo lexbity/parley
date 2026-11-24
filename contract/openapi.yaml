@@ -4672,6 +4672,15 @@ components:
         required: [role]
         properties:
           role: {enum: [interviewer, briefer, template_builder, matcher, composer, linter]}
+          review_ref:
+            oneOf:
+            - type: 'null'
+            - type: object
+              required: [kind, id]
+              properties:
+                kind: {enum: [interviewer_candidate, brief_scope, template_build_candidate]}
+                id: {type: string}
+              additionalProperties: false
     ExtractorJob:
       allOf:
       - $ref: '#/components/schemas/JobFields'

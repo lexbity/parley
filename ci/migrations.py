@@ -71,6 +71,8 @@ SLICE_MIGRATIONS: dict[str, list[str]] = {
     "u07": [],
     "ar01": ["0027_inference_boundary.sql"],
     "ar02": ["0028_coach_question_context.sql"],
+    "ar03": ["0029_template_candidates.sql"],
+    "ar04": ["0030_chat_job_bindings.sql"],
     "u08": ["0026_command_approvals.sql"],
     "u09": [],
 }

@@ -1,7 +1,6 @@
 //! Owner Interviewer and scoped Briefer commands. Model runs are durable
 //! proposals; owner decisions are the only writes to resource/brief facts.
-use super::{AppState, Workspace, WorkspaceError, digest, new_id, now_utc};
-use crate::jobs::{self, Attempt};
+use super::{AppState, WorkspaceError, digest, new_id, now_utc};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -12,7 +11,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Sqlite, SqlitePool, Transaction};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 const DEFAULT_QUESTIONS: &str = include_str!("../roles/interviewer/questions.json");
 const INTERVIEWER_PROMPT: &str = include_str!("../roles/interviewer/prompt.md");
@@ -157,53 +156,6 @@ struct SegmentParty {
 #[serde(deny_unknown_fields)]
 struct Empty {}
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InterviewerOutput {
-    next_question: String,
-    target_field: String,
-    extracted: BTreeMap<String, ExtractedValue>,
-    #[allow(dead_code)]
-    ready_to_save: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ExtractedValue {
-    value: Value,
-    owner_quote: String,
-    owner_turn_id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BrieferOutput {
-    #[serde(default)]
-    response: Option<String>,
-    items: Vec<BriefCandidate>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BriefCandidate {
-    kind: String,
-    text: String,
-    detail: BriefDetail,
-    tier: u8,
-    quote: Option<String>,
-    check_suggestion: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BriefDetail {
-    #[serde(default)]
-    term: Option<String>,
-    plain_meaning: String,
-    use_or_avoid: String,
-    applies_to: String,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct BriefItem {
     id: String,
@@ -265,628 +217,7 @@ type BriefDecisionRow = (
     Option<String>,
 );
 
-pub(super) async fn initialize_defaults(pool: &SqlitePool) -> Result<(), WorkspaceError> {
-    let now = now_utc();
-    let defaults = [
-        ("interviewer", INTERVIEWER_PROMPT, "interviewer-v1"),
-        ("briefer", BRIEFER_PROMPT, "briefer-v1"),
-        ("coach", COACH_PROMPT, "coach-v2"),
-    ];
-    for (role, prompt, id) in defaults {
-        let hash = digest(prompt.as_bytes());
-        sqlx::query("INSERT OR IGNORE INTO agent_prompt_version(role,version_no,version_id,prompt_text,prompt_sha256,created_by,created_at) VALUES(?,1,?,?,?,'bundled',?)")
-            .bind(role).bind(id).bind(prompt).bind(hash).bind(&now).execute(pool).await?;
-        sqlx::query("INSERT OR IGNORE INTO agent_prompt_active(role,version_id) VALUES(?,?)")
-            .bind(role)
-            .bind(id)
-            .execute(pool)
-            .await?;
-    }
-    let questions: Value = serde_json::from_str(DEFAULT_QUESTIONS)
-        .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
-    let questions_text =
-        serde_json::to_string(&questions).map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
-    let questions_hash = digest(questions_text.as_bytes());
-    sqlx::query("INSERT OR IGNORE INTO interviewer_question_bank_version(version_id,version_no,content_json,content_sha256,created_by,created_at) VALUES('question-bank-v1',1,?,?,'bundled',?)")
-        .bind(&questions_text).bind(questions_hash).bind(&now).execute(pool).await?;
-    sqlx::query("INSERT OR IGNORE INTO interviewer_question_bank_active(singleton,version_id) VALUES(1,'question-bank-v1')")
-        .execute(pool).await?;
-    Ok(())
-}
-
-pub(super) fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/agent/chats", get(list_chats).post(create_chat))
-        .route("/api/v1/agent/chats/{id}", get(get_chat))
-        .route("/api/v1/agent/chats/{id}/turns", post(add_turn))
-        .route("/api/v1/agent/chats/{id}/questions", post(question_action))
-        .route(
-            "/api/v1/agent/candidates/{id}/confirm",
-            post(confirm_candidate),
-        )
-        .route(
-            "/api/v1/agent/candidates/{id}/dismiss",
-            post(dismiss_candidate),
-        )
-        .route(
-            "/api/v1/agent/question-bank",
-            get(get_question_bank).put(update_question_bank),
-        )
-        .route(
-            "/api/v1/agent/prompts/{role}",
-            get(get_prompt).put(update_prompt),
-        )
-        .route("/api/v1/segments", get(list_segments).post(create_segment))
-        .route("/api/v1/segments/{id}/parties", post(update_segment_party))
-        .route(
-            "/api/v1/briefs/{scope_kind}/{scope_id}/items",
-            get(list_brief_items).post(generate_brief),
-        )
-        .route("/api/v1/brief-items/{id}/decision", post(decide_brief_item))
-        .route("/api/v1/fluency", get(list_fluency))
-        .route("/api/v1/fluency/{term}", put(update_fluency))
-}
-
-pub(super) async fn process_role(workspace: &Workspace, id: &str, role: &str) {
-    if !matches!(role, "interviewer" | "briefer") {
-        jobs::finish_job_error(
-            workspace,
-            id,
-            "ROLE_UNSUPPORTED",
-            "This role is not registered by the Interviewer and Briefer adapter",
-            "failed",
-        )
-        .await;
-        return;
-    }
-    let attempt = match jobs::claim_attempt(workspace, id).await {
-        Ok(Some(attempt)) => attempt,
-        _ => return,
-    };
-    if attempt.role != role {
-        jobs::finish_attempt_error(
-            workspace,
-            id,
-            attempt.number,
-            "ROLE_CHANGED",
-            "Durable job role does not match the worker dispatch",
-            "failed",
-        )
-        .await;
-        return;
-    }
-    if attempt.provider_config.model.trim().is_empty() {
-        jobs::finish_attempt_error(
-            workspace,
-            id,
-            attempt.number,
-            "MODEL_UNAVAILABLE",
-            "Choose an installed local model in Settings",
-            "failed",
-        )
-        .await;
-        return;
-    }
-    if attempt.model_digest.is_none() {
-        jobs::finish_attempt_error(
-            workspace,
-            id,
-            attempt.number,
-            "MODEL_HEALTH_REQUIRED",
-            "Check the installed local model in Settings before running this role",
-            "failed",
-        )
-        .await;
-        return;
-    }
-    let payload = match serde_json::from_str::<Value>(&attempt.input_json) {
-        Ok(value) => value,
-        Err(_) => {
-            jobs::finish_attempt_error(
-                workspace,
-                id,
-                attempt.number,
-                "INPUT_INVALID",
-                "Durable role input is invalid",
-                "failed",
-            )
-            .await;
-            return;
-        }
-    };
-    let prompt_input = serde_json::to_string(&payload).unwrap_or_default();
-    if prompt_input
-        .len()
-        .saturating_add(attempt.prompt.len())
-        .saturating_add(attempt.schema.len())
-        .saturating_add(attempt.provider_config.num_predict as usize)
-        > attempt.provider_config.num_ctx as usize
-    {
-        jobs::finish_attempt_error(
-            workspace,
-            id,
-            attempt.number,
-            "CONTEXT_BUDGET",
-            "Role input exceeds the configured context budget",
-            "failed",
-        )
-        .await;
-        return;
-    }
-    let response = match tokio::time::timeout(
-        std::time::Duration::from_secs(120),
-        jobs::ollama_chat(
-            &attempt.provider_config,
-            &format!("<DATA>\n{prompt_input}\n</DATA>"),
-            &attempt.prompt,
-            &attempt.schema,
-            0.2,
-        ),
-    )
-    .await
-    {
-        Err(_) => {
-            jobs::finish_attempt_error(
-                workspace,
-                id,
-                attempt.number,
-                "ATTEMPT_TIMEOUT",
-                "Agent role exceeded 120 seconds",
-                "failed",
-            )
-            .await;
-            return;
-        }
-        Ok(Err(error)) => {
-            jobs::finish_attempt_error(
-                workspace,
-                id,
-                attempt.number,
-                "AGENT_FAILED",
-                &redact_error(&error),
-                "failed",
-            )
-            .await;
-            return;
-        }
-        Ok(Ok(value)) => value,
-    };
-    let tokens_in = response
-        .prompt_eval_count
-        .unwrap_or_else(|| token_upper_bound(&prompt_input)) as u32;
-    let tokens_out = response.eval_count.unwrap_or(0) as u32;
-    let result: Result<Value, String> = match role {
-        "interviewer" => {
-            process_interviewer_result(
-                workspace,
-                id,
-                &attempt,
-                &payload,
-                &response.message.content,
-                tokens_in,
-                tokens_out,
-            )
-            .await
-        }
-        "briefer" => {
-            process_briefer_result(
-                workspace,
-                id,
-                &attempt,
-                &payload,
-                &response.message.content,
-                tokens_in,
-                tokens_out,
-            )
-            .await
-        }
-        _ => unreachable!(),
-    };
-    if let Err(error) = result {
-        let (code, message, disposition) = if error.starts_with("SCHEMA:") {
-            if attempt.number < 3 {
-                ("OUTPUT_INVALID", error.as_str(), "retry")
-            } else {
-                ("OUTPUT_INVALID", error.as_str(), "invalid")
-            }
-        } else if error.starts_with("STALE:") {
-            (
-                "STALE_INPUT",
-                "The conversation or brief scope changed while this role was running",
-                "failed",
-            )
-        } else {
-            ("ROLE_VALIDATION", error.as_str(), "failed")
-        };
-        jobs::finish_attempt_error(
-            workspace,
-            id,
-            attempt.number,
-            code,
-            &redact_error(message),
-            disposition,
-        )
-        .await;
-    }
-}
-
-async fn process_interviewer_result(
-    workspace: &Workspace,
-    job_id: &str,
-    attempt: &Attempt,
-    input: &Value,
-    output_text: &str,
-    tokens_in: u32,
-    tokens_out: u32,
-) -> Result<Value, String> {
-    let output: InterviewerOutput = serde_json::from_str(output_text)
-        .map_err(|error| format!("SCHEMA: invalid Interviewer output: {error}"))?;
-    if output.next_question.trim().is_empty()
-        || output.next_question.chars().count() > 600
-        || output.extracted.len() > 24
-    {
-        return Err("SCHEMA: Interviewer output exceeds field bounds".into());
-    }
-    let chat_id = input["chat_id"]
-        .as_str()
-        .ok_or("ROLE_INPUT: missing chat id")?;
-    let kind = input["asset_kind"]
-        .as_str()
-        .ok_or("ROLE_INPUT: missing asset kind")?;
-    let turns = input["turns"]
-        .as_array()
-        .ok_or("ROLE_INPUT: missing turns")?;
-    let allowed: BTreeSet<&str> =
-        allowed_fields(kind).ok_or("ROLE_INPUT: unsupported asset kind")?;
-    let mut fields = input["current_fields"]
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
-    let mut quotes = input["current_quotes"]
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
-    for (field, extracted) in output.extracted {
-        if !allowed.contains(field.as_str()) {
-            return Err(format!(
-                "ROLE_VALIDATION: field {field:?} is not part of the {kind} schema"
-            ));
-        }
-        let owner_turn = turns
-            .iter()
-            .find(|turn| {
-                turn["id"].as_str() == Some(extracted.owner_turn_id.as_str())
-                    && turn["speaker"].as_str() == Some("owner")
-            })
-            .ok_or_else(|| {
-                format!("ROLE_VALIDATION: extracted field {field:?} cites no owner turn")
-            })?;
-        let owner_text = owner_turn["text"]
-            .as_str()
-            .ok_or("ROLE_VALIDATION: owner turn has no text")?;
-        if parley_domain::evidence::verify_quote(owner_text, &extracted.owner_quote, None).is_err()
-        {
-            return Err(format!(
-                "ROLE_VALIDATION: owner quote for {field:?} is not an exact verified span"
-            ));
-        }
-        fields.insert(field.clone(), extracted.value);
-        quotes.insert(
-            field,
-            json!({"turn_id":extracted.owner_turn_id,"quote":extracted.owner_quote}),
-        );
-    }
-    let missing = missing_fields(kind, &Value::Object(fields.clone()));
-    let ready = missing.is_empty();
-    let chat_revision = input["chat_revision"]
-        .as_i64()
-        .ok_or("ROLE_INPUT: missing chat revision")?;
-    let now = now_utc();
-    let candidate_id = new_id(&format!("{job_id}:candidate"));
-    let fields_value = Value::Object(fields);
-    let quotes_value = Value::Object(quotes);
-    let missing_value = serde_json::to_value(&missing).map_err(|error| error.to_string())?;
-    let result = json!({"prompt_id":attempt.prompt_id,"next_question":output.next_question,"target_field":output.target_field,"candidate_id":candidate_id,"fields":fields_value,"owner_quotes":quotes_value,"missing_fields":missing,"ready_to_save":ready});
-    let mut tx = workspace
-        .pool()
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .map_err(|e| e.to_string())?;
-    let current: Option<i64> = sqlx::query_scalar(
-        "SELECT revision FROM agent_chat WHERE id=? AND role='interviewer' AND scope_kind='owner'",
-    )
-    .bind(chat_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| e.to_string())?;
-    if current != Some(chat_revision) {
-        tx.rollback().await.map_err(|e| e.to_string())?;
-        return Err("STALE: interviewer chat changed".into());
-    }
-    let turn_no: i64 =
-        sqlx::query_scalar("SELECT coalesce(max(turn_no),0)+1 FROM agent_turn WHERE chat_id=?")
-            .bind(chat_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-    let turn_id = new_id(&format!("{chat_id}:{turn_no}"));
-    sqlx::query("INSERT INTO agent_turn(id,chat_id,turn_no,speaker,text,job_id,created_at) VALUES(?,?,?,'agent',?,?,?)")
-        .bind(&turn_id).bind(chat_id).bind(turn_no).bind(&output.next_question).bind(job_id).bind(&now).execute(&mut *tx).await.map_err(|e|e.to_string())?;
-    sqlx::query("INSERT INTO interviewer_candidate(id,chat_id,job_id,asset_kind,fields_json,owner_quotes_json,missing_fields_json,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'proposed',?,?)")
-        .bind(&candidate_id).bind(chat_id).bind(job_id).bind(kind).bind(fields_value.to_string()).bind(quotes_value.to_string()).bind(missing_value.to_string()).bind(&now).bind(&now).execute(&mut *tx).await.map_err(|e|e.to_string())?;
-    sqlx::query("UPDATE agent_chat SET revision=revision+1,updated_at=? WHERE id=? AND revision=?")
-        .bind(&now)
-        .bind(chat_id)
-        .bind(chat_revision)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-    sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'agent_chat',?,?, 'interviewer.candidate_proposed',?)")
-        .bind(new_id(job_id)).bind(&now).bind(chat_id).bind(chat_revision+1).bind(json!({"candidate_id":candidate_id,"job_id":job_id,"ready":ready}).to_string()).execute(&mut *tx).await.map_err(|e|e.to_string())?;
-    jobs::complete_role_result_in_tx(
-        &mut tx,
-        job_id,
-        attempt.number,
-        &attempt.input_sha256,
-        &result,
-        tokens_in,
-        tokens_out,
-    )
-    .await
-    .map_err(|e| format!("STALE: {e}"))?;
-    tx.commit().await.map_err(|e| e.to_string())?;
-    Ok(result)
-}
-
-async fn process_briefer_result(
-    workspace: &Workspace,
-    job_id: &str,
-    attempt: &Attempt,
-    input: &Value,
-    output_text: &str,
-    tokens_in: u32,
-    tokens_out: u32,
-) -> Result<Value, String> {
-    let output: BrieferOutput = serde_json::from_str(output_text)
-        .map_err(|error| format!("SCHEMA: invalid Briefer output: {error}"))?;
-    if output.items.len() > 80 {
-        return Err("SCHEMA: brief contains too many items".into());
-    }
-    let chat_response = output.response;
-    let has_chat = input["chat_id"].as_str().is_some();
-    if has_chat
-        && chat_response
-            .as_deref()
-            .is_none_or(|value| value.trim().is_empty() || value.chars().count() > 1600)
-    {
-        return Err("ROLE_VALIDATION: scoped Briefer chat needs a bounded response".into());
-    }
-    if !has_chat
-        && chat_response
-            .as_deref()
-            .is_some_and(|value| value.chars().count() > 1600)
-    {
-        return Err("ROLE_VALIDATION: brief response exceeds its bound".into());
-    }
-    let scope_kind = input["scope_kind"]
-        .as_str()
-        .ok_or("ROLE_INPUT: missing scope kind")?;
-    let scope_id = input["scope_id"]
-        .as_str()
-        .ok_or("ROLE_INPUT: missing scope id")?;
-    let evidence = input["evidence"].as_array().cloned().unwrap_or_default();
-    let now = now_utc();
-    let mut validated = Vec::<(BriefCandidate, Option<(String, String, i64, i64)>)>::new();
-    for item in output.items {
-        if item.text.trim().is_empty()
-            || item.text.chars().count() > 1000
-            || !valid_brief_kind(&item.kind)
-            || !valid_detail(&item.kind, &item.detail)
-        {
-            return Err("ROLE_VALIDATION: brief item failed deterministic field validation".into());
-        }
-        let evidence_span = if item.tier == 1 {
-            let quote = item
-                .quote
-                .as_deref()
-                .filter(|value| !value.is_empty())
-                .ok_or("ROLE_VALIDATION: tier-1 item lacks a quote")?;
-            let mut matches = Vec::new();
-            for source in &evidence {
-                let Some(text) = source["text"].as_str() else {
-                    continue;
-                };
-                if let Ok(span) = parley_domain::evidence::verify_quote(text, quote, None) {
-                    matches.push((
-                        source["occurrence_id"]
-                            .as_str()
-                            .unwrap_or_default()
-                            .to_owned(),
-                        source["variant_id"].as_str().unwrap_or_default().to_owned(),
-                        span.source_start as i64,
-                        span.source_end as i64,
-                    ));
-                }
-            }
-            if matches.len() != 1 {
-                return Err(
-                    "ROLE_VALIDATION: tier-1 quote must resolve to one scoped source occurrence"
-                        .into(),
-                );
-            }
-            Some(matches.remove(0))
-        } else if item.tier == 2 {
-            if item.check_suggestion.as_deref().is_none_or(str::is_empty)
-                || item.quote.is_some()
-                || item.text.contains('@')
-            {
-                return Err("ROLE_VALIDATION: tier-2 brief item needs a verification suggestion and may not claim quoted or named evidence".into());
-            }
-            if mentions_sensitive_topic(&item.text) {
-                return Err("ROLE_VALIDATION: sensitive topic is prohibited in a brief".into());
-            }
-            if matches!(item.kind.as_str(), "norm" | "value" | "landmine")
-                && scope_kind != "segment"
-            {
-                // A party-level norm/value/landmine is allowed only as a sourced
-                // item. Unverified priors stay scoped to a segment tendency.
-                return Err(
-                    "ROLE_VALIDATION: unverified cultural tendencies must be scoped to a segment"
-                        .into(),
-                );
-            }
-            None
-        } else {
-            return Err("ROLE_VALIDATION: the model cannot assign tier 3".into());
-        };
-        if item.tier == 1 && mentions_sensitive_topic(&item.text) {
-            return Err("ROLE_VALIDATION: sensitive topic is prohibited in a brief".into());
-        }
-        validated.push((item, evidence_span));
-    }
-    let result = json!({"prompt_id":attempt.prompt_id,"scope_kind":scope_kind,"scope_id":scope_id,"item_count":validated.len(),"response":chat_response});
-    let mut tx = workspace
-        .pool()
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .map_err(|e| e.to_string())?;
-    let current:Option<(String,String,i64)>=sqlx::query_as("SELECT scope_kind,scope_id,scope_revision FROM durable_job WHERE id=? AND status='running' AND current_attempt=?").bind(job_id).bind(attempt.number).fetch_optional(&mut *tx).await.map_err(|e|e.to_string())?;
-    let expected_revision = input["scope_revision"]
-        .as_i64()
-        .ok_or("ROLE_INPUT: missing scope revision")?;
-    if current.as_ref().is_none_or(|(kind, id, revision)| {
-        kind != scope_kind || id != scope_id || *revision != expected_revision
-    }) {
-        tx.rollback().await.map_err(|e| e.to_string())?;
-        return Err("STALE: brief job is no longer current".into());
-    }
-    // A job started by a registered command may publish proposals only while
-    // its initiating run is still active in the same epoch (UCR-001 U05).
-    if crate::jobs::scoped_job_fence(&mut tx, job_id)
-        .await
-        .is_err()
-    {
-        tx.rollback().await.map_err(|e| e.to_string())?;
-        return Err("STALE: the initiating run revoked or the epoch changed".into());
-    }
-    if let Some(chat_id) = input["chat_id"].as_str() {
-        let expected_chat_revision = input["chat_revision"]
-            .as_i64()
-            .ok_or("ROLE_INPUT: missing chat revision")?;
-        let chat: Option<(i64, String, String, Option<String>)> =
-            sqlx::query_as("SELECT revision,role,scope_kind,scope_id FROM agent_chat WHERE id=?")
-                .bind(chat_id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(|e| e.to_string())?;
-        if chat
-            .as_ref()
-            .is_none_or(|(revision, role, chat_scope, chat_scope_id)| {
-                *revision != expected_chat_revision
-                    || role != "briefer"
-                    || chat_scope != scope_kind
-                    || chat_scope_id.as_deref() != Some(scope_id)
-            })
-        {
-            tx.rollback().await.map_err(|e| e.to_string())?;
-            return Err("STALE: Briefer chat changed or its scope no longer matches".into());
-        }
-        let turn_no: i64 =
-            sqlx::query_scalar("SELECT coalesce(max(turn_no),0)+1 FROM agent_turn WHERE chat_id=?")
-                .bind(chat_id)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(|e| e.to_string())?;
-        let turn_id = new_id(&format!("{chat_id}:{turn_no}"));
-        sqlx::query("INSERT INTO agent_turn(id,chat_id,turn_no,speaker,text,job_id,created_at) VALUES(?,?,?,'agent',?,?,?)")
-            .bind(&turn_id).bind(chat_id).bind(turn_no).bind(chat_response.as_deref().unwrap_or_default()).bind(job_id).bind(&now).execute(&mut *tx).await.map_err(|e|e.to_string())?;
-        sqlx::query(
-            "UPDATE agent_chat SET revision=revision+1,updated_at=? WHERE id=? AND revision=?",
-        )
-        .bind(&now)
-        .bind(chat_id)
-        .bind(expected_chat_revision)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-        sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'agent_chat',?,?, 'briefer.reply',?)")
-            .bind(new_id(job_id)).bind(&now).bind(chat_id).bind(expected_chat_revision+1).bind(json!({"job_id":job_id,"scope_kind":scope_kind,"scope_id":scope_id}).to_string()).execute(&mut *tx).await.map_err(|e|e.to_string())?;
-    }
-    if scope_kind == "party" {
-        let entity_revision: Option<i64> = sqlx::query_scalar(
-            "SELECT revision FROM entity WHERE id=? AND kind IN ('person','org')",
-        )
-        .bind(scope_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-        if entity_revision != Some(expected_revision) {
-            tx.rollback().await.map_err(|e| e.to_string())?;
-            return Err("STALE: party changed during brief generation".into());
-        }
-    } else {
-        let segment_revision: Option<i64> =
-            sqlx::query_scalar("SELECT revision FROM segment WHERE id=?")
-                .bind(scope_id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(|e| e.to_string())?;
-        if segment_revision != Some(expected_revision) {
-            tx.rollback().await.map_err(|e| e.to_string())?;
-            return Err("STALE: segment changed during brief generation".into());
-        }
-    }
-    let mut inserted_count = 0usize;
-    for (item, span) in validated {
-        let duplicate:Option<String>=sqlx::query_scalar("SELECT id FROM brief_item WHERE scope_kind=? AND scope_id=? AND kind=? AND lower(text)=lower(?) AND status='dismissed' LIMIT 1")
-            .bind(scope_kind).bind(scope_id).bind(&item.kind).bind(&item.text).fetch_optional(&mut *tx).await.map_err(|e|e.to_string())?;
-        if duplicate.is_some() {
-            continue;
-        }
-        let id = new_id(&format!("{job_id}:{}:{}", item.kind, item.text));
-        let detail = serde_json::to_string(&item.detail).map_err(|e| e.to_string())?;
-        let (occurrence, variant, start, end) = span
-            .map(|(a, b, c, d)| (Some(a), Some(b), Some(c), Some(d)))
-            .unwrap_or((None, None, None, None));
-        if item.kind == "jargon" {
-            let term = item.detail.term.as_deref().unwrap_or_default().trim();
-            sqlx::query("INSERT OR IGNORE INTO fluency(term,status,revision,updated_at) VALUES(?,'unknown',1,?)")
-                .bind(term).bind(&now).execute(&mut *tx).await.map_err(|e|e.to_string())?;
-        }
-        sqlx::query("INSERT INTO brief_item(id,scope_kind,scope_id,kind,text,detail_json,tier,source_occurrence_id,source_variant_id,quote,source_start,source_end,check_suggestion,speaker_kind,status,job_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,? ,?,'proposed',?,?,?)")
-            .bind(&id).bind(scope_kind).bind(scope_id).bind(&item.kind).bind(&item.text).bind(detail).bind(item.tier as i64)
-            .bind(&occurrence).bind(&variant).bind(&item.quote).bind(start).bind(end).bind(&item.check_suggestion)
-            .bind(if item.tier==1 {"party"} else {"model_prior"}).bind(job_id).bind(&now).bind(&now)
-            .execute(&mut *tx).await.map_err(|e|e.to_string())?;
-        inserted_count += 1;
-    }
-    // Keep provisional model prose out of the immutable event log (RFC-0002
-    // S04). The proposed items themselves live on the brief_item rows and the
-    // attempt output; the event carries counts only.
-    let event_payload = json!({
-        "job_id": job_id,
-        "scope_kind": scope_kind,
-        "scope_id": scope_id,
-        "items_proposed": inserted_count,
-    });
-    sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'brief',?,?, 'brief.items_proposed',?)")
-        .bind(new_id(job_id)).bind(&now).bind(scope_id).bind(1).bind(event_payload.to_string()).execute(&mut *tx).await.map_err(|e|e.to_string())?;
-    jobs::complete_role_result_in_tx(
-        &mut tx,
-        job_id,
-        attempt.number,
-        &attempt.input_sha256,
-        &result,
-        tokens_in,
-        tokens_out,
-    )
-    .await
-    .map_err(|e| format!("STALE: {e}"))?;
-    tx.commit().await.map_err(|e| e.to_string())?;
-    Ok(result)
-}
-
-fn allowed_fields(kind: &str) -> Option<BTreeSet<&'static str>> {
+pub(crate) fn allowed_fields(kind: &str) -> Option<BTreeSet<&'static str>> {
     let fields: &[&str] = match kind {
         "proof" => &[
             "what_i_did",
@@ -922,7 +253,7 @@ fn allowed_fields(kind: &str) -> Option<BTreeSet<&'static str>> {
     Some(fields.iter().copied().collect())
 }
 
-fn missing_fields(kind: &str, fields: &Value) -> Vec<String> {
+pub(crate) fn missing_fields(kind: &str, fields: &Value) -> Vec<String> {
     let required: &[&str] = match kind {
         "proof" => &[
             "what_i_did",
@@ -1053,53 +384,66 @@ fn missing_fields(kind: &str, fields: &Value) -> Vec<String> {
     missing
 }
 
-fn valid_brief_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "jargon" | "norm" | "value" | "landmine" | "stakeholder" | "interest_hypothesis"
-    )
+pub(super) async fn initialize_defaults(pool: &SqlitePool) -> Result<(), WorkspaceError> {
+    let now = now_utc();
+    let defaults = [
+        ("interviewer", INTERVIEWER_PROMPT, "interviewer-v1"),
+        ("briefer", BRIEFER_PROMPT, "briefer-v1"),
+        ("coach", COACH_PROMPT, "coach-v2"),
+    ];
+    for (role, prompt, id) in defaults {
+        let hash = digest(prompt.as_bytes());
+        sqlx::query("INSERT OR IGNORE INTO agent_prompt_version(role,version_no,version_id,prompt_text,prompt_sha256,created_by,created_at) VALUES(?,1,?,?,?,'bundled',?)")
+            .bind(role).bind(id).bind(prompt).bind(hash).bind(&now).execute(pool).await?;
+        sqlx::query("INSERT OR IGNORE INTO agent_prompt_active(role,version_id) VALUES(?,?)")
+            .bind(role)
+            .bind(id)
+            .execute(pool)
+            .await?;
+    }
+    let questions: Value = serde_json::from_str(DEFAULT_QUESTIONS)
+        .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
+    let questions_text =
+        serde_json::to_string(&questions).map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
+    let questions_hash = digest(questions_text.as_bytes());
+    sqlx::query("INSERT OR IGNORE INTO interviewer_question_bank_version(version_id,version_no,content_json,content_sha256,created_by,created_at) VALUES('question-bank-v1',1,?,?,'bundled',?)")
+        .bind(&questions_text).bind(questions_hash).bind(&now).execute(pool).await?;
+    sqlx::query("INSERT OR IGNORE INTO interviewer_question_bank_active(singleton,version_id) VALUES(1,'question-bank-v1')")
+        .execute(pool).await?;
+    Ok(())
 }
-fn valid_detail(kind: &str, detail: &BriefDetail) -> bool {
-    matches!(
-        detail.use_or_avoid.as_str(),
-        "use" | "avoid" | "owner_decides"
-    ) && matches!(detail.applies_to.as_str(), "org" | "segment" | "role")
-        && (!detail.plain_meaning.trim().is_empty() || kind != "jargon")
-        && (kind != "jargon"
-            || detail
-                .term
-                .as_deref()
-                .is_some_and(|term| !term.trim().is_empty() && term.chars().count() <= 120))
-}
-fn mentions_sensitive_topic(text: &str) -> bool {
-    let lower = text.to_lowercase();
-    [
-        "health",
-        "disability",
-        "family",
-        "sexual orientation",
-        "religion",
-        "political",
-        "race",
-        "ethnicity",
-        "immigration",
-        "union membership",
-        "financial hardship",
-        "home address",
-        "home location",
-        "minor",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
-}
-fn token_upper_bound(text: &str) -> u32 {
-    text.len().div_ceil(4).min(u32::MAX as usize) as u32
-}
-fn redact_error(text: &str) -> String {
-    text.chars()
-        .filter(|ch| !ch.is_control() || *ch == '\n')
-        .take(500)
-        .collect()
+
+pub(super) fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/v1/agent/chats", get(list_chats).post(create_chat))
+        .route("/api/v1/agent/chats/{id}", get(get_chat))
+        .route("/api/v1/agent/chats/{id}/turns", post(add_turn))
+        .route("/api/v1/agent/chats/{id}/questions", post(question_action))
+        .route(
+            "/api/v1/agent/candidates/{id}/confirm",
+            post(confirm_candidate),
+        )
+        .route(
+            "/api/v1/agent/candidates/{id}/dismiss",
+            post(dismiss_candidate),
+        )
+        .route(
+            "/api/v1/agent/question-bank",
+            get(get_question_bank).put(update_question_bank),
+        )
+        .route(
+            "/api/v1/agent/prompts/{role}",
+            get(get_prompt).put(update_prompt),
+        )
+        .route("/api/v1/segments", get(list_segments).post(create_segment))
+        .route("/api/v1/segments/{id}/parties", post(update_segment_party))
+        .route(
+            "/api/v1/briefs/{scope_kind}/{scope_id}/items",
+            get(list_brief_items).post(generate_brief),
+        )
+        .route("/api/v1/brief-items/{id}/decision", post(decide_brief_item))
+        .route("/api/v1/fluency", get(list_fluency))
+        .route("/api/v1/fluency/{term}", put(update_fluency))
 }
 
 async fn create_chat(
@@ -1291,7 +635,7 @@ async fn list_chats(
         );
     }
     let rows:Result<Vec<ChatSummary>,_>=sqlx::query_as(
-        "SELECT c.id,c.role,c.scope_kind,c.scope_id,c.asset_kind,c.revision,(SELECT t.text FROM agent_turn t WHERE t.chat_id=c.id ORDER BY t.turn_no DESC LIMIT 1) AS last_turn,c.updated_at,(SELECT j.id FROM durable_job j WHERE j.status IN ('queued','running') AND ((c.role='interviewer' AND j.role='interviewer' AND j.scope_kind='owner' AND j.scope_id=c.id) OR (c.role='briefer' AND j.role='briefer' AND json_extract(j.input_json,'$.chat_id')=c.id)) ORDER BY j.created_at DESC LIMIT 1) AS active_job_id FROM agent_chat c WHERE (? IS NULL OR c.role=?) AND (? IS NULL OR c.scope_kind=?) AND (? IS NULL OR c.scope_id=?) ORDER BY c.updated_at DESC,c.id",
+        "SELECT c.id,c.role,c.scope_kind,c.scope_id,c.asset_kind,c.revision,(SELECT t.text FROM agent_turn t WHERE t.chat_id=c.id ORDER BY t.turn_no DESC LIMIT 1) AS last_turn,c.updated_at,(SELECT j.id FROM durable_job j WHERE j.status IN ('queued','running') AND j.chat_id=c.id ORDER BY j.created_at DESC LIMIT 1) AS active_job_id FROM agent_chat c WHERE (? IS NULL OR c.role=?) AND (? IS NULL OR c.scope_kind=?) AND (? IS NULL OR c.scope_id=?) ORDER BY c.updated_at DESC,c.id",
     ).bind(&query.role).bind(&query.role).bind(&query.scope_kind).bind(&query.scope_kind).bind(&query.scope_id).bind(&query.scope_id).fetch_all(state.workspace.pool()).await;
     match rows {
         Ok(rows) => response_json(StatusCode::OK, json!(rows), state.workspace.epoch()),
@@ -1315,7 +659,7 @@ async fn read_chat(pool: &SqlitePool, id: &str) -> Result<Option<ChatRecord>, Wo
         .bind(id).fetch_all(pool).await?.into_iter().map(|row:(String,String)|QuestionState{question_id:row.0,state:row.1}).collect();
     let candidates:Vec<CandidateRecord>=sqlx::query_as("SELECT id,asset_kind,fields_json,owner_quotes_json,missing_fields_json,state,resource_id FROM interviewer_candidate WHERE chat_id=? ORDER BY created_at,id")
         .bind(id).fetch_all(pool).await?.into_iter().map(|row:(String,String,String,String,String,String,Option<String>)|CandidateRecord{id:row.0,asset_kind:row.1,fields:serde_json::from_str(&row.2).unwrap_or(Value::Null),owner_quotes:serde_json::from_str(&row.3).unwrap_or(Value::Null),missing_fields:serde_json::from_str(&row.4).unwrap_or_default(),state:row.5,resource_id:row.6}).collect();
-    let active_job_id:Option<String>=sqlx::query_scalar("SELECT id FROM durable_job WHERE status IN ('queued','running') AND ((role='interviewer' AND scope_id=?) OR (role='briefer' AND json_extract(input_json,'$.chat_id')=?)) ORDER BY created_at DESC LIMIT 1").bind(id).bind(id).fetch_optional(pool).await?;
+    let active_job_id:Option<String>=sqlx::query_scalar("SELECT id FROM durable_job WHERE status IN ('queued','running') AND chat_id=? ORDER BY created_at DESC LIMIT 1").bind(id).fetch_optional(pool).await?;
     Ok(Some(ChatRecord {
         id: id.to_owned(),
         role,
@@ -1339,7 +683,8 @@ async fn add_turn(
     if let Err(response) = super::authenticate(&headers, &state).await {
         return response.into_response();
     }
-    if request.text.trim().is_empty() || request.text.len() > MAX_TURN_BYTES {
+    let text = request.text.trim().to_owned();
+    if text.is_empty() || text.len() > MAX_TURN_BYTES {
         return super::error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "TURN_INVALID",
@@ -1352,7 +697,7 @@ async fn add_turn(
             return super::error(StatusCode::BAD_REQUEST, "IDEMPOTENCY_KEY_REQUIRED", message);
         }
     };
-    let canonical = digest(format!("POST\0/agent/chats/{id}/turns\0{}", request.text).as_bytes());
+    let canonical = digest(format!("POST\0/agent/chats/{id}/turns\0{text}").as_bytes());
     let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
         Ok(tx) => tx,
         Err(error) => return super::command_error(error.into()),
@@ -1362,195 +707,79 @@ async fn add_turn(
     {
         return response;
     }
-    let row: Option<ChatScopeRow> = sqlx::query_as(
-        "SELECT role,scope_kind,scope_id,asset_kind,revision FROM agent_chat WHERE id=?",
-    )
-    .bind(&id)
-    .fetch_optional(&mut *tx)
-    .await
-    .ok()
-    .flatten();
-    let Some((role, scope_kind, scope_id, asset_kind, revision)) = row else {
-        return super::error(
-            StatusCode::NOT_FOUND,
-            "CHAT_NOT_FOUND",
-            "Chat does not exist",
-        );
-    };
-    if !((role == "interviewer" && scope_kind == "owner" && asset_kind.is_some())
-        || (role == "briefer"
-            && matches!(scope_kind.as_str(), "party" | "segment")
-            && scope_id.is_some()
-            && asset_kind.is_none()))
-    {
-        return super::error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "CHAT_ROLE_INVALID",
-            "Turns require an owner Interviewer chat or scoped party/segment Briefer chat",
-        );
-    }
-    let turn_no: i64 = match sqlx::query_scalar(
-        "SELECT coalesce(max(turn_no),0)+1 FROM agent_turn WHERE chat_id=?",
-    )
-    .bind(&id)
-    .fetch_one(&mut *tx)
-    .await
-    {
-        Ok(value) => value,
-        Err(error) => return super::command_error(error.into()),
-    };
-    let now = now_utc();
-    let turn_id = new_id(&format!("{id}:{turn_no}"));
-    if let Err(error)=sqlx::query("INSERT INTO agent_turn(id,chat_id,turn_no,speaker,text,created_at) VALUES(?,?,?,'owner',?,?)").bind(&turn_id).bind(&id).bind(turn_no).bind(request.text.trim()).bind(&now).execute(&mut *tx).await{return super::command_error(error.into());}
-    let next_revision = revision + 1;
-    if let Err(error) =
-        sqlx::query("UPDATE agent_chat SET revision=?,updated_at=? WHERE id=? AND revision=?")
-            .bind(next_revision)
-            .bind(&now)
-            .bind(&id)
-            .bind(revision)
-            .execute(&mut *tx)
-            .await
-    {
-        return super::command_error(error.into());
-    }
-    let turns: Vec<Value> = match sqlx::query_as::<_, (String, String, String)>(
-        "SELECT id,speaker,text FROM agent_turn WHERE chat_id=? ORDER BY turn_no",
-    )
-    .bind(&id)
-    .fetch_all(&mut *tx)
-    .await
-    {
-        Ok(rows) => rows
-            .into_iter()
-            .map(|row| json!({"id":row.0,"speaker":row.1,"text":row.2}))
-            .collect(),
-        Err(error) => return super::command_error(error.into()),
-    };
-    let input = if role == "interviewer" {
-        let existing:Option<(String,String)>=sqlx::query_as("SELECT fields_json,owner_quotes_json FROM interviewer_candidate WHERE chat_id=? AND state='proposed' ORDER BY created_at DESC LIMIT 1").bind(&id).fetch_optional(&mut *tx).await.ok().flatten();
-        let active_prompt: Option<String> = match sqlx::query_scalar(
-            "SELECT version_id FROM agent_prompt_active WHERE role='interviewer'",
-        )
+    let role: Option<String> = sqlx::query_scalar("SELECT role FROM agent_chat WHERE id=?")
+        .bind(&id)
         .fetch_optional(&mut *tx)
         .await
-        {
-            Ok(value) => value,
-            Err(error) => return super::command_error(error.into()),
-        };
-        let bank:Option<(String,String)>=match sqlx::query_as("SELECT b.version_id,b.content_json FROM interviewer_question_bank_active a JOIN interviewer_question_bank_version b ON b.version_id=a.version_id WHERE a.singleton=1").fetch_optional(&mut *tx).await{Ok(value)=>value,Err(error)=>return super::command_error(error.into())};
-        let Some((bank_id, bank_content)) = bank else {
-            return super::error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "QUESTION_BANK_MISSING",
-                "Interviewer question bank is not configured",
-            );
-        };
-        let current_fields = existing
-            .as_ref()
-            .and_then(|row| serde_json::from_str::<Value>(&row.0).ok())
-            .unwrap_or(json!({}));
-        let current_quotes = existing
-            .as_ref()
-            .and_then(|row| serde_json::from_str::<Value>(&row.1).ok())
-            .unwrap_or(json!({}));
-        json!({"chat_id":id,"asset_kind":asset_kind,"chat_revision":next_revision,"turns":turns,"current_fields":current_fields,"current_quotes":current_quotes,"question_bank_version_id":bank_id,"question_bank":serde_json::from_str::<Value>(&bank_content).unwrap_or(Value::Null),"prompt_version_id":active_prompt})
-    } else {
-        let scoped_id = scope_id.as_deref().unwrap_or_default();
-        let scope_revision: Option<i64> = if scope_kind == "party" {
-            sqlx::query_scalar(
-                "SELECT revision FROM entity WHERE id=? AND kind IN ('person','org')",
+        .ok()
+        .flatten();
+    // One typed intake per role. Neither handler path resolves scope, prompts
+    // or jobs itself; the application operations own admission (AR-001 AR04).
+    let (result, cursor): (Value, i64) = match role.as_deref() {
+        Some("interviewer") => {
+            let input = crate::application::interview::OwnerTurnInput {
+                chat_id: id.clone(),
+                text,
+                epoch: state.workspace.epoch().to_owned(),
+                create_chat_if_missing: false,
+                asset_kind: None,
+                coach_question_id: None,
+            };
+            let outcome = match crate::application::interview::start_owner_turn(&mut tx, &input).await
+            {
+                Ok(outcome) => outcome,
+                Err(error) => return interview_error(error),
+            };
+            let cursor = match append_event(
+                &mut tx,
+                &id,
+                "interviewer.owner_turn",
+                json!({"turn_id":outcome.turn_id,"job_id":outcome.job_id}),
             )
-            .bind(scoped_id)
-            .fetch_optional(&mut *tx)
             .await
-            .ok()
-            .flatten()
-        } else {
-            sqlx::query_scalar("SELECT revision FROM segment WHERE id=?")
-                .bind(scoped_id)
-                .fetch_optional(&mut *tx)
-                .await
-                .ok()
-                .flatten()
-        };
-        let Some(scope_revision) = scope_revision else {
+            {
+                Ok(cursor) => cursor,
+                Err(error) => return super::command_error(error),
+            };
+            (
+                json!({"chat_id":id,"turn_id":outcome.turn_id,"job_id":outcome.job_id,"revision":outcome.revision}),
+                cursor,
+            )
+        }
+        Some("briefer") => {
+            let start = crate::application::brief::OwnerBriefStart::ChatTurn {
+                chat_id: id.clone(),
+                text,
+            };
+            let outcome = match crate::application::brief::start_owner(
+                &mut tx,
+                state.workspace.epoch(),
+                &start,
+            )
+            .await
+            {
+                Ok(outcome) => outcome,
+                Err(error) => return brief_error(error),
+            };
+            (
+                json!({
+                    "chat_id":outcome.chat_id,
+                    "turn_id":outcome.turn_id,
+                    "job_id":outcome.job_id,
+                    "revision":outcome.revision,
+                    "event_cursor":outcome.event_cursor,
+                }),
+                outcome.event_cursor.parse::<i64>().unwrap_or_default(),
+            )
+        }
+        _ => {
             return super::error(
                 StatusCode::NOT_FOUND,
-                "BRIEF_SCOPE_NOT_FOUND",
-                "Briefer chat scope no longer exists",
+                "CHAT_NOT_FOUND",
+                "Chat does not exist",
             );
-        };
-        let evidence = match crate::application::brief::collect_brief_evidence(
-            &mut tx,
-            &scope_kind,
-            scoped_id,
-        )
-        .await
-        {
-            Ok(value) => value,
-            Err(error) => {
-                return super::command_error(crate::WorkspaceError::Invalid(format!(
-                    "evidence collection failed: {error:?}"
-                )));
-            }
-        };
-        let active_prompt: Option<String> = match sqlx::query_scalar(
-            "SELECT version_id FROM agent_prompt_active WHERE role='briefer'",
-        )
-        .fetch_optional(&mut *tx)
-        .await
-        {
-            Ok(value) => value,
-            Err(error) => return super::command_error(error.into()),
-        };
-        json!({"chat_id":id,"scope_kind":scope_kind,"scope_id":scoped_id,"scope_revision":scope_revision,"chat_revision":next_revision,"turns":turns,"evidence":evidence,"prompt_version_id":active_prompt})
+        }
     };
-    let job_role = role.as_str();
-    let job_scope_kind = if job_role == "interviewer" {
-        "owner"
-    } else {
-        scope_kind.as_str()
-    };
-    let job_scope_id = if job_role == "interviewer" {
-        id.as_str()
-    } else {
-        scope_id.as_deref().unwrap_or_default()
-    };
-    let job_revision = if job_role == "interviewer" {
-        next_revision
-    } else {
-        input["scope_revision"].as_i64().unwrap_or(1)
-    };
-    let job_id = match jobs::enqueue_role_in_tx(
-        &mut tx,
-        job_role,
-        job_scope_kind,
-        job_scope_id,
-        job_revision,
-        &input,
-        3,
-        state.workspace.epoch(),
-        None,
-        None,
-    )
-    .await
-    {
-        Ok(value) => value,
-        Err(error) => return super::command_error(error),
-    };
-    let cursor = match append_event(
-        &mut tx,
-        &id,
-        "interviewer.owner_turn",
-        json!({"turn_id":turn_id,"job_id":job_id}),
-    )
-    .await
-    {
-        Ok(cursor) => cursor,
-        Err(error) => return super::command_error(error),
-    };
-    let result = json!({"chat_id":id,"turn_id":turn_id,"job_id":job_id,"revision":next_revision});
     if let Err(error) = write_receipt(
         &mut tx,
         state.workspace.epoch(),
@@ -1569,6 +798,87 @@ async fn add_turn(
     }
     state.jobs.notify_one();
     response_json(StatusCode::ACCEPTED, result, state.workspace.epoch())
+}
+
+fn interview_error(error: crate::application::interview::InterviewError) -> Response {
+    match error {
+        crate::application::interview::InterviewError::NotFound => super::error(
+            StatusCode::NOT_FOUND,
+            "CHAT_NOT_FOUND",
+            "Owner Interviewer chat does not exist",
+        ),
+        crate::application::interview::InterviewError::StaleRevision => super::error(
+            StatusCode::CONFLICT,
+            "CHAT_STALE",
+            "Chat changed; reload and retry",
+        ),
+        crate::application::interview::InterviewError::InvalidTurn => super::error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "TURN_INVALID",
+            "Owner turn must contain 1–16,000 UTF-8 bytes",
+        ),
+        crate::application::interview::InterviewError::InvalidKind => super::error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "CHAT_ROLE_INVALID",
+            "Turns require an owner Interviewer chat",
+        ),
+        crate::application::interview::InterviewError::BankMissing => super::error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "QUESTION_BANK_MISSING",
+            "Interviewer question bank is not configured",
+        ),
+        crate::application::interview::InterviewError::QueueAtCapacity
+        | crate::application::interview::InterviewError::InferenceBusy => {
+            let mut response = super::error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "INFERENCE_BUSY",
+                "The local inference queue is full",
+            );
+            response.headers_mut().insert(
+                "retry-after",
+                axum::http::HeaderValue::from_static("2"),
+            );
+            response
+        }
+        crate::application::interview::InterviewError::Database => super::command_error(
+            crate::WorkspaceError::Invalid("interview intake failed".into()),
+        ),
+    }
+}
+
+fn brief_error(error: crate::application::brief::BriefError) -> Response {
+    match error {
+        crate::application::brief::BriefError::NotFound | crate::application::brief::BriefError::TargetNotGranted => super::error(
+            StatusCode::NOT_FOUND,
+            "BRIEF_SCOPE_NOT_FOUND",
+            "Briefer scope no longer exists",
+        ),
+        crate::application::brief::BriefError::StaleRevision => super::error(
+            StatusCode::CONFLICT,
+            "BRIEF_SCOPE_STALE",
+            "Brief scope changed; reload and retry",
+        ),
+        crate::application::brief::BriefError::InvalidPurpose => super::error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "BRIEF_INPUT_INVALID",
+            "Briefer input is invalid",
+        ),
+        crate::application::brief::BriefError::QueueAtCapacity => {
+            let mut response = super::error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "INFERENCE_BUSY",
+                "The local inference queue is full",
+            );
+            response.headers_mut().insert(
+                "retry-after",
+                axum::http::HeaderValue::from_static("2"),
+            );
+            response
+        }
+        crate::application::brief::BriefError::Database => {
+            super::command_error(crate::WorkspaceError::Invalid("brief intake failed".into()))
+        }
+    }
 }
 
 async fn question_action(
@@ -1849,8 +1159,8 @@ async fn confirm_candidate(
     let now = now_utc();
     let body = request.fields.to_string();
     let subtype_locked = if readiness == "ready" { 1 } else { 0 };
-    if let Err(error)=sqlx::query("INSERT INTO entity(id,kind,name,focus,notes_md,notes_rev,revision,created_at,updated_at,subtype,body_json,readiness,resource_content_revision,subtype_locked) VALUES(?,?,?,'',?,1,1,?,?,?,?,?,1,?)")
-        .bind(&resource_id).bind("resource").bind(request.title.trim()).bind("").bind(&body).bind(&now).bind(&now).bind(&kind).bind(&body).bind(readiness).bind(subtype_locked).execute(&mut *tx).await{return super::command_error(error.into());}
+    if let Err(error)=sqlx::query("INSERT INTO entity(id,kind,name,focus,notes_md,notes_rev,revision,created_at,updated_at,subtype,body_json,readiness,resource_content_revision,subtype_locked) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        .bind(&resource_id).bind("resource").bind(request.title.trim()).bind("").bind("").bind(1_i64).bind(1_i64).bind(&now).bind(&now).bind(&kind).bind(&body).bind(readiness).bind(1_i64).bind(subtype_locked).execute(&mut *tx).await{return super::command_error(error.into());}
     if let Some(column_id) = &request.column_id
         && let Err(error) = state
             .workspace
@@ -2607,89 +1917,26 @@ async fn generate_brief(
     {
         return response;
     }
-    let (scope_revision, display_name) = if scope_kind == "party" {
-        match sqlx::query_as::<_, (i64, String)>(
-            "SELECT revision,name FROM entity WHERE id=? AND kind IN ('person','org')",
-        )
-        .bind(&scope_id)
-        .fetch_optional(&mut *tx)
-        .await
-        {
-            Ok(Some(row)) => row,
-            Ok(None) => {
-                return super::error(
-                    StatusCode::NOT_FOUND,
-                    "PARTY_NOT_FOUND",
-                    "Party brief scope does not exist",
-                );
-            }
-            Err(error) => return super::command_error(error.into()),
-        }
-    } else {
-        match sqlx::query_as::<_, (i64, String)>("SELECT revision,name FROM segment WHERE id=?")
-            .bind(&scope_id)
-            .fetch_optional(&mut *tx)
-            .await
-        {
-            Ok(Some(row)) => row,
-            Ok(None) => {
-                return super::error(
-                    StatusCode::NOT_FOUND,
-                    "SEGMENT_NOT_FOUND",
-                    "Segment brief scope does not exist",
-                );
-            }
-            Err(error) => return super::command_error(error.into()),
-        }
-    };
-    let evidence =
-        match crate::application::brief::collect_brief_evidence(&mut tx, &scope_kind, &scope_id)
-            .await
-        {
-            Ok(value) => value,
-            Err(error) => {
-                return super::command_error(crate::WorkspaceError::Invalid(format!(
-                    "evidence collection failed: {error:?}"
-                )));
-            }
-        };
-    let prompt_id: Option<String> =
-        sqlx::query_scalar("SELECT version_id FROM agent_prompt_active WHERE role='briefer'")
-            .fetch_optional(&mut *tx)
-            .await
-            .ok()
-            .flatten();
-    let input = json!({"scope_kind":scope_kind,"scope_id":scope_id,"scope_revision":scope_revision,"display_name":display_name,"evidence":evidence,"prompt_version_id":prompt_id});
-    let job_id = match jobs::enqueue_role_in_tx(
+    let outcome = match crate::application::brief::start_owner(
         &mut tx,
-        "briefer",
-        &scope_kind,
-        &scope_id,
-        scope_revision,
-        &input,
-        3,
         state.workspace.epoch(),
-        None,
-        None,
+        &crate::application::brief::OwnerBriefStart::Generate {
+            scope_kind: scope_kind.clone(),
+            scope_id: scope_id.clone(),
+        },
     )
     .await
     {
-        Ok(value) => value,
-        Err(error) => return super::command_error(error),
+        Ok(outcome) => outcome,
+        Err(error) => return brief_error(error),
     };
-    let result =
-        json!({"job_id":job_id,"scope_kind":scope_kind,"scope_id":scope_id,"state":"queued"});
-    let cursor = match append_event(
-        &mut tx,
-        &scope_id,
-        "brief.generation_queued",
-        json!({"job_id":job_id,"scope_kind":scope_kind}),
-    )
-    .await
-    {
-        Ok(cursor) => cursor,
-        Err(error) => return super::command_error(error),
-    };
+    let result = json!({
+        "job_id":outcome.job_id,
+        "scope_kind":outcome.scope_kind,
+        "scope_id":outcome.scope_id,
+        "state":outcome.state
+    });
+    let cursor = outcome.event_cursor.parse::<i64>().unwrap_or_default();
     if let Err(error) = write_receipt(
         &mut tx,
         state.workspace.epoch(),

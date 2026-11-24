@@ -37,6 +37,7 @@ const PRIVATE_ARCHIVE_TABLES: &[&str] = &[
     "durable_job",
     "job_attempt",
     "coach_question_hold",
+    "template_build_candidate",
     "inference_job_dependency",
     "inference_active_profile",
     "inference_probe",

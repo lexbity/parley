@@ -323,7 +323,12 @@
                   "maximum": 120000
                 },
                 "role": {
-                  "const": "coach"
+                  "enum": [
+                    "coach",
+                    "template_builder",
+                    "interviewer",
+                    "briefer"
+                  ]
                 },
                 "prompt_version": {
                   "type": "string",

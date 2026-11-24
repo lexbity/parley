@@ -1,0 +1,8 @@
+{
+  "text": "I ran a survey in June.",
+  "expected": {
+    "status": 202,
+    "job_role": "interviewer",
+    "chat_binding": true
+  }
+}

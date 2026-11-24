@@ -280,21 +280,9 @@ function openReview(row: RunListItem) {
     return;
   }
   // Reopen the party desk on the reviewed party with the Brief (chat) pane
-  // active, using the same session preference the desk persists and an
-  // explicit hand-off flag for an already-mounted desk instance.
-  const epoch = parley.workspaceEpoch ?? '';
-  if (epoch) {
-    try {
-      globalThis.sessionStorage.setItem(
-        `parley.parties.${epoch}`,
-        JSON.stringify({ root: review.scope_id, selected: review.scope_id, pane: 'sheet', auxiliary: 'chat' }),
-      );
-    } catch { /* Session storage can be unavailable; the desk still opens. */ }
-  }
-  try {
-    globalThis.sessionStorage.setItem('parley.open-brief', review.scope_id);
-  } catch { /* The desk still opens on the party. */ }
-  props.navigate(`/parties/${encodeURIComponent(review.scope_id)}`);
+  // active. The hand-off rides the typed route query, not browser storage, so
+  // no private state survives the click (AR-001 AR04).
+  props.navigate(`/parties/${encodeURIComponent(review.scope_id)}?brief=1`);
 }
 
 async function cancel(row: RunListItem) {

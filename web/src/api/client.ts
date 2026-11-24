@@ -103,7 +103,7 @@ export type AgentChat = {
 };
 export type AgentChatSummary = { id: string; role: AgentChat['role']; scope_kind: AgentChat['scope_kind']; scope_id: string | null; asset_kind: AgentChat['asset_kind']; revision: number; last_turn: string | null; updated_at: string; active_job_id: string | null };
 export type BriefItem = { id: string; scope_kind: 'party' | 'segment'; scope_id: string; kind: string; text: string; detail: Record<string, unknown>; tier: 1 | 2 | 3; quote: string | null; check_suggestion: string | null; speaker_kind: string; status: string; revision: number; supersedes_id: string | null };
-export type RoleJob = { id: string; role: string; status: string; result: Record<string, unknown> | null; last_error: string | null; scope_kind?: string; scope_id?: string };
+export type RoleJob = { id: string; role: string; status: string; result: Record<string, unknown> | null; last_error: string | null; scope_kind?: string; scope_id?: string; review_ref: { kind: 'interviewer_candidate' | 'brief_scope'; id: string } | null };
 export type VocabularyFluency = { term: string; status: 'unknown' | 'learning' | 'fluent'; revision: number };
 export type WritingTemplate = { id: string; family_id: string; name: string; version: number; status: string; body: string; sentence_rules: string[]; stage_class: string; channel: string; parent_version_id: string | null };
 export type WritingInterestClaim = { claim_id: string; revision: number; wording: string; tier: number; speaker_kind: string };
@@ -1654,10 +1654,18 @@ export class ParleyClient {
     await this.mutate(`/agent/candidates/${encodeURIComponent(id)}/dismiss`, 'POST', {}, { 'Idempotency-Key': key });
   }
 
-  async getRoleJob(id: string): Promise<RoleJob> {
-    const result = object(await this.request(`/jobs/${encodeURIComponent(id)}`));
+  async getRoleJob(id: string, signal?: AbortSignal): Promise<RoleJob> {
+    const result = object(await this.request(`/jobs/${encodeURIComponent(id)}`, { signal }));
     if (!result || typeof result.status !== 'string') throw new Error('Invalid response: role job is malformed');
-    return { id: requiredString(result.id, 'job.id'), role: requiredString(result.role, 'job.role'), status: result.status, result: object(result.result), last_error: typeof result.last_error === 'string' ? result.last_error : null, scope_kind: typeof result.scope_kind === 'string' ? result.scope_kind : undefined, scope_id: typeof result.scope_id === 'string' ? result.scope_id : undefined };
+    const review = object(result?.review_ref);
+    let reviewRef: RoleJob['review_ref'] = null;
+    if (review !== null) {
+      if (review?.kind !== 'interviewer_candidate' && review?.kind !== 'brief_scope') {
+        throw new Error('Invalid response: role job review reference is malformed');
+      }
+      reviewRef = { kind: review.kind, id: requiredString(review.id, 'job.review_ref.id') };
+    }
+    return { id: requiredString(result.id, 'job.id'), role: requiredString(result.role, 'job.role'), status: result.status, result: object(result.result), last_error: typeof result.last_error === 'string' ? result.last_error : null, scope_kind: typeof result.scope_kind === 'string' ? result.scope_kind : undefined, scope_id: typeof result.scope_id === 'string' ? result.scope_id : undefined, review_ref: reviewRef };
   }
 
   async getBriefItems(scopeKind: 'party' | 'segment', scopeId: string): Promise<BriefItem[]> {

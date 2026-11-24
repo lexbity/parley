@@ -9,6 +9,9 @@ import {
 async function main() {
   const runtimeSchema = await readFile(new URL("./runtime-v1.schema.json", import.meta.url))
   const coachSchema = await readFile(new URL("./coach.schema.json", import.meta.url))
+  const builderSchema = await readFile(new URL("./template_builder.schema.json", import.meta.url))
+  const interviewerSchema = await readFile(new URL("./interviewer.schema.json", import.meta.url))
+  const brieferSchema = await readFile(new URL("./briefer.schema.json", import.meta.url))
   const build = (await readFile(new URL("./worker-build", import.meta.url), "ascii")).trim()
   const validate = compileSchema(parseJson(runtimeSchema))
   const namespaces = {}
@@ -42,7 +45,7 @@ async function main() {
     const tokenizer = await readFile("/tokenizer/artifact.json")
     const body = await Promise.race([
       readControl,
-      executeStructured(execution.body, { tokenizer, coachSchema }, relay.fetch, signal),
+      executeStructured(execution.body, { tokenizer, coachSchema, builderSchema, interviewerSchema, brieferSchema }, relay.fetch, signal),
     ])
     await writeFrame(stdout, validate, { v: 1, kind: "complete", seq: 2, ...ids, body })
   } catch (error) {

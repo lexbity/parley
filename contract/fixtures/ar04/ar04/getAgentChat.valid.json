@@ -1,0 +1,12 @@
+{
+  "id": "chat_1",
+  "role": "interviewer",
+  "scope_kind": "owner",
+  "scope_id": null,
+  "asset_kind": "proof",
+  "revision": 2,
+  "active_job_id": null,
+  "turns": [],
+  "questions": [],
+  "candidates": []
+}
