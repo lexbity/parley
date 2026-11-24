@@ -163,32 +163,86 @@ fn like_pattern(term: &str) -> String {
     format!("%{escaped}%")
 }
 
-#[allow(clippy::type_complexity)]
-async fn build_sheet(
-    tx: &mut Transaction<'_, Sqlite>,
-    q: &SheetQuery,
-) -> Result<QueueSheetResponse, WorkspaceError> {
-    let generation: i64 = sqlx::query_scalar("SELECT coalesce(max(cursor),0) FROM event")
-        .fetch_one(&mut **tx)
-        .await?;
-    let search = q.search.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let status = q.status.as_deref().filter(|s| !s.is_empty());
-    if let Some(status) = status
-        && !matches!(status, "open" | "resolved" | "dormant" | "closed")
-    {
-        return Err(WorkspaceError::Invalid(
-            "invalid lifecycle status filter".into(),
-        ));
-    }
-    let phase = q.phase.as_deref().filter(|s| !s.is_empty());
-    let party = q.party_id.as_deref().filter(|s| !s.is_empty());
-    let tag = q.tag.as_deref().filter(|s| !s.is_empty());
+/// SQL projection of the date shown as an opportunity's next action. It
+/// mirrors `next_action_for`: a dated conversing thread wins; an owner task
+/// suppresses the waiting checkpoint; the earliest waiting expiry is the
+/// fallback, and a null expiry sorts as null. Correlated lookups use the
+/// `contact_thread(opportunity_id, recipient_id)` index.
+const ACTION_DATE_SQL: &str = "(CASE WHEN o.state<>'open' THEN NULL WHEN EXISTS(SELECT 1 FROM contact_thread d1 WHERE d1.opportunity_id=o.id AND d1.state='conversing' AND d1.next_action_at IS NOT NULL) THEN (SELECT d2.next_action_at FROM contact_thread d2 WHERE d2.opportunity_id=o.id AND d2.state='conversing' AND d2.next_action_at IS NOT NULL ORDER BY d2.next_action_at,d2.id LIMIT 1) WHEN o.notes_next_task IS NOT NULL AND trim(o.notes_next_task)<>'' THEN NULL WHEN EXISTS(SELECT 1 FROM contact_thread d3 WHERE d3.opportunity_id=o.id AND d3.state='waiting' AND d3.expires_at IS NULL) THEN NULL ELSE (SELECT d4.expires_at FROM contact_thread d4 WHERE d4.opportunity_id=o.id AND d4.state='waiting' AND d4.expires_at IS NOT NULL ORDER BY d4.expires_at,d4.id LIMIT 1) END)";
 
-    // Dynamic WHERE clauses are assembled with sqlx QueryBuilder, matching the
-    // established filter pattern in materials.rs; every user value is bound.
-    let mut builder = sqlx::QueryBuilder::<Sqlite>::new(
-        "SELECT o.id,o.title,o.state,o.close_reason,o.stage_id,o.stage_pack_id,o.stage_pack_version,o.stage_class,o.phase_revision,o.last_phase_event_id,o.notes_next_task,ps.label,ps.class,ps.kind,NOT EXISTS(SELECT 1 FROM material m WHERE m.opportunity_id=o.id) FROM opportunity o LEFT JOIN pack_stage ps ON ps.pack_id=o.stage_pack_id AND ps.pack_version=o.stage_pack_version AND ps.stage_id=o.stage_id WHERE 1=1",
-    );
+/// Opaque continuation token. The client passes it back verbatim, so its
+/// shape is an implementation detail. Keyset values are the last row's sort
+/// keys, which makes pagination stable when rows change between pages.
+#[derive(Debug)]
+enum SheetCursor {
+    Name {
+        title: String,
+        id: String,
+    },
+    Due {
+        date: Option<String>,
+        title: String,
+        id: String,
+    },
+}
+
+/// Hex keeps the opaque token safe in a raw query string (no percent-encoding
+/// required by callers) while preserving arbitrary title bytes.
+fn encode_sheet_cursor(value: Value) -> String {
+    hex::encode(value.to_string().as_bytes())
+}
+
+fn parse_sheet_cursor(raw: &str) -> Option<SheetCursor> {
+    let decoded = String::from_utf8(hex::decode(raw).ok()?).ok()?;
+    let parts: Vec<Value> = serde_json::from_str(&decoded).ok()?;
+    match parts.as_slice() {
+        [Value::String(mode), Value::String(title), Value::String(id)] if mode == "n" => {
+            Some(SheetCursor::Name {
+                title: title.clone(),
+                id: id.clone(),
+            })
+        }
+        [
+            Value::String(mode),
+            date,
+            Value::String(title),
+            Value::String(id),
+        ] if mode == "d" => {
+            let date = match date {
+                Value::String(value) if !value.is_empty() => Some(value.clone()),
+                Value::String(_) => None,
+                _ => return None,
+            };
+            Some(SheetCursor::Due {
+                date,
+                title: title.clone(),
+                id: id.clone(),
+            })
+        }
+        _ => None,
+    }
+}
+
+struct SheetFilters<'a> {
+    search: Option<&'a str>,
+    status: Option<&'a str>,
+    phase: Option<&'a str>,
+    party: Option<&'a str>,
+    tag: Option<&'a str>,
+    missing_material: Option<bool>,
+    deadline_before: Option<&'a str>,
+}
+
+fn push_sheet_filters(builder: &mut sqlx::QueryBuilder<Sqlite>, filters: &SheetFilters<'_>) {
+    let SheetFilters {
+        search,
+        status,
+        phase,
+        party,
+        tag,
+        missing_material,
+        deadline_before,
+    } = *filters;
     if let Some(term) = search {
         let like = like_pattern(term);
         builder
@@ -225,21 +279,131 @@ async fn build_sheet(
             .push_bind(tag)
             .push(")");
     }
-    if let Some(missing) = q.missing_material {
+    if let Some(missing) = missing_material {
         builder.push(if missing {
             " AND NOT EXISTS(SELECT 1 FROM material m WHERE m.opportunity_id=o.id)"
         } else {
             " AND EXISTS(SELECT 1 FROM material m WHERE m.opportunity_id=o.id)"
         });
     }
-    if let Some(before) = q.deadline_before.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(before) = deadline_before {
         builder
             .push(" AND EXISTS(SELECT 1 FROM contact_thread t WHERE t.opportunity_id=o.id AND t.state='waiting' AND t.expires_at <= ")
             .push_bind(before)
             .push(")");
     }
-    builder.push(" ORDER BY o.id");
-    let rows: Vec<SheetRowRecord> = builder.build_query_as().fetch_all(&mut **tx).await?;
+}
+
+#[allow(clippy::type_complexity)]
+async fn build_sheet(
+    tx: &mut Transaction<'_, Sqlite>,
+    q: &SheetQuery,
+) -> Result<QueueSheetResponse, WorkspaceError> {
+    let generation: i64 = sqlx::query_scalar("SELECT coalesce(max(cursor),0) FROM event")
+        .fetch_one(&mut **tx)
+        .await?;
+    let search = q.search.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let status = q.status.as_deref().filter(|s| !s.is_empty());
+    if let Some(status) = status
+        && !matches!(status, "open" | "resolved" | "dormant" | "closed")
+    {
+        return Err(WorkspaceError::Invalid(
+            "invalid lifecycle status filter".into(),
+        ));
+    }
+    let phase = q.phase.as_deref().filter(|s| !s.is_empty());
+    let party = q.party_id.as_deref().filter(|s| !s.is_empty());
+    let tag = q.tag.as_deref().filter(|s| !s.is_empty());
+    let deadline = q.deadline_before.as_deref().filter(|s| !s.is_empty());
+    let filters = SheetFilters {
+        search,
+        status,
+        phase,
+        party,
+        tag,
+        missing_material: q.missing_material,
+        deadline_before: deadline,
+    };
+    let by_name = q.sort.as_deref() == Some("name");
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let cursor = q.cursor.as_deref().and_then(parse_sheet_cursor);
+
+    // The total is a count over the filtered set; it never depends on the page
+    // or the sort order. Every user value stays bound through QueryBuilder.
+    let mut count =
+        sqlx::QueryBuilder::<Sqlite>::new("SELECT count(*) FROM opportunity o WHERE 1=1");
+    push_sheet_filters(&mut count, &filters);
+    let total: i64 = count.build_query_scalar().fetch_one(&mut **tx).await?;
+
+    // Only the requested page is fetched. ORDER BY is performed by SQLite over
+    // the same keys the previous Rust sort used, so a single page costs the
+    // same at 10,000 rows as at 10.
+    // The action-date expression involves correlated thread lookups. Compute
+    // it once per filtered row in a materialized CTE so the sorter compares a
+    // cached scalar instead of re-running the subqueries per comparison.
+    let mut page = sqlx::QueryBuilder::<Sqlite>::new("WITH filtered AS MATERIALIZED (SELECT o.*,");
+    if by_name {
+        page.push("NULL");
+    } else {
+        page.push(ACTION_DATE_SQL);
+    }
+    page.push(" AS action_date FROM opportunity o WHERE 1=1");
+    push_sheet_filters(&mut page, &filters);
+    page.push(") SELECT f.id,f.title,f.state,f.close_reason,f.stage_id,f.stage_pack_id,f.stage_pack_version,f.stage_class,f.phase_revision,f.last_phase_event_id,f.notes_next_task,ps.label,ps.class,ps.kind,NOT EXISTS(SELECT 1 FROM material m WHERE m.opportunity_id=f.id) FROM filtered f LEFT JOIN pack_stage ps ON ps.pack_id=f.stage_pack_id AND ps.pack_version=f.stage_pack_version AND ps.stage_id=f.stage_id WHERE 1=1");
+    match cursor {
+        Some(SheetCursor::Name { title, id }) if by_name => {
+            page.push(" AND (lower(f.title)>")
+                .push_bind(title.clone())
+                .push(" OR (lower(f.title)=")
+                .push_bind(title)
+                .push(" AND f.id>")
+                .push_bind(id)
+                .push("))");
+        }
+        Some(SheetCursor::Due {
+            date: Some(date),
+            title,
+            id,
+        }) if !by_name => {
+            page.push(" AND (f.action_date>")
+                .push_bind(date.clone())
+                .push(" OR (f.action_date=")
+                .push_bind(date)
+                .push(" AND (lower(f.title)>")
+                .push_bind(title.clone())
+                .push(" OR (lower(f.title)=")
+                .push_bind(title)
+                .push(" AND f.id>")
+                .push_bind(id)
+                .push("))) OR f.action_date IS NULL)");
+        }
+        Some(SheetCursor::Due {
+            date: None,
+            title,
+            id,
+        }) if !by_name => {
+            page.push(" AND f.action_date IS NULL AND (lower(f.title)>")
+                .push_bind(title.clone())
+                .push(" OR (lower(f.title)=")
+                .push_bind(title)
+                .push(" AND f.id>")
+                .push_bind(id)
+                .push("))");
+        }
+        // A cursor from a different sort is ignored rather than misapplied.
+        _ => {}
+    }
+    if by_name {
+        page.push(" ORDER BY lower(f.title),f.id");
+    } else {
+        page.push(" ORDER BY f.action_date NULLS LAST,lower(f.title),f.id");
+    }
+    page.push(" LIMIT ").push_bind(limit + 1);
+    let mut rows: Vec<SheetRowRecord> = page.build_query_as().fetch_all(&mut **tx).await?;
+    let has_next = rows.len() > limit as usize;
+    if has_next {
+        rows.truncate(limit as usize);
+    }
 
     let ids: Vec<String> = rows.iter().map(|r| r.0.clone()).collect();
     let participants = load_participants(tx, &ids).await?;
@@ -322,62 +486,34 @@ async fn build_sheet(
         )
         .collect::<Vec<_>>();
 
-    let (rows, total) = sort_and_page(rows, q);
-
-    let offset = q
-        .cursor
-        .as_deref()
-        .and_then(|c| c.parse::<usize>().ok())
-        .unwrap_or(0);
-    let next_cursor = if offset + rows.len() < total {
-        Some((offset + rows.len()).to_string())
+    let next_cursor = if has_next {
+        let last = rows.last().expect("a full page has a last row");
+        if by_name {
+            Some(encode_sheet_cursor(json!([
+                "n",
+                last.title.to_lowercase(),
+                last.opportunity_id
+            ])))
+        } else {
+            Some(encode_sheet_cursor(json!([
+                "d",
+                last.next_action.date.clone().unwrap_or_default(),
+                last.title.to_lowercase(),
+                last.opportunity_id
+            ])))
+        }
     } else {
         None
     };
 
     Ok(QueueSheetResponse {
         generation: generation.to_string(),
-        total,
+        total: total as usize,
         rows,
         phases,
         cursor: q.cursor.clone(),
         next_cursor,
     })
-}
-
-fn sort_and_page(mut rows: Vec<QueueSheetRow>, q: &SheetQuery) -> (Vec<QueueSheetRow>, usize) {
-    let total = rows.len();
-    let by_name = q.sort.as_deref() == Some("name");
-    rows.sort_by(|a, b| {
-        if by_name {
-            a.title
-                .to_lowercase()
-                .cmp(&b.title.to_lowercase())
-                .then_with(|| a.opportunity_id.cmp(&b.opportunity_id))
-        } else {
-            // Action date ascending, nulls last, then normalized title, then id.
-            let date_order = match (&a.next_action.date, &b.next_action.date) {
-                (None, None) => std::cmp::Ordering::Equal,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (Some(x), Some(y)) => x.cmp(y),
-            };
-            date_order
-                .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
-                .then_with(|| a.opportunity_id.cmp(&b.opportunity_id))
-        }
-    });
-    let offset = q
-        .cursor
-        .as_deref()
-        .and_then(|c| c.parse::<usize>().ok())
-        .unwrap_or(0);
-    let limit = q.limit.unwrap_or(50).clamp(1, 200) as usize;
-    if offset >= total {
-        (Vec::new(), total)
-    } else {
-        (rows.into_iter().skip(offset).take(limit).collect(), total)
-    }
 }
 
 #[allow(clippy::type_complexity)]

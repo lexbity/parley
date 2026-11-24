@@ -3,7 +3,10 @@
 mod party_http;
 use party_http::*;
 use serde_json::json;
-use std::fs;
+use std::{
+    fs,
+    time::{Duration, Instant},
+};
 #[tokio::test]
 async fn p01_session_advertises_party_capabilities() {
     let db = path();
@@ -347,6 +350,84 @@ async fn p01_bounded_directory_and_neighborhood_at_5000_parties() {
     );
     assert!(latency[18] < std::time::Duration::from_millis(500));
     service.shutdown().await;
+}
+
+#[tokio::test]
+async fn p01_queue_sheet_list_at_10000_opportunities_meets_render_budget() {
+    let db = path();
+    let workspace = parley_service::Workspace::open(&db).await.unwrap();
+    sqlx::query("WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<10000) INSERT INTO opportunity(id,title,state,revision,created_at,updated_at) SELECT printf('scale-opp-%05d',i),printf('Opportunity %05d',i),'open',1,'2026-11-24','2026-11-24' FROM n")
+        .execute(workspace.pool())
+        .await
+        .unwrap();
+    workspace.pool().close().await;
+    let service = parley_service::start_workspace(&db).await.unwrap();
+    let session = owner_session(&service).await;
+
+    // The UI renders view=list. Its first page must not grow with the table.
+    // Mirror the s10 benchmark: one cold read, then 20 loopback reads with the
+    // response JSON parsed; p95 is the 19th of 20 sorted samples.
+    let cold = request(
+        &service,
+        &session,
+        "GET",
+        "/api/v1/queue?view=list&limit=50",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(cold.status, 200, "{:?}", cold.body);
+    let mut latency = Vec::new();
+    for _ in 0..20 {
+        let started = Instant::now();
+        let response = request(
+            &service,
+            &session,
+            "GET",
+            "/api/v1/queue?view=list&limit=50",
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(response.status, 200, "{:?}", response.body);
+        let sheet = &response.body;
+        assert_eq!(sheet["total"], 10000);
+        assert_eq!(sheet["rows"].as_array().unwrap().len(), 50);
+        latency.push(started.elapsed());
+    }
+    latency.sort();
+    let p95 = latency[18];
+    eprintln!("Queue sheet list at 10000 opportunities: p95 {p95:?}");
+    assert!(p95 < Duration::from_millis(200), "sheet p95 {p95:?}");
+
+    // Keyset pagination walks every row exactly once.
+    let mut cursor: Option<String> = None;
+    let mut seen = std::collections::HashSet::new();
+    let mut pages = 0;
+    loop {
+        let path = match &cursor {
+            Some(cursor) => format!("/api/v1/queue?view=sheet&limit=200&cursor={cursor}"),
+            None => "/api/v1/queue?view=sheet&limit=200".to_owned(),
+        };
+        let response = request(&service, &session, "GET", &path, None, &[]).await;
+        assert_eq!(response.status, 200, "{:?}", response.body);
+        let sheet = &response.body;
+        assert_eq!(sheet["total"], 10000);
+        for row in sheet["rows"].as_array().unwrap() {
+            assert!(seen.insert(row["opportunity_id"].as_str().unwrap().to_owned()));
+        }
+        pages += 1;
+        cursor = sheet["next_cursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+        assert!(pages <= 60, "pagination did not terminate");
+    }
+    assert_eq!(seen.len(), 10000);
+    assert_eq!(pages, 50);
+
+    service.shutdown().await;
+    let _ = fs::remove_file(&db);
 }
 
 #[tokio::test]

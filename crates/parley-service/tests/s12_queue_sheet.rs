@@ -372,6 +372,109 @@ async fn s12_sheet_sort_pagination_and_waiting_checkpoint() {
     let _ = fs::remove_file(path);
 }
 
+fn legacy_order(rows: &[Value], by_name: bool) -> Vec<String> {
+    let mut rows = rows.to_vec();
+    rows.sort_by(|a, b| {
+        let title_order = a["title"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .cmp(&b["title"].as_str().unwrap().to_lowercase());
+        let id_order = a["opportunity_id"]
+            .as_str()
+            .unwrap()
+            .cmp(b["opportunity_id"].as_str().unwrap());
+        if by_name {
+            title_order.then(id_order)
+        } else {
+            let date_order = match (
+                a["next_action"]["date"].as_str(),
+                b["next_action"]["date"].as_str(),
+            ) {
+                (None, None) => std::cmp::Ordering::Equal,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (Some(x), Some(y)) => x.cmp(y),
+            };
+            date_order.then(title_order).then(id_order)
+        }
+    });
+    rows.iter()
+        .map(|row| row["opportunity_id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+async fn walk_pages(port: u16, sort: &str) -> Vec<String> {
+    let mut cursor: Option<String> = None;
+    let mut walked = Vec::new();
+    loop {
+        let suffix = match &cursor {
+            Some(cursor) => format!("&cursor={cursor}"),
+            None => String::new(),
+        };
+        let page = sheet(port, &format!("&sort={sort}&limit=1{suffix}")).await;
+        for row in page["rows"].as_array().unwrap() {
+            walked.push(row["opportunity_id"].as_str().unwrap().to_owned());
+        }
+        cursor = page["next_cursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    walked
+}
+
+#[tokio::test]
+async fn s12_sheet_sql_order_matches_legacy_comparator_and_keyset_is_stable() {
+    let (path, workspace, port, service) = setup().await;
+    let zulu = create_party(port, "Zulu").await;
+    let alpha = create_party(port, "alpha").await;
+    let mike = create_party(port, "Mike").await;
+    let zebra = create_opportunity(port, "Zebra review", &zulu).await;
+    let alp = create_opportunity(port, "alpha plan", &alpha).await;
+    let beta = create_opportunity(port, "Beta task", &mike).await;
+    let gamma = create_opportunity(port, "gamma choose", &mike).await;
+
+    sqlx::query("INSERT INTO contact_thread(id,opportunity_id,recipient_id,state,current_touch,expires_at,next_action_at,created_at,updated_at) VALUES('t-wait',?,?,'waiting',1,'2026-11-25T08:00:00.000Z',NULL,'2026-11-20T08:00:00.000Z','2026-11-20T08:00:00.000Z')")
+        .bind(&zebra)
+        .bind(&zulu)
+        .execute(workspace.pool())
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO contact_thread(id,opportunity_id,recipient_id,state,current_touch,expires_at,next_action_at,created_at,updated_at) VALUES('t-due',?,?,'conversing',1,NULL,'2026-11-21T08:00:00.000Z','2026-11-20T08:00:00.000Z','2026-11-20T08:00:00.000Z')")
+        .bind(&alp)
+        .bind(&alpha)
+        .execute(workspace.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE opportunity SET notes_next_task='Call the team' WHERE id=?")
+        .bind(&beta)
+        .execute(workspace.pool())
+        .await
+        .unwrap();
+
+    for sort in ["due", "name"] {
+        let full = sheet(port, &format!("&sort={sort}&limit=200")).await;
+        assert_eq!(full["total"], 4);
+        let rows = full["rows"].as_array().unwrap();
+        let ids: Vec<String> = rows
+            .iter()
+            .map(|row| row["opportunity_id"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(ids, legacy_order(rows, sort == "name"), "sort={sort}");
+        assert_eq!(walk_pages(port, sort).await, ids, "sort={sort} cursor walk");
+    }
+
+    // All four rows are reachable; the dated conversing tiebreak and the
+    // waiting checkpoint keep their distinct next-action dates.
+    assert_ne!(zebra, alp);
+    assert_ne!(beta, gamma);
+
+    drop(workspace);
+    drop(service);
+    let _ = fs::remove_file(path);
+}
+
 #[tokio::test]
 async fn s12_events_filter_returns_scoped_history_with_timestamps() {
     let (path, _workspace, port, service) = setup().await;
