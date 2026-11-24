@@ -37,8 +37,12 @@ test('desktop workspaces retain their pane layout with an empty inventory', asyn
   await expect(page.getByLabel('Find scenario')).toBeVisible();
   await expect(page.getByLabel('Opportunity title')).toBeHidden();
   await page.getByRole('link', { name: 'Output' }).click();
-  await expect(page.getByRole('columnheader')).toHaveText(['Material', 'Opportunity', 'Contact', 'Status', 'Release']);
-  await expect(page.getByRole('button', { name: 'Create output' })).toHaveAttribute('aria-expanded', 'false');
+  const outputWorkspace = page.getByRole('region', { name: 'Output workspace' });
+  const library = outputWorkspace.getByRole('heading', { name: 'Opportunity workspace' });
+  const editor = outputWorkspace.getByRole('heading', { name: 'Untitled draft' });
+  await expect(library).toBeVisible();
+  await expect(editor).toBeVisible();
+  expect((await library.boundingBox())!.x).toBeLessThan((await editor.boundingBox())!.x);
 
   await page.getByRole('link', { name: 'Settings', exact: true }).click();
   await page.getByRole('navigation', { name: 'Settings sections' }).getByRole('link', { name: 'Backup and data' }).click();

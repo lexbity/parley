@@ -18,6 +18,13 @@ function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [],
   vi.spyOn(parley, 'listSources').mockResolvedValue(sources);
   vi.spyOn(parley, 'listOpportunities').mockResolvedValue([]);
   vi.spyOn(parley, 'listOutputs').mockResolvedValue([]);
+  vi.spyOn(parley, 'listWritingTemplates').mockResolvedValue([]);
+  vi.spyOn(parley, 'listTemplateFamilies').mockResolvedValue([]);
+  vi.spyOn(parley, 'listVoiceSamples').mockResolvedValue([]);
+  vi.spyOn(parley, 'getEmbeddingModel').mockResolvedValue({ model: '', model_digest: null, calibrated_kinds: [] });
+  vi.spyOn(parley, 'getWritingInterests').mockResolvedValue([]);
+  vi.spyOn(parley, 'getWritingExchange').mockResolvedValue({ current: null, versions: [] });
+  vi.spyOn(parley, 'getWritingMatch').mockRejectedValue(new Error('no completed match'));
   vi.spyOn(parley, 'listThreads').mockResolvedValue([]);
   vi.spyOn(parley, 'listCapacity').mockResolvedValue([]);
   vi.spyOn(parley, 'getBoard').mockResolvedValue(board);
@@ -328,6 +335,7 @@ describe('AppShell', () => {
       phases: [], cursor: null, next_cursor: null,
     });
     vi.spyOn(parley, 'listOutputs').mockResolvedValue([queued]);
+    vi.spyOn(parley, 'listOpportunities').mockResolvedValue([{ id: 'o1', title: 'Onboarding exchange', state: 'open', revision: 1, participants: [{ id: 'p1', kind: 'person', name: 'Dana Lee' }], tags: [], next_task: null, next_deadline: null, missing_material: true }]);
     const createOpportunity = vi.spyOn(parley, 'createOpportunity').mockResolvedValue(created);
     const wrapper = mount(AppShell);
     await flushPromises();
@@ -344,8 +352,10 @@ describe('AppShell', () => {
     expect(wrapper.text()).toContain('Review outreach v1 in Output');
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(4)').trigger('click');
     await flushPromises();
-    expect(wrapper.find('[aria-label="Material registry"]').exists()).toBe(true);
-    expect(wrapper.text()).toContain('outreach · v1');
+    expect(wrapper.find('[aria-label="Output workspace"]').exists()).toBe(true);
+    await wrapper.findAll('button').find((button) => button.text().startsWith('Drafts'))!.trigger('click');
+    expect(wrapper.text()).toContain('Outreach');
+    expect(wrapper.text()).toContain('v1');
     expect(wrapper.text()).toContain('Dana Lee');
     wrapper.unmount();
   });
@@ -353,6 +363,7 @@ describe('AppShell', () => {
   it('reports opportunity creation errors and copies a released approved version', async () => {
     const approved: Material = { id: 'm1', opportunity_id: 'o1', recipient_id: 'p1', recipient_name: 'Dana Lee', kind: 'outreach', version: 1, body: 'Hi Dana.', content_sha256: 'c42a55643d4c6762196d5271afcb9f8ed6beb3a828f1b201a321cfcb6b89aad2', status: 'approved', gate: null, attachment: null };
     stubWorkspace([{ id: 'p1', kind: 'person', name: 'Dana Lee', revision: 1 }]);
+    vi.spyOn(parley, 'listOpportunities').mockResolvedValue([{ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participants: [{ id: 'p1', kind: 'person', name: 'Dana Lee' }], tags: [], next_task: null, next_deadline: null, missing_material: false }]);
     vi.spyOn(parley, 'listOutputs').mockResolvedValue([approved]);
     vi.spyOn(parley, 'createOpportunity').mockRejectedValueOnce(new Error('opportunity denied'));
     const release = vi.spyOn(parley, 'releaseMaterial').mockResolvedValue({ release_id: 'r1', material_id: 'm1', version: 1, recipient_id: 'p1', body: 'Hi Dana.', content_sha256: approved.content_sha256, issued_at: '2026-11-21T12:00:00Z', attachment: null });
@@ -370,9 +381,13 @@ describe('AppShell', () => {
     expect(wrapper.text()).toContain('opportunity denied');
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(4)').trigger('click');
     await flushPromises();
-    await wrapper.findAll('button').find((button) => button.text() === 'Review')!.trigger('click');
-    await wrapper.findAll('button').find((button) => button.text() === 'Copy approved text')!.trigger('click');
+    await wrapper.findAll('button').find((button) => button.text().startsWith('Drafts'))!.trigger('click');
+    await wrapper.findAll('button').find((button) => button.text().includes('Outreach'))!.trigger('click');
     await flushPromises();
+    await wrapper.findAll('button').find((button) => button.text() === 'Review')!.trigger('click');
+    await wrapper.findAll('button').find((button) => button.text().includes('Copy or download approved text'))!.trigger('click');
+    await flushPromises();
+    await wrapper.findAll('button').find((button) => button.text() === 'Copy approved text')!.trigger('click');
     expect(release).toHaveBeenCalledWith('m1');
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith('Hi Dana.'));
     expect(acknowledge).toHaveBeenCalledWith('r1', true);
@@ -383,7 +398,8 @@ describe('AppShell', () => {
   it('records failed clipboard handoff after issuance and keeps unapproved copy disabled', async () => {
     const approved: Material = { id: 'm2', opportunity_id: 'o1', recipient_id: 'p1', recipient_name: 'Dana Lee', kind: 'outreach', version: 2, body: 'Hi Dana.', content_sha256: 'c42a55643d4c6762196d5271afcb9f8ed6beb3a828f1b201a321cfcb6b89aad2', status: 'approved', gate: null, attachment: null };
     const draft: Material = { ...approved, id: 'm3', version: 1, status: 'draft', gate: null, attachment: null };
-    stubWorkspace();
+    stubWorkspace([{ id: 'p1', kind: 'person', name: 'Dana Lee', revision: 1 }]);
+    vi.spyOn(parley, 'listOpportunities').mockResolvedValue([{ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participants: [{ id: 'p1', kind: 'person', name: 'Dana Lee' }], tags: [], next_task: null, next_deadline: null, missing_material: false }]);
     vi.spyOn(parley, 'listOutputs').mockResolvedValue([approved, draft]);
     vi.spyOn(parley, 'evaluateMaterialGate').mockResolvedValue({ checks: [], copy_enabled: true });
     vi.spyOn(parley, 'releaseMaterial').mockResolvedValue({ release_id: 'r2', material_id: 'm2', version: 2, recipient_id: 'p1', body: 'Hi Dana.', content_sha256: approved.content_sha256, issued_at: '2026-11-21T12:00:00Z', attachment: null });
@@ -394,16 +410,26 @@ describe('AppShell', () => {
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(4)').trigger('click');
     await flushPromises();
     expect(parley.evaluateMaterialGate).not.toHaveBeenCalled();
-    const review = wrapper.findAll('button').filter(button => button.text() === 'Review');
-    await review[1]!.trigger('click');
+    // The draft version opens through the library, and its gate review runs
+    // the deterministic report for the exact saved version.
+    await wrapper.findAll('button').find((button) => button.text().startsWith('Drafts'))!.trigger('click');
+    await wrapper.findAll('button').filter((button) => button.text().includes('Outreach') && button.text().includes('v1'))[0]!.trigger('click');
     await flushPromises();
-    expect(wrapper.text()).toContain('Approve this exact version');
+    await wrapper.findAll('button').find((button) => button.text() === 'Review')!.trigger('click');
+    await wrapper.findAll('button').find((button) => button.text().includes('Run gate checks'))!.trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).toContain('Approve exact version');
     expect(parley.evaluateMaterialGate).toHaveBeenCalledWith('m3', {});
-    await review[0]!.trigger('click');
-    const copyButtons = wrapper.findAll('button').filter((button) => button.text() === 'Copy approved text');
-    expect(copyButtons).toHaveLength(1);
-    expect(wrapper.text()).toContain('Approve this exact version');
-    await copyButtons[0]!.trigger('click');
+    // The approved version releases through the same editor toolbar.
+    await wrapper.findAll('button').find((button) => button.text().startsWith('Drafts'))!.trigger('click');
+    await wrapper.findAll('button').filter((button) => button.text().includes('Outreach') && button.text().includes('v2'))[0]!.trigger('click');
+    await flushPromises();
+    await wrapper.findAll('button').find((button) => button.text() === 'Review')!.trigger('click');
+    await wrapper.findAll('button').find((button) => button.text().includes('Copy or download approved text'))!.trigger('click');
+    await flushPromises();
+    const copyButton = wrapper.findAll('button').find((button) => button.text() === 'Copy approved text')!;
+    expect(copyButton.attributes('disabled')).toBeUndefined();
+    await copyButton.trigger('click');
     // The failure ack runs after the rejected clipboard promise settles, one
     // microtask cycle behind the other work flushed above; wait for it.
     await vi.waitFor(() => expect(acknowledge).toHaveBeenCalledWith('r2', false));

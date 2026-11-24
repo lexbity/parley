@@ -133,5 +133,6 @@ test('u07_delegated_writing_run_reports_waiting_and_opens_output_review', async 
   await expect(reviewButton).toBeVisible();
   await reviewButton.click();
   await expect(page).toHaveURL(new RegExp(`/output/${opportunityId}$`));
-  await expect(page.getByRole('complementary', { name: 'Material review' })).toBeVisible();
+  const workspace = page.getByRole('region', { name: 'Output workspace' });
+  await expect(workspace.getByRole('combobox', { name: 'Opportunity', exact: true })).toHaveValue(opportunityId);
 });

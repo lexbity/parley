@@ -63,16 +63,24 @@ test('s03_reviewed_manual_message_copy_is_recipient_and_version_bound', async ({
   }, 200);
 
   await page.getByRole('link', { name: 'Output' }).click();
-  await page.getByRole('button', { name: 'Review outreach v1 for Dana Lee' }).click();
-  const review = page.getByRole('complementary', { name: 'Material review' });
-  await expect(review.getByRole('heading', { name: 'outreach · v1' })).toBeVisible();
+  const workspace = page.getByRole('region', { name: 'Output workspace' });
+  await workspace.getByRole('combobox', { name: 'Opportunity', exact: true }).selectOption({ label: title });
+  await workspace.getByRole('combobox', { name: 'Recipient', exact: true }).selectOption({ label: recipient });
+  await workspace.getByRole('button', { name: /^Drafts/ }).click();
+  await workspace.getByRole('button', { name: /Outreach/ }).first().click();
+  await workspace.getByRole('button', { name: 'Review', exact: true }).click();
+  await workspace.getByRole('button', { name: 'Copy or download approved text' }).click();
+  const review = page.getByRole('dialog');
   await review.getByRole('button', { name: 'Copy approved text' }).click();
   await expect(review.getByRole('status')).toContainText('Copy confirmed for Dana Lee, version 1');
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(body);
   await expect(review.getByText('No send has been recorded', { exact: false })).toBeVisible();
+  await review.getByRole('button', { name: 'Close', exact: true }).click();
 
   await page.getByRole('link', { name: 'Queue' }).click();
   await scenario.getByText('Linked material (1)', { exact: true }).click();
   await scenario.getByRole('button', { name: 'Review outreach v1 in Output' }).click();
   await expect(page).toHaveURL('/output/' + material.id);
+  await expect(page.getByRole('dialog')).toContainText('Version history');
+  await expect(page.getByRole('dialog')).toContainText('Outreach · v1');
 });

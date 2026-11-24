@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /* global MouseEvent, HTMLElement, EventTarget, KeyboardEvent */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { parley, type AdminOperation, type ContactThread, type GraphEntity, type Material, type OpportunitySummary, type ProviderConfig, type ReleasedMaterial, type Resource, type SavedSource } from '../api/client';
+import { parley, type AdminOperation, type GraphEntity, type Material, type OpportunitySummary, type ProviderConfig, type Resource, type SavedSource } from '../api/client';
 import type { CommandDescriptor, CommandManifest, CommandSuccess } from '../api/commands';
 import { tabs } from './tabs';
 import { resolveRoute, routeForTab } from './router';
@@ -19,9 +19,7 @@ import DelegatedRuns from '../features/settings/DelegatedRuns.vue';
 import MaintenanceSettings from '../features/settings/MaintenanceSettings.vue';
 import CapacitySettings from '../features/settings/CapacitySettings.vue';
 import Packs from '../features/settings/Packs.vue';
-import ContactThreadPanel from '../features/queue/ContactThreadPanel.vue';
-import WritingWorkspace from '../features/output/WritingWorkspace.vue';
-import MaterialActions from '../features/output/MaterialActions.vue';
+import OutputWorkspace from '../features/output/OutputWorkspace.vue';
 
 /**
  * Tabs whose owner journey is qualified stay discoverable (RFC-0003 S01);
@@ -30,11 +28,6 @@ import MaterialActions from '../features/output/MaterialActions.vue';
 const qualifiedTabs = tabs;
 const route = ref(resolveRoute(globalThis.location.pathname));
 const active = computed(() => route.value.tab);
-const writingOpen = ref(false);
-const writingMounted = ref(false);
-const writingToggle = ref<HTMLElement | null>(null);
-const outputStatus = ref('');
-const openedMaterials = ref(new Set<string>());
 const parties = ref<GraphEntity[]>([]);
 const openedTabs = ref(new Set([route.value.tab]));
 const interviewerOpen = ref(false);
@@ -52,27 +45,8 @@ const lastTabPaths = new Map<string, string>();
 const sources = ref<SavedSource[]>([]);
 const opportunities = ref<OpportunitySummary[]>([]);
 const outputs = ref<Material[]>([]);
-const outputLoading = ref(false);
-const outputLoaded = ref(false);
 const outputError = ref('');
-const materialQuery = ref('');
-const materialSearch = ref<HTMLElement | null>(null);
-const outputStates = ['draft', 'approved', 'released'] satisfies Material['status'][];
-const opportunityTitles = computed(() => new Map(opportunities.value.map(item => [item.id, item.title])));
-const reviewedMaterials = computed(() => outputs.value.filter(material => openedMaterials.value.has(material.id)));
-const visibleOutputs = computed(() => {
-  const query = materialQuery.value.trim().toLocaleLowerCase();
-  return outputs.value.filter(material => {
-    if (outputStatus.value && outputStatus.value !== material.status) return false;
-    return [material.recipient_name, opportunityTitles.value.get(material.opportunity_id), material.kind, material.status, `v${material.version}`]
-      .some(field => field?.toLocaleLowerCase().includes(query));
-  });
-});
 const resources = ref<Resource[]>([]);
-const threads = ref<ContactThread[]>([]);
-const deliveredReleases = ref<Record<string, ReleasedMaterial>>({});
-let outputThreadTimer: ReturnType<typeof globalThis.setInterval> | undefined;
-let outputThreadReadInFlight = false;
 const status = ref('');
 const error = ref('');
 const busy = ref(false);
@@ -250,7 +224,7 @@ function onGlobalKeydown(event: KeyboardEvent) {
 let tabRequest = 0;
 async function refreshTab(tab = active.value) {
   const request = ++tabRequest;
-  if (tab === 'Output') { outputLoading.value = true; outputError.value = ''; }
+  if (tab === 'Output') outputError.value = '';
   try {
     if (tab === 'Parties') {
       const result = await Promise.all([parley.listParties(), parley.listSources(), parley.listOpportunities()]);
@@ -259,11 +233,8 @@ async function refreshTab(tab = active.value) {
       const result = await Promise.all([parley.listParties(), parley.listOutputs()]);
       if (request === tabRequest) [parties.value, outputs.value] = result;
     } else if (tab === 'Output') {
-      const result = await Promise.all([parley.listOpportunities(), parley.listOutputs(), parley.listResources(), parley.listThreads()]);
-      if (request === tabRequest) {
-        [opportunities.value, outputs.value, resources.value, threads.value] = result;
-        outputLoaded.value = true;
-      }
+      const result = await Promise.all([parley.listOpportunities(), parley.listOutputs(), parley.listResources()]);
+      if (request === tabRequest) [opportunities.value, outputs.value, resources.value] = result;
     } else if (tab === 'Settings') {
       const [directory] = await Promise.all([parley.listParties(), loadProvider()]);
       if (request === tabRequest) parties.value = directory;
@@ -274,8 +245,6 @@ async function refreshTab(tab = active.value) {
       if (tab === 'Output') outputError.value = message;
       else error.value = message;
     }
-  } finally {
-    if (tab === 'Output' && request === tabRequest) outputLoading.value = false;
   }
 }
 
@@ -336,17 +305,9 @@ function handlePopState() {
 }
 
 async function focusRouteLocation() {
-  if (route.value.location === 'templates') {
-    showWriting();
-    return;
-  }
-  if (route.value.tab === 'Output' && route.value.recordId) {
-    writingOpen.value = false;
-    openedMaterials.value.add(route.value.recordId);
-  }
+  if (route.value.tab !== 'Queue') return;
   await nextTick();
-  const targetId = route.value.location === 'inbox' ? 'leads-inbox'
-    : route.value.tab === 'Output' && route.value.recordId ? `output-review-${route.value.recordId}` : null;
+  const targetId = route.value.location === 'inbox' ? 'leads-inbox' : null;
   if (!targetId) return;
   const target = globalThis.document.getElementById(targetId);
   target?.focus();
@@ -354,32 +315,6 @@ async function focusRouteLocation() {
 
 function goToSettings(id: string) {
   globalThis.document.getElementById(id)?.focus();
-}
-function showWriting() {
-  writingMounted.value = true;
-  writingOpen.value = true;
-  void nextTick(() => {
-    const id = route.value.location === 'templates' ? 'output-templates' : 'writing-heading';
-    globalThis.document.getElementById(id)?.focus();
-  });
-}
-function closeWriting() {
-  writingOpen.value = false;
-  if (route.value.location === 'templates') navigate('/output');
-  void nextTick(() => writingToggle.value?.focus());
-}
-function clearMaterialFilters() {
-  materialQuery.value = '';
-  outputStatus.value = '';
-  void nextTick(() => materialSearch.value?.focus());
-}
-function closeMaterial() {
-  const id = route.value.recordId;
-  navigate('/output');
-  void nextTick(() => {
-    const trigger = id ? globalThis.document.getElementById(`output-material-${id}`) : null;
-    (trigger ?? materialSearch.value)?.focus();
-  });
 }
 
 async function loadProvider() {
@@ -400,13 +335,6 @@ async function checkProvider() {
   finally { busy.value = false; }
 }
 
-function installMaterial(updated: Material) {
-  const index = outputs.value.findIndex((item) => item.id === updated.id);
-  if (index >= 0) outputs.value[index] = updated;
-  else outputs.value = [updated, ...outputs.value];
-  if (deliveredReleases.value[updated.id]?.version !== updated.version) delete deliveredReleases.value[updated.id];
-}
-
 async function applyWorkspaceChange(operation: AdminOperation, epoch: string, announce: boolean) {
   if (announce) adminChannel?.postMessage({ type: 'workspace-changed', operation, epoch });
   if (operation === 'restore' || operation === 'erase_workspace') workspaceRefreshRequired.value = true;
@@ -417,18 +345,6 @@ async function applyWorkspaceChange(operation: AdminOperation, epoch: string, an
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Workspace records changed; reload the current workspace before continuing.'; }
 }
 
-async function pollOutputThreads() {
-  if (active.value !== 'Output' || outputThreadReadInFlight || globalThis.document.visibilityState !== 'visible') return;
-  outputThreadReadInFlight = true;
-  try { threads.value = await parley.listThreads(); }
-  catch { /* Keep the latest server-confirmed thread state available during transport recovery. */ }
-  finally { outputThreadReadInFlight = false; }
-}
-
-function onOutputVisibilityChange() {
-  if (globalThis.document.visibilityState === 'visible') void pollOutputThreads();
-}
-
 function onWorkspaceQuarantined() { workspaceRefreshRequired.value = true; }
 function onWorkspaceReloaded() { workspaceRefreshRequired.value = false; }
 
@@ -437,8 +353,6 @@ onMounted(() => {
   globalThis.history.replaceState({ parleyIndex: historyIndex }, '', route.value.path);
   globalThis.addEventListener('popstate', handlePopState);
   globalThis.addEventListener('keydown', onGlobalKeydown);
-  outputThreadTimer = globalThis.setInterval(() => { void pollOutputThreads(); }, 2_000);
-  globalThis.document.addEventListener('visibilitychange', onOutputVisibilityChange);
   globalThis.addEventListener('parley:workspace-quarantined', onWorkspaceQuarantined);
   globalThis.addEventListener('parley:workspace-reloaded', onWorkspaceReloaded);
   if ('BroadcastChannel' in globalThis) {
@@ -463,10 +377,8 @@ onBeforeUnmount(() => {
   globalThis.removeEventListener('keydown', onGlobalKeydown);
   manifestSource.stop();
   disposeRegistry();
-  globalThis.document.removeEventListener('visibilitychange', onOutputVisibilityChange);
   globalThis.removeEventListener('parley:workspace-quarantined', onWorkspaceQuarantined);
   globalThis.removeEventListener('parley:workspace-reloaded', onWorkspaceReloaded);
-  if (outputThreadTimer) globalThis.clearInterval(outputThreadTimer);
   adminChannel?.close();
 });
 watch([connected, active], async ([ready, tab]) => {
@@ -475,8 +387,7 @@ watch([connected, active], async ([ready, tab]) => {
   await refreshTab(tab);
   if (active.value === tab) void focusRouteLocation();
 });
-watch(route, (current, previous) => {
-  if (current.tab === 'Output' && current.location !== 'templates' && previous.location === 'templates') writingOpen.value = false;
+watch(route, () => {
   void focusRouteLocation();
 });
 </script>
@@ -712,24 +623,6 @@ watch(route, (current, previous) => {
         v-show="active === 'Output'"
         class="output-workspace"
       >
-        <div class="output-tools">
-          <button
-            ref="writingToggle"
-            class="primary"
-            type="button"
-            :aria-expanded="writingOpen"
-            @click="writingOpen ? closeWriting() : showWriting()"
-          >
-            {{ writingOpen ? 'Back to materials' : 'Create output' }}
-          </button>
-          <button
-            v-if="route.location !== 'templates'"
-            type="button"
-            @click="navigate('/output/templates')"
-          >
-            Manage templates
-          </button>
-        </div>
         <p
           v-if="outputError"
           role="alert"
@@ -743,236 +636,26 @@ watch(route, (current, previous) => {
             Retry
           </button>
         </p>
-        <div
-          v-show="!writingOpen"
-          class="output-layout"
-          :class="{ 'review-open': route.tab === 'Output' && !!route.recordId }"
-        >
-          <section
-            class="registry"
-            aria-label="Material registry"
-          >
-            <div class="output-filters">
-              <label>Find materials
-                <input
-                  ref="materialSearch"
-                  v-model="materialQuery"
-                  type="search"
-                  placeholder="Material, opportunity or contact"
-                >
-              </label>
-              <label>Status
-                <select
-                  v-model="outputStatus"
-                  aria-label="Filter material status"
-                >
-                  <option value="">All statuses</option>
-                  <option
-                    v-for="state in outputStates"
-                    :key="state"
-                    :value="state"
-                  >{{ state }}</option>
-                </select>
-              </label>
-            </div>
-            <p
-              v-if="outputLoading && !outputLoaded"
-              role="status"
-              class="output-notice"
-            >
-              Loading materials…
-            </p>
-            <div
-              v-else-if="outputLoaded"
-              class="registry-scroll"
-            >
-              <table role="table">
-                <thead role="rowgroup">
-                  <tr role="row">
-                    <th
-                      scope="col"
-                      role="columnheader"
-                    >
-                      Material
-                    </th>
-                    <th
-                      scope="col"
-                      role="columnheader"
-                    >
-                      Opportunity
-                    </th>
-                    <th
-                      scope="col"
-                      role="columnheader"
-                    >
-                      Contact
-                    </th>
-                    <th
-                      scope="col"
-                      role="columnheader"
-                    >
-                      Status
-                    </th>
-                    <th
-                      scope="col"
-                      role="columnheader"
-                    >
-                      Release
-                    </th>
-                  </tr>
-                </thead>
-                <tbody role="rowgroup">
-                  <tr
-                    v-for="material in visibleOutputs"
-                    :key="material.id"
-                    role="row"
-                    :class="{ selected: route.tab === 'Output' && route.recordId === material.id }"
-                  >
-                    <th
-                      scope="row"
-                      role="rowheader"
-                    >
-                      {{ material.kind }} · v{{ material.version }}
-                    </th>
-                    <td
-                      role="cell"
-                      class="material-opportunity"
-                    >
-                      <button
-                        v-if="opportunityTitles.has(material.opportunity_id)"
-                        type="button"
-                        class="text-action"
-                        @click="navigate('/queue/' + encodeURIComponent(material.opportunity_id))"
-                      >
-                        {{ opportunityTitles.get(material.opportunity_id) }}
-                      </button>
-                      <span v-else>Unavailable</span>
-                    </td>
-                    <td
-                      role="cell"
-                      class="material-recipient"
-                    >
-                      {{ material.recipient_name }}
-                    </td>
-                    <td
-                      role="cell"
-                      class="material-status"
-                    >
-                      {{ material.status }}
-                    </td>
-                    <td
-                      role="cell"
-                      class="material-review"
-                    >
-                      <button
-                        :id="`output-material-${material.id}`"
-                        type="button"
-                        :aria-label="`Review ${material.kind} v${material.version} for ${material.recipient_name}`"
-                        :aria-pressed="route.tab === 'Output' && route.recordId === material.id"
-                        @click="navigate('/output/' + encodeURIComponent(material.id))"
-                      >
-                        Review
-                      </button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-              <div
-                v-if="!visibleOutputs.length"
-                class="output-notice"
-              >
-                <p>{{ outputs.length ? 'No matching materials.' : 'No materials yet.' }}</p>
-                <button
-                  v-if="materialQuery || outputStatus"
-                  type="button"
-                  @click="clearMaterialFilters"
-                >
-                  Clear filters
-                </button>
-              </div>
-            </div>
-          </section>
-          <aside
-            class="output-review"
-            aria-label="Material review"
-          >
-            <section
-              v-for="material in reviewedMaterials"
-              v-show="route.tab === 'Output' && route.recordId === material.id"
-              :key="material.id"
-              class="material-detail"
-              :aria-labelledby="`output-review-${material.id}`"
-              @keydown.esc.stop="closeMaterial"
-            >
-              <header class="material-heading">
-                <div>
-                  <small>{{ material.recipient_name }}</small>
-                  <h3
-                    :id="`output-review-${material.id}`"
-                    tabindex="-1"
-                  >
-                    {{ material.kind }} · v{{ material.version }}
-                  </h3>
-                </div>
-                <button
-                  type="button"
-                  @click="closeMaterial"
-                >
-                  Close material
-                </button>
-              </header>
-              <div class="material-workflow">
-                <MaterialActions
-                  :material="material"
-                  @updated="installMaterial"
-                  @delivered="deliveredReleases[material.id] = $event"
-                />
-                <ContactThreadPanel
-                  :opportunity-id="material.opportunity_id"
-                  :material="material"
-                  :delivered="deliveredReleases[material.id] ?? null"
-                  :threads="threads"
-                  @changed="refreshTab('Output')"
-                />
-              </div>
-            </section>
-            <div
-              v-if="route.tab !== 'Output' || !route.recordId"
-              class="output-notice"
-            >
-              <h3>Material review</h3>
-              <p>Select a version to review its content, release checks, and contact thread.</p>
-            </div>
-            <div
-              v-else-if="outputLoaded && !outputs.some(material => material.id === route.recordId)"
-              class="output-notice"
-            >
-              <h3>Material unavailable</h3>
-              <button
-                type="button"
-                @click="closeMaterial"
-              >
-                Back to materials
-              </button>
-            </div>
-          </aside>
-        </div>
-        <WritingWorkspace
-          v-if="writingMounted"
-          v-show="writingOpen"
+        <!-- The workspace stays mounted across registry refreshes so unsaved
+             working drafts and open reviews survive a committed change. -->
+        <OutputWorkspace
           :opportunities="opportunities"
           :resources="resources"
           :outputs="outputs"
-          @saved="refreshTab('Output')"
+          :active="active === 'Output'"
+          :record-id="route.tab === 'Output' ? route.recordId : null"
+          :location="route.tab === 'Output' ? route.location : null"
+          @changed="refreshTab('Output')"
+          @navigate="navigate"
         />
       </div>
+      <p
+        v-else-if="!error"
+        role="status"
+      >
+        Opening workspace…
+      </p>
     </template>
-    <p
-      v-else-if="!error"
-      role="status"
-    >
-      Opening workspace…
-    </p>
   </main>
   <CommandPalette
     :open="paletteOpen"
@@ -1058,32 +741,8 @@ small { color: #58665f; } .record-card { margin: .55rem 0; overflow-wrap: anywhe
 
 <style scoped>
 .output-workspace, .settings-workspace { --line: #c7d1c3; --panel: #fffef9; --muted: #53665b; }
-.output-tools { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: .85rem; }
-.output-tools button, .material-heading button, .output-filters input, .output-filters select { min-height: 2.5rem; }
-.output-layout { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); align-items: start; gap: 1rem; }
-.registry, .output-review { min-width: 0; padding: 0; border: 1px solid var(--line); border-radius: .55rem; background: var(--panel); overflow: hidden; }
-.output-filters { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: .65rem; padding: .8rem 1rem; }
-.output-filters label { margin: 0; }
-.registry-scroll { overflow: auto; max-height: min(66dvh, 46rem); }
-.registry table { border-collapse: separate; border-spacing: 0; table-layout: fixed; width: 100%; text-align: left; }
-.registry th, .registry td { padding: .75rem .6rem; border-top: 1px solid #d7dcd1; vertical-align: top; overflow-wrap: anywhere; }
-.registry th:first-child { padding-inline-start: 1rem; }
-.registry thead th { position: sticky; top: 0; z-index: 1; color: #445b4d; background: #f0f2e9; font: .83rem/1.5 ui-monospace, monospace; }
-.registry thead th:nth-child(2) { width: 29%; }
-.registry thead th:nth-child(4) { width: 15%; }
-.registry thead th:last-child { width: 17%; }
-.registry tbody th { font-weight: 650; }
-.registry tr.selected { background: #e8efe6; }
-.material-status { text-transform: capitalize; }
-.text-action { background: transparent; color: #225744; border: 0; padding: 0; text-align: left; overflow-wrap: anywhere; }
-.text-action:hover { text-decoration: underline; }
 .output-notice { padding: .7rem 1rem; margin: 0; overflow-wrap: anywhere; color: var(--muted); }
 .output-notice h3 { color: #182d25; }
-.material-detail { border: 0; padding: 0; border-radius: 0; background: none; }
-.material-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: start; gap: .55rem; padding: .9rem 1rem; border-bottom: 1px solid var(--line); background: #edf2e8; overflow-wrap: anywhere; }
-.material-heading h3 { margin: 0; font: 1.75rem/1.17 Georgia, serif; }
-.material-workflow { display: grid; gap: .65rem; min-width: 0; padding: .8rem; overflow-wrap: anywhere; }
-.material-workflow :deep(button) { margin-block: .15rem; }
 .settings-workspace { display: grid; grid-template-columns: minmax(11rem, 13rem) minmax(0, 1fr); align-items: start; gap: 1rem; }
 .settings-index { position: sticky; top: .75rem; display: grid; gap: .15rem; padding: .45rem; background: var(--panel); border: 1px solid var(--line); border-radius: .55rem; }
 .settings-index a { display: block; padding: .6rem .7rem; color: #225744; border-radius: .3rem; text-decoration: none; }
@@ -1097,25 +756,11 @@ small { color: #58665f; } .record-card { margin: .55rem 0; overflow-wrap: anywhe
 #settings-provider input, #settings-provider button { min-height: 2.5rem; }
 .provider-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: .45rem; }
 .provider-health { grid-column: 1 / -1; }
-@media (max-width: 1020px) {
-  .output-layout { grid-template-columns: minmax(0, 1fr); }
-  .output-layout:not(.review-open) .output-review, .output-layout.review-open .registry { display: none; }
-}
 @media (max-width: 680px) {
   .settings-workspace { grid-template-columns: minmax(0, 1fr); }
   .settings-index { position: static; display: flex; flex-wrap: wrap; }
-  .registry-scroll { max-height: none; }
-  .registry table, .registry tbody { display: block; }
-  .registry thead { position: absolute; clip-path: inset(50%); width: 1px; height: 1px; overflow: hidden; white-space: nowrap; }
-  .registry tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .25rem .6rem; padding: .7rem .85rem; border-top: 1px solid #d7dcd1; }
-  .registry tbody th, .registry tbody td { padding: 0; border: 0; }
-  .material-opportunity, .material-recipient { grid-column: 1 / -1; color: var(--muted); }
-  .material-status { grid-column: 2; grid-row: 1; text-align: end; }
-  .material-review { grid-column: 2; justify-self: end; }
-  .material-review button { min-height: 2.4rem; }
 }
 @media (max-width: 430px) {
   #settings-provider form { grid-template-columns: minmax(0, 1fr); }
-  .output-filters { grid-template-columns: minmax(0, 1fr); }
 }
 </style>

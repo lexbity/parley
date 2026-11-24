@@ -110,15 +110,20 @@ test('s07_browser_explicit_mark_sent_deadline_outcome_and_resolution', async ({ 
   // from the same material and recipient surface.
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.getByRole('link', { name: 'Output' }).click();
-  await page.locator(`#output-material-${material.id}`).click();
-  const outputRow = page.getByRole('complementary', { name: 'Material review' });
-  await expect(outputRow).toBeVisible();
-  await outputRow.getByRole('button', { name: 'Copy approved text' }).click();
-  await expect(outputRow.getByRole('status')).toContainText('Copy confirmed');
-  await outputRow.getByLabel('Reply deadline (inclusive local date)').fill('2026-11-28');
+  const workspace = page.getByRole('region', { name: 'Output workspace' });
+  await workspace.getByRole('combobox', { name: 'Opportunity', exact: true }).selectOption({ label: 'Onboarding follow-up' });
+  await workspace.getByRole('combobox', { name: 'Recipient', exact: true }).selectOption({ label: name });
+  await workspace.getByRole('button', { name: /^Drafts/ }).click();
+  await workspace.getByRole('button', { name: /Outreach/ }).first().click();
+  await workspace.getByRole('button', { name: 'Review', exact: true }).click();
+  await workspace.getByRole('button', { name: 'Copy or download approved text' }).click();
+  const releaseDialog = page.getByRole('dialog');
+  await releaseDialog.getByRole('button', { name: 'Copy approved text' }).click();
+  await expect(releaseDialog.getByRole('status')).toContainText('Copy confirmed');
+  await releaseDialog.getByLabel('Reply deadline (inclusive local date)').fill('2026-11-28');
   const sendResponsePromise = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname.endsWith('/send'));
-  await outputRow.getByRole('button', { name: 'Mark this delivered version sent' }).click();
+  await releaseDialog.getByRole('button', { name: 'Mark this delivered version sent' }).click();
   const sendResponse = await sendResponsePromise;
   expect(sendResponse.status()).toBe(201);
   const send = await sendResponse.json();
