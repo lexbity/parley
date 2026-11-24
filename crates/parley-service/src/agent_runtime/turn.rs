@@ -27,20 +27,75 @@ pub(crate) fn new_lease() -> Lease {
 
 /// Claim a queued run under the writer. Only this transition makes a run
 /// eligible for tool execution, and it returns the actor bound to that lease.
+///
+/// A run that is waiting on a background job is claimed only after that job
+/// reaches a terminal outcome (UCR-001 U05); otherwise it stays asleep with
+/// no lease. A run whose UTC deadline passed while waiting is expired rather
+/// than resumed.
 pub(crate) async fn claim(
     tx: &mut Transaction<'_, Sqlite>,
     run_id: &str,
     epoch: &str,
     secret: &[u8],
 ) -> Result<Option<Actor>, sqlx::Error> {
+    let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT state,wake_condition,deadline_at FROM agent_run WHERE run_id=? AND epoch=?",
+    )
+    .bind(run_id)
+    .bind(epoch)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((state, wake, deadline)) = row else {
+        return Ok(None);
+    };
+    if !matches!(
+        state.as_str(),
+        "queued" | "waiting_owner" | "waiting_job"
+    ) {
+        return Ok(None);
+    }
+    if state == "waiting_job"
+        && let Some(job) = wake.as_deref()
+        && !job.is_empty()
+    {
+        let status: Option<String> = sqlx::query_scalar(
+            "SELECT status FROM durable_job WHERE id=?",
+        )
+        .bind(job)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let terminal = matches!(
+            status.as_deref(),
+            Some("succeeded" | "invalid" | "failed" | "cancelled") | None
+        );
+        if !terminal {
+            return Ok(None);
+        }
+    }
+    if let Some(deadline) = deadline.as_ref()
+        && !deadline.is_empty()
+        && *deadline <= crate::now_utc()
+    {
+        sqlx::query(
+            "UPDATE agent_run SET state='expired', lease_token=NULL, lease_deadline=NULL, finished_at=?, updated_at=? WHERE run_id=? AND state=?",
+        )
+        .bind(crate::now_utc())
+        .bind(crate::now_utc())
+        .bind(run_id)
+        .bind(&state)
+        .execute(&mut **tx)
+        .await?;
+        return Ok(None);
+    }
     let lease = new_lease();
     let updated = sqlx::query(
-        "UPDATE agent_run SET state='running', lease_token=?, lease_deadline=?, state_revision=state_revision+1, updated_at=? WHERE run_id=? AND state IN ('queued','waiting_owner','waiting_job') AND lease_token IS NULL",
+        "UPDATE agent_run SET state='running', lease_token=?, lease_deadline=?, state_revision=state_revision+1, updated_at=? WHERE run_id=? AND state=? AND lease_token IS NULL",
     )
     .bind(&lease.token)
     .bind(&lease.deadline)
     .bind(crate::now_utc())
     .bind(run_id)
+    .bind(&state)
     .execute(&mut **tx)
     .await?;
     if updated.rows_affected() == 0 {
@@ -186,15 +241,18 @@ pub(crate) async fn finish(
 }
 
 /// A run that is waiting has a persisted wake condition and no active lease.
-#[allow(dead_code)] // waiting states are wired with job continuations in U05
+/// The caller names the state (`waiting_owner` or `waiting_job`) and the
+/// durable condition to wake on; only the lease holder may park the run.
 pub(crate) async fn wait(
     tx: &mut Transaction<'_, Sqlite>,
     actor: &Actor,
+    state: &str,
     condition: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE agent_run SET state='waiting_owner', wake_condition=?, lease_token=NULL, lease_deadline=NULL, updated_at=? WHERE run_id=? AND lease_token=?",
+        "UPDATE agent_run SET state=?, wake_condition=?, lease_token=NULL, lease_deadline=NULL, updated_at=? WHERE run_id=? AND lease_token=?",
     )
+    .bind(state)
     .bind(condition)
     .bind(crate::now_utc())
     .bind(actor.run_id.as_deref().unwrap_or(""))
@@ -202,6 +260,40 @@ pub(crate) async fn wait(
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+/// Reconstruct the committed assistant/tool message history of a run in
+/// turn order. The first message of every turn is the assistant message
+/// (with its tool calls when it had any), followed by its tool results. The
+/// system and user task are reseeded by the caller on every resume.
+pub(crate) async fn history(pool: &sqlx::SqlitePool, run_id: &str) -> Vec<Value> {
+    let rows: Vec<(i64, String, i64, String, String)> = sqlx::query_as(
+        "SELECT turn_no,role,ordinal,body,detail_json FROM agent_run_turn WHERE run_id=? AND role IN ('assistant','tool') ORDER BY turn_no,ordinal,role",
+    )
+    .bind(run_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let mut messages = Vec::new();
+    for (_turn_no, role, ordinal, body, detail) in rows {
+        if role == "assistant" && ordinal == 0 {
+            let mut message = json!({"role": "assistant", "content": body});
+            if let Ok(detail_value) = serde_json::from_str::<Value>(&detail)
+                && let Some(calls) = detail_value.get("tool_calls").cloned()
+            {
+                message["tool_calls"] = calls;
+            }
+            messages.push(message);
+        } else if role == "tool" {
+            let name = serde_json::from_str::<Value>(&detail)
+                .ok()
+                .and_then(|value| value.get("name").cloned())
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_default();
+            messages.push(json!({"role": "tool", "content": body, "name": name}));
+        }
+    }
+    messages
 }
 
 pub(crate) fn tool_result_message(name: &str, result: &Value) -> Value {

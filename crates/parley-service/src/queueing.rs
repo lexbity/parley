@@ -510,6 +510,9 @@ async fn answer_question(
             next_revision,
             &input_job,
             3,
+            state.workspace.epoch(),
+            None,
+            None,
         )
         .await
         {
@@ -864,8 +867,19 @@ async fn generate_coach_report(
     candidates.truncate((5 - open) as usize);
     let input = json!({"period":request.period,"event_cursor":cursor.to_string(),"evidence":{"segment_gaps":candidates,"candidate_count":candidates.len()},"candidates":candidates});
     let job =
-        match crate::jobs::enqueue_role_in_tx(&mut tx, "coach", "owner", "weekly", 1, &input, 3)
-            .await
+        match crate::jobs::enqueue_role_in_tx(
+            &mut tx,
+            "coach",
+            "owner",
+            "weekly",
+            1,
+            &input,
+            3,
+            state.workspace.epoch(),
+            None,
+            None,
+        )
+        .await
         {
             Ok(v) => v,
             Err(e) => return super::materials::workspace_error(e),

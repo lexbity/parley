@@ -78,6 +78,17 @@ async fn process_run(state: &crate::AppState, run_id: &str) {
         }
     };
 
+    let (turn_count, was_resumed) = {
+        let row: Option<(i64, bool)> = sqlx::query_as(
+            "SELECT turn_count, wake_condition IS NOT NULL FROM agent_run WHERE run_id=?",
+        )
+        .bind(run_id)
+        .fetch_optional(state.workspace.pool())
+        .await
+        .unwrap_or(None);
+        row.unwrap_or((0, false))
+    };
+
     // Hold the single inference lane for this turn; discarded when the run
     // ends or waits, so queued runs and fixed roles alternate fairly.
     let inference = state.workspace.inference();
@@ -89,7 +100,13 @@ async fn process_run(state: &crate::AppState, run_id: &str) {
             return;
         }
     };
-    let probe = provider::tool_capable(&config).await;
+    // A resumed run already proved tool capability when it was admitted;
+    // probing again would consume a provider round-trip on every resume.
+    let probe = if was_resumed {
+        Ok(true)
+    } else {
+        provider::tool_capable(&config).await
+    };
     if probe.is_err() {
         finish_with_error(state, &actor, "TOOLS_UNAVAILABLE").await;
         return;
@@ -105,9 +122,37 @@ async fn process_run(state: &crate::AppState, run_id: &str) {
         .await
         .unwrap_or_default();
     messages.push(json!({"role": "user", "content": task}));
+    // Rebuild the committed conversation so a run resumed from a background
+    // job continuation sees its earlier turns and tool results.
+    let history = turn::history(state.workspace.pool(), run_id).await;
+    messages.extend(history);
     let tools = tools::tool_specs(&state.registry, &actor.permissions);
+    let _ = turn_count;
+    // Resumed runs must continue the committed turn numbering: tool intents
+    // and turns are keyed by (run, turn, ordinal) and restarting at 1 would
+    // silently collide with earlier committed rows.
+    let base_turn: i64 = sqlx::query_scalar(
+        "SELECT coalesce(max(turn_no),0)+1 FROM agent_run_turn WHERE run_id=?",
+    )
+    .bind(run_id)
+    .fetch_one(state.workspace.pool())
+    .await
+    .unwrap_or(1);
 
     for iteration in 0..turn::MAX_TURNS {
+        // The durable turn budget counts assistant conversation turns (one
+        // per provider round-trip); a resumed run continues from its
+        // committed count, never past the cap.
+        let used: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM agent_run_turn WHERE run_id=? AND role='assistant'")
+                .bind(run_id)
+                .fetch_one(state.workspace.pool())
+                .await
+                .unwrap_or(iteration);
+        if used >= turn::MAX_TURNS {
+            finish_with_error(state, &actor, "TURN_LIMIT").await;
+            return;
+        }
         // Renew before each provider call; the lease token is checked again
         // when a turn or tool result is committed.
         {
@@ -129,18 +174,20 @@ async fn process_run(state: &crate::AppState, run_id: &str) {
                 return;
             }
         };
-        let turn_no = iteration + 1;
+        let turn_no = base_turn + iteration;
         let calls = assistant.tool_calls.clone().unwrap_or_default();
         if calls.is_empty() {
-            record_assistant(state, &actor, turn_no, &assistant.content).await;
+            let assistant_message = json!({"role": "assistant", "content": assistant.content});
+            record_assistant(state, &actor, turn_no, &assistant_message).await;
             finish(state, &actor, "succeeded").await;
             return;
         }
-        messages.push(json!({
+        let assistant_message = json!({
             "role": "assistant",
             "content": assistant.content,
             "tool_calls": calls,
-        }));
+        });
+        messages.push(assistant_message.clone());
         for (index, call) in calls.into_iter().enumerate() {
             let ordinal = index as i64 + 1;
             let args: Value = serde_json::from_str(&call.function.arguments)
@@ -183,7 +230,7 @@ async fn process_run(state: &crate::AppState, run_id: &str) {
                 }
             }
         }
-        record_assistant(state, &actor, turn_no, &assistant.content).await;
+        record_assistant(state, &actor, turn_no, &assistant_message).await;
     }
     finish_with_error(state, &actor, "TURN_LIMIT").await;
 }
@@ -192,11 +239,14 @@ async fn record_assistant(
     state: &crate::AppState,
     actor: &crate::commands::Actor,
     turn_no: i64,
-    content: &str,
+    message: &Value,
 ) {
+    let content = message.get("content").and_then(Value::as_str).unwrap_or_default();
+    // Keep the committed assistant message complete so a resume can rebuild
+    // the exact conversation, including its tool calls.
+    let detail = json!({"tool_calls": message.get("tool_calls").cloned().unwrap_or_default()});
     if let Ok(mut tx) = state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
-        let _ =
-            turn::record_turn(&mut tx, actor, turn_no, "assistant", 0, content, &json!({})).await;
+        let _ = turn::record_turn(&mut tx, actor, turn_no, "assistant", 0, content, &detail).await;
         let _ = tx.commit().await;
     }
 }

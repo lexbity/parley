@@ -12,7 +12,7 @@ afterEach(() => {
 const party: GraphEntity = { id: 'party-1', kind: 'person', name: 'Granted Party', focus: '', revision: 1 };
 const opportunity = { id: 'opp-1', title: 'Granted Opportunity', state: 'open', revision: 1, participants: [], tags: [], next_task: null, next_deadline: null, missing_material: false } as OpportunitySummary;
 const queued: RunListItem = { run_id: 'run-1', state: 'queued', revision: 1, deadline_at: '2026-11-23T10:00:00Z' };
-const status: RunStatus = { run_id: 'run-1', state: 'running', revision: 2, deadline_at: queued.deadline_at, turn_count: 1, transcript_bytes: 42, wake_condition: null };
+const status: RunStatus = { run_id: 'run-1', state: 'running', revision: 2, deadline_at: queued.deadline_at, turn_count: 1, transcript_bytes: 42, wake_condition: null, review: null };
 const started = { ...queued, state: 'queued' as const, granted_actions: ['party.read'], targets: [{ kind: 'party' as const, id: party.id }], phase: 'queued' };
 const page: TranscriptPage = {
   items: [

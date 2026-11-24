@@ -9,6 +9,8 @@ use crate::commands::{Actor, Registry};
 use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
 
+use super::turn;
+
 pub(crate) const SEARCH_TOOL: &str = "commands__search";
 pub(crate) const DESCRIBE_TOOL: &str = "commands__describe";
 pub(crate) const RUN_TOOL: &str = "commands__run";
@@ -324,5 +326,45 @@ pub(crate) async fn dispatch(
             "Intent could not be finalized".into(),
         )
     })?;
+
+    // A job-start command parks the run until its job reaches a terminal
+    // state: the lease is released, the wake condition is persisted and the
+    // runtime scan resumes the run after the worker publishes a reviewable
+    // proposal or a terminal failure (UCR-001 U05). Tier 2 commands arrive
+    // through the commands__run meta-tool, so the inner id is read from its
+    // arguments.
+    let is_brief_start = if id == RUN_TOOL {
+        args.get("id").and_then(Value::as_str)
+            == Some(crate::commands::jobs::BRIEF_START_ID)
+    } else {
+        id == crate::commands::jobs::BRIEF_START_ID
+    };
+    if is_brief_start {
+        let job_id = result
+            .get("result")
+            .and_then(|value| value.get("job_id"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if !job_id.is_empty() {
+            let mut tx = match state
+                .workspace
+                .pool()
+                .begin_with("BEGIN IMMEDIATE")
+                .await
+            {
+                Ok(tx) => tx,
+                Err(_) => {
+                    return Err(DispatchError::Denied(
+                        503,
+                        "unavailable".into(),
+                        "Ledger is unavailable".into(),
+                    ));
+                }
+            };
+            let _ = turn::wait(&mut tx, actor, "waiting_job", job_id).await;
+            let _ = tx.commit().await;
+        }
+    }
+
     Ok(result)
 }

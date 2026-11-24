@@ -239,19 +239,32 @@ watch([selectedRecordId, dossier, sheetRows], () => {
   const revision = Number(party.revision ?? 1);
   if (!Number.isSafeInteger(revision) || revision < 1) return;
   const fingerprint = JSON.stringify([parley.workspaceEpoch, id, revision]);
-  disposePartyActions = registerScoped(commandRegistry, partyActions({
-    partyId: id,
-    cardRevision: revision,
-    intentFingerprint: fingerprint,
-    invoke: (commandId: string, args: Record<string, unknown>, key: string) =>
-      commands.invoke(commandId, { version: 1, args, dry_run: false }, key),
-    onCommitted: (_receipt, commandId) => {
-      status.value = commandId === 'party.rename' ? 'Party renamed.' : 'Focus updated.';
-      error.value = '';
-      changed();
-      if (selectedRecordId.value === id) void loadDossier().then(() => { directoryRevision.value++; });
+  disposePartyActions = registerScoped(commandRegistry, [
+    ...partyActions({
+      partyId: id,
+      cardRevision: revision,
+      intentFingerprint: fingerprint,
+      invoke: (commandId: string, args: Record<string, unknown>, key: string) =>
+        commands.invoke(commandId, { version: 1, args, dry_run: false }, key),
+      onCommitted: (_receipt, commandId) => {
+        status.value = commandId === 'party.rename' ? 'Party renamed.' : 'Focus updated.';
+        error.value = '';
+        changed();
+        if (selectedRecordId.value === id) void loadDossier().then(() => { directoryRevision.value++; });
+      },
+    }),
+    {
+      id: 'ui.party.open_brief',
+      title: 'Open brief',
+      summary: 'Open the selected party brief research and proposals',
+      keywords: ['brief', 'leads', 'research', 'proposal'],
+      effect: 'read',
+      when: (ctx) => ctx.context.route === 'parties' && ctx.context['selection.party'] === true,
+      run: () => {
+        auxiliary.value = 'chat';
+      },
     },
-  }));
+  ]);
 }, { flush: 'sync' });
 async function loadDossier() {
   const id = selectedRecordId.value;
@@ -609,7 +622,13 @@ watch([query, kind, sort, importBatch, directoryRevision, () => props.active], (
   const timer = globalThis.setTimeout(() => { void loadDirectory(); }, previous.length ? 120 : 0);
   cleanup(() => { globalThis.clearTimeout(timer); directoryRequest++; });
 }, { immediate: true });
-watch(() => props.partyId, id => { if (id && id !== rootPartyId.value) selectRow(id); });
+watch(() => props.partyId, id => {
+  if (id && globalThis.sessionStorage.getItem('parley.open-brief') === id) {
+    auxiliary.value = 'chat';
+    globalThis.sessionStorage.removeItem('parley.open-brief');
+  }
+  if (id && id !== rootPartyId.value) selectRow(id);
+});
 watch(selectedRecordId, () => { openingOpportunity.value = false; retirement.value = null; void loadDossier(); void loadNotes(); }, { immediate: true });
 let eventCursor = parley.eventCursor;
 let eventTimer: ReturnType<typeof globalThis.setInterval> | undefined;

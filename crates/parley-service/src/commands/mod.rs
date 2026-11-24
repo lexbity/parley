@@ -3,6 +3,7 @@
 
 pub(crate) mod descriptor;
 pub(crate) mod http;
+pub(crate) mod jobs;
 pub(crate) mod ledger;
 pub(crate) mod opportunity;
 pub(crate) mod party;
@@ -51,6 +52,7 @@ impl Registry {
         descriptors.extend(read::descriptors().into_iter().cloned());
         descriptors.extend(party::descriptors().into_iter().cloned());
         descriptors.extend(task::descriptors().into_iter().cloned());
+        descriptors.extend(jobs::descriptors().into_iter().cloned());
         descriptor::validate_registry(&descriptors)?;
         let mut by_id = HashMap::with_capacity(descriptors.len());
         for (index, item) in descriptors.iter().enumerate() {
@@ -201,12 +203,14 @@ impl Registry {
         let (read_valid, read_invalid) = read::validation_samples();
         let (party_valid, party_invalid) = party::validation_samples();
         let (task_valid, task_invalid) = task::validation_samples();
+        let (jobs_valid, jobs_invalid) = jobs::validation_samples();
         let valid = [
             phase_valid,
             opportunity_valid,
             read_valid,
             party_valid,
             task_valid,
+            jobs_valid,
         ]
         .concat();
         let invalid = [
@@ -215,6 +219,7 @@ impl Registry {
             read_invalid,
             party_invalid,
             task_invalid,
+            jobs_invalid,
         ]
         .concat();
         for sample in valid {
@@ -244,6 +249,9 @@ impl Registry {
                     .map_err(|error| format!("{}: {error}", sample.command))?;
             } else if sample.command == task::TASK_DONE_ID {
                 task::parse_wire_args(&sample.args)
+                    .map_err(|error| format!("{}: {error}", sample.command))?;
+            } else if sample.command == jobs::BRIEF_START_ID {
+                jobs::parse_wire_args(&sample.args)
                     .map_err(|error| format!("{}: {error}", sample.command))?;
             } else {
                 return Err(format!(
@@ -287,6 +295,8 @@ pub(crate) fn audit_args(
             (party::args_allowlist(), party::args_sensitive())
         } else if command_id == task::TASK_DONE_ID {
             (task::args_allowlist(), task::args_sensitive())
+        } else if command_id == jobs::BRIEF_START_ID {
+            (jobs::args_allowlist(), jobs::args_sensitive())
         } else {
             (&[], &[])
         };
@@ -332,7 +342,7 @@ pub(crate) enum ActorKind {
     Agent,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ActorTarget {
     pub kind: String,
     pub id: String,

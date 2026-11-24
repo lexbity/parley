@@ -20,6 +20,10 @@ pub(crate) enum Permission {
     PartyEdit,
     #[serde(rename = "opportunity.task.edit")]
     OpportunityTaskEdit,
+    #[serde(rename = "brief.start")]
+    BriefStart,
+    #[serde(rename = "job.read")]
+    JobRead,
 }
 
 impl Permission {
@@ -31,6 +35,8 @@ impl Permission {
             Permission::OpportunityRead => "opportunity.read",
             Permission::PartyEdit => "party.edit",
             Permission::OpportunityTaskEdit => "opportunity.task.edit",
+            Permission::BriefStart => "brief.start",
+            Permission::JobRead => "job.read",
         }
     }
 
@@ -43,6 +49,8 @@ impl Permission {
             Permission::OpportunityRead,
             Permission::PartyEdit,
             Permission::OpportunityTaskEdit,
+            Permission::BriefStart,
+            Permission::JobRead,
         ]
     }
 
@@ -62,6 +70,8 @@ pub(crate) const PERMISSION_ALLOWLIST: &[&str] = &[
     "opportunity.read",
     "party.edit",
     "opportunity.task.edit",
+    "brief.start",
+    "job.read",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

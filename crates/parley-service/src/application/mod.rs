@@ -5,6 +5,8 @@
 //! operation receives a transaction and a checked actor context from the
 //! writer executor; it never sees HTTP types, keys or transport envelopes.
 
+pub(crate) mod brief;
+pub(crate) mod job_status;
 pub(crate) mod opportunity;
 pub(crate) mod opportunity_summary;
 pub(crate) mod opportunity_task;

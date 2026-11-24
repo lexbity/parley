@@ -873,6 +873,12 @@ async fn process_briefer_result(
         tx.rollback().await.map_err(|e| e.to_string())?;
         return Err("STALE: brief job is no longer current".into());
     }
+    // A job started by a registered command may publish proposals only while
+    // its initiating run is still active in the same epoch (UCR-001 U05).
+    if crate::jobs::scoped_job_fence(&mut tx, job_id).await.is_err() {
+        tx.rollback().await.map_err(|e| e.to_string())?;
+        return Err("STALE: the initiating run revoked or the epoch changed".into());
+    }
     if let Some(chat_id) = input["chat_id"].as_str() {
         let expected_chat_revision = input["chat_revision"]
             .as_i64()
@@ -1585,10 +1591,17 @@ async fn add_turn(
                 "Briefer chat scope no longer exists",
             );
         };
-        let evidence = match collect_brief_evidence(&mut tx, &scope_kind, scoped_id).await {
-            Ok(value) => value,
-            Err(error) => return super::command_error(error),
-        };
+        let evidence =
+            match crate::application::brief::collect_brief_evidence(&mut tx, &scope_kind, scoped_id)
+                .await
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    return super::command_error(crate::WorkspaceError::Invalid(format!(
+                        "evidence collection failed: {error:?}"
+                    )));
+                }
+            };
         let active_prompt: Option<String> = match sqlx::query_scalar(
             "SELECT version_id FROM agent_prompt_active WHERE role='briefer'",
         )
@@ -1624,6 +1637,9 @@ async fn add_turn(
         job_revision,
         &input,
         3,
+        state.workspace.epoch(),
+        None,
+        None,
     )
     .await
     {
@@ -2698,10 +2714,15 @@ async fn generate_brief(
             Err(error) => return super::command_error(error.into()),
         }
     };
-    let evidence = match collect_brief_evidence(&mut tx, &scope_kind, &scope_id).await {
-        Ok(value) => value,
-        Err(error) => return super::command_error(error),
-    };
+    let evidence =
+        match crate::application::brief::collect_brief_evidence(&mut tx, &scope_kind, &scope_id)
+            .await
+        {
+            Ok(value) => value,
+            Err(error) => return super::command_error(crate::WorkspaceError::Invalid(
+                format!("evidence collection failed: {error:?}"),
+            )),
+        };
     let prompt_id: Option<String> =
         sqlx::query_scalar("SELECT version_id FROM agent_prompt_active WHERE role='briefer'")
             .fetch_optional(&mut *tx)
@@ -2717,6 +2738,9 @@ async fn generate_brief(
         scope_revision,
         &input,
         3,
+        state.workspace.epoch(),
+        None,
+        None,
     )
     .await
     {
@@ -2754,21 +2778,6 @@ async fn generate_brief(
     }
     jobs::wake(&state.jobs, &job_id);
     response_json(StatusCode::ACCEPTED, result, state.workspace.epoch())
-}
-
-async fn collect_brief_evidence(
-    tx: &mut Transaction<'_, Sqlite>,
-    scope_kind: &str,
-    scope_id: &str,
-) -> Result<Vec<Value>, WorkspaceError> {
-    let rows: Vec<(String, String, String, Option<String>)> = if scope_kind == "party" {
-        sqlx::query_as("SELECT DISTINCT so.id,so.source_variant_id,sv.raw_text,sv.url FROM source_occurrence so JOIN source_variant sv ON sv.id=so.source_variant_id WHERE so.actor_entity_id=? OR EXISTS(SELECT 1 FROM claim_revision cr JOIN claim c ON c.id=cr.claim_id WHERE cr.occurrence_id=so.id AND c.subject_id=?) ORDER BY so.captured_at,so.id")
-            .bind(scope_id).bind(scope_id).fetch_all(&mut **tx).await?
-    } else {
-        sqlx::query_as("SELECT DISTINCT so.id,so.source_variant_id,sv.raw_text,sv.url FROM segment_party sp JOIN source_occurrence so ON so.actor_entity_id=sp.party_id JOIN source_variant sv ON sv.id=so.source_variant_id WHERE sp.segment_id=? UNION SELECT DISTINCT so.id,so.source_variant_id,sv.raw_text,sv.url FROM segment_party sp JOIN claim c ON c.subject_id=sp.party_id JOIN claim_revision cr ON cr.claim_id=c.id JOIN source_occurrence so ON so.id=cr.occurrence_id JOIN source_variant sv ON sv.id=so.source_variant_id WHERE sp.segment_id=? ORDER BY 1")
-            .bind(scope_id).bind(scope_id).fetch_all(&mut **tx).await?
-    };
-    Ok(rows.into_iter().map(|(occurrence_id,variant_id,text,url)|json!({"occurrence_id":occurrence_id,"variant_id":variant_id,"text":text,"url":url})).collect())
 }
 
 async fn decide_brief_item(

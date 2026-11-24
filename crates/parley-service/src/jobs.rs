@@ -191,63 +191,16 @@ pub(super) fn role_allowed(role: &str) -> bool {
     )
 }
 
-#[allow(dead_code)] // Public to other service role adapters added in later RFC-0002 slices.
-#[allow(clippy::too_many_arguments)] // The typed role command is the shared cross-slice worker boundary.
-pub(crate) async fn enqueue_role(
-    workspace: &Workspace,
-    queue: &Queue,
-    role: &str,
-    scope_kind: &str,
-    scope_id: &str,
-    scope_revision: i64,
-    input: &Value,
-    max_attempts: i64,
-) -> Result<String, WorkspaceError> {
-    if !role_allowed(role) || role == "extractor" {
-        return Err(WorkspaceError::Invalid(
-            "agent role is not an enqueueable assistant role".into(),
-        ));
-    }
-    if !matches!(
-        scope_kind,
-        "owner" | "party" | "segment" | "opportunity" | "material"
-    ) || scope_id.is_empty()
-        || scope_revision < 1
-        || !(1..=3).contains(&max_attempts)
-    {
-        return Err(WorkspaceError::Invalid(
-            "assistant job scope or retry budget is invalid".into(),
-        ));
-    }
-    let input_json =
-        serde_json::to_string(input).map_err(|error| WorkspaceError::Invalid(error.to_string()))?;
-    if input_json.len() > MAX_BODY {
-        return Err(WorkspaceError::Invalid(
-            "assistant job input exceeds the bounded size limit".into(),
-        ));
-    }
-    let input_hash = digest(input_json.as_bytes());
-    let id = new_id(&format!("{role}:{scope_kind}:{scope_id}:{input_hash}"));
-    let mut tx = workspace.pool().begin_with("BEGIN IMMEDIATE").await?;
-    enqueue_role_in_tx(
-        &mut tx,
-        role,
-        scope_kind,
-        scope_id,
-        scope_revision,
-        input,
-        max_attempts,
-    )
-    .await?;
-    tx.commit().await?;
-    wake(queue, &id);
-    Ok(id)
-}
-
 pub(crate) fn wake(queue: &Queue, id: &str) {
     let _ = queue.0.try_send(id.to_owned());
 }
 
+/// Enqueue one assistant job inside the caller's transaction. A registered
+/// command binds the job to its initiating epoch and run so admission,
+/// completion and status reads can be fenced (UCR-001 U05). Owner-launched
+/// jobs pass `epoch` and `None` run/owner and keep their previous identity
+/// rules. The job id includes the binding so two runs never collide.
+#[allow(clippy::too_many_arguments)] // The typed role command is the shared cross-slice worker boundary.
 pub(crate) async fn enqueue_role_in_tx(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     role: &str,
@@ -256,6 +209,9 @@ pub(crate) async fn enqueue_role_in_tx(
     scope_revision: i64,
     input: &Value,
     max_attempts: i64,
+    epoch: &str,
+    run_id: Option<&str>,
+    owner_pseudonym: Option<&str>,
 ) -> Result<String, WorkspaceError> {
     if !role_allowed(role) || role == "extractor" {
         return Err(WorkspaceError::Invalid(
@@ -288,13 +244,70 @@ pub(crate) async fn enqueue_role_in_tx(
         return Err(WorkspaceError::Invalid("agent queue is at capacity".into()));
     }
     let input_hash = digest(input_json.as_bytes());
-    let id = new_id(&format!("{role}:{scope_kind}:{scope_id}:{input_hash}"));
+    let id = if let Some(run_id) = run_id {
+        new_id(&format!("{role}:{epoch}:{run_id}:{scope_kind}:{scope_id}:{input_hash}"))
+    } else {
+        new_id(&format!("{role}:{scope_kind}:{scope_id}:{input_hash}"))
+    };
     let now = now_utc();
-    sqlx::query("INSERT INTO durable_job(id,role,status,input_json,input_sha256,scope_kind,scope_id,scope_revision,max_attempts,created_at,updated_at) VALUES(?,?,'queued',?,?,?,?,?,?,?,?)")
-        .bind(&id).bind(role).bind(&input_json).bind(&input_hash).bind(scope_kind).bind(scope_id).bind(scope_revision).bind(max_attempts).bind(&now).bind(&now).execute(&mut **tx).await?;
+    sqlx::query("INSERT INTO durable_job(id,role,status,input_json,input_sha256,scope_kind,scope_id,scope_revision,max_attempts,epoch,run_id,owner_pseudonym,created_at,updated_at) VALUES(?,?,'queued',?,?,?,?,?,?,?,?,?,?,?)")
+        .bind(&id).bind(role).bind(&input_json).bind(&input_hash).bind(scope_kind).bind(scope_id).bind(scope_revision).bind(max_attempts).bind(epoch).bind(run_id).bind(owner_pseudonym).bind(&now).bind(&now).execute(&mut **tx).await?;
     sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'job',?,1,'job.queued',?)")
-        .bind(new_id(&id)).bind(&now).bind(&id).bind(json!({"role":role,"scope_kind":scope_kind,"scope_id":scope_id,"scope_revision":scope_revision}).to_string()).execute(&mut **tx).await?;
+        .bind(new_id(&id)).bind(&now).bind(&id).bind(json!({"role":role,"scope_kind":scope_kind,"scope_id":scope_id,"scope_revision":scope_revision,"run_id":run_id}).to_string()).execute(&mut **tx).await?;
     Ok(id)
+}
+
+/// Completion fence for a job started by a registered command. The run that
+/// started the job must still be active in the same epoch, and the workspace
+/// must still be on that epoch, or the publication is stale and the worker
+/// must not install reviewable proposals (UCR-001 U05). Cancellation and
+/// epoch rotation therefore take no dependency on a provider answer.
+pub(crate) async fn scoped_job_fence(
+    tx: &mut Transaction<'_, Sqlite>,
+    job_id: &str,
+) -> Result<(), ()> {
+    let row: Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT epoch,run_id FROM durable_job WHERE id=?",
+    )
+    .bind(job_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|_| ())?;
+    let Some((job_epoch, run_id)) = row else {
+        return Err(());
+    };
+    let Some(run_id) = run_id else {
+        return Ok(());
+    };
+    let current_epoch: Option<String> = sqlx::query_scalar(
+        "SELECT epoch FROM workspace_meta WHERE singleton=1",
+    )
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|_| ())?
+    .flatten();
+    if current_epoch.as_deref() != Some(job_epoch.as_str()) {
+        return Err(());
+    }
+    let run: Option<(String, String)> = sqlx::query_as(
+        "SELECT state,epoch FROM agent_run WHERE run_id=?",
+    )
+    .bind(run_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|_| ())?;
+    match run {
+        Some((state, run_epoch))
+            if run_epoch == job_epoch
+                && matches!(
+                    state.as_str(),
+                    "running" | "waiting_owner" | "waiting_job"
+                ) =>
+        {
+            Ok(())
+        }
+        _ => Err(()),
+    }
 }
 
 async fn worker(workspace: Arc<Workspace>, mut rx: mpsc::Receiver<String>) {
@@ -677,25 +690,6 @@ fn role_defaults(role: &str) -> Option<(&'static str, &'static str)> {
         "linter" => Some((LINTER_PROMPT, LINTER_SCHEMA)),
         _ => None,
     }
-}
-
-#[allow(dead_code)] // Role adapters may complete a result without an aggregate write.
-pub(crate) async fn complete_role_result(
-    workspace: &Workspace,
-    id: &str,
-    attempt: i64,
-    input_hash: &str,
-    result: &Value,
-    tokens_in: u32,
-    tokens_out: u32,
-) -> Result<(), WorkspaceError> {
-    let mut tx = workspace.pool().begin_with("BEGIN IMMEDIATE").await?;
-    complete_role_result_in_tx(
-        &mut tx, id, attempt, input_hash, result, tokens_in, tokens_out,
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(())
 }
 
 pub(super) async fn complete_role_result_in_tx(

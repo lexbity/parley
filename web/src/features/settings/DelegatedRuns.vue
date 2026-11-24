@@ -7,6 +7,10 @@
  * operation key, and a generation/epoch change stops polling immediately.
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+
+const props = defineProps<{
+  navigate?: (path: string) => void;
+}>();
 import { newOperationKey, parley, type GraphEntity, type OpportunitySummary } from '../../api/client';
 import {
   RUN_PERMISSIONS, RUN_STATES,
@@ -27,6 +31,19 @@ const permissionHelp: Record<RunPermission, string> = {
   'opportunity.phase.edit': 'change the phase of a granted opportunity',
   'party.edit': 'rename a granted party or change its focus',
   'opportunity.task.edit': 'change the checked state of a task in a granted opportunity notes',
+  'brief.start': 'queue a reviewable brief about a granted party',
+  'job.read': 'read the status of jobs this run started',
+};
+
+const stateLabel: Record<RunState, string> = {
+  queued: 'queued',
+  running: 'working',
+  waiting_owner: 'waiting for your review',
+  waiting_job: 'waiting for a background job',
+  succeeded: 'succeeded',
+  failed: 'failed',
+  cancelled: 'cancelled',
+  expired: 'expired',
 };
 
 const task = ref('');
@@ -174,12 +191,12 @@ async function loadTranscriptPage(index: number) {
 
 async function poll() {
   if (stale.value || pollInFlight || !checkEpoch()) return;
-  if (!hasActiveRuns.value && !selectedRunId.value) return;
+  if (!runs.value.length && !selectedRunId.value) return;
   pollInFlight = true;
   try {
     const list = await commands.listRuns({ limit: 20 });
     applyRuns(list.items);
-    for (const row of runs.value.filter((item) => ACTIVE_STATES.includes(item.state))) await refreshStatus(row.run_id);
+    for (const row of runs.value) await refreshStatus(row.run_id);
     if (selectedRunId.value) await loadTranscriptPage(pageIndex.value);
     checkEpoch();
   } catch (reason) {
@@ -244,6 +261,28 @@ async function start() {
     busy.value = false;
     startPolling();
   }
+}
+
+function openReview(row: RunListItem) {
+  const status = runStatuses.value[row.run_id];
+  const review = status?.review;
+  if (!review || !props.navigate) return;
+  // Reopen the party desk on the reviewed party with the Brief (chat) pane
+  // active, using the same session preference the desk persists and an
+  // explicit hand-off flag for an already-mounted desk instance.
+  const epoch = parley.workspaceEpoch ?? '';
+  if (epoch) {
+    try {
+      globalThis.sessionStorage.setItem(
+        `parley.parties.${epoch}`,
+        JSON.stringify({ root: review.scope_id, selected: review.scope_id, pane: 'sheet', auxiliary: 'chat' }),
+      );
+    } catch { /* Session storage can be unavailable; the desk still opens. */ }
+  }
+  try {
+    globalThis.sessionStorage.setItem('parley.open-brief', review.scope_id);
+  } catch { /* The desk still opens on the party. */ }
+  props.navigate(`/parties/${encodeURIComponent(review.scope_id)}`);
 }
 
 async function cancel(row: RunListItem) {
@@ -494,7 +533,7 @@ onBeforeUnmount(() => {
             :data-state="row.state"
             class="run-row"
           >
-            <p>Run {{ row.run_id }} · {{ row.state }} · deadline {{ row.deadline_at }}</p>
+            <p>Run {{ row.run_id }} · <strong>{{ stateLabel[row.state] }}</strong> · deadline {{ row.deadline_at }}</p>
             <progress
               v-if="ACTIVE_STATES.includes(row.state)"
               :value="progress(row.run_id)"
@@ -504,6 +543,27 @@ onBeforeUnmount(() => {
             <p v-if="runStatuses[row.run_id]">
               Turn {{ progress(row.run_id) }} of at most {{ MAX_TURNS }} · {{ runStatuses[row.run_id]?.transcript_bytes }} transcript bytes
             </p>
+            <p
+              v-if="row.state === 'waiting_job'"
+              role="status"
+            >
+              Waiting for its background job to finish. The queue, brief and REST surfaces stay usable.
+            </p>
+            <p
+              v-if="row.state === 'waiting_owner'"
+              role="status"
+            >
+              Waiting for your review before it can continue.
+            </p>
+            <button
+              v-if="row.state === 'succeeded' && runStatuses[row.run_id]?.review"
+              type="button"
+              :aria-label="`Open reviewed candidate for run ${row.run_id}`"
+              class="review-link"
+              @click="openReview(row)"
+            >
+              Open reviewed brief
+            </button>
             <button
               type="button"
               :aria-label="`View transcript ${row.run_id}`"

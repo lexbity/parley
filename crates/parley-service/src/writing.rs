@@ -1870,6 +1870,9 @@ async fn lint_material(
         input.version,
         &job_input,
         2,
+        state.workspace.epoch(),
+        None,
+        None,
     )
     .await
     {
@@ -2013,6 +2016,9 @@ async fn enqueue_role_command(
         scope_revision,
         input,
         max_attempts,
+        state.workspace.epoch(),
+        None,
+        None,
     )
     .await
     .map_err(super::materials::workspace_error)?;

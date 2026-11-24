@@ -22,7 +22,9 @@ use std::{
 
 /// Versioned table policy for transient UCR-001 command state. Backups carry
 /// scrubbed metadata only; portable exports omit the rows entirely (FR-10).
-pub(crate) const COMMAND_TABLE_POLICY_VERSION: u32 = 2;
+/// Job rows carry private inputs and outputs, so scoped and fixed-role job
+/// state is scrubbed and omitted with the rest of the command ledger.
+pub(crate) const COMMAND_TABLE_POLICY_VERSION: u32 = 3;
 pub(crate) const SCRUB_ON_BACKUP: &[&str] = &[
     "command_audit_event",
     "command_receipt",
@@ -32,6 +34,8 @@ pub(crate) const SCRUB_ON_BACKUP: &[&str] = &[
     "agent_run_turn",
     "agent_tool_intent",
     "agent_run_budget",
+    "durable_job",
+    "job_attempt",
 ];
 pub(crate) const OMIT_FROM_EXPORT: &[&str] = SCRUB_ON_BACKUP;
 

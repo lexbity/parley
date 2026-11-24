@@ -666,6 +666,7 @@ watch(route, (current, previous) => {
           <DelegatedRuns
             id="settings-delegated-runs"
             tabindex="-1"
+            :navigate="navigate"
           />
           <CapacitySettings
             id="settings-capacity"

@@ -330,6 +330,32 @@ async fn status(
             "Run is not available",
         );
     };
+    // A succeeded run that started a brief job exposes the typed review
+    // reference of that job so the owner can open the reviewed candidate
+    // directly. It is derived from the committed intent, never from model
+    // output.
+    let review = if state_name == "succeeded" {
+        let refs: Vec<String> = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT result_ref FROM agent_tool_intent WHERE run_id=? AND state='completed' AND result_ref IS NOT NULL ORDER BY turn_no DESC, ordinal DESC LIMIT 8",
+        )
+        .bind(&id)
+        .fetch_all(state.workspace.pool())
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .collect();
+        refs.iter().find_map(|text| {
+            let value: Value = serde_json::from_str(text).ok()?;
+            let result = value.get("result")?;
+            let job_id = result.get("job_id").and_then(Value::as_str)?;
+            let scope_kind = result.get("scope_kind").and_then(Value::as_str)?;
+            let scope_id = result.get("scope_id").and_then(Value::as_str)?;
+            Some(json!({"job_id": job_id, "scope_kind": scope_kind, "scope_id": scope_id}))
+        })
+    } else {
+        None
+    };
     let mut response = Json(json!({
         "run_id": id,
         "state": state_name,
@@ -338,6 +364,7 @@ async fn status(
         "turn_count": turn_count,
         "transcript_bytes": transcript_bytes,
         "wake_condition": wake,
+        "review": review,
     }))
     .into_response();
     private_headers(&mut response, state.workspace.epoch());

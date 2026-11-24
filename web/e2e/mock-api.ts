@@ -83,11 +83,13 @@ type AgentRunRecord = {
   state: string;
   revision: number;
   deadline_at: string;
+  task: string;
   targets: AgentRunTarget[];
   permissions: string[];
   turn_count: number;
   transcript_bytes: number;
   wake_condition: string | null;
+  review?: { job_id: string; scope_kind: string; scope_id: string } | null;
 };
 type AgentTurnRecord = { turn_no: number; speaker: string; ordinal: number; text: string };
 
@@ -686,7 +688,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
   // its worker, lease or provider state.
   const AGENT_STATES = ['queued', 'running', 'waiting_owner', 'waiting_job', 'succeeded', 'failed', 'cancelled', 'expired'];
   const AGENT_TARGET_KINDS = ['party', 'opportunity', 'resource', 'material', 'segment'];
-  const AGENT_PERMISSIONS = ['party.read', 'opportunity.read', 'opportunity.create', 'opportunity.phase.edit', 'party.edit', 'opportunity.task.edit'];
+  const AGENT_PERMISSIONS = ['party.read', 'opportunity.read', 'opportunity.create', 'opportunity.phase.edit', 'party.edit', 'opportunity.task.edit', 'brief.start', 'job.read'];
 
   function agentTargetLabel(target: AgentRunTarget): string {
     if (target.kind === 'party') return directory.get(target.id)?.name ?? target.id;
@@ -711,17 +713,42 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
   function advanceAgentRun(runId: string) {
     const run = agentRuns.get(runId);
     if (!run || run.state !== 'queued') return;
+    const brief = run.permissions.includes('brief.start');
+    const hang = run.task.includes('hang');
     scheduleAgent(runId, () => {
       if (run.state !== 'queued' || run.epoch !== epoch) return;
       setAgentState(run, 'running', 'tool_dispatch');
+      if (hang) return; // A hung provider keeps the run claimed and running.
       scheduleAgent(runId, () => {
         if (run.state !== 'running') return;
-        const names = run.targets.map(agentTargetLabel).join(', ') || 'no targets';
-        addAgentTurn(run, { turn_no: 2, speaker: 'tool', ordinal: 1, text: `Scoped read of ${names} via party.get_summary / opportunity.get_summary` });
+        if (!brief) {
+          const names = run.targets.map(agentTargetLabel).join(', ') || 'no targets';
+          addAgentTurn(run, { turn_no: 2, speaker: 'tool', ordinal: 1, text: `Scoped read of ${names} via party.get_summary / opportunity.get_summary` });
+          scheduleAgent(runId, () => {
+            if (run.state !== 'running') return;
+            addAgentTurn(run, { turn_no: 2, speaker: 'assistant', ordinal: 0, text: `Completed scoped read of ${names} using only the granted read permissions.` });
+            setAgentState(run, 'succeeded', 'completed');
+          }, 600);
+          return;
+        }
+        // A delegated brief run: start the job, park in waiting_job, then
+        // resume with a review reference once the job is ready.
+        const target = run.targets[0];
+        if (!target) return;
+        const jobId = `mock-job-${run.run_id}`;
+        addAgentTurn(run, {
+          turn_no: 2, speaker: 'tool', ordinal: 1,
+          text: JSON.stringify({ ok: true, command_version: 1, replayed: false, dry_run: false, audit_id: `aud-mock-${run.run_id}`, original_audit_id: null, result: { job_id: jobId, scope_kind: target.kind, scope_id: target.id, state: 'queued', event_cursor: '1' } }),
+        });
         scheduleAgent(runId, () => {
           if (run.state !== 'running') return;
-          addAgentTurn(run, { turn_no: 2, speaker: 'assistant', ordinal: 0, text: `Completed scoped read of ${names} using only the granted read permissions.` });
-          setAgentState(run, 'succeeded', 'completed');
+          setAgentState(run, 'waiting_job', jobId);
+          scheduleAgent(runId, () => {
+            if (run.state !== 'waiting_job') return;
+            addAgentTurn(run, { turn_no: 3, speaker: 'assistant', ordinal: 0, text: 'The brief proposal is ready for owner review.' });
+            run.review = { job_id: jobId, scope_kind: target.kind, scope_id: target.id };
+            setAgentState(run, 'succeeded', 'completed');
+          }, 2000);
         }, 600);
       }, 600);
     }, 600);
@@ -750,6 +777,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
     return {
       run_id: run.run_id, state: run.state, revision: run.revision, deadline_at: run.deadline_at,
       turn_count: run.turn_count, transcript_bytes: run.transcript_bytes, wake_condition: run.wake_condition,
+      review: run.review ?? null,
     };
   }
 
@@ -1132,6 +1160,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
       const run: AgentRunRecord = {
         run_id: runId, epoch, state: 'queued', revision: 1,
         deadline_at: new Date(testClock + 15 * 60_000).toISOString(),
+        task: input.task,
         targets: (targets as AgentRunTarget[]).map((target) => ({ kind: target.kind, id: target.id })),
         permissions: permissions as string[], turn_count: 1,
         transcript_bytes: Buffer.byteLength(input.task, 'utf8'), wake_condition: 'queued',

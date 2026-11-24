@@ -25,12 +25,14 @@ use super::ledger::{
     AdmitError, Mode, PolicyResult, Timing, admit_attempt, finalize_attempt, key_digest,
     lookup_receipt,
 };
+use super::jobs::{self, RunError as JobRunError, run as run_jobs};
 use super::opportunity::{self, RunError as CreateRunError};
 use super::party::{PartyCommand, RunError as PartyRunError, run as run_party};
 use super::phase::{PhaseCommand, RunError as PhaseRunError, run as run_phase};
 use super::policy::Effect;
 use super::task::{self, RunError as TaskRunError, run as run_task};
 use super::{Actor, ActorKind, Registry, audit_args, validator_for};
+use crate::application::brief::BriefError;
 use crate::application::opportunity::CreateError;
 use crate::application::opportunity_task::TaskError;
 use crate::application::party_edit::PartyEditError;
@@ -64,6 +66,7 @@ enum Execution {
     Phase(PhaseCommand),
     Party(PartyCommand),
     Task,
+    Brief,
 }
 
 enum OperationError {
@@ -71,6 +74,7 @@ enum OperationError {
     Create(CreateRunError),
     Party(PartyRunError),
     Task(TaskRunError),
+    Jobs(JobRunError),
 }
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -687,6 +691,13 @@ async fn submit(
             });
             let elapsed = timing.elapsed_ms();
             if reply.ok {
+                // Publish the worker wake only after the commit is known
+                // (UCR-001 Q3). A replay of the same job id wakes again;
+                // an idempotent wake is harmless because the durable queue
+                // and its 500 ms poll remain authoritative.
+                if let Some(job_id) = reply.inner.get("job_id").and_then(|v| v.as_str()) {
+                    crate::jobs::wake(&state.jobs, job_id);
+                }
                 let mut response = Json(json!({
                     "ok": true,
                     "command_version": command_version,
@@ -1268,10 +1279,9 @@ async fn pipeline(
     }
     charge_invocation(tx, actor).await?;
 
-    // U02 read commands run on the same pipeline but never mutate facts.
+    // U02/U05 read commands run on the same pipeline but never mutate facts.
     if let Some(read_command) = super::read::ReadCommand::for_id(command_id) {
-        let party_ids = actor.party_ids();
-        let reply = match super::read::run(read_command, tx, args, &party_ids).await {
+        let reply = match super::read::run(read_command, tx, args, actor).await {
             Ok(value) => RunReply {
                 status: 200,
                 ok: true,
@@ -1338,6 +1348,8 @@ async fn pipeline(
         Execution::Party(command)
     } else if command_id == task::TASK_DONE_ID {
         Execution::Task
+    } else if command_id == jobs::BRIEF_START_ID {
+        Execution::Brief
     } else {
         finalize_attempt(
             tx,
@@ -1398,6 +1410,9 @@ async fn pipeline(
         Execution::Task => run_task(tx, args, key_digest)
             .await
             .map_err(OperationError::Task),
+        Execution::Brief => run_jobs(tx, args, key_digest, actor)
+            .await
+            .map_err(OperationError::Jobs),
     };
     // A storage failure is not a domain conflict: abandon the transaction and
     // let admission record the terminal audit outcome with no effect.
@@ -1592,6 +1607,40 @@ async fn pipeline(
                     message.to_string(),
                     vec![json!({"path": "/byte_start", "problem": "invalid_span"})],
                 ),
+                OperationError::Jobs(JobRunError::InvalidArgs) => (
+                    422,
+                    "invalid_args",
+                    "Arguments do not match the command rules".to_string(),
+                    vec![json!({"path": "", "problem": "invalid_args"})],
+                ),
+                OperationError::Jobs(JobRunError::Brief(BriefError::NotFound))
+                | OperationError::Jobs(JobRunError::Brief(BriefError::TargetNotGranted)) => (
+                    404,
+                    "target_unavailable",
+                    "Target record is not available".to_string(),
+                    vec![],
+                ),
+                OperationError::Jobs(JobRunError::Brief(BriefError::StaleRevision)) => (
+                    409,
+                    "version_mismatch",
+                    "Expected revision is stale; reload and create a new intent".to_string(),
+                    vec![],
+                ),
+                OperationError::Jobs(JobRunError::Brief(BriefError::InvalidPurpose)) => (
+                    422,
+                    "invalid_args",
+                    "Purpose must be 1–2000 characters".to_string(),
+                    vec![json!({"path": "/purpose", "problem": "invalid_purpose"})],
+                ),
+                OperationError::Jobs(JobRunError::Brief(BriefError::QueueAtCapacity)) => (
+                    429,
+                    "budget_exceeded",
+                    "The job queue is at capacity".to_string(),
+                    vec![],
+                ),
+                OperationError::Jobs(JobRunError::Brief(BriefError::Database)) => {
+                    return Err(crate::application::writer::Failure::Unavailable);
+                }
                 OperationError::Create(CreateRunError::Create(CreateError::Database)) => {
                     return Err(crate::application::writer::Failure::Unavailable);
                 }

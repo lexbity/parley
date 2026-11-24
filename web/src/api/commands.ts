@@ -379,7 +379,7 @@ export const RUN_STATES = ['queued', 'running', 'waiting_owner', 'waiting_job', 
 export type RunState = typeof RUN_STATES[number];
 export const RUN_TARGET_KINDS = ['party', 'opportunity', 'resource', 'material', 'segment'] as const;
 export type RunTargetKind = typeof RUN_TARGET_KINDS[number];
-export const RUN_PERMISSIONS = ['party.read', 'opportunity.read', 'opportunity.create', 'opportunity.phase.edit', 'party.edit', 'opportunity.task.edit'] as const;
+export const RUN_PERMISSIONS = ['party.read', 'opportunity.read', 'opportunity.create', 'opportunity.phase.edit', 'party.edit', 'opportunity.task.edit', 'brief.start', 'job.read'] as const;
 export type RunPermission = typeof RUN_PERMISSIONS[number];
 export const RUN_TRANSCRIPT_SPEAKERS = ['owner', 'assistant', 'tool', 'system'] as const;
 
@@ -401,6 +401,12 @@ export interface StartedRun {
 }
 export interface RunListItem { run_id: string; state: RunState; revision: number; deadline_at: string }
 export interface RunList { items: RunListItem[]; next_cursor: string | null }
+export interface RunReview {
+  job_id: string;
+  scope_kind: string;
+  scope_id: string;
+}
+
 export interface RunStatus {
   run_id: string;
   state: RunState;
@@ -409,6 +415,7 @@ export interface RunStatus {
   turn_count: number;
   transcript_bytes: number;
   wake_condition: string | null;
+  review: RunReview | null;
 }
 export interface TranscriptTurn { turn_no: number; speaker: 'owner' | 'assistant' | 'tool' | 'system'; ordinal: number; text: string }
 export interface TranscriptPage { items: TranscriptTurn[]; next_cursor: string | null }
@@ -489,6 +496,16 @@ function decodeRunStatus(value: unknown): RunStatus {
   if (!status || !Number.isSafeInteger(status.turn_count) || !Number.isSafeInteger(status.transcript_bytes)) {
     throw new Error('Invalid run response: status is malformed');
   }
+  let review: RunReview | null = null;
+  if (status.review !== null && status.review !== undefined) {
+    const raw = object(status.review);
+    if (!raw) throw new Error('Invalid run response: review is malformed');
+    review = {
+      job_id: requiredString(raw.job_id, 'review.job_id'),
+      scope_kind: requiredString(raw.scope_kind, 'review.scope_kind'),
+      scope_id: requiredString(raw.scope_id, 'review.scope_id'),
+    };
+  }
   return {
     run_id: requiredString(status.run_id, 'run_id'),
     state: decodeRunState(status.state, 'state'),
@@ -497,6 +514,7 @@ function decodeRunStatus(value: unknown): RunStatus {
     turn_count: Number(status.turn_count),
     transcript_bytes: Number(status.transcript_bytes),
     wake_condition: decodeNullableText(status.wake_condition, 'wake_condition'),
+    review,
   };
 }
 
