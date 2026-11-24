@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/* global HTMLElement, ResizeObserver, KeyboardEvent */
+/* global HTMLElement, ResizeObserver, KeyboardEvent, requestAnimationFrame, cancelAnimationFrame */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { Background, Controls, Handle, MarkerType, Position, VueFlow, type Edge, type Node, type VueFlowInstance } from '@xyflow/vue';
 import { parley, type GraphSnapshot } from '../../api/client';
@@ -140,6 +140,11 @@ function alignEditor() {
     y: Math.max(8, Math.min((rect?.top ?? bounds.top) - bounds.top, bounds.height - 295)),
   };
 }
+let alignFrame = 0;
+function scheduleAlignEditor() {
+  if (alignFrame) return;
+  alignFrame = requestAnimationFrame(() => { alignFrame = 0; alignEditor(); });
+}
 function cancelEditor() { editor.value?.querySelector<HTMLElement>('.editor-actions button[type=button]')?.click(); }
 function onViewport() { alignEditor(); rememberViewport(); }
 function editFocusedNode(event: KeyboardEvent) {
@@ -161,7 +166,7 @@ onMounted(() => {
     observer.observe(frame.value);
   }
 });
-onBeforeUnmount(() => observer?.disconnect());
+onBeforeUnmount(() => { observer?.disconnect(); if (alignFrame) cancelAnimationFrame(alignFrame); });
 </script>
 
 <template>
@@ -186,7 +191,7 @@ onBeforeUnmount(() => observer?.disconnect());
       @init="instance => { flow = instance; restoreViewport(); }"
       @nodes-initialized="restoreViewport"
       @move-end="onViewport"
-      @move="alignEditor"
+      @move="scheduleAlignEditor"
       @node-click="({ node }) => emit('activate', node.id)"
       @edge-click="({ edge }) => emit('inspect-edge', edge.id)"
       @node-drag-stop="({ node }) => emit('position', node)"

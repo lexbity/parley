@@ -45,6 +45,7 @@ const partyKind = ref<'person' | 'org'>('person');
 const partyName = ref('');
 const partyFocus = ref('');
 const partyNotes = ref('');
+const partyNotesPreviewOpen = ref(false);
 const newPartyFiles = ref<string[]>([]);
 const newPartyFilesBusy = ref(false);
 const duplicateParties = computed(() => {
@@ -195,6 +196,7 @@ let frozenNotes: { markdown: string; key: string; etag: string } | null = null;
 let pendingSave: Promise<boolean> | null = null;
 const notes = ref<EntityNotes | null>(null);
 const notesDraft = ref('');
+const notesPreviewOpen = ref(false);
 const notesBusy = ref(false);
 const notesError = ref('');
 const notesConflict = ref('');
@@ -881,9 +883,15 @@ onBeforeUnmount(() => {
             :readonly="busy || quarantined"
             compact
           />
-          <details v-if="partyNotes">
+          <details
+            v-if="partyNotes"
+            @toggle="partyNotesPreviewOpen = ($event.target as HTMLDetailsElement).open"
+          >
             <summary>Preview Markdown</summary>
-            <MarkdownPreview :source="partyNotes" />
+            <MarkdownPreview
+              v-if="partyNotesPreviewOpen"
+              :source="partyNotes"
+            />
           </details>
         </div>
         <PartyFiles
@@ -993,9 +1001,12 @@ onBeforeUnmount(() => {
                 @composition="composing = $event; scheduleNotesAutosave()"
                 @update:model-value="scheduleNotesAutosave"
               />
-              <details>
+              <details @toggle="notesPreviewOpen = ($event.target as HTMLDetailsElement).open">
                 <summary>Preview Markdown</summary>
-                <div class="notes-preview">
+                <div
+                  v-if="notesPreviewOpen"
+                  class="notes-preview"
+                >
                   <MarkdownPreview :source="notesDraft" />
                 </div>
               </details>

@@ -29,6 +29,12 @@ const narrow = ref(false);
 const view = ref<View>('board');
 const pickerOpen = ref(false);
 const query = ref('');
+const searchText = ref('');
+let searchTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
+watch(searchText, value => {
+  if (searchTimer) globalThis.clearTimeout(searchTimer);
+  searchTimer = globalThis.setTimeout(() => { query.value = value; }, 120);
+});
 const graphFilter = ref<'all' | 'resources' | 'parties' | 'activity'>('all');
 const boardLoading = ref(false);
 const graphLoading = ref(false);
@@ -1257,6 +1263,7 @@ onMounted(() => {
   void refreshBoard();
 });
 onBeforeUnmount(() => {
+  if (searchTimer) globalThis.clearTimeout(searchTimer);
   boardGeneration += 1; graphGeneration += 1; detailGeneration += 1; editorGeneration += 1; partyGeneration += 1;
   disposeResourceActions?.();
   media?.removeEventListener('change', updateBreakpoint);
@@ -2203,7 +2210,7 @@ defineExpose({ refresh, requestSwitch, hasDraft, columns });
         <div class="picker-content">
           <label>Search by title or type<input
             ref="pickerSearch"
-            v-model="query"
+            v-model="searchText"
             type="search"
             autocomplete="off"
           ></label>

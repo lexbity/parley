@@ -91,7 +91,13 @@ const allTargets = computed<TargetOption[]>(() => [
 ]);
 const targetOptions = computed(() => {
   const needle = targetQuery.value.trim().toLocaleLowerCase();
-  return needle ? allTargets.value.filter((target) => target.label.toLocaleLowerCase().includes(needle)) : allTargets.value;
+  const matches = needle
+    ? allTargets.value.filter((target) => target.label.toLocaleLowerCase().includes(needle))
+    : allTargets.value;
+  // Only a bounded window is mounted. Selected targets stay visible so they
+  // can always be unselected, regardless of the current filter.
+  const pinned = matches.filter((target) => selectedTargets.value.includes(target.key));
+  return [...pinned, ...matches.filter((target) => !pinned.includes(target))].slice(0, 50);
 });
 const taskBytes = computed(() => new TextEncoder().encode(task.value).length);
 const canStart = computed(() => !stale.value && !busy.value && !!task.value.trim()
