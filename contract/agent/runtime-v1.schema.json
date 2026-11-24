@@ -344,7 +344,8 @@
                     "coach",
                     "template_builder",
                     "interviewer",
-                    "briefer"
+                    "briefer",
+                    "extractor"
                   ]
                 },
                 "prompt_version": {

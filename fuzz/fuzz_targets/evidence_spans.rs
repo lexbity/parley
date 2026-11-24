@@ -26,4 +26,22 @@ fuzz_target!(|data: &[u8]| {
         normalize(&quote),
         "renormalized slice must equal the normalized quote"
     );
+    // Canonical chunk-boundary consistency (AR-001 AR06): a quote contained
+    // entirely in one sanitized chunk verifies against the full source with
+    // the same normalized span bytes.
+    let cut = (source.len() / 3).max(1);
+    let cut = (0..=cut)
+        .rev()
+        .find(|&index| source.is_char_boundary(index))
+        .unwrap_or(0);
+    let slice = &source[..cut];
+    if matched.source_end <= cut
+        && let Ok(inner) = verify_quote(slice, &quote, None)
+    {
+        assert_eq!(
+            normalize(&slice[inner.source_start..inner.source_end]),
+            normalize(&quote),
+            "chunk-local span must match the full-source span"
+        );
+    }
 });

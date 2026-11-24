@@ -8,6 +8,7 @@
 pub(crate) mod brief;
 pub(crate) mod coach;
 pub(crate) mod compose_start;
+pub(crate) mod extract;
 pub(crate) mod inference_context;
 pub(crate) mod interview;
 pub(crate) mod job_status;

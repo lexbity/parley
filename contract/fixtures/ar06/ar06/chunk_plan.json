@@ -1,0 +1,11 @@
+{
+  "context_tokens": 4096,
+  "output_tokens": 256,
+  "source": "Alpha uses the new hiring pipeline.\nFiller data fills this line.\nBeta mentioned the quarterly planning review.\n",
+  "chunks": [
+    {"index": 0, "start": 0, "end": 295},
+    {"index": 1, "start": 118, "end": 413}
+  ],
+  "overlap_chars": 177,
+  "max_chunks": 16
+}

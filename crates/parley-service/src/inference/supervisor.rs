@@ -915,6 +915,7 @@ fn validate_completion(request: &Execute, result: &Completion) -> Result<(), Run
             protocol::Role::TemplateBuilder => crate::inference::builder_schema(),
             protocol::Role::Interviewer => crate::inference::interviewer_schema(),
             protocol::Role::Briefer => crate::inference::briefer_schema(),
+            protocol::Role::Extractor => crate::inference::extractor_schema(),
         };
         if digest(schema) != *schema_digest {
             return Err(RunError::ProtocolMismatch);

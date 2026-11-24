@@ -11,14 +11,12 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
-use std::{net::IpAddr, time::Duration};
+use std::net::IpAddr;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
 };
 
-const PROMPT: &str = include_str!("../roles/extractor/prompt.md");
-const SCHEMA: &str = include_str!("../roles/extractor/schema.json");
 const INTERVIEWER_PROMPT: &str = include_str!("../roles/interviewer/prompt.md");
 const INTERVIEWER_SCHEMA: &str = include_str!("../roles/interviewer/schema.json");
 const BRIEFER_PROMPT: &str = include_str!("../roles/briefer/prompt.md");
@@ -44,7 +42,6 @@ pub(crate) fn briefer_schema() -> &'static str {
     BRIEFER_SCHEMA
 }
 const MAX_BODY: usize = 2_200_000;
-const MAX_CHUNKS: usize = 16;
 const MAX_RETRIES: i64 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -98,25 +95,6 @@ type JobReadRow = (
     i64,
     i64,
 );
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Candidate {
-    kind: String,
-    statement: String,
-    quote: String,
-    mention_name: Option<String>,
-    mention_kind: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ExtractorOutput {
-    candidates: Vec<Candidate>,
-    injection_suspected: bool,
-    #[serde(skip)]
-    dropped_items: u32,
-}
 
 #[derive(Deserialize)]
 pub(crate) struct OllamaChatResponse {
@@ -359,7 +337,11 @@ pub(crate) async fn process(state: &super::AppState, job_id: &str) {
         super::inference::template_builder::run(state, job_id).await;
         return;
     }
-    if let Some(role) = role.as_deref().filter(|role| *role != "extractor") {
+    if role.as_deref() == Some("extractor") {
+        super::inference::extractor::run(state, job_id).await;
+        return;
+    }
+    if let Some(role) = role.as_deref() {
         if matches!(role, "matcher" | "composer" | "linter") {
             super::writing_jobs::process_role(workspace, job_id, role).await;
         } else if matches!(role, "interviewer" | "briefer") {
@@ -375,207 +357,6 @@ pub(crate) async fn process(state: &super::AppState, job_id: &str) {
                 "failed",
             )
             .await;
-        }
-        return;
-    }
-    let started = tokio::time::Instant::now();
-    loop {
-        if started.elapsed() >= Duration::from_secs(360) {
-            finish_job_error(
-                workspace,
-                job_id,
-                "JOB_TIMEOUT",
-                "Extractor exceeded its total time budget",
-                "failed",
-            )
-            .await;
-            return;
-        }
-        let attempt = match claim_attempt(workspace, job_id).await {
-            Ok(Some(value)) => value,
-            _ => return,
-        };
-        let source: Option<(String, String)> = sqlx::query_as("SELECT v.raw_text,j.input_json FROM durable_job j JOIN source_variant v ON v.id=j.source_variant_id WHERE j.id=? AND j.current_attempt=?")
-            .bind(job_id).bind(attempt.number).fetch_optional(workspace.pool()).await.ok().flatten();
-        let Some((raw_text, input_json)) = source else {
-            finish_attempt_error(
-                workspace,
-                job_id,
-                attempt.number,
-                "SOURCE_UNAVAILABLE",
-                "Capture source is no longer available",
-                "failed",
-            )
-            .await;
-            return;
-        };
-        let config = attempt.provider_config.clone();
-        if config.model.trim().is_empty() {
-            finish_attempt_error(
-                workspace,
-                job_id,
-                attempt.number,
-                "MODEL_UNAVAILABLE",
-                "Choose an installed local Extractor model in Settings",
-                "failed",
-            )
-            .await;
-            return;
-        }
-        if attempt.model_digest.is_none() {
-            finish_attempt_error(
-                workspace,
-                job_id,
-                attempt.number,
-                "MODEL_HEALTH_REQUIRED",
-                "Check the installed local model in Settings before running extraction",
-                "failed",
-            )
-            .await;
-            return;
-        }
-        let sanitized = strip_invisible_controls(&raw_text);
-        let suspicious = injection_suspected(&sanitized);
-        let chunks = match chunks(&sanitized, config.num_ctx, config.num_predict) {
-            Ok(value) => value,
-            Err(message) => {
-                finish_attempt_error(
-                    workspace,
-                    job_id,
-                    attempt.number,
-                    "CONTEXT_BUDGET",
-                    &message,
-                    "failed",
-                )
-                .await;
-                return;
-            }
-        };
-        let call = tokio::time::timeout(Duration::from_secs(120), async {
-                let mut combined = ExtractorOutput { candidates: Vec::new(), injection_suspected: suspicious, dropped_items: 0 };
-            let mut seen = std::collections::BTreeSet::new();
-            let mut tokens_in = 0;
-            let mut tokens_out = 0;
-            for (index, chunk) in chunks.iter().enumerate() {
-                let _ = sqlx::query("UPDATE durable_job SET progress_current=?,progress_total=? WHERE id=? AND status='running' AND current_attempt=?")
-                    .bind(index as i64).bind(chunks.len() as i64).bind(job_id).bind(attempt.number)
-                    .execute(workspace.pool()).await;
-                let input: Value = serde_json::from_str(&input_json).map_err(|e| format!("invalid durable input: {e}"))?;
-                let occurrence = input["occurrence_id"].as_str().unwrap_or_default();
-                let repair = sqlx::query_scalar::<_,Option<String>>("SELECT error_message FROM job_attempt WHERE job_id=? AND attempt_no<? ORDER BY attempt_no DESC LIMIT 1")
-                    .bind(job_id).bind(attempt.number).fetch_optional(workspace.pool()).await.ok().flatten().flatten();
-                let content = format!("Locale: {}. Chunk {}/{}. Previous validation issue: {}\n\n<DATA>\n{}\n</DATA>",config.locale,index+1,chunks.len(),repair.as_deref().unwrap_or("none"),chunk);
-                let response = ollama_chat(&config, &content, &attempt.prompt, &attempt.schema, 0.0).await?;
-                tokens_in += response.prompt_eval_count.unwrap_or_else(|| token_upper_bound(&content));
-                tokens_out += response.eval_count.unwrap_or(0);
-                let chunk_out: ExtractorOutput = serde_json::from_str(&response.message.content).map_err(|e| format!("SCHEMA: model output did not match Extractor schema: {e}"))?;
-                combined.injection_suspected |= chunk_out.injection_suspected;
-                for candidate in chunk_out.candidates {
-                    if !valid_candidate(&candidate) {
-                        combined.dropped_items += 1;
-                        continue;
-                    }
-                    if parley_domain::evidence::verify_quote(&raw_text, &candidate.quote, None).is_err() {
-                        combined.dropped_items += 1;
-                        continue;
-                    }
-                    let key = parley_domain::evidence::normalize(&candidate.quote);
-                    if !seen.insert((key, candidate.kind.clone())) { continue; }
-                    let _ = occurrence;
-                    combined.candidates.push(candidate);
-                }
-                let _ = sqlx::query("UPDATE durable_job SET progress_current=? WHERE id=? AND status='running' AND current_attempt=?")
-                    .bind((index + 1) as i64).bind(job_id).bind(attempt.number)
-                    .execute(workspace.pool()).await;
-            }
-            Ok::<_,String>((combined,tokens_in,tokens_out))
-        }).await;
-        let result = match call {
-            Err(_) => {
-                finish_attempt_error(
-                    workspace,
-                    job_id,
-                    attempt.number,
-                    "ATTEMPT_TIMEOUT",
-                    "Extractor attempt exceeded 120 seconds",
-                    "failed",
-                )
-                .await;
-                return;
-            }
-            Ok(Err(error)) if error.starts_with("SCHEMA:") && attempt.number < MAX_RETRIES => {
-                finish_attempt_error(
-                    workspace,
-                    job_id,
-                    attempt.number,
-                    "OUTPUT_INVALID",
-                    &error,
-                    "retry",
-                )
-                .await;
-                continue;
-            }
-            Ok(Err(error)) if error.starts_with("SCHEMA:") => {
-                finish_attempt_error(
-                    workspace,
-                    job_id,
-                    attempt.number,
-                    "OUTPUT_INVALID",
-                    &error,
-                    "invalid",
-                )
-                .await;
-                return;
-            }
-            Ok(Err(error)) => {
-                finish_attempt_error(
-                    workspace,
-                    job_id,
-                    attempt.number,
-                    "AGENT_FAILED",
-                    &redact_provider_error(&error),
-                    "failed",
-                )
-                .await;
-                return;
-            }
-            Ok(Ok(value)) => value,
-        };
-        match save_proposals(
-            workspace,
-            job_id,
-            attempt.number,
-            result.0,
-            result.1,
-            result.2,
-        )
-        .await
-        {
-            Ok(()) => return,
-            Err(WorkspaceError::StaleRevision) => {
-                finish_attempt_error(
-                    workspace,
-                    job_id,
-                    attempt.number,
-                    "STALE_INPUT",
-                    "Capture changed while Extractor was running",
-                    "failed",
-                )
-                .await;
-                return;
-            }
-            Err(error) => {
-                finish_attempt_error(
-                    workspace,
-                    job_id,
-                    attempt.number,
-                    "PERSIST_FAILED",
-                    &error.to_string(),
-                    "failed",
-                )
-                .await;
-                return;
-            }
         }
     }
 }
@@ -673,7 +454,6 @@ pub(crate) async fn claim_attempt(
 
 fn role_defaults(role: &str) -> Option<(&'static str, &'static str)> {
     match role {
-        "extractor" => Some((PROMPT, SCHEMA)),
         "interviewer" => Some((INTERVIEWER_PROMPT, INTERVIEWER_SCHEMA)),
         "briefer" => Some((BRIEFER_PROMPT, BRIEFER_SCHEMA)),
         "matcher" => Some((MATCHER_PROMPT, MATCHER_SCHEMA)),
@@ -738,101 +518,6 @@ pub(super) async fn complete_role_result_in_tx(
     sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'job',?,?, 'job.completed',?)")
         .bind(new_id(id)).bind(&now).bind(id).bind(attempt).bind(&event_payload).execute(&mut **tx).await?;
     Ok(())
-}
-
-async fn save_proposals(
-    workspace: &Workspace,
-    job_id: &str,
-    attempt: i64,
-    output: ExtractorOutput,
-    tokens_in: u32,
-    tokens_out: u32,
-) -> Result<(), WorkspaceError> {
-    let mut tx = workspace.pool().begin_with("BEGIN IMMEDIATE").await?;
-    let job:Option<(String,String,String,String)>=sqlx::query_as("SELECT status,source_occurrence_id,source_variant_id,input_sha256 FROM durable_job WHERE id=? AND current_attempt=?")
-        .bind(job_id).bind(attempt).fetch_optional(&mut *tx).await?;
-    let Some((status, occurrence, variant, input_hash)) = job else {
-        tx.rollback().await?;
-        return Err(WorkspaceError::StaleRevision);
-    };
-    if status != "running" {
-        tx.rollback().await?;
-        return Err(WorkspaceError::StaleRevision);
-    }
-    let attempt_hash: Option<String> = sqlx::query_scalar(
-        "SELECT input_sha256 FROM job_attempt WHERE job_id=? AND attempt_no=? AND status='running'",
-    )
-    .bind(job_id)
-    .bind(attempt)
-    .fetch_optional(&mut *tx)
-    .await?;
-    if attempt_hash.as_deref() != Some(input_hash.as_str()) {
-        tx.rollback().await?;
-        return Err(WorkspaceError::StaleRevision);
-    }
-    let occurrence_variant: Option<String> =
-        sqlx::query_scalar("SELECT source_variant_id FROM source_occurrence WHERE id=?")
-            .bind(&occurrence)
-            .fetch_optional(&mut *tx)
-            .await?;
-    if occurrence_variant.as_deref() != Some(variant.as_str()) {
-        tx.rollback().await?;
-        return Err(WorkspaceError::StaleRevision);
-    }
-    let candidate_count = output.candidates.len();
-    let injection_suspected = output.injection_suspected;
-    let batch_id = new_id(job_id);
-    let now = now_utc();
-    sqlx::query("INSERT INTO proposal_batch(id,source_variant_id,job_id,source_occurrence_id,status,created_at) VALUES(?,?,?,?,'pending',?)").bind(&batch_id).bind(&variant).bind(job_id).bind(&occurrence).bind(&now).execute(&mut *tx).await?;
-    let mut dropped = output.dropped_items as usize;
-    let mut staged_count = 0usize;
-    for candidate in output.candidates {
-        let matched = match parley_domain::evidence::verify_quote(
-            &source_text(&mut tx, &variant).await?,
-            &candidate.quote,
-            None,
-        ) {
-            Ok(value) => value,
-            Err(_) => {
-                dropped += 1;
-                continue;
-            }
-        };
-        let id = new_id(&format!("{job_id}:{}:{}", candidate.kind, candidate.quote));
-        let data = json!({"kind":candidate.kind,"statement":candidate.statement,"quote":candidate.quote,"mention_name":candidate.mention_name,"mention_kind":candidate.mention_kind,"source_start":matched.source_start,"source_end":matched.source_end,"normalized_start":matched.normalized_start,"normalized_end":matched.normalized_end,"normalization_version":parley_domain::evidence::NORMALIZATION_VERSION,"injection_suspected":output.injection_suspected});
-        sqlx::query("INSERT INTO proposal_item(id,batch_id,proposal_kind,candidate_json,occurrence_id,status) VALUES(?,?,?,?,?,'pending')").bind(&id).bind(&batch_id).bind(&candidate.kind).bind(data.to_string()).bind(&occurrence).execute(&mut *tx).await?;
-        staged_count += 1;
-    }
-    if staged_count == 0 {
-        sqlx::query("UPDATE proposal_batch SET status='applied' WHERE id=?")
-            .bind(&batch_id)
-            .execute(&mut *tx)
-            .await?;
-    }
-    let output_json=json!({"proposal_batch_id":batch_id,"candidate_count":candidate_count,"dropped_items":dropped,"injection_suspected":injection_suspected}).to_string();
-    sqlx::query("UPDATE job_attempt SET status='succeeded',output_json=?,tokens_in=?,tokens_out=?,finished_at=?,duration_ms=CAST((julianday(?) - julianday(started_at))*86400000 AS INTEGER) WHERE job_id=? AND attempt_no=? AND status='running'")
-       .bind(&output_json).bind(tokens_in as i64).bind(tokens_out as i64).bind(&now).bind(&now).bind(job_id).bind(attempt).execute(&mut *tx).await?;
-    let affected=sqlx::query("UPDATE durable_job SET status='succeeded',last_error_code=NULL,last_error=NULL,updated_at=?,completed_at=? WHERE id=? AND status='running' AND current_attempt=?")
-       .bind(&now).bind(&now).bind(job_id).bind(attempt).execute(&mut *tx).await?.rows_affected();
-    if affected != 1 {
-        tx.rollback().await?;
-        return Err(WorkspaceError::StaleRevision);
-    }
-    sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'job',?,?, 'job.completed',?)")
-      .bind(new_id(job_id)).bind(&now).bind(job_id).bind(attempt).bind(&output_json).execute(&mut *tx).await?;
-    tx.commit().await?;
-    Ok(())
-}
-
-async fn source_text(
-    tx: &mut Transaction<'_, Sqlite>,
-    variant: &str,
-) -> Result<String, WorkspaceError> {
-    sqlx::query_scalar("SELECT raw_text FROM source_variant WHERE id=?")
-        .bind(variant)
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or(WorkspaceError::NotFound)
 }
 
 pub(super) async fn finish_job_error(
@@ -1008,104 +693,6 @@ pub(crate) fn decode_chunks(mut rest: &str) -> Result<String, String> {
         rest = &rest[size + 2..]
     }
     String::from_utf8(bytes).map_err(|e| e.to_string())
-}
-fn token_upper_bound(text: &str) -> u32 {
-    text.len().min(u32::MAX as usize) as u32
-}
-fn chunks(text: &str, num_ctx: u32, num_predict: u32) -> Result<Vec<String>, String> {
-    let framing = PROMPT
-        .len()
-        .saturating_add(SCHEMA.len())
-        .saturating_add(1024);
-    let source_budget = (num_ctx as usize)
-        .saturating_sub(num_predict as usize)
-        .saturating_sub(framing);
-    if source_budget < 256 {
-        return Err(
-            "Context budget cannot hold the bundled prompt, output reserve, and a source chunk"
-                .into(),
-        );
-    }
-    let max = source_budget;
-    let overlap = 300usize.min(max / 8);
-    let mut result = Vec::new();
-    let mut start = 0;
-    while start < text.len() {
-        let mut end = (start + max).min(text.len());
-        while !text.is_char_boundary(end) {
-            end -= 1
-        }
-        if end <= start {
-            return Err("Could not split capture at a UTF-8 boundary".into());
-        }
-        result.push(text[start..end].to_owned());
-        if result.len() > MAX_CHUNKS {
-            return Err("Capture exceeds the configured chunk budget".into());
-        }
-        if end == text.len() {
-            break;
-        }
-        start = end.saturating_sub(overlap);
-        while !text.is_char_boundary(start) {
-            start += 1
-        }
-    }
-    Ok(result)
-}
-fn strip_invisible_controls(text: &str) -> String {
-    text.chars().filter(|ch|!matches!(*ch,'\u{200b}'..='\u{200f}'|'\u{202a}'..='\u{202e}'|'\u{2060}'..='\u{206f}'|'\u{feff}')).collect()
-}
-fn injection_suspected(text: &str) -> bool {
-    let lower = text.to_lowercase();
-    [
-        "ignore previous",
-        "system prompt",
-        "you are now",
-        "<|system|>",
-        "<|assistant|>",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
-        || text.len() > 1_500_000
-}
-fn has_sensitive_content(text: &str) -> bool {
-    let lower = text.to_lowercase();
-    [
-        "medical leave",
-        "health condition",
-        "disability",
-        "pregnant",
-        "religion",
-        "political party",
-        "sexual orientation",
-        "home address",
-        "family status",
-        "union member",
-        "immigration status",
-    ]
-    .iter()
-    .any(|term| lower.contains(term))
-}
-fn valid_kind(kind: &str) -> bool {
-    matches!(kind, "signal" | "interest" | "hook" | "stakeholder")
-}
-fn valid_candidate(candidate: &Candidate) -> bool {
-    valid_kind(&candidate.kind)
-        && !candidate.statement.trim().is_empty()
-        && candidate.statement.chars().count() <= 1000
-        && !candidate.quote.is_empty()
-        && candidate.quote.chars().count() <= 4000
-        && candidate
-            .mention_name
-            .as_ref()
-            .is_none_or(|name| !name.trim().is_empty() && name.chars().count() <= 500)
-        && candidate
-            .mention_kind
-            .as_deref()
-            .is_none_or(|kind| matches!(kind, "person" | "org"))
-        && (candidate.mention_name.is_some() || candidate.mention_kind.is_none())
-        && !has_sensitive_content(&candidate.statement)
-        && !has_sensitive_content(&candidate.quote)
 }
 fn redact_provider_error(error: &str) -> String {
     let mut s = error.replace('\n', " ");

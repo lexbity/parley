@@ -13,6 +13,7 @@ async function main() {
   const builderSchema = await readFile(new URL("./template_builder.schema.json", import.meta.url))
   const interviewerSchema = await readFile(new URL("./interviewer.schema.json", import.meta.url))
   const brieferSchema = await readFile(new URL("./briefer.schema.json", import.meta.url))
+  const extractorSchema = await readFile(new URL("./extractor.schema.json", import.meta.url))
   const build = (await readFile(new URL("./worker-build", import.meta.url), "ascii")).trim()
   const validate = compileSchema(parseJson(runtimeSchema))
   const namespaces = {}
@@ -50,7 +51,7 @@ async function main() {
     throw new WorkerFailure("WORKER_PROTOCOL")
   })
   let workerSeq = 3
-  const assets = { tokenizer: null, coachSchema, builderSchema, interviewerSchema, brieferSchema }
+  const assets = { tokenizer: null, coachSchema, builderSchema, interviewerSchema, brieferSchema, extractorSchema }
   const control = {
     async next() {
       const { value } = await frames.next()

@@ -232,13 +232,22 @@ describe('AppShell', () => {
       progress_current: 0, progress_total: 1, injection_suspected: false, last_error_code: null, last_error: null,
       source_occurrence_id: 'o2', proposal_batch_id: null, proposals: [],
     };
-    const completed: ExtractorJob = { ...queued, status: 'succeeded', current_attempt: 1, progress_current: 1 };
+    const completed: ExtractorJob = { ...queued, status: 'succeeded', current_attempt: 1, progress_current: 1, proposal_batch_id: 'batch2', proposals: [] };
     const cancelled: ExtractorJob = { ...queued, status: 'cancelled', last_error: 'Cancelled by owner' };
     const source: SavedSource = { content_id: 'c2', variant_id: 'v2', occurrence_id: 'o2', normalized_sha256: 'a', raw_sha256: 'b', job_id: 'job2' };
     stubWorkspace();
     vi.spyOn(parley, 'listSources').mockResolvedValue([source]);
     vi.spyOn(parley, 'saveSource').mockResolvedValue(source);
-    const getJob = vi.spyOn(parley, 'getExtractorJob').mockResolvedValueOnce(queued).mockResolvedValueOnce(completed).mockResolvedValueOnce(cancelled);
+    // The initial read stages the full job; the session reconciler then polls
+    // the typed role projection and performs one bounded terminal fetch.
+    const getJob = vi.spyOn(parley, 'getExtractorJob')
+      .mockResolvedValueOnce(queued)
+      .mockResolvedValueOnce(completed)
+      .mockResolvedValueOnce(cancelled);
+    const roleJob = (status: string) => ({ id: 'job2', role: 'extractor', status, result: null, last_error: null, review_ref: null });
+    vi.spyOn(parley, 'getRoleJob')
+      .mockResolvedValueOnce(roleJob('queued'))
+      .mockResolvedValueOnce(roleJob('succeeded'));
     vi.spyOn(parley, 'getCaptureProposals').mockResolvedValue(queued);
     const cancel = vi.spyOn(parley, 'cancelJob').mockResolvedValue();
     const wrapper = mount(AppShell);
@@ -247,7 +256,8 @@ describe('AppShell', () => {
     await wrapper.get('form.capture textarea').setValue('A durable local capture.');
     await wrapper.get('form.capture').trigger('submit');
     await flushPromises();
-    await vi.advanceTimersByTimeAsync(1000);
+    expect(getJob).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2000);
     await flushPromises();
     expect(getJob).toHaveBeenCalledTimes(2);
     expect(wrapper.text()).toContain('Job succeeded');
@@ -276,6 +286,7 @@ describe('AppShell', () => {
     vi.spyOn(parley, 'listSources').mockResolvedValue([source]);
     vi.spyOn(parley, 'saveSource').mockResolvedValue(source);
     vi.spyOn(parley, 'getExtractorJob').mockResolvedValueOnce(queued).mockRejectedValueOnce('poll unavailable');
+    vi.spyOn(parley, 'getRoleJob').mockRejectedValue('poll unavailable');
     vi.spyOn(parley, 'getCaptureProposals').mockRejectedValueOnce('review unavailable').mockResolvedValue(queued);
     vi.spyOn(parley, 'cancelJob').mockRejectedValue('cancel unavailable');
     vi.spyOn(parley, 'resolveProposals').mockRejectedValue('decision unavailable');
@@ -284,8 +295,6 @@ describe('AppShell', () => {
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
     await wrapper.get('form.capture textarea').setValue('A source whose local job needs manual review.');
     await wrapper.get('form.capture').trigger('submit');
-    await flushPromises();
-    await vi.advanceTimersByTimeAsync(1000);
     await flushPromises();
     expect(wrapper.text()).toContain('Could not refresh Extractor review');
     const reviewButton = () => wrapper.findAll('button').find((button) => button.text() === 'Review proposals')!;
