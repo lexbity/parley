@@ -23,6 +23,7 @@ pub(crate) enum Reason {
     CapacityUpdate,
     MissingIdentity,
     Insight,
+    ContextReview,
 }
 
 impl Reason {
@@ -37,6 +38,7 @@ impl Reason {
             Self::CapacityUpdate => "capacity_update",
             Self::MissingIdentity => "missing_identity",
             Self::Insight => "insight",
+            Self::ContextReview => "context_review",
         }
     }
 }
@@ -44,6 +46,8 @@ impl Reason {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum Target {
+    Party { party_id: String },
+    Opportunity { opportunity_id: String, recipient_id: String },
     Segment { segment_id: String },
     Term { term: String },
     FlaggedTemplates,
@@ -55,6 +59,8 @@ pub(crate) enum Target {
 impl Target {
     pub(crate) fn wire(&self) -> Value {
         match self {
+            Self::Party { party_id } => json!({"party_id":party_id}),
+            Self::Opportunity { opportunity_id, recipient_id } => json!({"opportunity_id":opportunity_id,"recipient_id":recipient_id}),
             Self::Segment { segment_id } => json!({"segment_id":segment_id}),
             Self::Term { term } => json!({"term":term}),
             Self::FlaggedTemplates => json!({"status":"flagged"}),
@@ -107,7 +113,7 @@ impl Seed {
             Reason::MissingIdentity => {
                 json!({"type":"object","required":["identity"],"properties":{"identity":{"type":"string","minLength":1}}})
             }
-            Reason::AssessmentCheck | Reason::Insight => {
+            Reason::AssessmentCheck | Reason::Insight | Reason::ContextReview => {
                 json!({"type":"object","required":["note"],"properties":{"note":{"type":"string","minLength":1}}})
             }
         }
@@ -126,6 +132,67 @@ pub(crate) struct Plan {
     pub(crate) seeds: Vec<Seed>,
     pub(crate) coverage: Coverage,
     pub(crate) dependencies: String,
+}
+
+pub(crate) struct ContextPlan {
+    pub(crate) seeds: Vec<Seed>,
+    pub(crate) coverage: Coverage,
+    pub(crate) dependencies: String,
+    pub(crate) dependency_json: Value,
+    pub(crate) projection: Value,
+}
+
+/// Apply the shared deterministic planner to an explicitly selected party or
+/// opportunity projection. No model input is read until selectors and all
+/// selected references have been resolved under this snapshot.
+pub(crate) async fn plan_context(
+    conn: &mut SqliteConnection,
+    request: &super::inference_context::ContextRequest,
+) -> Result<ContextPlan, WorkspaceError> {
+    let snapshot = super::inference_context::snapshot(conn, request).await?;
+    let scope = &snapshot.projection["scope"];
+    let mut coverage = Coverage::default();
+    let mut seeds = Vec::new();
+    if scope["kind"] == "opportunity" {
+        let opportunity_id = scope["id"].as_str().ok_or_else(|| WorkspaceError::Invalid("Invalid Coach scope".into()))?;
+        let recipient_id = scope["recipient_id"].as_str().ok_or_else(|| WorkspaceError::Invalid("Invalid Coach scope".into()))?;
+        let latest: Option<(String, i64, i64, String)> = sqlx::query_as(
+            "SELECT id,opportunity_revision,recipient_revision,shortlist_json FROM match_run
+             WHERE opportunity_id=? AND recipient_id=? ORDER BY created_at DESC,id DESC LIMIT 1",
+        ).bind(opportunity_id).bind(recipient_id).fetch_optional(&mut *conn).await?;
+        match latest {
+            None => {
+                coverage.missing = 1;
+                seeds.push(Seed::new(Reason::AssessmentCheck, Target::Opportunity { opportunity_id: opportunity_id.to_owned(), recipient_id: recipient_id.to_owned() }, 2)?);
+            }
+            Some((_id, opportunity_revision, recipient_revision, shortlist)) => {
+                let current = opportunity_revision == scope["revision"].as_i64().unwrap_or_default()
+                    && recipient_revision == scope["recipient_revision"].as_i64().unwrap_or_default();
+                if current {
+                    coverage.current = 1;
+                    let gaps = serde_json::from_str::<Value>(&shortlist).ok()
+                        .and_then(|value| value["results"].as_array().cloned())
+                        .is_some_and(|results| results.iter().all(|row| row["no_match"] == true));
+                    coverage.no_match = i64::from(gaps);
+                    if gaps {
+                        seeds.push(Seed::new(Reason::ContextReview, Target::Opportunity { opportunity_id: opportunity_id.to_owned(), recipient_id: recipient_id.to_owned() }, 2)?);
+                    }
+                } else {
+                    coverage.stale = 1;
+                    seeds.push(Seed::new(Reason::AssessmentCheck, Target::Opportunity { opportunity_id: opportunity_id.to_owned(), recipient_id: recipient_id.to_owned() }, 2)?);
+                }
+            }
+        }
+    } else {
+        // A party selection has no implicit match/assessment. Its contextual
+        // question is explicitly about the selected research context.
+        seeds.push(Seed::new(Reason::ContextReview, Target::Party { party_id: scope["id"].as_str().unwrap_or_default().to_owned() }, 1)?);
+    }
+    for seed in &mut seeds {
+        seed.key = fingerprint(&json!({"selector":scope,"reason":seed.reason,"target":seed.target}))?;
+    }
+    let dependencies = snapshot.dependency_digest;
+    Ok(ContextPlan { seeds, coverage, dependencies, dependency_json: snapshot.dependency_json, projection: snapshot.projection })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
