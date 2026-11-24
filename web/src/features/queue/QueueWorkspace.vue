@@ -21,6 +21,8 @@ import { opportunityCreateAction, queuePhaseActions, queueTaskAction, registerSc
 import type { OpportunityNotes } from '../../api/client';
 import Daily from './Daily.vue';
 import Insights from './Insights.vue';
+import SearchableSelect from '../../shared/SearchableSelect.vue';
+import type { SelectOption } from '../../shared/select-options';
 
 defineOptions({ name: 'QueueWorkspace' });
 
@@ -58,6 +60,7 @@ const inspectorHeading = ref<HTMLElement | null>(null);
 let savedScroll = 0;
 const createTitle = ref('');
 const createPartyId = ref('');
+const partyOptions = computed<SelectOption[]>(() => props.parties.map(party => ({ value: party.id, label: `${party.name} · ${party.kind}` })));
 const createBusy = ref(false);
 const rowRefs = ref<Record<string, HTMLElement | null>>({});
 // Entry restores the last valid search, filters, sort and selection for this
@@ -779,23 +782,16 @@ onBeforeUnmount(() => {
         maxlength="500"
         :readonly="createBusy"
       ></label>
-      <label>Participant
-        <select
-          v-model="createPartyId"
-          required
-          :disabled="createBusy"
-        >
-          <option
-            value=""
-            disabled
-          >Choose a party</option>
-          <option
-            v-for="party in parties"
-            :key="party.id"
-            :value="party.id"
-          >{{ party.name }} · {{ party.kind }}</option>
-        </select>
-      </label>
+      <SearchableSelect
+        id="create-party"
+        label="Participant"
+        placeholder="Filter parties"
+        :model-value="createPartyId"
+        :options="partyOptions"
+        :disabled="createBusy"
+        required
+        @update:model-value="createPartyId = $event"
+      />
       <button
         type="submit"
         class="primary"

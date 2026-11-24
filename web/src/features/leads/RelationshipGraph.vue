@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/* global HTMLElement, HTMLDetailsElement, HTMLSelectElement, KeyboardEvent, ResizeObserver */
+/* global HTMLElement, HTMLDetailsElement, HTMLSelectElement, KeyboardEvent, ResizeObserver, requestAnimationFrame, cancelAnimationFrame */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { Background, Controls, Handle, Position, MiniMap, VueFlow, type Edge, type Node, type VueFlowInstance } from '@xyflow/vue';
 import { newOperationKey, parley, type GraphSnapshot, type SavedSource } from '../../api/client';
@@ -46,6 +46,7 @@ const edges = computed<Edge[]>(() => snapshot.value.edges.map(edge => ({
   labelBgStyle: { fill: '#eff3eb' }, style: { stroke: edge.tier === 2 ? '#8b6725' : '#71957f', strokeWidth: 1.6 },
 })));
 const selectedEdge = computed(() => snapshot.value.edges.find((edge) => edge.id === selectedEdgeId.value) ?? null);
+const nodeNames = computed(() => new Map(snapshot.value.nodes.map(node => [node.id, node.name])));
 
 async function load() {
   const ownGeneration = ++generation.value;
@@ -113,6 +114,13 @@ function anchorTo(id: string) {
 }
 function alignEditor() {
   if (props.editorOpen && props.focusEntityId) anchorTo(props.focusEntityId);
+}
+// Panning emits move events faster than the browser can paint. Coalesce the
+// layout reads into one per animation frame.
+let alignFrame = 0;
+function scheduleAlignEditor() {
+  if (alignFrame) return;
+  alignFrame = requestAnimationFrame(() => { alignFrame = 0; alignEditor(); });
 }
 function viewportKey(root: string) {
   return parley.workspaceEpoch && `parley.parties.graph.${parley.workspaceId}.${parley.workspaceEpoch}.${root}`;
@@ -185,7 +193,7 @@ onMounted(() => {
     resizeObserver.observe(frame.value);
   }
 });
-onBeforeUnmount(() => { generation.value++; resizeObserver?.disconnect(); });
+onBeforeUnmount(() => { generation.value++; resizeObserver?.disconnect(); if (alignFrame) cancelAnimationFrame(alignFrame); });
 </script>
 
 <template>
@@ -257,7 +265,7 @@ onBeforeUnmount(() => { generation.value++; resizeObserver?.disconnect(); });
           @node-drag-stop="savePosition"
           @init="instance => flow = instance"
           @nodes-initialized="restoreViewport"
-          @move="alignEditor"
+          @move="scheduleAlignEditor"
           @move-end="rememberViewport"
           @node-click="({ node }) => focusNode(node.id)"
           @edge-click="({ edge }) => inspectEdge(edge.id)"
@@ -322,7 +330,7 @@ onBeforeUnmount(() => { generation.value++; resizeObserver?.disconnect(); });
               :aria-pressed="selectedEdgeId === edge.id"
               @click="inspectEdge(edge.id)"
             >
-              {{ snapshot.nodes.find((node) => node.id === edge.from_id)?.name }} {{ edge.verb }} {{ snapshot.nodes.find((node) => node.id === edge.to_id)?.name }}
+              {{ nodeNames.get(edge.from_id) }} {{ edge.verb }} {{ nodeNames.get(edge.to_id) }}
             </button>
             <small> · T{{ edge.tier }} · {{ edge.speaker_kind }} · {{ edge.captured_at }}</small>
           </li>
@@ -331,7 +339,7 @@ onBeforeUnmount(() => { generation.value++; resizeObserver?.disconnect(); });
           v-if="selectedEdge"
           aria-label="Selected relationship evidence"
         >
-          <strong>{{ snapshot.nodes.find((node) => node.id === selectedEdge?.from_id)?.name }} → {{ selectedEdge.verb }} → {{ snapshot.nodes.find((node) => node.id === selectedEdge?.to_id)?.name }}</strong>
+          <strong>{{ nodeNames.get(selectedEdge?.from_id ?? '') }} → {{ selectedEdge.verb }} → {{ nodeNames.get(selectedEdge?.to_id ?? '') }}</strong>
           <p>Speaker: {{ selectedEdge.speaker_kind }} · Tier {{ selectedEdge.tier }} · {{ selectedEdge.captured_at }}</p>
           <blockquote>{{ selectedEdge.quote }}</blockquote>
           <p>{{ selectedEdge.source_title ?? 'Captured source' }}<span v-if="selectedEdge.source_url"> · {{ selectedEdge.source_url }}</span></p>

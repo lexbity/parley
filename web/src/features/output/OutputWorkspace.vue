@@ -8,6 +8,8 @@ import {
   type WritingInterest, type WritingMatch, type WritingTemplate,
 } from '../../api/client';
 import ContactThreadPanel from '../queue/ContactThreadPanel.vue';
+import SearchableSelect from '../../shared/SearchableSelect.vue';
+import type { SelectOption } from '../../shared/select-options';
 
 /**
  * The Output workspace (AR-001 screens 35–41). One opportunity/recipient scope
@@ -75,6 +77,7 @@ const scopeGeneration = ref(0);
 const consumedRecord = ref<string | null>(null);
 
 const selectedOpportunity = computed(() => props.opportunities.find((item) => item.id === opportunityId.value) ?? null);
+const opportunityOptions = computed<SelectOption[]>(() => props.opportunities.map(item => ({ value: item.id, label: item.title })));
 const participants = computed(() => selectedOpportunity.value?.participants ?? []);
 const recipient = computed(() => participants.value.find((item) => item.id === recipientId.value) ?? null);
 const boundTemplate = computed(() => templates.value.find((item) => item.id === draft.value.templateId) ?? null);
@@ -889,15 +892,15 @@ onBeforeUnmount(() => {
               class="ow-pill"
             >{{ selectedOpportunity.state }}</span>
           </div>
-          <label>Opportunity<select
-            :value="opportunityId"
+          <SearchableSelect
+            id="output-opportunity"
+            label="Opportunity"
+            placeholder="Filter opportunities"
+            :model-value="opportunityId"
+            :options="opportunityOptions"
             :disabled="busy || !props.opportunities.length"
-            @change="selectScope(($event.target as HTMLSelectElement).value)"
-          ><option
-            v-for="item in props.opportunities"
-            :key="item.id"
-            :value="item.id"
-          >{{ item.title }}</option></select></label>
+            @update:model-value="selectScope($event)"
+          />
           <label>Recipient<select
             :value="recipientId"
             :disabled="busy || !participants.length"
