@@ -411,14 +411,8 @@ async fn wait_state(port: u16, id: &str, states: &[&str]) -> Value {
 
 async fn wait_job(port: u16, id: &str, states: &[&str]) -> Value {
     for _ in 0..150 {
-        let (status, value) = request(
-            port,
-            "GET",
-            &format!("/api/v1/jobs/{id}"),
-            None,
-            "job-read",
-        )
-        .await;
+        let (status, value) =
+            request(port, "GET", &format!("/api/v1/jobs/{id}"), None, "job-read").await;
         assert_eq!(status, 200, "{value:?}");
         if states.contains(&value["status"].as_str().unwrap_or_default()) {
             return value;
@@ -494,9 +488,11 @@ async fn u05_agent_brief_waits_on_job_and_resumes_with_review() {
                 return final_answer("The brief proposal is ready for owner review.");
             }
             // After the brief job was started, answer with its job status.
-            if let Some(tool) = messages.iter().rev().find(|message| {
-                message["role"].as_str() == Some("tool")
-            }) {
+            if let Some(tool) = messages
+                .iter()
+                .rev()
+                .find(|message| message["role"].as_str() == Some("tool"))
+            {
                 let job_id = tool["content"]
                     .as_str()
                     .and_then(|text| serde_json::from_str::<Value>(text).ok())
@@ -542,14 +538,19 @@ async fn u05_agent_brief_waits_on_job_and_resumes_with_review() {
     // the job is running.
     let waiting = wait_state(port, &run_id, &["waiting_job"]).await;
     assert!(
-        waiting["wake_condition"].as_str().map(str::len).unwrap_or(0) > 0,
+        waiting["wake_condition"]
+            .as_str()
+            .map(str::len)
+            .unwrap_or(0)
+            > 0,
         "{waiting}"
     );
-    let lease: Option<String> = sqlx::query_scalar("SELECT lease_token FROM agent_run WHERE run_id=?")
-        .bind(&run_id)
-        .fetch_one(workspace.pool())
-        .await
-        .unwrap();
+    let lease: Option<String> =
+        sqlx::query_scalar("SELECT lease_token FROM agent_run WHERE run_id=?")
+            .bind(&run_id)
+            .fetch_one(workspace.pool())
+            .await
+            .unwrap();
     assert!(lease.is_none(), "waiting run must hold no lease");
     let job_id: String =
         sqlx::query_scalar("SELECT id FROM durable_job WHERE run_id=? ORDER BY created_at LIMIT 1")
@@ -557,19 +558,23 @@ async fn u05_agent_brief_waits_on_job_and_resumes_with_review() {
             .fetch_one(workspace.pool())
             .await
             .unwrap();
-    let job_epoch: String =
-        sqlx::query_scalar("SELECT epoch FROM durable_job WHERE id=?")
-            .bind(&job_id)
-            .fetch_one(workspace.pool())
-            .await
-            .unwrap();
-    let current_epoch: String = sqlx::query_scalar("SELECT epoch FROM workspace_meta WHERE singleton=1")
+    let job_epoch: String = sqlx::query_scalar("SELECT epoch FROM durable_job WHERE id=?")
+        .bind(&job_id)
         .fetch_one(workspace.pool())
         .await
         .unwrap();
+    let current_epoch: String =
+        sqlx::query_scalar("SELECT epoch FROM workspace_meta WHERE singleton=1")
+            .fetch_one(workspace.pool())
+            .await
+            .unwrap();
     assert_eq!(job_epoch, current_epoch);
     assert_eq!(
-        count(&workspace, "SELECT COUNT(*) FROM durable_job WHERE run_id IS NOT NULL").await,
+        count(
+            &workspace,
+            "SELECT COUNT(*) FROM durable_job WHERE run_id IS NOT NULL"
+        )
+        .await,
         1,
         "exactly one scoped job"
     );
@@ -590,7 +595,10 @@ async fn u05_agent_brief_waits_on_job_and_resumes_with_review() {
     );
 
     // The success surface exposes the typed review reference.
-    let review = status["review"].as_object().expect("review reference").clone();
+    let review = status["review"]
+        .as_object()
+        .expect("review reference")
+        .clone();
     assert_eq!(review["scope_kind"], "party");
     assert_eq!(review["scope_id"], party);
     assert_eq!(review["job_id"], job_id);
@@ -602,13 +610,12 @@ async fn u05_agent_brief_waits_on_job_and_resumes_with_review() {
         .await
         .unwrap();
     assert_eq!(items, 1);
-    let proposed: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM brief_item WHERE job_id=? AND status='proposed'",
-    )
-    .bind(&job_id)
-    .fetch_one(workspace.pool())
-    .await
-    .unwrap();
+    let proposed: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM brief_item WHERE job_id=? AND status='proposed'")
+            .bind(&job_id)
+            .fetch_one(workspace.pool())
+            .await
+            .unwrap();
     assert_eq!(proposed, 1);
 
     // The transcript exposes the typed job status with a review reference,
@@ -616,7 +623,10 @@ async fn u05_agent_brief_waits_on_job_and_resumes_with_review() {
     let text = tool_text(&transcript(port, &run_id).await);
     assert!(text.contains("job_id"), "{text}");
     assert!(text.contains("review_reference"), "{text}");
-    assert!(!text.contains("Onboarding is a term"), "raw proposal text leaked");
+    assert!(
+        !text.contains("Onboarding is a term"),
+        "raw proposal text leaked"
+    );
     assert!(!text.contains("purpose"), "job input leaked");
 
     // Owner review of the candidate goes through the existing Brief UI.
@@ -737,7 +747,11 @@ async fn u05_forbidden_scope_foreign_job_and_concealment() {
     let text = tool_text(&transcript(port, &run_id).await);
     assert!(text.contains("target_unavailable"), "{text}");
     assert_eq!(
-        count(&workspace, "SELECT COUNT(*) FROM durable_job WHERE run_id IS NOT NULL").await,
+        count(
+            &workspace,
+            "SELECT COUNT(*) FROM durable_job WHERE run_id IS NOT NULL"
+        )
+        .await,
         0,
         "no scoped job may be created for a foreign target"
     );
@@ -811,13 +825,19 @@ async fn u05_cancelled_run_fences_job_completion_no_candidate() {
     // because the initiating run is cancelled.
     provider.release().await;
     let job = wait_job(port, &job_id, &["failed", "cancelled", "succeeded"]).await;
-    assert_ne!(job["status"], "succeeded", "no candidate may publish: {job:?}");
+    assert_ne!(
+        job["status"], "succeeded",
+        "no candidate may publish: {job:?}"
+    );
     let items: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM brief_item WHERE job_id=?")
         .bind(&job_id)
         .fetch_one(workspace.pool())
         .await
         .unwrap();
-    assert_eq!(items, 0, "a cancelled run must leave zero reviewable proposals");
+    assert_eq!(
+        items, 0,
+        "a cancelled run must leave zero reviewable proposals"
+    );
     assert_eq!(
         count(&workspace, "SELECT COUNT(*) FROM brief_item").await,
         0
@@ -928,12 +948,14 @@ async fn u05_stale_lease_second_attempt_never_publishes() {
     // The worker crashed after claiming attempt 1: the job is requeued and
     // the stale attempt is marked interrupted. The paused provider response
     // for the old lease returns later and must never publish.
-    sqlx::query("UPDATE durable_job SET status='queued', updated_at=? WHERE id=? AND status='running'")
-        .bind(crate_now())
-        .bind(&job_id)
-        .execute(workspace.pool())
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE durable_job SET status='queued', updated_at=? WHERE id=? AND status='running'",
+    )
+    .bind(crate_now())
+    .bind(&job_id)
+    .execute(workspace.pool())
+    .await
+    .unwrap();
     sqlx::query("UPDATE job_attempt SET status='failed',error_code='INTERRUPTED',error_message='Worker stopped',finished_at=? WHERE job_id=? AND attempt_no=1 AND status='running'")
         .bind(crate_now())
         .bind(&job_id)
@@ -1002,7 +1024,9 @@ async fn u05_backup_scrubs_scoped_job_artifacts() {
         .await
         .unwrap();
 
-    let backup = parley_service::create_backup_for_test(&workspace).await.unwrap();
+    let backup = parley_service::create_backup_for_test(&workspace)
+        .await
+        .unwrap();
     let settings = workspace.maintenance_settings().await.unwrap();
     let backup_dir = PathBuf::from(settings.backup_directory).join(&backup);
     let snapshot = backup_dir.join("workspace.sqlite");
@@ -1083,5 +1107,8 @@ async fn u05_boot_rejects_invalid_job_registrations() {
         &json!({"type":"object","additionalProperties":false,"properties":{}}),
         None,
     );
-    assert!(bad.is_ok(), "type mismatches are accepted by the owned-shape gate");
+    assert!(
+        bad.is_ok(),
+        "type mismatches are accepted by the owned-shape gate"
+    );
 }

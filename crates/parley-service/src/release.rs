@@ -168,7 +168,7 @@ pub(crate) async fn dependency_vector(
     for fill in &material.slot_fills {
         if let Some(resource_id) = &fill.resource_id {
             let (revision, readiness): (i64, String) =
-                sqlx::query_as("SELECT revision,readiness FROM resource WHERE id=?")
+                sqlx::query_as("SELECT resource_content_revision,readiness FROM entity WHERE id=? AND retired_at IS NULL")
                     .bind(resource_id)
                     .fetch_optional(&mut **tx)
                     .await?
@@ -322,7 +322,7 @@ pub(crate) async fn evaluate_material(
                     continue;
                 };
                 let row: Option<(String, String, String, String)> = sqlx::query_as(
-                    "SELECT kind,readiness,title,body_json FROM resource WHERE id=?",
+                    "SELECT subtype,readiness,name,body_json FROM entity WHERE id=? AND retired_at IS NULL",
                 )
                 .bind(resource_id)
                 .fetch_optional(&mut **tx)
@@ -355,7 +355,7 @@ pub(crate) async fn evaluate_material(
                     continue;
                 };
                 let row: Option<(String, String, String)> =
-                    sqlx::query_as("SELECT kind,readiness,body_json FROM resource WHERE id=?")
+                    sqlx::query_as("SELECT subtype,readiness,body_json FROM entity WHERE id=? AND retired_at IS NULL")
                         .bind(resource_id)
                         .fetch_optional(&mut **tx)
                         .await?;
@@ -505,7 +505,7 @@ pub(crate) async fn evaluate_material(
     for fill in &material.slot_fills {
         if let Some(resource_id) = &fill.resource_id {
             let row: Option<(String, String)> = sqlx::query_as(
-                "SELECT kind,body_json FROM resource WHERE id=? AND readiness='ready'",
+                "SELECT subtype,body_json FROM entity WHERE id=? AND readiness='ready' AND retired_at IS NULL",
             )
             .bind(resource_id)
             .fetch_optional(&mut **tx)
@@ -637,7 +637,7 @@ pub(crate) async fn evaluate_material(
         .iter()
         .all(|(term, status)| status == "fluent" || !contains_glossary_term(&material.body, term));
     let gift_delivered_before = sqlx::query_scalar::<_, i64>(
-        "SELECT count(*) FROM send s JOIN send_part sp ON sp.send_id=s.id JOIN resource_use ru ON ru.material_id=sp.material_id AND ru.version_no=sp.version_no JOIN resource r ON r.id=ru.resource_id WHERE s.recipient_id=? AND r.kind='gift'",
+        "SELECT count(*) FROM send s JOIN send_part sp ON sp.send_id=s.id JOIN resource_use ru ON ru.material_id=sp.material_id AND ru.version_no=sp.version_no JOIN entity e ON e.id=ru.resource_id WHERE s.recipient_id=? AND e.subtype='gift'",
     )
     .bind(&material.recipient_id)
     .fetch_one(&mut **tx)

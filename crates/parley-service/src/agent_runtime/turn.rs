@@ -48,22 +48,18 @@ pub(crate) async fn claim(
     let Some((state, wake, deadline)) = row else {
         return Ok(None);
     };
-    if !matches!(
-        state.as_str(),
-        "queued" | "waiting_owner" | "waiting_job"
-    ) {
+    if !matches!(state.as_str(), "queued" | "waiting_owner" | "waiting_job") {
         return Ok(None);
     }
     if state == "waiting_job"
         && let Some(job) = wake.as_deref()
         && !job.is_empty()
     {
-        let status: Option<String> = sqlx::query_scalar(
-            "SELECT status FROM durable_job WHERE id=?",
-        )
-        .bind(job)
-        .fetch_optional(&mut **tx)
-        .await?;
+        let status: Option<String> =
+            sqlx::query_scalar("SELECT status FROM durable_job WHERE id=?")
+                .bind(job)
+                .fetch_optional(&mut **tx)
+                .await?;
         let terminal = matches!(
             status.as_deref(),
             Some("succeeded" | "invalid" | "failed" | "cancelled") | None

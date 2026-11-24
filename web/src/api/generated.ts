@@ -3391,6 +3391,7 @@ export interface components {
             title: string;
             readiness: string;
             revision: number;
+            content_revision: number;
             placement: components["schemas"]["PlacementView"] | null;
             counts: components["schemas"]["ResourceCounts"];
             gaps: string[];
@@ -3402,6 +3403,7 @@ export interface components {
             title: string;
             readiness: string;
             revision: number;
+            content_revision: number;
             legacy: boolean;
             counts: components["schemas"]["ResourceCounts"];
             gaps: string[];
@@ -3486,6 +3488,7 @@ export interface components {
             };
             readiness: string;
             revision: number;
+            content_revision: number;
             notes: {
                 markdown: string;
                 revision: number;

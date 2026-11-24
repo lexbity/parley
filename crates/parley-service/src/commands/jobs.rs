@@ -12,9 +12,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
 
+use super::Actor;
 use super::descriptor::{CommandDescriptor, PaletteSpec};
 use super::policy::{Effect, Permission, Surface};
-use super::Actor;
 use crate::application::brief::{BriefError, BriefInput, start as brief_start};
 
 pub(crate) const BRIEF_START_ID: &str = "brief.start";
@@ -152,12 +152,12 @@ pub(crate) async fn run(
 ) -> Result<super::RunOutcome, RunError> {
     let parsed: BriefStartWireArgs =
         serde_json::from_value(args.clone()).map_err(|_| RunError::InvalidArgs)?;
-    let (target_kind, target_id) = match (parsed.party_id.as_deref(), parsed.opportunity_id.as_deref())
-    {
-        (Some(id), None) => ("party", id.to_owned()),
-        (None, Some(id)) => ("opportunity", id.to_owned()),
-        _ => return Err(RunError::InvalidArgs),
-    };
+    let (target_kind, target_id) =
+        match (parsed.party_id.as_deref(), parsed.opportunity_id.as_deref()) {
+            (Some(id), None) => ("party", id.to_owned()),
+            (None, Some(id)) => ("opportunity", id.to_owned()),
+            _ => return Err(RunError::InvalidArgs),
+        };
     let outcome = brief_start(
         tx,
         &BriefInput {
@@ -181,10 +181,9 @@ pub(crate) async fn run(
 
 /// Serde/schema agreement for schema-valid samples.
 pub(crate) fn parse_wire_args(args: &Value) -> Result<(), String> {
-    let parsed: BriefStartWireArgs =
-        serde_json::from_value(args.clone()).map_err(|error| {
-            format!("serde rejected schema-valid args for {BRIEF_START_ID}: {error}")
-        })?;
+    let parsed: BriefStartWireArgs = serde_json::from_value(args.clone()).map_err(|error| {
+        format!("serde rejected schema-valid args for {BRIEF_START_ID}: {error}")
+    })?;
     let one = parsed.party_id.is_some() as u8 + parsed.opportunity_id.is_some() as u8;
     if one != 1 {
         return Err(format!(
@@ -241,7 +240,13 @@ pub(crate) fn validation_samples() -> (Vec<super::SampleArgs>, Vec<super::Sample
 }
 
 pub(crate) fn args_allowlist() -> &'static [&'static str] {
-    &["party_id", "opportunity_id", "expected_revision", "purpose", "job_id"]
+    &[
+        "party_id",
+        "opportunity_id",
+        "expected_revision",
+        "purpose",
+        "job_id",
+    ]
 }
 
 pub(crate) fn args_sensitive() -> &'static [&'static str] {

@@ -712,7 +712,8 @@ impl Workspace {
     }
 
     /// Idempotent first-launch resource write. Resource, revision, event and
-    /// receipt are committed under one SQLite writer reservation.
+    /// receipt are committed under one SQLite writer reservation. The legacy
+    /// `resource` table is gone; the entity row is the record (U06).
     pub async fn create_resource(
         &self,
         request: CreateResource,
@@ -759,8 +760,8 @@ impl Workspace {
         }
         let now = now_utc();
         let id = new_id(&canonical);
-        sqlx::query("INSERT INTO resource(id,kind,title,body_json,readiness,revision,created_at,updated_at) VALUES(?,?,?,?, 'draft',1,?,?)")
-            .bind(&id).bind(&request.kind).bind(&request.title).bind(&body).bind(&now).bind(&now).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO entity(id,kind,name,focus,notes_md,notes_rev,revision,created_at,updated_at,subtype,body_json,readiness,resource_content_revision,subtype_locked) VALUES(?,?,?,'',?,1,1,?,?,?,?,'draft',1,0)")
+            .bind(&id).bind("resource").bind(&request.title).bind("").bind(&now).bind(&now).bind(&request.kind).bind(&body).execute(&mut *tx).await?;
         sqlx::query("UPDATE workspace_meta SET revision=revision+1 WHERE singleton=1")
             .execute(&mut *tx)
             .await?;
@@ -785,7 +786,9 @@ impl Workspace {
 
     /// Conditional draft edit. The receipt is bound to the addressed record,
     /// the presented ETag and the typed body; a stale precondition fails
-    /// without consuming the key so the corrected command can reuse it.
+    /// without consuming the key so the corrected command can reuse it. The
+    /// entity row is the record; content edits advance the separate content
+    /// revision and flag affected material versions (U06).
     pub async fn update_resource(
         &self,
         idempotency_key: &str,
@@ -829,28 +832,37 @@ impl Workspace {
             tx.commit().await?;
             return Ok(record);
         }
-        let row = sqlx::query_as::<_, (String, String, String, String, i64)>(
-            "SELECT kind,title,body_json,readiness,revision FROM resource WHERE id=? AND readiness <> 'retired'",
+        let row = sqlx::query_as::<_, (String, String, i64, i64, i64)>(
+            "SELECT subtype,readiness,revision,resource_content_revision,subtype_locked FROM entity WHERE id=? AND subtype<>'' AND readiness <> 'retired' AND retired_at IS NULL",
         )
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some((kind, _title, _body_json, readiness, revision)) = row else {
+        let Some((kind, readiness, revision, content_revision, _subtype_locked)) = row else {
             return Err(WorkspaceError::NotFound);
         };
         if if_match != resource_etag(&self.epoch, id, revision) {
             return Err(WorkspaceError::StaleRevision);
         }
         let next_revision = revision + 1;
+        let next_content_revision = content_revision + 1;
         let now = now_utc();
-        sqlx::query("UPDATE resource SET title=?,body_json=?,revision=?,updated_at=? WHERE id=?")
+        sqlx::query("UPDATE entity SET name=?,body_json=?,revision=?,resource_content_revision=?,updated_at=? WHERE id=? AND revision=?")
             .bind(title)
             .bind(&body_json)
             .bind(next_revision)
+            .bind(next_content_revision)
             .bind(&now)
             .bind(id)
+            .bind(revision)
             .execute(&mut *tx)
             .await?;
+        if readiness != "ready" {
+            sqlx::query("UPDATE entity SET subtype_locked=1 WHERE id=?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
         sqlx::query("UPDATE workspace_meta SET revision=revision+1 WHERE singleton=1")
             .execute(&mut *tx)
             .await?;
@@ -867,6 +879,19 @@ impl Workspace {
             serde_json::to_string(&updated).map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
         sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?,'resource',?,?,'resource.updated','{}')")
             .bind(event_id).bind(&now).bind(id).bind(next_revision).execute(&mut *tx).await?;
+        let affected: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT DISTINCT d.material_id,d.version_no FROM version_dependency d \
+             WHERE d.kind='resource' AND d.source_id=? AND d.source_revision <> ?",
+        )
+        .bind(id)
+        .bind(next_content_revision.to_string())
+        .fetch_all(&mut *tx)
+        .await?;
+        for (material_id, version_no) in &affected {
+            let event_id = new_id(id);
+            sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?,'material',?,?,'material.release_recheck_required',?)")
+                .bind(event_id).bind(&now).bind(material_id).bind(version_no).bind(format!("{{\"resource_id\":{id:?},\"version_no\":{version_no}}}")).execute(&mut *tx).await?;
+        }
         let cursor: i64 = sqlx::query_scalar("SELECT last_insert_rowid()")
             .fetch_one(&mut *tx)
             .await?;
@@ -878,16 +903,16 @@ impl Workspace {
 
     /// Saved owner resources for directory reads, optionally narrowed to
     /// resource kinds. Ordered most recently updated first with a stable ID
-    /// tiebreaker.
+    /// tiebreaker. Reads the canonical entity rows (U06).
     pub async fn list_resources_filtered(
         &self,
         kinds: &[&str],
     ) -> Result<Vec<ResourceRecord>, WorkspaceError> {
         let mut builder = sqlx::QueryBuilder::new(
-            "SELECT id,kind,title,body_json,readiness,revision FROM resource WHERE readiness <> 'retired'",
+            "SELECT id,subtype,name,body_json,readiness,revision FROM entity WHERE subtype<>'' AND readiness <> 'retired' AND retired_at IS NULL",
         );
         if !kinds.is_empty() {
-            builder.push(" AND kind IN (");
+            builder.push(" AND subtype IN (");
             let mut separated = builder.separated(", ");
             for kind in kinds {
                 match *kind {
@@ -924,7 +949,7 @@ impl Workspace {
     }
 
     pub async fn get_resource(&self, id: &str) -> Result<Option<ResourceRecord>, WorkspaceError> {
-        let row = sqlx::query_as::<_, (String,String,String,String,String,i64)>("SELECT id,kind,title,body_json,readiness,revision FROM resource WHERE id=? AND readiness <> 'retired'")
+        let row = sqlx::query_as::<_, (String,String,String,String,String,i64)>("SELECT id,subtype,name,body_json,readiness,revision FROM entity WHERE id=? AND subtype<>'' AND readiness <> 'retired' AND retired_at IS NULL")
             .bind(id).fetch_optional(&self.pool).await?;
         row.map(|(id, kind, title, body, readiness, revision)| {
             Ok(ResourceRecord {
@@ -974,10 +999,10 @@ impl Workspace {
     }
 
     /// One directory entity by ID (person, organization, project or resource
-    /// kind entity). None when the ID is unknown or belongs to a resource.
+    /// kind entity). None when the ID is unknown.
     pub async fn get_entity(&self, id: &str) -> Result<Option<EntityRecord>, WorkspaceError> {
         let row = sqlx::query_as::<_, (String, String, String, String, i64)>(
-            "SELECT e.id,e.kind,coalesce(r.title,e.name),e.focus,e.revision FROM entity e LEFT JOIN resource r ON r.id=e.id WHERE e.id=?",
+            "SELECT id,kind,name,focus,revision FROM entity WHERE id=?",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -1048,11 +1073,16 @@ impl Workspace {
         if if_match != entity_etag(&self.epoch, id, revision) {
             return Err(WorkspaceError::StaleRevision);
         }
-        let resource: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM resource WHERE id=?)")
-            .bind(id)
-            .fetch_one(&mut *tx)
-            .await?;
+        let resource: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM entity WHERE id=? AND subtype<>'')")
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await?;
         if resource {
+            let title_changed = name
+                .as_deref()
+                .map(|provided| provided.trim() != current_name)
+                .unwrap_or(false);
             let next_name = match name {
                 Some(name) => {
                     let trimmed = name.trim();
@@ -1083,15 +1113,23 @@ impl Workspace {
                     "Resource title exceeds 240 characters.".into(),
                 ));
             }
-            sqlx::query("UPDATE resource SET title=?,revision=revision+1,updated_at=? WHERE id=? AND title<>?").bind(&next_name).bind(&now).bind(id).bind(&next_name).execute(&mut *tx).await?;
-            sqlx::query("UPDATE entity SET name=CASE WHEN EXISTS(SELECT 1 FROM resource r WHERE r.id=entity.id) THEN '' ELSE ? END,focus=?,revision=?,updated_at=? WHERE id=?")
-                .bind(&next_name)
-                .bind(&next_focus)
-                .bind(next_revision)
-                .bind(&now)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
+            let next_content_revision: i64 =
+                sqlx::query_scalar("SELECT resource_content_revision FROM entity WHERE id=?")
+                    .bind(id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            let next_content = next_content_revision + i64::from(title_changed);
+            sqlx::query(
+                "UPDATE entity SET name=?,focus=?,revision=?,resource_content_revision=?,updated_at=? WHERE id=?",
+            )
+            .bind(&next_name)
+            .bind(&next_focus)
+            .bind(next_revision)
+            .bind(next_content)
+            .bind(&now)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
             sqlx::query("UPDATE workspace_meta SET revision=revision+1 WHERE singleton=1")
                 .execute(&mut *tx)
                 .await?;
@@ -1106,6 +1144,20 @@ impl Workspace {
                 .map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
             sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?,'entity',?,?,'entity.updated','{}')")
                 .bind(new_id(id)).bind(&now).bind(id).bind(next_revision).execute(&mut *tx).await?;
+            if title_changed {
+                let affected: Vec<(String, i64)> = sqlx::query_as(
+                    "SELECT DISTINCT d.material_id,d.version_no FROM version_dependency d \
+                     WHERE d.kind='resource' AND d.source_id=? AND d.source_revision <> ?",
+                )
+                .bind(id)
+                .bind(next_content.to_string())
+                .fetch_all(&mut *tx)
+                .await?;
+                for (material_id, version_no) in &affected {
+                    sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?,'material',?,?,'material.release_recheck_required',?)")
+                        .bind(new_id(id)).bind(&now).bind(material_id).bind(version_no).bind(format!("{{\"resource_id\":{id:?},\"version_no\":{version_no}}}")).execute(&mut *tx).await?;
+                }
+            }
             let cursor: i64 = sqlx::query_scalar("SELECT last_insert_rowid()")
                 .fetch_one(&mut *tx)
                 .await?;
@@ -1335,8 +1387,8 @@ impl Workspace {
             })
             .collect();
         let paths=sqlx::query_as::<_,(String,String,String,String,String,String)>(
-            "WITH paths AS (SELECT r.id,r.title,r.kind,'edge' AS via,eg.id AS hop,eg.verb AS label FROM edge eg JOIN resource r ON r.id=CASE WHEN eg.from_id=? THEN eg.to_id ELSE eg.from_id END WHERE (eg.from_id=? OR eg.to_id=?) AND eg.state='active' AND r.readiness<>'retired'
-            UNION SELECT r.id,r.title,r.kind,'opportunity',o.id,o.title FROM opportunity_party op JOIN opportunity o ON o.id=op.opportunity_id JOIN material m ON m.opportunity_id=o.id JOIN resource_use ru ON ru.material_id=m.id AND ru.version_no=m.head_version JOIN resource r ON r.id=ru.resource_id WHERE op.party_id=? AND o.state='open' AND r.readiness<>'retired')
+            "WITH paths AS (SELECT e.id,e.name AS title,e.subtype AS kind,'edge' AS via,eg.id AS hop,eg.verb AS label FROM edge eg JOIN entity e ON e.id=CASE WHEN eg.from_id=? THEN eg.to_id ELSE eg.from_id END WHERE (eg.from_id=? OR eg.to_id=?) AND eg.state='active' AND e.subtype<>'' AND e.readiness<>'retired' AND e.retired_at IS NULL
+            UNION SELECT e.id,e.name,e.subtype,'opportunity',o.id,o.title FROM opportunity_party op JOIN opportunity o ON o.id=op.opportunity_id JOIN material m ON m.opportunity_id=o.id JOIN resource_use ru ON ru.material_id=m.id AND ru.version_no=m.head_version JOIN entity e ON e.id=ru.resource_id WHERE op.party_id=? AND o.state='open' AND e.subtype<>'' AND e.readiness<>'retired' AND e.retired_at IS NULL)
             SELECT * FROM paths WHERE id IN (SELECT id FROM paths GROUP BY id ORDER BY title COLLATE NOCASE,id LIMIT 60) ORDER BY title COLLATE NOCASE,id,via,hop")
             .bind(id).bind(id).bind(id).bind(id).fetch_all(&self.pool).await?;
         let mut associated_resources: Vec<DossierResource> = Vec::new();
@@ -1585,7 +1637,7 @@ impl Workspace {
     }
 
     pub async fn list_resources(&self) -> Result<Vec<ResourceRecord>, WorkspaceError> {
-        let rows=sqlx::query_as::<_,(String,String,String,String,String,i64)>("SELECT id,kind,title,body_json,readiness,revision FROM resource WHERE readiness <> 'retired' ORDER BY created_at,id").fetch_all(&self.pool).await?;
+        let rows=sqlx::query_as::<_,(String,String,String,String,String,i64)>("SELECT id,subtype,name,body_json,readiness,revision FROM entity WHERE subtype<>'' AND readiness <> 'retired' AND retired_at IS NULL ORDER BY created_at,id").fetch_all(&self.pool).await?;
         rows.into_iter()
             .map(|(id, kind, title, body, readiness, revision)| {
                 Ok(ResourceRecord {
@@ -3758,10 +3810,11 @@ mod tests {
             ids.push(task.await.unwrap().id);
         }
         assert!(ids.iter().all(|id| id == &ids[0]));
-        let resource_count: i64 = sqlx::query_scalar("SELECT count(*) FROM resource")
-            .fetch_one(workspace.pool())
-            .await
-            .unwrap();
+        let resource_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM entity WHERE subtype<>''")
+                .fetch_one(workspace.pool())
+                .await
+                .unwrap();
         let event_count: i64 =
             sqlx::query_scalar("SELECT count(*) FROM event WHERE event_type='resource.created'")
                 .fetch_one(workspace.pool())

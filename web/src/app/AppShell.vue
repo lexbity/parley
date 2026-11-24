@@ -149,6 +149,16 @@ const pickerOptions = computed(() => ({
   // The same authoritative directory the owner create form uses; the palette
   // never accepts a party ID typed by the user or supplied by an agent.
   party: parties.value.map((party) => ({ value: party.id, label: party.name })),
+  // Reviewed resource subtypes (U06): the palette only offers the closed set
+  // the boot-validated command schema accepts.
+  resource_subtype: [
+    { value: 'gift', label: 'Gift' },
+    { value: 'proof', label: 'Proof' },
+    { value: 'artifact', label: 'Artifact' },
+    { value: 'skill', label: 'Skill' },
+    { value: 'interest', label: 'Interest' },
+    { value: 'note', label: 'Note' },
+  ],
   // The task picker reads the indexed tasks of the selected opportunity. The
   // option value is the line digest; the typed span travels with the frozen
   // selection, never as user-typed text.

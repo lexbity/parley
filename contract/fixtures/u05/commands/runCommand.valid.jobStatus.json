@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/CommandRunSuccess","body":{"ok":true,"command_version":1,"audit_id":"aud_u05_job_status_01","original_audit_id":null,"replayed":false,"dry_run":false,"result":{"job_id":"job_u05_brief_01","progress":{"current":1,"total":3},"error":null,"review_reference":{"id":"brief_item_u05_01","kind":"brief"}}}}

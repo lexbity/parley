@@ -775,13 +775,24 @@ async fn retire_card(
         return Err(WorkspaceError::StaleRevision);
     }
     let now = now_utc();
-    sqlx::query(
-        "UPDATE resource SET readiness='retired',revision=revision+1,updated_at=? WHERE id=?",
+    let (subtype, content_revision): (String, i64) = sqlx::query_as(
+        "SELECT subtype,resource_content_revision FROM entity WHERE id=? AND retired_at IS NULL",
     )
-    .bind(&now)
     .bind(id)
-    .execute(&mut **tx)
-    .await?;
+    .fetch_optional(&mut **tx)
+    .await?
+    .unwrap_or_default();
+    if !subtype.is_empty() {
+        sqlx::query(
+            "UPDATE entity SET readiness='retired',resource_content_revision=?,updated_at=?,revision=? WHERE id=?",
+        )
+        .bind(content_revision + 1)
+        .bind(&now)
+        .bind(revision + 1)
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    }
     sqlx::query("UPDATE entity SET retired_at=?,updated_at=?,revision=? WHERE id=?")
         .bind(&now)
         .bind(&now)
@@ -793,6 +804,20 @@ async fn retire_card(
         sqlx::query("INSERT INTO party_policy(party_id,state) VALUES(?,'closed') ON CONFLICT(party_id) DO UPDATE SET state='closed',revision=revision+1").bind(id).execute(&mut **tx).await?;
     }
     emit_event(tx, id, "entity.retired").await?;
+    if !subtype.is_empty() {
+        let affected: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT DISTINCT d.material_id,d.version_no FROM version_dependency d \
+             WHERE d.kind='resource' AND d.source_id=? AND d.source_revision <> ?",
+        )
+        .bind(id)
+        .bind((content_revision + 1).to_string())
+        .fetch_all(&mut **tx)
+        .await?;
+        for (material_id, version_no) in &affected {
+            sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'material',?,?,'material.release_recheck_required',?)")
+                .bind(super::new_id(id)).bind(&now).bind(material_id).bind(version_no).bind(format!("{{\"resource_id\":{id:?},\"version_no\":{version_no}}}")).execute(&mut **tx).await?;
+        }
+    }
     sqlx::query("UPDATE workspace_meta SET revision=revision+1 WHERE singleton=1")
         .execute(&mut **tx)
         .await?;

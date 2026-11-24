@@ -91,7 +91,6 @@ const taskBytes = computed(() => new TextEncoder().encode(task.value).length);
 const canStart = computed(() => !stale.value && !busy.value && !!task.value.trim()
   && taskBytes.value <= MAX_TASK_BYTES && selectedTargets.value.length > 0
   && permissions.value.length > 0 && acknowledged.value);
-const hasActiveRuns = computed(() => runs.value.some((row) => ACTIVE_STATES.includes(row.state)));
 const visibleRuns = computed(() => statusFilter.value ? runs.value.filter((row) => row.state === statusFilter.value) : runs.value);
 function message(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback;

@@ -10,9 +10,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
 
+use super::Actor;
 use super::descriptor::{CommandDescriptor, PaletteSpec};
 use super::policy::{Effect, Permission, Surface};
-use super::Actor;
 use crate::application::job_status::status as job_status;
 use crate::application::opportunity_summary::summary as opportunity_summary;
 use crate::application::party_summary::summary as party_summary;
@@ -20,6 +20,7 @@ use crate::application::party_summary::summary as party_summary;
 pub(crate) const PARTY_SUMMARY_ID: &str = "party.get_summary";
 pub(crate) const OPPORTUNITY_SUMMARY_ID: &str = "opportunity.get_summary";
 pub(crate) const JOB_STATUS_ID: &str = "job.get_status";
+pub(crate) const RESOURCE_SUMMARY_ID: &str = "resource.get_summary";
 
 static PARTY_ARGS_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
     json!({
@@ -71,6 +72,28 @@ static OPPORTUNITY_RESULT_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
         }
     })
 });
+static RESOURCE_ARGS_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["resource_id"],
+        "properties": {"resource_id": {"type": "string", "minLength": 1, "maxLength": 200, "x-sensitive": true}}
+    })
+});
+static RESOURCE_RESULT_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "subtype", "title", "readiness", "content_revision"],
+        "properties": {
+            "id": {"type": "string"},
+            "subtype": {"type": "string"},
+            "title": {"type": "string"},
+            "readiness": {"type": "string"},
+            "content_revision": {"type": "integer", "minimum": 1}
+        }
+    })
+});
 
 pub(crate) fn descriptors() -> Vec<&'static CommandDescriptor> {
     static PARTY: LazyLock<CommandDescriptor> = LazyLock::new(|| CommandDescriptor {
@@ -113,7 +136,27 @@ pub(crate) fn descriptors() -> Vec<&'static CommandDescriptor> {
             prompts: &[],
         },
     });
-    vec![&PARTY, &OPPORTUNITY]
+    static RESOURCE: LazyLock<CommandDescriptor> = LazyLock::new(|| CommandDescriptor {
+        id: RESOURCE_SUMMARY_ID,
+        version: 1,
+        title: "Summarise a resource",
+        summary: "Return a resource's subtype, title, readiness and content revision",
+        description: "Returns only the resource subtype, title, readiness and content revision. It cannot read notes, attachments or private evidence and cannot change any record.",
+        keywords: &["resource", "summary"],
+        effect: Effect::Read,
+        requires_permission: Permission::ResourceRead,
+        surfaces: &[Surface::Agent],
+        agent_tier: Some(1),
+        args_schema: &RESOURCE_ARGS_SCHEMA,
+        result_schema: &RESOURCE_RESULT_SCHEMA,
+        supports_dry_run: false,
+        when: None,
+        palette: PaletteSpec {
+            context_fields: &[],
+            prompts: &[],
+        },
+    });
+    vec![&PARTY, &OPPORTUNITY, &RESOURCE]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +164,7 @@ pub(crate) enum ReadCommand {
     Party,
     Opportunity,
     JobStatus,
+    Resource,
 }
 
 impl ReadCommand {
@@ -129,6 +173,7 @@ impl ReadCommand {
             PARTY_SUMMARY_ID => Some(Self::Party),
             OPPORTUNITY_SUMMARY_ID => Some(Self::Opportunity),
             JOB_STATUS_ID => Some(Self::JobStatus),
+            RESOURCE_SUMMARY_ID => Some(Self::Resource),
             _ => None,
         }
     }
@@ -139,6 +184,7 @@ impl ReadCommand {
             Self::Party => &PARTY_ARGS_SCHEMA,
             Self::Opportunity => &OPPORTUNITY_ARGS_SCHEMA,
             Self::JobStatus => &JOB_STATUS_ARGS_SCHEMA,
+            Self::Resource => &RESOURCE_ARGS_SCHEMA,
         }
     }
 }
@@ -159,6 +205,12 @@ struct OpportunityArgs {
 #[serde(deny_unknown_fields)]
 struct JobArgs {
     job_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResourceArgs {
+    resource_id: String,
 }
 
 #[derive(Debug)]
@@ -203,6 +255,15 @@ pub(crate) async fn run(
                 .ok_or(RunError::NotFound)?;
             Ok(serde_json::to_value(result).map_err(|_| RunError::NotFound)?)
         }
+        ReadCommand::Resource => {
+            let parsed: ResourceArgs =
+                serde_json::from_value(args.clone()).map_err(|_| RunError::InvalidArgs)?;
+            let result = crate::application::resources::summary(tx, &parsed.resource_id)
+                .await
+                .map_err(|_| RunError::NotFound)?
+                .ok_or(RunError::NotFound)?;
+            Ok(serde_json::to_value(result).map_err(|_| RunError::NotFound)?)
+        }
     }
 }
 
@@ -212,6 +273,7 @@ pub(crate) fn parse_wire_args(command: ReadCommand, args: &Value) -> Result<(), 
         ReadCommand::Party => serde_json::from_value::<PartyArgs>(args.clone()).is_ok(),
         ReadCommand::Opportunity => serde_json::from_value::<OpportunityArgs>(args.clone()).is_ok(),
         ReadCommand::JobStatus => serde_json::from_value::<JobArgs>(args.clone()).is_ok(),
+        ReadCommand::Resource => serde_json::from_value::<ResourceArgs>(args.clone()).is_ok(),
     };
     if ok {
         Ok(())
@@ -228,15 +290,16 @@ fn command_id(command: ReadCommand) -> &'static str {
         ReadCommand::Party => PARTY_SUMMARY_ID,
         ReadCommand::Opportunity => OPPORTUNITY_SUMMARY_ID,
         ReadCommand::JobStatus => JOB_STATUS_ID,
+        ReadCommand::Resource => RESOURCE_SUMMARY_ID,
     }
 }
 
 pub(crate) fn args_allowlist() -> &'static [&'static str] {
-    &["party_id", "opportunity_id", "job_id"]
+    &["party_id", "opportunity_id", "job_id", "resource_id"]
 }
 
 pub(crate) fn args_sensitive() -> &'static [&'static str] {
-    &["party_id", "opportunity_id", "job_id"]
+    &["party_id", "opportunity_id", "job_id", "resource_id"]
 }
 
 pub(crate) fn validation_samples() -> (Vec<super::SampleArgs>, Vec<super::SampleArgs>) {
@@ -253,6 +316,10 @@ pub(crate) fn validation_samples() -> (Vec<super::SampleArgs>, Vec<super::Sample
             command: JOB_STATUS_ID.to_string(),
             args: json!({"job_id": "job_sample"}),
         },
+        super::SampleArgs {
+            command: RESOURCE_SUMMARY_ID.to_string(),
+            args: json!({"resource_id": "res_sample"}),
+        },
     ];
     let invalid = vec![
         super::SampleArgs {
@@ -266,6 +333,10 @@ pub(crate) fn validation_samples() -> (Vec<super::SampleArgs>, Vec<super::Sample
         super::SampleArgs {
             command: JOB_STATUS_ID.to_string(),
             args: json!({}),
+        },
+        super::SampleArgs {
+            command: RESOURCE_SUMMARY_ID.to_string(),
+            args: json!({"resource_id": "res_sample", "notes": "private"}),
         },
     ];
     (valid, invalid)

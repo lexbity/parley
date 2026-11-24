@@ -105,7 +105,6 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
   let epoch = 'ffeeddccbbaa99887766554433221100';
   const bootstraps = new Map<string, number>();
   const sessions = new Map<string, string>();
-  const resources = new Map<string, ResourceRecord>();
   const directory = new Map<string, EntityRecord>();
   const notesByEntity = new Map<string, { markdown: string; revision: number }>();
   const partyImportOrigins = new Map<string, { batch_id: string; source_record: number }>();
@@ -113,7 +112,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
   const entityAttachments = new Map<string, RecordData[]>();
   interface BoardColumn { id: string; title: string; position: number; revision: number; kind: 'owner' | 'system' }
   interface ResourcePlacementView { column_id: string; position: number; revision: number }
-  interface ResourceEntityRecord { id: string; kind: string; name: string; focus: string; revision: number; subtype: string; body: RecordData; readiness: string; notes: { markdown: string; revision: number }; etag: string }
+  interface ResourceEntityRecord { id: string; kind: string; name: string; focus: string; revision: number; contentRevision: number; subtype: string; body: RecordData; readiness: string; notes: { markdown: string; revision: number }; etag: string }
   const resourceColumns: BoardColumn[] = [
     { id: 'inbox', title: 'Inbox', position: 1024, revision: 1, kind: 'system' },
     { id: 'developing', title: 'Developing', position: 2048, revision: 1, kind: 'owner' },
@@ -181,8 +180,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
   let testClock = Date.UTC(2026, 0, 1);
   const now = () => new Date(testClock += 1000).toISOString();
   capacityLedger.set('quarter:project slots', { period: 'quarter', unit: 'project slots', total: 15, committed: 0, updated_at: now() });
-  const tag = (resource: ResourceRecord) => `"p1.${epoch}.resource.${resource.id}.${resource.revision}"`;
-  const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.entity.${entity.id}.${entity.revision}"`;
+const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.entity.${entity.id}.${entity.revision}"`;
   const notesTag = (entityId: string, revision: number) => `"p1.${epoch}.notes.${entityId}.${revision}"`;
   const pushEvent = (event: Omit<EventRecord, 'cursor' | 'occurred_at'>) => {
     events.push({ ...event, occurred_at: now(), cursor: String(events.length + 1) });
@@ -198,7 +196,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
   }
 
   function workspaceCollections(): Record<string, unknown> {
-    return { resources, directory, notesByEntity, partyImportOrigins, entityAttachments, sourceTextByOccurrence, graphEdges, graphPositions, sourceGroups, captures, extractorJobs, roleJobs, agentChats, briefItems, segments, segmentMembers, fluency, writingInterests, writingExchanges, templateFamilies, writingTemplates, voiceSamples, opportunities, outputs, uploads, materialRecords, releaseRecords, threads, sends, outcomes, resolutions, capacityLedger, coachQuestions, validatedPacks, boardLists, placements, notesByOpportunity, opportunityPhases, agentRuns, agentTurns, events };
+    return { directory, notesByEntity, partyImportOrigins, entityAttachments, sourceTextByOccurrence, graphEdges, graphPositions, sourceGroups, captures, extractorJobs, roleJobs, agentChats, briefItems, segments, segmentMembers, fluency, writingInterests, writingExchanges, templateFamilies, writingTemplates, voiceSamples, opportunities, outputs, uploads, materialRecords, releaseRecords, threads, sends, outcomes, resolutions, capacityLedger, coachQuestions, validatedPacks, boardLists, placements, notesByOpportunity, opportunityPhases, agentRuns, agentTurns, events };
   }
 
   function clearAgentTimers(runId?: string) {
@@ -388,6 +386,8 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
   const COMMAND_PARTY_RENAME = 'party.rename';
   const COMMAND_PARTY_FOCUS = 'party.set_focus';
   const COMMAND_TASK = 'opportunity.set_task_done';
+  const COMMAND_CREATE_DRAFT = 'resource.create_draft';
+  const COMMAND_MARK_READY = 'resource.mark_ready';
   const COMMAND_ARG_FIELDS: Record<string, string[]> = {
     [COMMAND_CREATE]: ['title', 'primary_party_id'],
     [COMMAND_SET]: ['opportunity_id', 'expected_phase_revision', 'expected_pack_id', 'expected_pack_version', 'stage_id'],
@@ -395,6 +395,8 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
     [COMMAND_PARTY_RENAME]: ['party_id', 'expected_card_revision', 'name'],
     [COMMAND_PARTY_FOCUS]: ['party_id', 'expected_card_revision', 'focus'],
     [COMMAND_TASK]: ['opportunity_id', 'expected_notes_revision', 'byte_start', 'byte_end', 'line_sha256', 'checked'],
+    [COMMAND_CREATE_DRAFT]: ['title', 'subtype'],
+    [COMMAND_MARK_READY]: ['resource_id', 'expected_content_revision'],
   };
   const commandDescriptors: RecordData[] = [
     {
@@ -463,6 +465,28 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
       result_schema: { type: 'object', additionalProperties: false },
       palette: { context_fields: ['route', 'selection.opportunity'], prompts: [{ field: 'line_sha256', picker: 'opportunity_task', title: 'Task' }] },
     },
+    {
+      id: COMMAND_CREATE_DRAFT, version: 1, title: 'Create resource draft',
+      summary: 'Create a new draft resource with a subtype',
+      description: 'Creates a draft resource row with the given title and subtype. Full editing continues in the Resources editor.',
+      keywords: ['resource', 'draft', 'create'], effect: 'write', requires_permission: 'resource.write',
+      surfaces: ['palette'], supports_dry_run: false,
+      when: 'route == "resources"',
+      args_schema: { type: 'object', additionalProperties: false, required: COMMAND_ARG_FIELDS[COMMAND_CREATE_DRAFT], properties: {} },
+      result_schema: { type: 'object', additionalProperties: false },
+      palette: { context_fields: ['route'], prompts: [{ field: 'title', picker: 'text', title: 'Title' }, { field: 'subtype', picker: 'resource_subtype', title: 'Subtype' }] },
+    },
+    {
+      id: COMMAND_MARK_READY, version: 1, title: 'Mark resource ready',
+      summary: 'Validate and ready a draft resource',
+      description: 'Validates the persisted typed fields of the selected resource and makes it ready when complete.',
+      keywords: ['resource', 'ready', 'validate'], effect: 'write', requires_permission: 'resource.write',
+      surfaces: ['palette'], supports_dry_run: false,
+      when: 'route == "resources" && selection.resource',
+      args_schema: { type: 'object', additionalProperties: false, required: COMMAND_ARG_FIELDS[COMMAND_MARK_READY], properties: {} },
+      result_schema: { type: 'object', additionalProperties: false },
+      palette: { context_fields: ['route', 'selection.resource'], prompts: [] },
+    },
   ];
   const commandManifestVersion = `sha256:${createHash('sha256').update(JSON.stringify(commandDescriptors)).digest('hex')}`;
   const commandReceipts = new Map<string, { digest: string; status: number; body: RecordData; audit_id: string }>();
@@ -503,7 +527,8 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
     if (!fields) return null;
     for (const field of fields) {
       const value = args[field];
-      if (field === 'expected_phase_revision' || field === 'expected_card_revision' || field === 'expected_notes_revision') {
+      if (field === 'expected_phase_revision' || field === 'expected_card_revision' || field === 'expected_notes_revision'
+        || field === 'expected_content_revision') {
         if (!Number.isSafeInteger(value) || Number(value) < 1) {
           return { path: `/${field}`, problem: 'expected a positive integer' };
         }
@@ -605,6 +630,81 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
       return {
         status: 200,
         body: { opportunity_id: opportunityId, notes_revision: current.revision, next_task, task_count, event_id: randomHex(), event_cursor: String(events.length) },
+      };
+    }
+    if (id === COMMAND_CREATE_DRAFT || id === COMMAND_MARK_READY) {
+      const SUBTYPES = ['gift', 'proof', 'artifact', 'skill', 'interest', 'note'];
+      const requiredFields: Record<string, string[]> = {
+        gift: ['what', 'format', 'delivery', 'cost_to_me'],
+        proof: ['what_i_did', 'for_whom', 'problem', 'result_unit', 'period', 'my_role', 'permission_to_name', 'result_value'],
+        artifact: ['title', 'location', 'what_it_shows', 'public'],
+      };
+      if (id === COMMAND_CREATE_DRAFT) {
+        const title = String(args.title ?? '').trim();
+        const subtype = String(args.subtype ?? '');
+        if (!title || title.length > 240 || !SUBTYPES.includes(subtype)) {
+          return { status: 422, body: { code: 'invalid_args', message: 'Title or subtype is invalid', details: [{ path: '/subtype', problem: 'unknown_subtype' }] } };
+        }
+        const resourceId = randomHex();
+        const entity: ResourceEntityRecord = {
+          id: resourceId, kind: 'resource', name: title, focus: '', revision: 1, contentRevision: 1,
+          subtype, body: {}, readiness: 'draft', notes: { markdown: '', revision: 1 }, etag: '',
+        };
+        entity.etag = entityTag(entity);
+        entityResources.set(resourceId, entity);
+        pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: resourceId, revision: 1, event_type: 'resource.created', payload: { subtype } });
+        return {
+          status: 200,
+          body: {
+            id: resourceId, title, subtype, readiness: 'draft', revision: 1, content_revision: 1,
+            event_id: randomHex(), event_cursor: events.length,
+          },
+        };
+      }
+      const resourceId = String(args.resource_id);
+      const entity = entityResources.get(resourceId);
+      if (!entity || entity.readiness === 'retired') {
+        return { status: 404, body: { code: 'target_unavailable', message: 'Target record is not available', details: [] } };
+      }
+      if (Number(args.expected_content_revision) !== entity.contentRevision) {
+        return { status: 409, body: { code: 'version_mismatch', message: 'Expected content revision is stale; reload and create a new intent', details: [] } };
+      }
+      if (entity.readiness === 'ready') {
+        return {
+          status: 200,
+          body: {
+            id: resourceId, title: entity.name, subtype: entity.subtype, readiness: 'ready',
+            revision: entity.revision, content_revision: entity.contentRevision, event_id: null, event_cursor: null,
+          },
+        };
+      }
+      const body = entity.body as RecordData;
+      const text = (key: string) => typeof body[key] === 'string' ? String(body[key]).trim() : '';
+      const missing: string[] = [];
+      for (const key of requiredFields[entity.subtype] ?? []) {
+        if (!text(key) && body[key] !== true) missing.push(key);
+      }
+      if (missing.length) {
+        return {
+          status: 422,
+          body: {
+            code: 'invalid_args', message: `resource is missing required fields: ${missing.join(', ')}`,
+            details: missing.map((field) => ({ path: `/${field}`, problem: 'missing_field' })),
+          },
+        };
+      }
+      entity.readiness = 'ready';
+      entity.revision += 1;
+      entity.contentRevision += 1;
+      entity.etag = entityTag(entity);
+      pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: resourceId, revision: entity.revision, event_type: 'resource.readied', payload: { subtype: entity.subtype } });
+      return {
+        status: 200,
+        body: {
+          id: resourceId, title: entity.name, subtype: entity.subtype, readiness: 'ready',
+          revision: entity.revision, content_revision: entity.contentRevision,
+          event_id: randomHex(), event_cursor: events.length,
+        },
       };
     }
     if (id === COMMAND_CREATE) {
@@ -805,15 +905,12 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
     return JSON.parse(Buffer.concat(chunks).toString('utf8')) as RecordData;
   }
 
-  function syncResourceCard(resource: ResourceRecord) {
-    const existing = entityResources.get(resource.id);
-    const card: ResourceEntityRecord = {
-      id: resource.id, kind: resource.kind === 'artifact' ? 'artifact' : 'resource', focus: '',
-      name: resource.title, subtype: resource.kind, body: resource.body, readiness: resource.readiness,
-      revision: resource.revision, notes: existing?.notes ?? { markdown: '', revision: 1 }, etag: '',
+  function resourceLegacyShape(res: ResourceEntityRecord): ResourceRecord {
+    return {
+      id: String(res.id), kind: res.subtype, title: String(res.name), body: res.body,
+      readiness: res.readiness, revision: Number(res.revision), etag: entityTag(res),
+      updated_at: now(),
     };
-    card.etag = entityTag(card);
-    entityResources.set(card.id, card);
   }
 
   function findEntity(id: string): RecordData | undefined {
@@ -946,7 +1043,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
       if (!title || !['gift', 'proof', 'artifact', 'skill', 'interest', 'note'].includes(subtype)) return 'invalid';
       const id = randomHex();
       const child: ResourceEntityRecord = {
-        id, kind: 'resource', name: title, focus: '', revision: 1, subtype,
+        id, kind: 'resource', name: title, focus: '', revision: 1, contentRevision: 1, subtype,
         body: (create.body ?? {}) as RecordData, readiness: 'draft',
         notes: { markdown: String(create.notes_md ?? ''), revision: 1 }, etag: '',
       };
@@ -1050,6 +1147,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
         if (routeMatch && context.route !== routeMatch[1]) return false;
         if (when.includes('selection.opportunity') && context['selection.opportunity'] !== true) return false;
         if (when.includes('selection.party') && context['selection.party'] !== true) return false;
+        if (when.includes('selection.resource') && context['selection.resource'] !== true) return false;
         return true;
       });
       return json(response, 200, {
@@ -1297,7 +1395,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
     const fileRoute = /^\/api\/v1\/entities\/([^/]+)\/attachments(?:\/([^/]+)(\/content)?)?$/.exec(url.pathname);
     if (fileRoute) {
       const [,ownerId,ref,content] = fileRoute;
-      if (!directory.has(ownerId!) && !resources.has(ownerId!)) return fail(response, 404, 'NOT_FOUND', 'Card unavailable.');
+      if (!directory.has(ownerId!) && !entityResources.has(ownerId!)) return fail(response, 404, 'NOT_FOUND', 'Card unavailable.');
       const files = entityAttachments.get(ownerId!) ?? [];
       const file = files.find(f => f.id === ref);
       if (content && request.method === 'GET') {
@@ -1398,7 +1496,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
         for (const value of Object.values(workspaceCollections())) {
           if (value instanceof Map) value.clear(); else if (Array.isArray(value)) value.splice(0, value.length);
         }
-        resources.clear(); directory.clear(); opportunities.clear(); sends.clear(); threads.clear(); outcomes.clear(); resolutions.clear(); adminBackups.splice(0, adminBackups.length);
+        directory.clear(); opportunities.clear(); sends.clear(); threads.clear(); outcomes.clear(); resolutions.clear(); adminBackups.splice(0, adminBackups.length);
         partySuppression.clear(); receipts.clear(); adminPreviews.clear(); adminJobs.clear();
         provider = { endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en' };
         Object.assign(questionBank, { version_id: 'question-bank-v1', content: { version: 1, questions: { proof: [{ id: 'result', text: 'What changed, and how did you measure the result?' }], gift: [{ id: 'offer', text: 'What useful thing could you offer?' }], artifact: [{ id: 'artifact', text: 'What have you made?' }] } } });
@@ -1573,7 +1671,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
           if (!title || !input.fields || typeof input.fields !== 'object') return fail(response, 422, 'CANDIDATE_INVALID', 'Enter a title and typed fields');
           if (input.column_id && !applyPlacement(id, { column_id: input.column_id })) return fail(response, 422, 'INVALID_REQUEST', 'Choose a column on the resource board');
           const card: ResourceEntityRecord = { id, kind: 'resource', name: title, subtype: String(candidate.asset_kind), focus: '',
-            body: input.fields as RecordData, revision: 1, readiness: 'draft', notes: { markdown: '', revision: 1 }, etag: '' };
+            body: input.fields as RecordData, revision: 1, contentRevision: 1, readiness: 'draft', notes: { markdown: '', revision: 1 }, etag: '' };
           card.etag = entityTag(card);
           entityResources.set(id, card);
           candidate.state = 'saved';
@@ -1739,7 +1837,10 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
       }
       const items: RecordData[] = [];
       if (resourceKinds.length || kinds.length === 0) {
-        items.push(...[...resources.values()].sort((a, b) => b.updated_at.localeCompare(a.updated_at) || a.id.localeCompare(b.id)));
+        items.push(...[...entityResources.values()]
+          .filter((resource) => resource.readiness !== 'retired' && ['gift', 'proof', 'artifact'].includes(resource.subtype))
+          .sort((a, b) => String(b.revision).localeCompare(String(a.revision)) || String(a.id).localeCompare(String(b.id)))
+          .map(resourceLegacyShape));
       }
       if (graphKinds.length || kinds.length === 0) {
         items.push(...[...directory.values()].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)).map((entity) => ({ ...entity, etag: entityTag(entity) })));
@@ -1790,27 +1891,30 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
         || !validBody) {
         return fail(response, 422, 'RESOURCE_INVALID', 'Resource type or name is invalid');
       }
-      const resource: ResourceRecord = {
+      const resource: ResourceEntityRecord = {
         id: randomHex(),
-        kind: String(input.kind),
-        title: input.title,
+        kind: 'resource',
+        name: String(input.title),
+        focus: '',
+        revision: 1,
+        contentRevision: 1,
+        subtype: String(input.kind),
         body: input.body as RecordData,
         readiness: 'draft',
-        revision: 1,
+        notes: { markdown: '', revision: 1 },
         etag: '',
-        updated_at: now(),
       };
-      resource.etag = tag(resource);
-      resources.set(resource.id, resource);
-      syncResourceCard(resource);
-      pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: resource.id, revision: 1, event_type: 'resource.created', payload: { kind: resource.kind } });
-      receipts.set(key, { digest, result: resource });
-      return json(response, 201, { data: resource });
+      resource.etag = entityTag(resource);
+      entityResources.set(resource.id, resource);
+      pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: resource.id, revision: 1, event_type: 'resource.created', payload: { kind: resource.subtype } });
+      const record = resourceLegacyShape(resource);
+      receipts.set(key, { digest, result: record });
+      return json(response, 201, { data: record });
     }
     const entityMatch = /^\/api\/v1\/entities\/([a-f0-9]+)$/.exec(url.pathname);
     if (entityMatch && request.method === 'GET') {
-      const resource = resources.get(entityMatch[1]!);
-      if (resource) return json(response, 200, { data: resource });
+      const resource = entityResources.get(entityMatch[1]!);
+      if (resource && resource.readiness !== 'retired') return json(response, 200, { data: resourceLegacyShape(resource) });
       const entity = directory.get(entityMatch[1]!);
       if (entity) return json(response, 200, { data: { ...entity, etag: entityTag(entity) } });
       const boardEntity = entityResources.get(entityMatch[1]!);
@@ -1837,22 +1941,22 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
           ? json(response, 200, { data: receipt.result })
           : fail(response, 409, 'KEY_REUSED', 'Idempotency key was used for a different command');
       }
-      const resource = resources.get(entityMatch[1]!);
-      if (resource) {
-        if (ifMatch !== resource.etag) return fail(response, 412, 'STALE_REVISION', 'Resource changed in another session');
-        const updated: ResourceRecord = {
+      const resource = entityResources.get(entityMatch[1]!);
+      if (resource && resource.readiness !== 'retired') {
+        if (ifMatch !== entityTag(resource)) return fail(response, 412, 'STALE_REVISION', 'Resource changed in another session');
+        const updated: ResourceEntityRecord = {
           ...resource,
-          title: String(input.title),
+          name: String(input.title),
           body: input.body as RecordData,
           revision: resource.revision + 1,
-          updated_at: now(),
+          contentRevision: resource.contentRevision + 1,
         };
-        updated.etag = tag(updated);
-        resources.set(updated.id, updated);
-        syncResourceCard(updated);
+        updated.etag = entityTag(updated);
+        entityResources.set(updated.id, updated);
         pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: updated.id, revision: updated.revision, event_type: 'resource.updated', payload: {} });
-        receipts.set(key, { digest, result: updated });
-        return json(response, 200, { data: updated });
+        const record = resourceLegacyShape(updated);
+        receipts.set(key, { digest, result: record });
+        return json(response, 200, { data: record });
       }
       const entity = directory.get(entityMatch[1]!);
       if (!entity) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
@@ -2022,7 +2126,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
         if (!res || res.readiness === 'retired') continue;
         placed.push({
           resource_id: resourceId, subtype: String(res.subtype), title: String(res.name),
-          readiness: String(res.readiness), revision: Number(res.revision), placement, counts: resourceCountsFor(resourceId),
+          readiness: String(res.readiness), revision: Number(res.revision), content_revision: Number(res.contentRevision), placement, counts: resourceCountsFor(resourceId),
           gaps: resourceGapsFor(resourceId), etag: entityTag(res),
         });
       }
@@ -2034,7 +2138,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
       if (includeOff) {
         for (const [resourceId, res] of entityResources) {
           if (resourcePlacements.has(resourceId) || res.readiness === 'retired') continue;
-          off_board.push({ resource_id: resourceId, subtype: String(res.subtype), title: String(res.name), readiness: String(res.readiness), revision: Number(res.revision), legacy: resources.has(resourceId), counts: resourceCountsFor(resourceId), gaps: resourceGapsFor(resourceId), etag: entityTag(res) });
+          off_board.push({ resource_id: resourceId, subtype: String(res.subtype), title: String(res.name), readiness: String(res.readiness), revision: Number(res.revision), content_revision: Number(res.contentRevision), legacy: false, counts: resourceCountsFor(resourceId), gaps: resourceGapsFor(resourceId), etag: entityTag(res) });
         }
           }
       return json(response, 200, { columns: resourceColumns, cards: page, off_board, next_cursor, event_cursor: events.length });
@@ -2091,7 +2195,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
       const entity = entityResources.get(resourceCardRead[1]!);
       if (!entity) return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
       if (entity.readiness === 'retired') return fail(response, 404, 'RESOURCE_RETIRED', 'This resource was retired');
-      return json(response, 200, { data: { ...entity, title: entity.name } });
+      return json(response, 200, { data: { ...entity, title: entity.name, content_revision: Number(entity.contentRevision) } });
     }
     const resourceDeliveries = /^\/api\/v1\/resource-cards\/([^/]+)\/deliveries$/.exec(url.pathname);
     if (resourceDeliveries && request.method === 'GET') {
@@ -2109,9 +2213,8 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
       if (!entity || entity.readiness === 'retired') return fail(response, 404, 'NOT_FOUND', 'Resource does not exist');
       entity.readiness = 'retired';
       entity.revision = Number(entity.revision) + 1;
+      entity.contentRevision = Number(entity.contentRevision) + 1;
       entity.etag = entityTag(entity);
-      const existing = resources.get(String(entity.id));
-      if (existing) { existing.readiness = 'retired'; existing.revision += 1; existing.etag = tag(existing); }
       applyPlacement(String(entity.id), { column_id: null });
       pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: entity.id as string, revision: Number(entity.revision), event_type: 'resource.retired', payload: {} });
       const result = { entity: { id: entity.id, kind: 'resource', readiness: 'retired', revision: Number(entity.revision) }, affected_versions: [] };
@@ -2166,7 +2269,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
           const subtype = String(create.subtype ?? '');
           if (!title || title.length > 240 || !['gift', 'proof', 'artifact', 'skill', 'interest', 'note'].includes(subtype)) return fail(response, 422, 'INVALID_REQUEST', 'Card title or subtype is invalid');
           const id = randomHex();
-          entity = { id, kind: 'resource', name: title, focus: '', revision: 1, subtype, body: (create.body ?? {}) as RecordData, readiness: 'draft', notes: { markdown: String(create.notes_md ?? ''), revision: 1 }, etag: '' };
+          entity = { id, kind: 'resource', name: title, focus: '', revision: 1, contentRevision: 1, subtype, body: (create.body ?? {}) as RecordData, readiness: 'draft', notes: { markdown: String(create.notes_md ?? ''), revision: 1 }, etag: '' };
           entity.etag = entityTag(entity);
           entityResources.set(id, entity);
           pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: id, revision: 1, event_type: 'resource.created', payload: { subtype } });
@@ -2197,7 +2300,12 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
           if (typeof edit.subtype === 'string') current.subtype = edit.subtype;
           if (edit.body && typeof edit.body === 'object') current.body = edit.body as RecordData;
           if (typeof edit.notes_md === 'string') current.notes = { markdown: edit.notes_md, revision: Number(current.notes?.revision ?? 1) + 1 };
-          if (changesContent) current.revision = Number(current.revision) + 1;
+          if (changesContent) {
+            current.revision = Number(current.revision) + 1;
+            if (typeof edit.title === 'string' || typeof edit.subtype === 'string' || (edit.body && typeof edit.body === 'object')) {
+              current.contentRevision = Number(current.contentRevision) + 1;
+            }
+          }
           current.etag = entityTag(current);
           for (const uploadId of (edit.staged_uploads ?? []) as string[]) {
             if (!bindUploadTo(String(current.id), uploadId)) return fail(response, 422, 'INVALID_REQUEST', 'Staged upload does not exist or is already bound');
@@ -2216,14 +2324,7 @@ export function createMockApi({ pauseExtractor = false } = {}): MockApi {
         } else {
           return fail(response, 422, 'INVALID_REQUEST', 'A commit must create or edit a card');
         }
-        const legacy = resources.get(entity.id);
-        if (legacy && (legacy.title !== entity.name || JSON.stringify(legacy.body) !== JSON.stringify(entity.body))) {
-          legacy.title = entity.name;
-          legacy.body = entity.body;
-          legacy.revision += 1;
-          legacy.etag = tag(legacy);
-        }
-        const result = { entity: { ...entity, title: entity.name }, placement: resourcePlacements.get(String(entity.id)) ?? null, created_related: relatedInfo.edge_id ? { edge_id: relatedInfo.edge_id, to_id: relatedInfo.to_id } : null, affected_versions: [], event_cursor: events.length };
+        const result = { entity: { ...entity, title: entity.name, content_revision: Number(entity.contentRevision) }, placement: resourcePlacements.get(String(entity.id)) ?? null, created_related: relatedInfo.edge_id ? { edge_id: relatedInfo.edge_id, to_id: relatedInfo.to_id } : null, affected_versions: [], event_cursor: events.length };
         receipts.set(key, { digest, result, status });
         committed = true;
         return json(response, status, result);

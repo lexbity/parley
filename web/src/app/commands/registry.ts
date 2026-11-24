@@ -324,8 +324,7 @@ const TASK_DONE_ID = 'opportunity.set_task_done';
  * notes revision and the chosen task (by its unique byte offset); the typed
  * span and line digest come from the authoritative task picker. The command
  * marks the task done.
- */
-export function queueTaskAction(input: TaskActionInput): UiCommand {
+ */export function queueTaskAction(input: TaskActionInput): UiCommand {
   let intent: { fingerprint: string; key: string } | null = null;
   return {
     id: 'ui.queue.set_task_done',
@@ -360,6 +359,46 @@ export function queueTaskAction(input: TaskActionInput): UiCommand {
       if (intent?.fingerprint !== fingerprint) intent = { fingerprint, key: newOperationKey() };
       const result = await input.invoke(TASK_DONE_ID, args, intent.key);
       await input.onCommitted(result, TASK_DONE_ID);
+    },
+  };
+}
+
+export interface ResourceMarkReadyActionInput {
+  resourceId: string;
+  contentRevision: number;
+  intentFingerprint: string;
+  invoke: (id: string, args: CommandArgs, key: string) => Promise<CommandSuccess>;
+  onCommitted: (result: CommandSuccess, commandId: string) => void | Promise<void>;
+}
+
+const MARK_READY_ID = 'resource.mark_ready';
+
+/**
+ * Scoped Resources action (U06). The palette freezes the selected resource
+ * and its content revision together with a fresh operation key; the typed
+ * readiness command validates the persisted fields and reports bounded
+ * missing fields without an effect when the draft is incomplete.
+ */
+export function resourceMarkReadyAction(input: ResourceMarkReadyActionInput): UiCommand {
+  let intent: { fingerprint: string; key: string } | null = null;
+  return {
+    id: 'ui.resources.mark_ready',
+    title: 'Mark resource ready',
+    summary: 'Validate and ready the selected resource',
+    keywords: ['resource', 'ready', 'validate'],
+    effect: 'read',
+    replaces: MARK_READY_ID,
+    confirmation: 'Validate the selected resource and mark it ready?',
+    when: (ctx) => ctx.context.route === 'resources' && ctx.context['selection.resource'] === true,
+    run: async () => {
+      const args: CommandArgs = {
+        resource_id: input.resourceId,
+        expected_content_revision: input.contentRevision,
+      };
+      const fingerprint = JSON.stringify([input.intentFingerprint, MARK_READY_ID, args]);
+      if (intent?.fingerprint !== fingerprint) intent = { fingerprint, key: newOperationKey() };
+      const result = await input.invoke(MARK_READY_ID, args, intent.key);
+      await input.onCommitted(result, MARK_READY_ID);
     },
   };
 }

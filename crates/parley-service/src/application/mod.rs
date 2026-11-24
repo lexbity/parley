@@ -13,4 +13,5 @@ pub(crate) mod opportunity_task;
 pub(crate) mod party_edit;
 pub(crate) mod party_summary;
 pub(crate) mod phase;
+pub(crate) mod resources;
 pub(crate) mod writer;

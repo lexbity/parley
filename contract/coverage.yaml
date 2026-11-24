@@ -1828,3 +1828,131 @@ slices:
       owner_role: owner
       package_target: rust
       evidence_path: evidence/u04.md
+  u05:
+    - requirement: UCR-FR-9
+      operationId: runCommand
+      test_id: u05_agent_brief_waits_on_job_and_resumes_with_review
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u05.md
+    - requirement: UCR-FR-3
+      operationId: runCommand
+      test_id: u05_forbidden_scope_foreign_job_and_concealment
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u05.md
+    - requirement: UCR-FR-5
+      operationId: runCommand
+      test_id: u05_cancelled_run_fences_job_completion_no_candidate
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u05.md
+    - requirement: UCR-FR-9
+      operationId: runCommand
+      test_id: u05_lost_wake_is_recovered_by_the_durable_queue_poll
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u05.md
+    - requirement: UCR-FR-9
+      operationId: runCommand
+      test_id: u05_stale_lease_second_attempt_never_publishes
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u05.md
+    - requirement: UCR-FR-10
+      operationId: runCommand
+      test_id: u05_backup_scrubs_scoped_job_artifacts
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u05.md
+    - requirement: UCR-FR-4
+      operationId: runCommand
+      test_id: u05_boot_rejects_invalid_job_registrations
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u05.md
+    - requirement: UCR-FR-7
+      operationId: runCommand
+      test_id: u05_delegated_brief_reports_waiting_and_opens_review
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u05.md
+    - requirement: UCR-FR-9
+      operationId: runCommand
+      test_id: u05_hung_provider_leaves_queue_and_brief_usable
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u05.md
+  u06:
+    - requirement: UCR-FR-11
+      operationId: runCommand
+      test_id: u06_migration_preserves_ids_content_revisions_and_deliveries
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u06.md
+    - requirement: UCR-FR-11
+      operationId: runCommand
+      test_id: u06_preflight_rejects_divergent_mirrors
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u06.md
+    - requirement: UCR-FR-2
+      operationId: runCommand
+      test_id: u06_notes_and_placement_keep_content_proof_intact
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u06.md
+    - requirement: UCR-FR-2
+      operationId: runCommand
+      test_id: u06_retirement_bumps_content_revision_and_flags_dependents
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u06.md
+    - requirement: UCR-FR-5
+      operationId: runCommand
+      test_id: u06_erase_refused_while_materials_reference_the_entity
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u06.md
+    - requirement: UCR-FR-4
+      operationId: runCommand
+      test_id: u06_commands_create_draft_mark_ready_and_replay
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u06.md
+    - requirement: UCR-FR-3
+      operationId: runCommand
+      test_id: u06_agent_read_grant_scopes_resource_summary
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u06.md
+    - requirement: UCR-FR-7
+      operationId: runCommand
+      test_id: u06_palette_creates_draft_and_marks_it_ready
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u06.md
+    - requirement: UCR-FR-6
+      operationId: runCommand
+      test_id: u06_null_resource_commands_are_route_and_selection_scoped
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/u06.md

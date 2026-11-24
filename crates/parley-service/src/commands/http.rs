@@ -21,15 +21,16 @@ use serde_json::{Value, json};
 use sqlx::{Connection, Sqlite};
 
 use super::descriptor::CommandDescriptor;
+use super::jobs::{self, RunError as JobRunError, run as run_jobs};
 use super::ledger::{
     AdmitError, Mode, PolicyResult, Timing, admit_attempt, finalize_attempt, key_digest,
     lookup_receipt,
 };
-use super::jobs::{self, RunError as JobRunError, run as run_jobs};
 use super::opportunity::{self, RunError as CreateRunError};
 use super::party::{PartyCommand, RunError as PartyRunError, run as run_party};
 use super::phase::{PhaseCommand, RunError as PhaseRunError, run as run_phase};
 use super::policy::Effect;
+use super::resource::{ResourceCommand, RunError as ResourceRunError};
 use super::task::{self, RunError as TaskRunError, run as run_task};
 use super::{Actor, ActorKind, Registry, audit_args, validator_for};
 use crate::application::brief::BriefError;
@@ -67,6 +68,7 @@ enum Execution {
     Party(PartyCommand),
     Task,
     Brief,
+    Resource(ResourceCommand),
 }
 
 enum OperationError {
@@ -75,6 +77,7 @@ enum OperationError {
     Party(PartyRunError),
     Task(TaskRunError),
     Jobs(JobRunError),
+    Resource(ResourceRunError),
 }
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -1350,6 +1353,8 @@ async fn pipeline(
         Execution::Task
     } else if command_id == jobs::BRIEF_START_ID {
         Execution::Brief
+    } else if let Some(command) = ResourceCommand::for_id(command_id) {
+        Execution::Resource(command)
     } else {
         finalize_attempt(
             tx,
@@ -1413,6 +1418,9 @@ async fn pipeline(
         Execution::Brief => run_jobs(tx, args, key_digest, actor)
             .await
             .map_err(OperationError::Jobs),
+        Execution::Resource(command) => super::resource::run(tx, command, args, key_digest)
+            .await
+            .map_err(OperationError::Resource),
     };
     // A storage failure is not a domain conflict: abandon the transaction and
     // let admission record the terminal audit outcome with no effect.
@@ -1641,6 +1649,75 @@ async fn pipeline(
                 OperationError::Jobs(JobRunError::Brief(BriefError::Database)) => {
                     return Err(crate::application::writer::Failure::Unavailable);
                 }
+                OperationError::Resource(ResourceRunError::InvalidArgs) => (
+                    422,
+                    "invalid_args",
+                    "Arguments do not match the command rules".to_string(),
+                    vec![json!({"path": "", "problem": "invalid_args"})],
+                ),
+                OperationError::Resource(ResourceRunError::Draft(
+                    crate::application::resources::ResourceDraftError::InvalidTitle,
+                )) => (
+                    422,
+                    "invalid_args",
+                    "Resource title must contain 1–240 characters".to_string(),
+                    vec![json!({"path": "/title", "problem": "invalid_title"})],
+                ),
+                OperationError::Resource(ResourceRunError::Draft(
+                    crate::application::resources::ResourceDraftError::InvalidSubtype,
+                )) => (
+                    422,
+                    "invalid_args",
+                    "Subtype must be one of the reviewed resource subtypes".to_string(),
+                    vec![json!({"path": "/subtype", "problem": "unknown_subtype"})],
+                ),
+                OperationError::Resource(ResourceRunError::Ready(
+                    crate::application::resources::ResourceReadyError::NotFound,
+                )) => (
+                    404,
+                    "target_unavailable",
+                    "Target record is not available".to_string(),
+                    vec![],
+                ),
+                OperationError::Resource(ResourceRunError::Ready(
+                    crate::application::resources::ResourceReadyError::StaleRevision,
+                )) => (
+                    409,
+                    "version_mismatch",
+                    "Expected content revision is stale; reload and create a new intent"
+                        .to_string(),
+                    vec![],
+                ),
+                OperationError::Resource(ResourceRunError::Ready(
+                    crate::application::resources::ResourceReadyError::NotDraft,
+                )) => (
+                    422,
+                    "invalid_args",
+                    "Only a draft resource can transition to ready".to_string(),
+                    vec![json!({"path": "", "problem": "not_draft"})],
+                ),
+                OperationError::Resource(ResourceRunError::Ready(
+                    crate::application::resources::ResourceReadyError::MissingFields(fields),
+                )) => {
+                    let details: Vec<Value> = fields
+                        .iter()
+                        .map(|field| json!({"path": format!("/{field}"), "problem": "missing_field"}))
+                        .collect();
+                    (
+                        422,
+                        "invalid_args",
+                        format!("resource is missing required fields: {}", fields.join(", ")),
+                        details,
+                    )
+                }
+                OperationError::Resource(ResourceRunError::Ready(
+                    crate::application::resources::ResourceReadyError::UnsupportedSubtype,
+                )) => (
+                    422,
+                    "invalid_args",
+                    "Subtype is not a material resource subtype".to_string(),
+                    vec![json!({"path": "/subtype", "problem": "unknown_subtype"})],
+                ),
                 OperationError::Create(CreateRunError::Create(CreateError::Database)) => {
                     return Err(crate::application::writer::Failure::Unavailable);
                 }

@@ -284,7 +284,7 @@ async fn s10_answer_routes_through_interviewer_without_direct_promotion() {
     .await
     .unwrap();
     assert_eq!(turns, 1);
-    let promoted: i64 = sqlx::query_scalar("SELECT count(*) FROM resource")
+    let promoted: i64 = sqlx::query_scalar("SELECT count(*) FROM entity WHERE subtype<>''")
         .fetch_one(workspace.pool())
         .await
         .unwrap();

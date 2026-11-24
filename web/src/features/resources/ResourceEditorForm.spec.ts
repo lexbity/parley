@@ -11,7 +11,7 @@ const columns: ResourceColumn[] = [
 
 const card: EntityCard = {
   id: 'card-1', kind: 'resource', title: 'Importer checklist', subtype: 'artifact',
-  body: {}, readiness: 'draft', revision: 1,
+  body: {}, readiness: 'draft', revision: 1, content_revision: 1,
   notes: { markdown: 'Checklist notes', revision: 1 }, etag: '"p1.e.card-1.1"',
 };
 

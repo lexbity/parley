@@ -748,7 +748,7 @@ async fn start_match(
         );
     }
     let resources: Result<Vec<ReadyResourceRow>, sqlx::Error> = sqlx::query_as(
-        "SELECT id,kind,title,body_json,revision,max(0.0,(julianday('now')-julianday(created_at))/30.4375) FROM resource WHERE readiness='ready' ORDER BY id",
+        "SELECT id,subtype,name,body_json,resource_content_revision,max(0.0,(julianday('now')-julianday(created_at))/30.4375) FROM entity WHERE subtype IN ('gift','proof','artifact') AND readiness='ready' AND retired_at IS NULL ORDER BY id",
     )
     .fetch_all(state.workspace.pool())
     .await;
@@ -1338,7 +1338,7 @@ async fn compose_material(
     for fill in &input.slot_fills {
         if let Some(resource_id) = fill.resource_id.as_deref() {
             let ready: Option<(String, i64)> = match sqlx::query_as(
-                "SELECT kind,revision FROM resource WHERE id=? AND readiness='ready'",
+                "SELECT subtype,resource_content_revision FROM entity WHERE id=? AND readiness='ready' AND retired_at IS NULL",
             )
             .bind(resource_id)
             .fetch_optional(state.workspace.pool())

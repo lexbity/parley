@@ -63,7 +63,19 @@ pub(crate) async fn status(
         .fetch_optional(&mut **tx)
         .await
         .map_err(|_| JobStatusError::Database)?;
-    let Some((role, state, current, maximum, progress_current, progress_total, last_error, job_epoch, scope_kind, run_id)) = row else {
+    let Some((
+        role,
+        state,
+        current,
+        maximum,
+        progress_current,
+        progress_total,
+        last_error,
+        job_epoch,
+        scope_kind,
+        run_id,
+    )) = row
+    else {
         return Ok(None);
     };
     // A delegated run may read only its own jobs in its own epoch. The owner
@@ -100,11 +112,11 @@ pub(crate) async fn status(
     let cursor: i64 = sqlx::query_scalar::<_, Option<i64>>(
         "SELECT max(cursor) FROM event WHERE entity_type='job' AND entity_id=?",
     )
-        .bind(job_id)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(|_| JobStatusError::Database)?
-        .unwrap_or(0);
+    .bind(job_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|_| JobStatusError::Database)?
+    .unwrap_or(0);
 
     Ok(Some(JobStatusResult {
         job_id: job_id.to_string(),

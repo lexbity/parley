@@ -51,9 +51,32 @@ type CardRow = (
     i64,
     i64,
     i64,
+    i64,
 );
-type OffBoardRow = (String, String, String, String, String, i64, i64, i64, i64);
-type EditCardRow = (String, String, String, String, String, i64, i64, String);
+type OffBoardRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+);
+type ResourceCardRow = (String, String, String, String, String, i64, i64, i64);
+type EditCardRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    String,
+    i64,
+);
 type DeliveryRowTuple = (
     String,
     String,
@@ -224,6 +247,9 @@ pub struct ResourceCardSummary {
     pub readiness: String,
     /// Entity revision; guards in-place title edits from the tile itself.
     pub revision: i64,
+    /// Content revision; materials bind this revision and a change here
+    /// rechecks dependent material versions (U06).
+    pub content_revision: i64,
     pub placement: Option<PlacementView>,
     pub counts: ResourceCounts,
     /// Missing typed fields for this subtype; an empty list means eligible.
@@ -238,6 +264,7 @@ pub struct OffBoardResource {
     pub title: String,
     pub readiness: String,
     pub revision: i64,
+    pub content_revision: i64,
     pub legacy: bool,
     pub counts: ResourceCounts,
     pub gaps: Vec<String>,
@@ -731,20 +758,22 @@ impl Workspace {
             tx.commit().await?;
             return Ok(json!({"_replay_status": replay.status, "result": replay.body}));
         }
-        let revision: Option<i64> = sqlx::query_scalar(
-            "SELECT revision FROM entity WHERE id=? AND subtype<>'' AND readiness <> 'retired' AND retired_at IS NULL",
+        let row: Option<(i64, i64)> = sqlx::query_as(
+            "SELECT revision,resource_content_revision FROM entity WHERE id=? AND subtype<>'' AND readiness <> 'retired' AND retired_at IS NULL",
         )
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some(revision) = revision else {
+        let Some((revision, content_revision)) = row else {
             return Err(WorkspaceError::NotFound);
         };
         let next_revision = revision + 1;
+        let next_content_revision = content_revision + 1;
         let updated = sqlx::query(
-            "UPDATE entity SET readiness='retired',revision=?,updated_at=? WHERE id=? AND revision=?",
+            "UPDATE entity SET readiness='retired',revision=?,resource_content_revision=?,updated_at=? WHERE id=? AND revision=?",
         )
         .bind(next_revision)
+        .bind(next_content_revision)
         .bind(now_utc())
         .bind(id)
         .bind(revision)
@@ -753,8 +782,6 @@ impl Workspace {
         if updated.rows_affected() != 1 {
             return Err(WorkspaceError::StaleRevision);
         }
-        sqlx::query("UPDATE resource SET readiness='retired',revision=revision+1,updated_at=? WHERE id=? AND readiness<>'retired'")
-            .bind(now_utc()).bind(id).execute(&mut *tx).await?;
         self.apply_placement(
             &mut tx,
             id,
@@ -781,7 +808,7 @@ impl Workspace {
              WHERE d.kind='resource' AND d.source_id=? AND d.source_revision <> ?",
         )
         .bind(id)
-        .bind(next_revision.to_string())
+        .bind(next_content_revision.to_string())
         .fetch_all(&mut *tx)
         .await?;
         let affected_json: Vec<Value> = affected
@@ -898,10 +925,24 @@ impl Workspace {
             .bind(id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("DELETE FROM entity WHERE id=?")
+        // Entity removal is refused by the foreign keys of any surviving
+        // reference table (resource_use, resource_tag, interviewer_candidate,
+        // edges, claims). The explicit delivery/dependency/evidence checks
+        // above produce the precise refusal; an FK violation here means a
+        // drafted material or candidate still uses the card.
+        if let Err(reason) = sqlx::query("DELETE FROM entity WHERE id=?")
             .bind(id)
             .execute(&mut *tx)
-            .await?;
+            .await
+        {
+            if reason
+                .as_database_error()
+                .is_some_and(|error| error.is_foreign_key_violation())
+            {
+                return Ok(EraseOutcome::Refused(ErasureRefusal::InMaterials));
+            }
+            return Err(reason.into());
+        }
         // Release private uploads this card owned exclusively; shared digests
         // stay (the same rule as party erasure).
         for upload_id in &uploads {
@@ -916,20 +957,6 @@ impl Workspace {
         sqlx::query("DELETE FROM blob WHERE sha256 NOT IN (SELECT blob_sha256 FROM blob_upload UNION SELECT blob_sha256 FROM material_version WHERE blob_sha256 IS NOT NULL UNION SELECT blob_sha256 FROM blob_snapshot_pin UNION SELECT blob_sha256 FROM blob_upload_lease)")
             .execute(&mut *tx)
             .await?;
-        // A paired legacy row (backfilled entities) keeps its own referencers;
-        // a foreign-key violation means drafted materials still use it.
-        if let Err(reason) = sqlx::query("DELETE FROM resource WHERE id=?")
-            .execute(&mut *tx)
-            .await
-        {
-            if reason
-                .as_database_error()
-                .is_some_and(|error| error.is_foreign_key_violation())
-            {
-                return Ok(EraseOutcome::Refused(ErasureRefusal::InMaterials));
-            }
-            return Err(reason.into());
-        }
         sqlx::query(
             "INSERT OR REPLACE INTO erasure_tombstone(entity_id,erased_at,source_generation) VALUES(?,?,?)",
         )
@@ -956,13 +983,16 @@ impl Workspace {
     /// Full read of one board card (entity kind resource) with typed body,
     /// notes and revisions, for the shared editor.
     pub async fn resource_card_read(&self, id: &str) -> Result<Value, WorkspaceError> {
-        let row: Option<(String, String, String, String, String, i64, i64)> = sqlx::query_as(
-            "SELECT name,subtype,body_json,readiness,notes_md,revision,notes_rev FROM entity WHERE id=? AND subtype<>'' AND readiness <> 'retired' AND retired_at IS NULL",
-        )
-        .bind(id)
-        .fetch_optional(self.pool())
-        .await?;
-        let Some((name, subtype, body, readiness, notes, revision, notes_rev)) = row else {
+        let row: Option<ResourceCardRow> =
+            sqlx::query_as(
+                "SELECT name,subtype,body_json,readiness,notes_md,revision,notes_rev,resource_content_revision FROM entity WHERE id=? AND subtype<>'' AND readiness <> 'retired' AND retired_at IS NULL",
+            )
+            .bind(id)
+            .fetch_optional(self.pool())
+            .await?;
+        let Some((name, subtype, body, readiness, notes, revision, notes_rev, content_revision)) =
+            row
+        else {
             return Err(WorkspaceError::NotFound);
         };
         Ok(json!({
@@ -973,6 +1003,7 @@ impl Workspace {
             "body": serde_json::from_str::<Value>(&body).unwrap_or_else(|_| json!({})),
             "readiness": readiness,
             "revision": revision,
+            "content_revision": content_revision,
             "notes": {"markdown": notes, "revision": notes_rev},
             "etag": entity_etag(&self.epoch, id, revision)
         }))
@@ -995,7 +1026,7 @@ impl Workspace {
         .await?;
         let after = cursor.as_deref().map(decode_cursor).transpose()?;
         let mut builder = sqlx::QueryBuilder::new(
-            "SELECT p.resource_id,e.subtype,e.name,e.readiness,e.body_json,p.column_id,p.position,p.revision,e.revision AS entity_rev,c.position AS col_pos, \
+            "SELECT p.resource_id,e.subtype,e.name,e.readiness,e.body_json,p.column_id,p.position,p.revision,e.revision AS entity_rev,e.resource_content_revision AS content_rev,c.position AS col_pos, \
              (SELECT COUNT(*) FROM entity_attachment a WHERE a.entity_id=e.id) AS files, \
              ((SELECT COUNT(*) FROM edge x JOIN graph_card n ON n.id=x.to_id WHERE x.state='active' AND x.from_id=e.id)
                + (SELECT COUNT(*) FROM edge x JOIN graph_card n ON n.id=x.from_id WHERE x.state='active' AND x.to_id=e.id)) + (SELECT COUNT(*) FROM version_dependency d JOIN material m ON m.id=d.material_id AND m.head_version=d.version_no WHERE d.kind='resource' AND d.source_id=e.id) * 2 AS connections, \
@@ -1044,6 +1075,7 @@ impl Workspace {
                 position,
                 placement_rev,
                 entity_rev,
+                content_rev,
                 _col_pos,
                 files,
                 connections,
@@ -1057,6 +1089,7 @@ impl Workspace {
                 title,
                 readiness,
                 revision: entity_rev,
+                content_revision: content_rev,
                 placement: Some(PlacementView {
                     column_id,
                     position,
@@ -1096,7 +1129,7 @@ impl Workspace {
     ) -> Result<Vec<OffBoardResource>, WorkspaceError> {
         // Entity-kind resources without a placement.
         let rows: Vec<OffBoardRow> = sqlx::query_as(
-            "SELECT e.id,e.subtype,e.name,e.readiness,e.body_json,e.revision, \
+            "SELECT e.id,e.subtype,e.name,e.readiness,e.body_json,e.revision,e.resource_content_revision, \
              (SELECT COUNT(*) FROM entity_attachment a WHERE a.entity_id=e.id), \
              ((SELECT COUNT(*) FROM edge x JOIN graph_card n ON n.id=x.to_id WHERE x.state='active' AND x.from_id=e.id)
                + (SELECT COUNT(*) FROM edge x JOIN graph_card n ON n.id=x.from_id WHERE x.state='active' AND x.to_id=e.id)) + (SELECT COUNT(*) FROM version_dependency d JOIN material m ON m.id=d.material_id AND m.head_version=d.version_no WHERE d.kind='resource' AND d.source_id=e.id) * 2, \
@@ -1118,6 +1151,7 @@ impl Workspace {
                     readiness,
                     body_json,
                     revision,
+                    content_revision,
                     files,
                     connections,
                     deliveries,
@@ -1131,6 +1165,7 @@ impl Workspace {
                         title,
                         readiness,
                         revision,
+                        content_revision,
                         legacy: false,
                         counts: ResourceCounts {
                             files,
@@ -1230,13 +1265,17 @@ impl Workspace {
             }
             let entity = entity_card_json(&self.epoch, &mut tx, &id).await?;
             let placement = current_placement_json(&mut tx, &id).await?;
-            let new_rev = entity["revision"].as_i64().unwrap_or(1);
+            let new_content_rev: i64 =
+                sqlx::query_scalar("SELECT resource_content_revision FROM entity WHERE id=?")
+                    .bind(&id)
+                    .fetch_one(&mut *tx)
+                    .await?;
             let affected: Vec<(String, i64)> = sqlx::query_as(
                 "SELECT DISTINCT d.material_id,d.version_no FROM version_dependency d \
                  WHERE d.kind='resource' AND d.source_id=? AND d.source_revision <> ?",
             )
             .bind(&id)
-            .bind(new_rev.to_string())
+            .bind(new_content_rev.to_string())
             .fetch_all(&mut *tx)
             .await?;
             let affected_json: Vec<Value> = affected
@@ -1291,8 +1330,8 @@ impl Workspace {
         }
         let id = new_id(&digest(format!("{title}\0{subtype}\0{notes}").as_bytes()));
         sqlx::query(
-            "INSERT INTO entity(id,kind,name,focus,notes_md,notes_rev,revision,created_at,updated_at,subtype,body_json,readiness) \
-             VALUES(?,?,?,'',?,?,1,?,?,?,?,'draft')",
+            "INSERT INTO entity(id,kind,name,focus,notes_md,notes_rev,revision,created_at,updated_at,subtype,body_json,readiness,resource_content_revision,subtype_locked) \
+             VALUES(?,?,?,'',?,?,1,?,?,?,?,'draft',1,0)",
         )
         .bind(&id)
         .bind("resource")
@@ -1323,13 +1362,22 @@ impl Workspace {
         edit: &EditResourceCard,
     ) -> Result<String, WorkspaceError> {
         let row: Option<EditCardRow> = sqlx::query_as(
-                "SELECT name,notes_md,subtype,body_json,readiness,revision,notes_rev,id FROM entity WHERE id=? AND subtype<>'' AND readiness <> 'retired' AND retired_at IS NULL",
+                "SELECT name,notes_md,subtype,body_json,readiness,revision,notes_rev,id,subtype_locked FROM entity WHERE id=? AND subtype<>'' AND readiness <> 'retired' AND retired_at IS NULL",
             )
             .bind(&edit.resource_id)
             .fetch_optional(&mut **tx)
             .await?;
-        let Some((name, current_notes, subtype, body_json, _readiness, revision, notes_rev, id)) =
-            row
+        let Some((
+            name,
+            current_notes,
+            subtype,
+            body_json,
+            _readiness,
+            revision,
+            notes_rev,
+            id,
+            subtype_locked,
+        )) = row
         else {
             return Err(WorkspaceError::NotFound);
         };
@@ -1361,13 +1409,8 @@ impl Workspace {
         let next_subtype = match &edit.subtype {
             Some(raw) => {
                 let next = validate_subtype(raw)?;
-                let legacy: bool =
-                    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM resource WHERE id=?)")
-                        .bind(&id)
-                        .fetch_one(&mut **tx)
-                        .await?;
                 if next != subtype
-                    && (legacy
+                    && (subtype_locked == 1
                         || serde_json::from_str::<Value>(&body_json)
                             .unwrap_or(Value::Null)
                             .as_object()
@@ -1391,8 +1434,14 @@ impl Workspace {
             None => body_json,
         };
         let next_revision = revision + i64::from(changes_content || changes_files);
+        let content_revision: i64 =
+            sqlx::query_scalar("SELECT resource_content_revision FROM entity WHERE id=?")
+                .bind(&id)
+                .fetch_one(&mut **tx)
+                .await?;
+        let next_content_revision = content_revision + i64::from(changes_content);
         sqlx::query(
-            "UPDATE entity SET name=?,notes_md=?,notes_rev=?,subtype=?,body_json=?,revision=?,updated_at=? WHERE id=?",
+            "UPDATE entity SET name=?,notes_md=?,notes_rev=?,subtype=?,body_json=?,revision=?,resource_content_revision=?,updated_at=? WHERE id=?",
         )
         .bind(&next_name)
         .bind(&next_notes)
@@ -1400,14 +1449,16 @@ impl Workspace {
         .bind(&next_subtype)
         .bind(&next_body)
         .bind(next_revision)
+        .bind(next_content_revision)
         .bind(now_utc())
         .bind(&id)
         .execute(&mut **tx)
         .await?;
         if changes_content {
-            sqlx::query("UPDATE resource SET title=?,body_json=?,revision=revision+1,updated_at=? WHERE id=?")
-                .bind(&next_name).bind(&next_body).bind(now_utc()).bind(&id)
-                .execute(&mut **tx).await?;
+            sqlx::query("UPDATE entity SET subtype_locked=1 WHERE id=?")
+                .bind(&id)
+                .execute(&mut **tx)
+                .await?;
         }
         write_event(
             tx,
@@ -2466,13 +2517,14 @@ async fn entity_card_json(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
 ) -> Result<Value, WorkspaceError> {
-    let row: Option<(String, String, String, String, String, i64, i64)> = sqlx::query_as(
-        "SELECT name,subtype,body_json,readiness,notes_md,revision,notes_rev FROM entity WHERE id=?",
+    let row: Option<ResourceCardRow> = sqlx::query_as(
+        "SELECT name,subtype,body_json,readiness,notes_md,revision,notes_rev,resource_content_revision FROM entity WHERE id=?",
     )
     .bind(id)
     .fetch_optional(&mut **tx)
     .await?;
-    let Some((name, subtype, body, readiness, notes, revision, notes_rev)) = row else {
+    let Some((name, subtype, body, readiness, notes, revision, notes_rev, content_revision)) = row
+    else {
         return Err(WorkspaceError::NotFound);
     };
     Ok(json!({
@@ -2483,6 +2535,7 @@ async fn entity_card_json(
         "body": serde_json::from_str::<Value>(&body).unwrap_or_else(|_| json!({})),
         "readiness": readiness,
         "revision": revision,
+        "content_revision": content_revision,
         "notes": {"markdown": notes, "revision": notes_rev},
         "etag": entity_etag(epoch, id, revision)
     }))

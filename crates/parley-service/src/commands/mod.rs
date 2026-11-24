@@ -10,6 +10,7 @@ pub(crate) mod party;
 pub(crate) mod phase;
 pub(crate) mod policy;
 pub(crate) mod read;
+pub(crate) mod resource;
 pub(crate) mod task;
 
 use std::collections::HashMap;
@@ -53,6 +54,7 @@ impl Registry {
         descriptors.extend(party::descriptors().into_iter().cloned());
         descriptors.extend(task::descriptors().into_iter().cloned());
         descriptors.extend(jobs::descriptors().into_iter().cloned());
+        descriptors.extend(resource::descriptors().into_iter().cloned());
         descriptor::validate_registry(&descriptors)?;
         let mut by_id = HashMap::with_capacity(descriptors.len());
         for (index, item) in descriptors.iter().enumerate() {
@@ -204,6 +206,7 @@ impl Registry {
         let (party_valid, party_invalid) = party::validation_samples();
         let (task_valid, task_invalid) = task::validation_samples();
         let (jobs_valid, jobs_invalid) = jobs::validation_samples();
+        let (resource_valid, resource_invalid) = resource::validation_samples();
         let valid = [
             phase_valid,
             opportunity_valid,
@@ -211,6 +214,7 @@ impl Registry {
             party_valid,
             task_valid,
             jobs_valid,
+            resource_valid,
         ]
         .concat();
         let invalid = [
@@ -220,6 +224,7 @@ impl Registry {
             party_invalid,
             task_invalid,
             jobs_invalid,
+            resource_invalid,
         ]
         .concat();
         for sample in valid {
@@ -252,6 +257,9 @@ impl Registry {
                     .map_err(|error| format!("{}: {error}", sample.command))?;
             } else if sample.command == jobs::BRIEF_START_ID {
                 jobs::parse_wire_args(&sample.args)
+                    .map_err(|error| format!("{}: {error}", sample.command))?;
+            } else if let Some(command_kind) = resource::ResourceCommand::for_id(&sample.command) {
+                resource::parse_wire_args(command_kind, &sample.args)
                     .map_err(|error| format!("{}: {error}", sample.command))?;
             } else {
                 return Err(format!(
@@ -297,6 +305,8 @@ pub(crate) fn audit_args(
             (task::args_allowlist(), task::args_sensitive())
         } else if command_id == jobs::BRIEF_START_ID {
             (jobs::args_allowlist(), jobs::args_sensitive())
+        } else if resource::ResourceCommand::for_id(command_id).is_some() {
+            (resource::args_allowlist(), resource::args_sensitive())
         } else {
             (&[], &[])
         };

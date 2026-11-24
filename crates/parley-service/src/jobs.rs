@@ -245,7 +245,9 @@ pub(crate) async fn enqueue_role_in_tx(
     }
     let input_hash = digest(input_json.as_bytes());
     let id = if let Some(run_id) = run_id {
-        new_id(&format!("{role}:{epoch}:{run_id}:{scope_kind}:{scope_id}:{input_hash}"))
+        new_id(&format!(
+            "{role}:{epoch}:{run_id}:{scope_kind}:{scope_id}:{input_hash}"
+        ))
     } else {
         new_id(&format!("{role}:{scope_kind}:{scope_id}:{input_hash}"))
     };
@@ -266,43 +268,37 @@ pub(crate) async fn scoped_job_fence(
     tx: &mut Transaction<'_, Sqlite>,
     job_id: &str,
 ) -> Result<(), ()> {
-    let row: Option<(String, Option<String>)> = sqlx::query_as(
-        "SELECT epoch,run_id FROM durable_job WHERE id=?",
-    )
-    .bind(job_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(|_| ())?;
+    let row: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT epoch,run_id FROM durable_job WHERE id=?")
+            .bind(job_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|_| ())?;
     let Some((job_epoch, run_id)) = row else {
         return Err(());
     };
     let Some(run_id) = run_id else {
         return Ok(());
     };
-    let current_epoch: Option<String> = sqlx::query_scalar(
-        "SELECT epoch FROM workspace_meta WHERE singleton=1",
-    )
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(|_| ())?
-    .flatten();
+    let current_epoch: Option<String> =
+        sqlx::query_scalar("SELECT epoch FROM workspace_meta WHERE singleton=1")
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|_| ())?
+            .flatten();
     if current_epoch.as_deref() != Some(job_epoch.as_str()) {
         return Err(());
     }
-    let run: Option<(String, String)> = sqlx::query_as(
-        "SELECT state,epoch FROM agent_run WHERE run_id=?",
-    )
-    .bind(run_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(|_| ())?;
+    let run: Option<(String, String)> =
+        sqlx::query_as("SELECT state,epoch FROM agent_run WHERE run_id=?")
+            .bind(run_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|_| ())?;
     match run {
         Some((state, run_epoch))
             if run_epoch == job_epoch
-                && matches!(
-                    state.as_str(),
-                    "running" | "waiting_owner" | "waiting_job"
-                ) =>
+                && matches!(state.as_str(), "running" | "waiting_owner" | "waiting_job") =>
         {
             Ok(())
         }

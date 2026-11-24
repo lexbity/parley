@@ -2,6 +2,8 @@
 /* global DragEvent, Event, HTMLElement, HTMLDialogElement, HTMLInputElement, HTMLSelectElement, MediaQueryList, BeforeUnloadEvent, BroadcastChannel, Element, MessageEvent */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ApiError, newOperationKey, parley, type DeliveryRow, type EntityAttachment, type EntityCard, type GraphSnapshot, type PlacementView, type ResourceBoardSnapshot, type ResourceColumn } from '../../api/client';
+import { commands } from '../../api/commands';
+import { registerScoped, resourceMarkReadyAction, useCommandRegistry, type UiCommand } from '../../app/commands/registry';
 import { kindLabel } from '../parties/relations';
 import MarkdownPreview from '../../shared/MarkdownPreview.vue';
 import ResourceEditorForm from './ResourceEditorForm.vue';
@@ -347,7 +349,10 @@ function chooseBoard(id: string) {
     if (narrow.value) { changeView('details'); void nextTick(() => detailsHeading.value?.focus()); }
     return;
   }
-  requestSwitch(() => setBoardSelection(id));
+  requestSwitch(() => {
+    setBoardSelection(id);
+    emit('navigate', `/resources/${encodeURIComponent(id)}`);
+  });
 }
 function chooseResource(id: string) {
   requestSwitch(() => {
@@ -359,6 +364,7 @@ function chooseResource(id: string) {
       edgeId.value = null;
       if (narrow.value) view.value = 'details';
     }
+    emit('navigate', `/resources/${encodeURIComponent(id)}`);
     void nextTick(() => detailsHeading.value?.focus());
   });
 }
@@ -1163,6 +1169,41 @@ function applyRoute(id: string) {
   view.value = 'details';
 }
 watch(() => props.routeId, id => { if (id && id !== rootId.value) applyRoute(id); });
+
+// --- U06 scoped command front doors -------------------------------------
+// The selected resource card is frozen (id + content revision) before the
+// readiness command is exposed; any change to that pair is a new intent.
+const commandRegistry = useCommandRegistry();
+let disposeResourceActions: (() => void) | undefined;
+let scopedResourceFingerprint: string | null = null;
+const selectedResourceId = computed(() => props.routeId ?? selectedId.value ?? inspectedId.value);
+function refreshScopedResourceActions() {
+  const id = selectedResourceId.value;
+  const card = id ? resourceById.value.get(id) : undefined;
+  const fingerprint = id && card && card.readiness !== 'retired'
+    ? JSON.stringify([parley.workspaceEpoch, id, card.content_revision])
+    : null;
+  if (fingerprint === scopedResourceFingerprint) return;
+  scopedResourceFingerprint = fingerprint;
+  disposeResourceActions?.();
+  disposeResourceActions = undefined;
+  if (!fingerprint) return;
+  const selectedCard = resourceById.value.get(id!)!;
+  const actions: UiCommand[] = [resourceMarkReadyAction({
+    resourceId: id!,
+    contentRevision: selectedCard.content_revision,
+    intentFingerprint: fingerprint,
+    invoke: (commandId, args, key) => commands.invoke(commandId, { version: 1, args, dry_run: false }, key),
+    onCommitted: (result) => {
+      status.value = result.dry_run ? 'Resource readiness dry run completed.' : 'Resource is ready.';
+      error.value = '';
+      void refreshBoard();
+    },
+  })];
+  disposeResourceActions = registerScoped(commandRegistry, actions);
+}
+watch([snapshot, selectedResourceId], refreshScopedResourceActions);
+
 onMounted(() => {
   media = globalThis.matchMedia?.('(max-width: 850px)') ?? null;
   updateBreakpoint();
@@ -1184,6 +1225,7 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   boardGeneration += 1; graphGeneration += 1; detailGeneration += 1; editorGeneration += 1; partyGeneration += 1;
+  disposeResourceActions?.();
   media?.removeEventListener('change', updateBreakpoint);
   globalThis.removeEventListener('beforeunload', onBeforeUnload);
   globalThis.removeEventListener('parley:workspace-reloaded', workspaceChanged);

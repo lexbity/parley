@@ -72,74 +72,73 @@ pub(crate) async fn start(
     // selected opportunity. An opportunity is eligible only when it has a
     // primary party; the brief itself is scoped to that party so the owner
     // reviews it in the existing Brief workspace.
-    let (scope_kind, scope_id, scope_revision, display_name) =
-        match input.target_kind {
-            "party" => {
-                let row: Option<(i64, String)> = sqlx::query_as(
-                    "SELECT revision,name FROM entity WHERE id=? AND kind IN ('person','org')",
-                )
-                .bind(&input.target_id)
-                .fetch_optional(&mut **tx)
-                .await
-                .map_err(|_| BriefError::Database)?;
-                let Some((revision, name)) = row else {
-                    return Err(BriefError::NotFound);
-                };
-                if revision != input.expected_revision {
-                    return Err(BriefError::StaleRevision);
-                }
-                ("party", input.target_id.clone(), revision, name)
+    let (scope_kind, scope_id, scope_revision, display_name) = match input.target_kind {
+        "party" => {
+            let row: Option<(i64, String)> = sqlx::query_as(
+                "SELECT revision,name FROM entity WHERE id=? AND kind IN ('person','org')",
+            )
+            .bind(&input.target_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|_| BriefError::Database)?;
+            let Some((revision, name)) = row else {
+                return Err(BriefError::NotFound);
+            };
+            if revision != input.expected_revision {
+                return Err(BriefError::StaleRevision);
             }
-            "opportunity" => {
-                let row: Option<(i64, String)> = sqlx::query_as(
-                    "SELECT revision,state FROM opportunity WHERE id=?",
-                )
-                .bind(&input.target_id)
-                .fetch_optional(&mut **tx)
-                .await
-                .map_err(|_| BriefError::Database)?;
-                let Some((revision, state)) = row else {
-                    return Err(BriefError::NotFound);
-                };
-                if revision != input.expected_revision {
-                    return Err(BriefError::StaleRevision);
-                }
-                if state != "open" {
-                    return Err(BriefError::NotFound);
-                }
-                let party_id: Option<String> = sqlx::query_scalar(
-                    "SELECT party_id FROM opportunity_party WHERE opportunity_id=? AND role='primary'",
-                )
-                .bind(&input.target_id)
-                .fetch_optional(&mut **tx)
-                .await
-                .map_err(|_| BriefError::Database)?
-                .flatten();
-                let Some(party_id) = party_id else {
-                    return Err(BriefError::NotFound);
-                };
-                let party: Option<(i64, String)> = sqlx::query_as(
-                    "SELECT revision,name FROM entity WHERE id=? AND kind IN ('person','org')",
-                )
-                .bind(&party_id)
-                .fetch_optional(&mut **tx)
-                .await
-                .map_err(|_| BriefError::Database)?;
-                let Some((party_revision, name)) = party else {
-                    return Err(BriefError::NotFound);
-                };
-                ("party", party_id, party_revision, name)
+            ("party", input.target_id.clone(), revision, name)
+        }
+        "opportunity" => {
+            let row: Option<(i64, String)> =
+                sqlx::query_as("SELECT revision,state FROM opportunity WHERE id=?")
+                    .bind(&input.target_id)
+                    .fetch_optional(&mut **tx)
+                    .await
+                    .map_err(|_| BriefError::Database)?;
+            let Some((revision, state)) = row else {
+                return Err(BriefError::NotFound);
+            };
+            if revision != input.expected_revision {
+                return Err(BriefError::StaleRevision);
             }
-            _ => return Err(BriefError::NotFound),
-        };
+            if state != "open" {
+                return Err(BriefError::NotFound);
+            }
+            let party_id: Option<String> = sqlx::query_scalar(
+                "SELECT party_id FROM opportunity_party WHERE opportunity_id=? AND role='primary'",
+            )
+            .bind(&input.target_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|_| BriefError::Database)?
+            .flatten();
+            let Some(party_id) = party_id else {
+                return Err(BriefError::NotFound);
+            };
+            let party: Option<(i64, String)> = sqlx::query_as(
+                "SELECT revision,name FROM entity WHERE id=? AND kind IN ('person','org')",
+            )
+            .bind(&party_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|_| BriefError::Database)?;
+            let Some((party_revision, name)) = party else {
+                return Err(BriefError::NotFound);
+            };
+            ("party", party_id, party_revision, name)
+        }
+        _ => return Err(BriefError::NotFound),
+    };
 
     // A delegated run may only collect evidence about a party inside its
     // immutable grant. Tool args cannot widen scope; an opportunity is
     // eligible only when its primary party is granted as well.
     if input.run_id.is_some()
-        && !input.granted_targets.iter().any(|target| {
-            target.kind == scope_kind && target.id == scope_id
-        })
+        && !input
+            .granted_targets
+            .iter()
+            .any(|target| target.kind == scope_kind && target.id == scope_id)
     {
         return Err(BriefError::TargetNotGranted);
     }
@@ -211,9 +210,8 @@ pub(crate) async fn collect_brief_evidence(
     scope_kind: &str,
     scope_id: &str,
 ) -> Result<Vec<serde_json::Value>, BriefError> {
-    let rows: Vec<(String, String, String, Option<String>)> =
-        if scope_kind == "party" {
-            sqlx::query_as(
+    let rows: Vec<(String, String, String, Option<String>)> = if scope_kind == "party" {
+        sqlx::query_as(
                 "SELECT DISTINCT so.id,so.source_variant_id,sv.raw_text,sv.url FROM source_occurrence so JOIN source_variant sv ON sv.id=so.source_variant_id WHERE so.actor_entity_id=? OR EXISTS(SELECT 1 FROM claim_revision cr JOIN claim c ON c.id=cr.claim_id WHERE cr.occurrence_id=so.id AND c.subject_id=?) ORDER BY so.captured_at,so.id",
             )
             .bind(scope_id)
@@ -221,8 +219,8 @@ pub(crate) async fn collect_brief_evidence(
             .fetch_all(&mut **tx)
             .await
             .map_err(|_| BriefError::Database)?
-        } else {
-            sqlx::query_as(
+    } else {
+        sqlx::query_as(
                 "SELECT DISTINCT so.id,so.source_variant_id,sv.raw_text,sv.url FROM segment_party sp JOIN source_occurrence so ON so.actor_entity_id=sp.party_id JOIN source_variant sv ON sv.id=so.source_variant_id WHERE sp.segment_id=? UNION SELECT DISTINCT so.id,so.source_variant_id,sv.raw_text,sv.url FROM segment_party sp JOIN claim c ON c.subject_id=sp.party_id JOIN claim_revision cr ON cr.claim_id=c.id JOIN source_occurrence so ON so.id=cr.occurrence_id JOIN source_variant sv ON sv.id=so.source_variant_id WHERE sp.segment_id=? ORDER BY 1",
             )
             .bind(scope_id)
@@ -230,7 +228,7 @@ pub(crate) async fn collect_brief_evidence(
             .fetch_all(&mut **tx)
             .await
             .map_err(|_| BriefError::Database)?
-        };
+    };
     Ok(rows
         .into_iter()
         .map(|(occurrence_id, variant_id, text, url)| {

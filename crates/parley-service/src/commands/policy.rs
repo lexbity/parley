@@ -24,6 +24,10 @@ pub(crate) enum Permission {
     BriefStart,
     #[serde(rename = "job.read")]
     JobRead,
+    #[serde(rename = "resource.read")]
+    ResourceRead,
+    #[serde(rename = "resource.write")]
+    ResourceWrite,
 }
 
 impl Permission {
@@ -37,6 +41,8 @@ impl Permission {
             Permission::OpportunityTaskEdit => "opportunity.task.edit",
             Permission::BriefStart => "brief.start",
             Permission::JobRead => "job.read",
+            Permission::ResourceRead => "resource.read",
+            Permission::ResourceWrite => "resource.write",
         }
     }
 
@@ -51,6 +57,8 @@ impl Permission {
             Permission::OpportunityTaskEdit,
             Permission::BriefStart,
             Permission::JobRead,
+            Permission::ResourceRead,
+            Permission::ResourceWrite,
         ]
     }
 
@@ -72,6 +80,8 @@ pub(crate) const PERMISSION_ALLOWLIST: &[&str] = &[
     "opportunity.task.edit",
     "brief.start",
     "job.read",
+    "resource.read",
+    "resource.write",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

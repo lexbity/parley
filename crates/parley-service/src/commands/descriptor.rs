@@ -37,8 +37,13 @@ pub(crate) struct PromptSpec {
     pub title: &'static str,
 }
 
-pub(crate) const PICKER_ALLOWLIST: &[&str] =
-    &["text", "party", "planning_stage", "opportunity_task"];
+pub(crate) const PICKER_ALLOWLIST: &[&str] = &[
+    "text",
+    "party",
+    "planning_stage",
+    "opportunity_task",
+    "resource_subtype",
+];
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct CommandDescriptor {

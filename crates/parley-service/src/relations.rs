@@ -314,13 +314,8 @@ async fn create_card(tx: &mut Tx<'_>, input: RelatedCard) -> Result<Value, Works
         if name.chars().count() > 240 {
             return Err(invalid("Resource title exceeds 240 characters."));
         }
-        sqlx::query("INSERT INTO resource(id,kind,title,body_json,readiness,revision,created_at,updated_at) VALUES(?,'artifact',?,'{}','draft',1,?,?)")
-            .bind(&id).bind(name).bind(&now).bind(&now).execute(&mut **tx).await?;
-        sqlx::query("UPDATE entity SET notes_md=? WHERE id=?")
-            .bind(canonical_markdown(&input.notes))
-            .bind(&id)
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query("INSERT INTO entity(id,kind,name,focus,notes_md,notes_rev,revision,created_at,updated_at,subtype,body_json,readiness,resource_content_revision,subtype_locked) VALUES(?,'artifact',?,'',?,1,1,?,?, 'artifact','{}','draft',1,0)")
+            .bind(&id).bind(name).bind(canonical_markdown(&input.notes)).bind(&now).bind(&now).execute(&mut **tx).await?;
         event(tx, "resource", &id, 1, "resource.created").await?;
     } else {
         sqlx::query("INSERT INTO entity(id,kind,name,revision,notes_md,created_at,updated_at) VALUES(?,?,?,1,?,?,?)").bind(&id).bind(&input.kind).bind(name).bind(canonical_markdown(&input.notes)).bind(&now).bind(now).execute(&mut **tx).await?;

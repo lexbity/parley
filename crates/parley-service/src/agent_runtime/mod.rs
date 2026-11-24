@@ -131,24 +131,24 @@ async fn process_run(state: &crate::AppState, run_id: &str) {
     // Resumed runs must continue the committed turn numbering: tool intents
     // and turns are keyed by (run, turn, ordinal) and restarting at 1 would
     // silently collide with earlier committed rows.
-    let base_turn: i64 = sqlx::query_scalar(
-        "SELECT coalesce(max(turn_no),0)+1 FROM agent_run_turn WHERE run_id=?",
-    )
-    .bind(run_id)
-    .fetch_one(state.workspace.pool())
-    .await
-    .unwrap_or(1);
+    let base_turn: i64 =
+        sqlx::query_scalar("SELECT coalesce(max(turn_no),0)+1 FROM agent_run_turn WHERE run_id=?")
+            .bind(run_id)
+            .fetch_one(state.workspace.pool())
+            .await
+            .unwrap_or(1);
 
     for iteration in 0..turn::MAX_TURNS {
         // The durable turn budget counts assistant conversation turns (one
         // per provider round-trip); a resumed run continues from its
         // committed count, never past the cap.
-        let used: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM agent_run_turn WHERE run_id=? AND role='assistant'")
-                .bind(run_id)
-                .fetch_one(state.workspace.pool())
-                .await
-                .unwrap_or(iteration);
+        let used: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM agent_run_turn WHERE run_id=? AND role='assistant'",
+        )
+        .bind(run_id)
+        .fetch_one(state.workspace.pool())
+        .await
+        .unwrap_or(iteration);
         if used >= turn::MAX_TURNS {
             finish_with_error(state, &actor, "TURN_LIMIT").await;
             return;
@@ -241,7 +241,10 @@ async fn record_assistant(
     turn_no: i64,
     message: &Value,
 ) {
-    let content = message.get("content").and_then(Value::as_str).unwrap_or_default();
+    let content = message
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     // Keep the committed assistant message complete so a resume can rebuild
     // the exact conversation, including its tool calls.
     let detail = json!({"tool_calls": message.get("tool_calls").cloned().unwrap_or_default()});

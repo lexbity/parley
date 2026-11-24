@@ -76,8 +76,6 @@ export type OpportunityTask = NonNullable<OpportunityNotes['tasks']>[number];
 export type MovePlacementInput = components['schemas']['MoveOpportunityPlacement'];
 type Session = components['schemas']['Session'];
 type EventPage = components['schemas']['EventPage'];
-type CreateResource = components['schemas']['CreateResource'];
-type UpdateResource = components['schemas']['UpdateResource'];
 
 export type ProviderConfig = { endpoint: string; model: string; num_ctx: number; num_predict: number; locale: string };
 export type ExtractorProposal = { id: string; kind: string; candidate: { statement: string; quote: string; mention_name: string | null; mention_kind: string | null }; status: string };
@@ -676,14 +674,14 @@ function decodeResourceCounts(value: unknown): ResourceCounts {
 
 function decodeResourceCardSummary(value: unknown): ResourceCardSummary {
   const item = object(value);
-  if (!item || !Number.isSafeInteger(item.revision) || !object(item.counts) || !Array.isArray(item.gaps)) throw new Error('Invalid response: card summary is malformed');
-  return { resource_id: requiredString(item.resource_id, 'card.resource_id'), subtype: requiredString(item.subtype, 'card.subtype'), title: requiredString(item.title, 'card.title'), readiness: requiredString(item.readiness, 'card.readiness'), revision: Number(item.revision), placement: decodePlacementView(item.placement), counts: decodeResourceCounts(item.counts), gaps: stringArray(item.gaps, 'card.gaps'), etag: requiredString(item.etag, 'card.etag') };
+  if (!item || !Number.isSafeInteger(item.revision) || !Number.isSafeInteger(item.content_revision) || !object(item.counts) || !Array.isArray(item.gaps)) throw new Error('Invalid response: card summary is malformed');
+  return { resource_id: requiredString(item.resource_id, 'card.resource_id'), subtype: requiredString(item.subtype, 'card.subtype'), title: requiredString(item.title, 'card.title'), readiness: requiredString(item.readiness, 'card.readiness'), revision: Number(item.revision), content_revision: Number(item.content_revision), placement: decodePlacementView(item.placement), counts: decodeResourceCounts(item.counts), gaps: stringArray(item.gaps, 'card.gaps'), etag: requiredString(item.etag, 'card.etag') };
 }
 
 function decodeOffBoardResource(value: unknown): OffBoardResource {
   const item = object(value);
-  if (!item || !Number.isSafeInteger(item.revision) || typeof item.legacy !== 'boolean' || !object(item.counts) || !Array.isArray(item.gaps)) throw new Error('Invalid response: off-board resource is malformed');
-  return { resource_id: requiredString(item.resource_id, 'off.resource_id'), subtype: requiredString(item.subtype, 'off.subtype'), title: requiredString(item.title, 'off.title'), readiness: requiredString(item.readiness, 'off.readiness'), revision: Number(item.revision), legacy: item.legacy, counts: decodeResourceCounts(item.counts), gaps: stringArray(item.gaps, 'off.gaps'), etag: requiredString(item.etag, 'off.etag') };
+  if (!item || !Number.isSafeInteger(item.revision) || !Number.isSafeInteger(item.content_revision) || typeof item.legacy !== 'boolean' || !object(item.counts) || !Array.isArray(item.gaps)) throw new Error('Invalid response: off-board resource is malformed');
+  return { resource_id: requiredString(item.resource_id, 'off.resource_id'), subtype: requiredString(item.subtype, 'off.subtype'), title: requiredString(item.title, 'off.title'), readiness: requiredString(item.readiness, 'off.readiness'), revision: Number(item.revision), content_revision: Number(item.content_revision), legacy: item.legacy, counts: decodeResourceCounts(item.counts), gaps: stringArray(item.gaps, 'off.gaps'), etag: requiredString(item.etag, 'off.etag') };
 }
 
 function decodeResourceBoardSnapshot(value: unknown): ResourceBoardSnapshot {
@@ -701,11 +699,11 @@ function decodeResourceBoardSnapshot(value: unknown): ResourceBoardSnapshot {
 function decodeEntityCard(value: unknown): EntityCard {
   const item = object(value);
   const notes = object(item?.notes);
-  if (!item || !object(item.body) || !notes || !Number.isSafeInteger(item.revision) || !Number.isSafeInteger(notes.revision)) throw new Error('Invalid response: card entity is malformed');
+  if (!item || !object(item.body) || !notes || !Number.isSafeInteger(item.revision) || !Number.isSafeInteger(item.content_revision) || !Number.isSafeInteger(notes.revision)) throw new Error('Invalid response: card entity is malformed');
   return {
     id: requiredString(item.id, 'entity.id'), kind: requiredString(item.kind, 'entity.kind'), title: requiredString(item.title, 'entity.title'),
     subtype: requiredString(item.subtype, 'entity.subtype'), body: item.body as Record<string, unknown>, readiness: requiredString(item.readiness, 'entity.readiness'),
-    revision: Number(item.revision), notes: { markdown: requiredString(notes.markdown, 'notes.markdown'), revision: Number(notes.revision) },
+    revision: Number(item.revision), content_revision: Number(item.content_revision), notes: { markdown: requiredString(notes.markdown, 'notes.markdown'), revision: Number(notes.revision) },
     etag: requiredString(item.etag, 'entity.etag'),
   };
 }
@@ -988,24 +986,11 @@ export class ParleyClient {
     }) };
   }
 
-  async getResource(id: string): Promise<Resource> {
-    const { data } = decodeEnvelopeData(await this.request(`/entities/${encodeURIComponent(id)}`), decodeResource);
-    return data as Resource;
-  }
-
   async getEvents(after = '0', filters: { entity_type?: string; entity_id?: string } = {}): Promise<EventPage> {
     const params = new URLSearchParams({ after });
     if (filters.entity_type) params.set('entity_type', filters.entity_type);
     if (filters.entity_id) params.set('entity_id', filters.entity_id);
     return decodeEventPage(await this.request(`/events?${params.toString()}`));
-  }
-
-  async createResource(input: CreateResource, key: string): Promise<Resource> {
-    const { data } = decodeEnvelopeData(
-      await this.mutate('/entities', 'POST', input, { 'Idempotency-Key': key }),
-      decodeResource,
-    );
-    return data as Resource;
   }
 
   async createEntity(input: EntityInput, key: string): Promise<GraphEntity> {
@@ -1107,17 +1092,6 @@ export class ParleyClient {
     const origin = object(data.import_origin);
     const import_origin = origin ? { batch_id: requiredString(origin.batch_id, 'origin.batch_id'), source_record: Number(origin.source_record) } : null;
     return { entity: decodeGraphEntity(data.entity), direct_links: links, files, opportunities, associated_resources: resources, ...(data.import_origin !== undefined ? { import_origin } : {}), ...(data.retired_at !== undefined ? { retired_at: typeof data.retired_at === 'string' ? data.retired_at : null } : {}) };
-  }
-
-  async updateResource(resource: Resource, input: UpdateResource, key: string): Promise<Resource> {
-    const { data } = decodeEnvelopeData(
-      await this.mutate(`/entities/${encodeURIComponent(resource.id)}`, 'PATCH', input, {
-        'If-Match': resource.etag,
-        'Idempotency-Key': key,
-      }),
-      decodeResource,
-    );
-    return data as Resource;
   }
 
   async saveSource(input: CaptureInput, key = newOperationKey()): Promise<SavedSource> {

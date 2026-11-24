@@ -1,8 +1,12 @@
 import { mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises } from '@vue/test-utils';
+import { commands } from '../../api/commands';
 import { ApiError, parley, type ResourceBoardSnapshot } from '../../api/client';
+import { createCommandRegistry, installCommandRegistry, useCommandRegistry } from '../../app/commands/registry';
 import ResourcesWorkspace from './ResourcesWorkspace.vue';
+
+installCommandRegistry(createCommandRegistry(vi.fn()));
 
 const emptyBoard: ResourceBoardSnapshot = {
   columns: [
@@ -24,6 +28,7 @@ const oneCardBoard: ResourceBoardSnapshot = {
     title: 'Importer checklist',
     readiness: 'draft',
     revision: 1,
+    content_revision: 1,
     placement: { column_id: 'developing', position: 1024, revision: 1 },
     counts: { files: 0, connections: 0, proposed: 0, deliveries: 0 },
     gaps: [],
@@ -65,7 +70,7 @@ describe('ResourcesWorkspace', () => {
     const commit = vi.spyOn(parley, 'commitResourceCard').mockResolvedValue({
       entity: {
         id: 'new-1', kind: 'resource', title: 'Workshop outline', subtype: 'note',
-        body: {}, readiness: 'draft', revision: 1,
+        body: {}, readiness: 'draft', revision: 1, content_revision: 1,
         notes: { markdown: 'Notes', revision: 1 }, etag: '"p1.e.new-1.1"',
       },
       placement: { column_id: 'developing', position: 2048, revision: 1 },
@@ -126,13 +131,13 @@ describe('ResourcesWorkspace', () => {
     stubBoard(oneCardBoard);
     vi.spyOn(parley, 'getEntityCard').mockResolvedValue({
       id: 'card-1', kind: 'resource', title: 'Importer checklist', subtype: 'artifact',
-      body: {}, readiness: 'draft', revision: 1,
+      body: {}, readiness: 'draft', revision: 1, content_revision: 1,
       notes: { markdown: '', revision: 1 }, etag: '"p1.e.card-1.1"',
     });
     const commit = vi.spyOn(parley, 'commitResourceCard').mockResolvedValue({
       entity: {
         id: 'card-1', kind: 'resource', title: 'Importer checklist v2', subtype: 'artifact',
-        body: {}, readiness: 'draft', revision: 2,
+        body: {}, readiness: 'draft', revision: 2, content_revision: 2,
         notes: { markdown: '', revision: 1 }, etag: '"p1.e.card-1.2"',
       },
       placement: { column_id: 'developing', position: 1024, revision: 2 },
@@ -171,6 +176,7 @@ describe('ResourcesWorkspace', () => {
         subtype: 'proof',
         title: 'Unfinished proof',
         readiness: 'draft',
+        content_revision: 1,
         revision: 1,
         placement: { column_id: 'available', position: 1024, revision: 1 },
         counts: { files: 0, connections: 0, proposed: 0, deliveries: 2 },
@@ -202,12 +208,12 @@ describe('ResourcesWorkspace', () => {
     stubBoard(oneCardBoard);
     const initialCard = {
       id: 'card-1', kind: 'resource', title: 'Importer checklist', subtype: 'artifact',
-      body: {}, readiness: 'draft', revision: 1,
+      body: {}, readiness: 'draft', revision: 1, content_revision: 1,
       notes: { markdown: '', revision: 1 }, etag: '"p1.e.card-1.1"',
     };
     const currentCard = {
       id: 'card-1', kind: 'resource', title: 'Theirs', subtype: 'artifact',
-      body: {}, readiness: 'draft', revision: 2,
+      body: {}, readiness: 'draft', revision: 2, content_revision: 2,
       notes: { markdown: 'theirs', revision: 2 }, etag: '"p1.e.card-1.2"',
     };
     vi.spyOn(parley, 'getEntityCard').mockResolvedValueOnce(initialCard).mockResolvedValueOnce(initialCard).mockResolvedValue(currentCard);
@@ -292,14 +298,14 @@ describe('ResourcesWorkspace', () => {
       off_board: [
         {
           resource_id: 'off-1', subtype: 'artifact', title: 'Fixture walkthrough',
-          readiness: 'draft', revision: 1, legacy: false,
+          readiness: 'draft', revision: 1, content_revision: 1, legacy: false,
           counts: { files: 0, connections: 0, proposed: 0, deliveries: 0 },
           gaps: [],
           etag: '"p1.e.off-1.1"',
         },
         {
           resource_id: 'legacy-1', subtype: 'note', title: 'Legacy checklist idea',
-          readiness: 'draft', revision: 1, legacy: true,
+          readiness: 'draft', revision: 1, content_revision: 1, legacy: true,
           counts: { files: 0, connections: 0, proposed: 0, deliveries: 0 },
           gaps: [],
           etag: '"p1.e.legacy-1.1"',
@@ -322,7 +328,7 @@ describe('ResourcesWorkspace', () => {
     stubBoard(oneCardBoard);
     vi.spyOn(parley, 'getEntityCard').mockResolvedValue({
       id: 'card-1', kind: 'resource', title: 'Importer checklist', subtype: 'artifact',
-      body: {}, readiness: 'draft', revision: 1,
+      body: {}, readiness: 'draft', revision: 1, content_revision: 1,
       notes: { markdown: '', revision: 1 }, etag: '"p1.e.card-1.1"',
     });
     const wrapper = mount(ResourcesWorkspace);
@@ -356,7 +362,7 @@ describe('ResourcesWorkspace', () => {
         ...oneCardBoard.cards,
         {
           resource_id: 'card-2', subtype: 'note', title: 'Workshop outline',
-          readiness: 'draft', revision: 1, placement: { column_id: 'inbox', position: 1024, revision: 1 },
+          readiness: 'draft', revision: 1, content_revision: 1, placement: { column_id: 'inbox', position: 1024, revision: 1 },
           counts: { files: 0, connections: 0, proposed: 0, deliveries: 0 },
           gaps: [], etag: '"p1.e.card-2.1"',
         },
@@ -373,11 +379,11 @@ describe('ResourcesWorkspace', () => {
     vi.spyOn(parley, 'getEntityCard').mockImplementation(async (id: string) => ({
       id, kind: 'resource', title: id === 'card-2' ? 'Workshop outline' : 'Importer checklist',
       subtype: id === 'card-2' ? 'note' : 'artifact',
-      body: {}, readiness: 'draft', revision: 1,
+      body: {}, readiness: 'draft', revision: 1, content_revision: 1,
       notes: { markdown: '', revision: 1 }, etag: `"p1.e.${id}.1"`,
     }));
     const commit = vi.spyOn(parley, 'commitResourceCard').mockResolvedValue({
-      entity: { id: 'card-2', kind: 'resource', title: 'Workshop outline v2', subtype: 'note', body: {}, readiness: 'draft', revision: 2, notes: { markdown: '', revision: 1 }, etag: '"p1.e.card-2.2"' },
+      entity: { id: 'card-2', kind: 'resource', title: 'Workshop outline v2', subtype: 'note', body: {}, readiness: 'draft', revision: 2, content_revision: 2, notes: { markdown: '', revision: 1 }, etag: '"p1.e.card-2.2"' },
       placement: null, created_related: null, event_cursor: 6,
     });
     const wrapper = mount(ResourcesWorkspace);
@@ -407,7 +413,7 @@ describe('ResourcesWorkspace', () => {
   it('adds a card from the always-visible list input', async () => {
     stubBoard();
     const commit = vi.spyOn(parley, 'commitResourceCard').mockResolvedValue({
-      entity: { id: 'new-1', kind: 'resource', title: 'Workshop outline', subtype: 'artifact', body: {}, readiness: 'draft', revision: 1, notes: { markdown: '', revision: 1 }, etag: '"p1.e.new-1.1"' },
+      entity: { id: 'new-1', kind: 'resource', title: 'Workshop outline', subtype: 'artifact', body: {}, readiness: 'draft', revision: 1, content_revision: 1, notes: { markdown: '', revision: 1 }, etag: '"p1.e.new-1.1"' },
       placement: { column_id: 'developing', position: 2048, revision: 1 },
       created_related: null,
       event_cursor: 4,
@@ -489,11 +495,11 @@ describe('ResourcesWorkspace', () => {
     stubBoard(oneCardBoard);
     vi.spyOn(parley, 'getEntityCard').mockResolvedValue({
       id: 'card-1', kind: 'resource', title: 'Importer checklist', subtype: 'artifact',
-      body: {}, readiness: 'draft', revision: 3,
+      body: {}, readiness: 'draft', revision: 3, content_revision: 3,
       notes: { markdown: '', revision: 4 }, etag: '"p1.e.card-1.3"',
     });
     const commit = vi.spyOn(parley, 'commitResourceCard').mockResolvedValue({
-      entity: { id: 'card-1', kind: 'resource', title: 'Importer checklist v2', subtype: 'artifact', body: {}, readiness: 'draft', revision: 4, notes: { markdown: '', revision: 4 }, etag: '"p1.e.card-1.4"' },
+      entity: { id: 'card-1', kind: 'resource', title: 'Importer checklist v2', subtype: 'artifact', body: {}, readiness: 'draft', revision: 4, content_revision: 4, notes: { markdown: '', revision: 4 }, etag: '"p1.e.card-1.4"' },
       placement: { column_id: 'developing', position: 1024, revision: 2 },
       created_related: null,
       event_cursor: 6,
@@ -608,7 +614,7 @@ describe('ResourcesWorkspace', () => {
     stubBoard(oneCardBoard);
     vi.spyOn(parley, 'getEntityCard').mockResolvedValue({
       id: 'card-1', kind: 'resource', title: 'Importer checklist', subtype: 'artifact',
-      body: {}, readiness: 'draft', revision: 1,
+      body: {}, readiness: 'draft', revision: 1, content_revision: 1,
       notes: { markdown: '', revision: 1 }, etag: '"p1.e.card-1.1"',
     });
     const commit = vi.spyOn(parley, 'commitResourceCard');
@@ -628,7 +634,7 @@ describe('ResourcesWorkspace', () => {
     stubBoard(oneCardBoard);
     vi.spyOn(parley, 'getEntityCard').mockResolvedValue({
       id: 'card-1', kind: 'resource', title: 'Importer checklist', subtype: 'artifact',
-      body: {}, readiness: 'draft', revision: 1,
+      body: {}, readiness: 'draft', revision: 1, content_revision: 1,
       notes: { markdown: '', revision: 1 }, etag: '"p1.e.card-1.1"',
     });
     vi.spyOn(parley, 'commitResourceCard').mockRejectedValue(new ApiError('stale', 412, 'STALE_REVISION'));
@@ -669,6 +675,59 @@ describe('ResourcesWorkspace', () => {
     await wrapper.get('.new-list input[aria-label="List name"]').setValue('Cancelled');
     await wrapper.get('.new-list input[aria-label="List name"]').trigger('keydown.esc');
     expect(wrapper.find('.new-list form.board-composer').exists()).toBe(false);
+    wrapper.unmount();
+  });
+});
+
+describe('ResourcesWorkspace scoped U06 command', () => {
+  it('exposes mark-ready for the selected resource with its frozen content revision', async () => {
+    const board: ResourceBoardSnapshot = {
+      ...emptyBoard,
+      cards: [{
+        resource_id: 'card-1', subtype: 'gift', title: 'Gift card', readiness: 'draft',
+        revision: 2, content_revision: 2, placement: { column_id: 'developing', position: 1024, revision: 1 },
+        counts: { files: 0, connections: 0, proposed: 0, deliveries: 0 },
+        gaps: ['what'], etag: '"p1.e.card-1.2"',
+      }],
+    };
+    stubBoard(board);
+    const invoke = vi.spyOn(commands, 'invoke').mockResolvedValue({
+      ok: true, command_version: 1, audit_id: 'a', replayed: false, dry_run: false,
+      result: { id: 'card-1', readiness: 'ready', content_revision: 3 },
+    });
+    const wrapper = mount(ResourcesWorkspace, { props: { routeId: 'card-1' } });
+    await flushPromises();
+    const ctx = { context: { route: 'resources', 'selection.resource': true }, selection: { resource: 'card-1' } };
+    const actions = useCommandRegistry().list(ctx);
+    const markReady = actions.find((action) => action.id === 'ui.resources.mark_ready');
+    expect(markReady).toBeTruthy();
+    await markReady!.run({}, ctx);
+    expect(invoke).toHaveBeenCalledWith(
+      'resource.mark_ready',
+      { version: 1, args: { resource_id: 'card-1', expected_content_revision: 2 }, dry_run: false },
+      expect.any(String),
+    );
+    wrapper.unmount();
+  });
+
+  it('picking an off-board resource publishes the deep link for palette selection', async () => {
+    stubBoard({
+      ...emptyBoard,
+      off_board: [{
+        resource_id: 'off-1', subtype: 'gift', title: 'Off gift', readiness: 'draft',
+        revision: 1, content_revision: 1, legacy: false,
+        counts: { files: 0, connections: 0, proposed: 0, deliveries: 0 },
+        gaps: [], etag: '"p1.e.off-1.1"',
+      }],
+    });
+    const wrapper = mount(ResourcesWorkspace);
+    await flushPromises();
+    const findResource = wrapper.findAll('button').find((button) => button.text() === 'Find resource')!;
+    await findResource.trigger('click');
+    await flushPromises();
+    const picker = wrapper.get('ul[aria-label="Resource picker"]');
+    await picker.get('button').trigger('click');
+    expect(wrapper.emitted('navigate')?.[0]?.[0]).toBe('/resources/off-1');
     wrapper.unmount();
   });
 });

@@ -334,8 +334,7 @@ pub(crate) async fn dispatch(
     // through the commands__run meta-tool, so the inner id is read from its
     // arguments.
     let is_brief_start = if id == RUN_TOOL {
-        args.get("id").and_then(Value::as_str)
-            == Some(crate::commands::jobs::BRIEF_START_ID)
+        args.get("id").and_then(Value::as_str) == Some(crate::commands::jobs::BRIEF_START_ID)
     } else {
         id == crate::commands::jobs::BRIEF_START_ID
     };
@@ -346,12 +345,7 @@ pub(crate) async fn dispatch(
             .and_then(Value::as_str)
             .unwrap_or("");
         if !job_id.is_empty() {
-            let mut tx = match state
-                .workspace
-                .pool()
-                .begin_with("BEGIN IMMEDIATE")
-                .await
-            {
+            let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
                 Ok(tx) => tx,
                 Err(_) => {
                     return Err(DispatchError::Denied(

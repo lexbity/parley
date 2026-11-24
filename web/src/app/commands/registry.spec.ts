@@ -3,7 +3,8 @@ import type { CommandDescriptor } from '../../api/commands';
 import { deriveContext } from './context';
 import {
   builtInNavigationCommands, createCommandRegistry, freezeDescriptor, installCommandRegistry,
-  mergeDescriptors, queuePhaseActions, registerScoped, uiDescriptor, useCommandRegistry,
+  mergeDescriptors, queuePhaseActions, registerScoped, resourceMarkReadyAction,
+  uiDescriptor, useCommandRegistry,
 } from './registry';
 
 const serverDescriptor: CommandDescriptor = {
@@ -158,5 +159,43 @@ describe('registry installation', () => {
     expect(useCommandRegistry()).toBe(registry);
     dispose();
     expect(() => useCommandRegistry()).toThrow(/not installed/);
+  });
+});
+
+describe('resourceMarkReadyAction', () => {
+  it('freezes the selected resource id and content revision with a fresh key per intent', async () => {
+    const invoke = vi.fn().mockResolvedValue({ ok: true, command_version: 1, audit_id: 'a', replayed: false, dry_run: false, result: {} });
+    const onCommitted = vi.fn();
+    const action = resourceMarkReadyAction({
+      resourceId: 'res_1', contentRevision: 4, intentFingerprint: 'fp',
+      invoke, onCommitted,
+    });
+    expect(action.id).toBe('ui.resources.mark_ready');
+    expect(action.replaces).toBe('resource.mark_ready');
+    expect(action.when?.({ context: { route: 'resources', 'selection.resource': true }, selection: {} })).toBe(true);
+    expect(action.when?.({ context: { route: 'queue', 'selection.resource': true }, selection: {} })).toBe(false);
+    expect(action.when?.({ context: { route: 'resources', 'selection.resource': false }, selection: {} })).toBe(false);
+    await action.run({}, { context: { route: 'resources' }, selection: {} });
+    expect(invoke.mock.calls).toHaveLength(1);
+    const firstArgs = invoke.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(firstArgs).toEqual({ resource_id: 'res_1', expected_content_revision: 4 });
+    const firstKey = invoke.mock.calls[0]?.[2];
+    await action.run({}, { context: { route: 'resources' }, selection: {} });
+    expect(invoke.mock.calls[1]?.[2]).toBe(firstKey);
+    expect(onCommitted).toHaveBeenCalledTimes(2);
+  });
+
+  it('mints a new key when the frozen content revision changes', async () => {
+    const invoke = vi.fn().mockResolvedValue({ ok: true, command_version: 1, audit_id: 'a', replayed: false, dry_run: false, result: {} });
+    let revision = 4;
+    const action = resourceMarkReadyAction({
+      resourceId: 'res_1', get contentRevision() { return revision; }, intentFingerprint: 'fp',
+      invoke, onCommitted: vi.fn(),
+    });
+    await action.run({}, { context: { route: 'resources' }, selection: {} });
+    revision = 5;
+    await action.run({}, { context: { route: 'resources' }, selection: {} });
+    expect(invoke.mock.calls).toHaveLength(2);
+    expect(invoke.mock.calls[0]?.[2]).not.toBe(invoke.mock.calls[1]?.[2]);
   });
 });

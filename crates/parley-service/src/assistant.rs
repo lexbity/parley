@@ -875,7 +875,10 @@ async fn process_briefer_result(
     }
     // A job started by a registered command may publish proposals only while
     // its initiating run is still active in the same epoch (UCR-001 U05).
-    if crate::jobs::scoped_job_fence(&mut tx, job_id).await.is_err() {
+    if crate::jobs::scoped_job_fence(&mut tx, job_id)
+        .await
+        .is_err()
+    {
         tx.rollback().await.map_err(|e| e.to_string())?;
         return Err("STALE: the initiating run revoked or the epoch changed".into());
     }
@@ -1591,17 +1594,20 @@ async fn add_turn(
                 "Briefer chat scope no longer exists",
             );
         };
-        let evidence =
-            match crate::application::brief::collect_brief_evidence(&mut tx, &scope_kind, scoped_id)
-                .await
-            {
-                Ok(value) => value,
-                Err(error) => {
-                    return super::command_error(crate::WorkspaceError::Invalid(format!(
-                        "evidence collection failed: {error:?}"
-                    )));
-                }
-            };
+        let evidence = match crate::application::brief::collect_brief_evidence(
+            &mut tx,
+            &scope_kind,
+            scoped_id,
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                return super::command_error(crate::WorkspaceError::Invalid(format!(
+                    "evidence collection failed: {error:?}"
+                )));
+            }
+        };
         let active_prompt: Option<String> = match sqlx::query_scalar(
             "SELECT version_id FROM agent_prompt_active WHERE role='briefer'",
         )
@@ -1955,8 +1961,9 @@ async fn confirm_candidate(
     let resource_id = new_id(&format!("candidate:{id}"));
     let now = now_utc();
     let body = request.fields.to_string();
-    if let Err(error)=sqlx::query("INSERT INTO resource(id,kind,title,body_json,readiness,revision,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?)")
-        .bind(&resource_id).bind(&kind).bind(request.title.trim()).bind(&body).bind(readiness).bind(&now).bind(&now).execute(&mut *tx).await{return super::command_error(error.into());}
+    let subtype_locked = if readiness == "ready" { 1 } else { 0 };
+    if let Err(error)=sqlx::query("INSERT INTO entity(id,kind,name,focus,notes_md,notes_rev,revision,created_at,updated_at,subtype,body_json,readiness,resource_content_revision,subtype_locked) VALUES(?,?,?,'',?,1,1,?,?,?,?,?,1,?)")
+        .bind(&resource_id).bind("resource").bind(request.title.trim()).bind("").bind(&body).bind(&now).bind(&now).bind(&kind).bind(&body).bind(readiness).bind(subtype_locked).execute(&mut *tx).await{return super::command_error(error.into());}
     if let Some(column_id) = &request.column_id
         && let Err(error) = state
             .workspace
@@ -2719,9 +2726,11 @@ async fn generate_brief(
             .await
         {
             Ok(value) => value,
-            Err(error) => return super::command_error(crate::WorkspaceError::Invalid(
-                format!("evidence collection failed: {error:?}"),
-            )),
+            Err(error) => {
+                return super::command_error(crate::WorkspaceError::Invalid(format!(
+                    "evidence collection failed: {error:?}"
+                )));
+            }
         };
     let prompt_id: Option<String> =
         sqlx::query_scalar("SELECT version_id FROM agent_prompt_active WHERE role='briefer'")

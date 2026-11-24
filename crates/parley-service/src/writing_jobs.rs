@@ -860,7 +860,7 @@ pub(super) async fn ensure_scope_current(
                 .and_then(Value::as_i64)
                 .unwrap_or(-1);
             let current: Option<i64> = sqlx::query_scalar(
-                "SELECT revision FROM resource WHERE id=? AND readiness='ready'",
+                "SELECT resource_content_revision FROM entity WHERE id=? AND readiness='ready' AND retired_at IS NULL",
             )
             .bind(id)
             .fetch_optional(&mut **tx)
@@ -878,7 +878,7 @@ pub(super) async fn ensure_scope_current(
         for (id, expected_value) in resources {
             let expected = expected_value.as_i64().unwrap_or(-1);
             let current: Option<i64> = sqlx::query_scalar(
-                "SELECT revision FROM resource WHERE id=? AND readiness='ready'",
+                "SELECT resource_content_revision FROM entity WHERE id=? AND readiness='ready' AND retired_at IS NULL",
             )
             .bind(id)
             .fetch_optional(&mut **tx)

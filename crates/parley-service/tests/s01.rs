@@ -286,7 +286,7 @@ async fn s01_resource_create_receipt_atomic() {
         ))
         .await
         .unwrap();
-    let resources: i64 = sqlx::query_scalar("SELECT count(*) FROM resource")
+    let resources: i64 = sqlx::query_scalar("SELECT count(*) FROM entity WHERE subtype<>''")
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -445,7 +445,7 @@ async fn s01_lost_ack_retry_returns_one_durable_resource() {
         .await
         .unwrap();
     for _ in 0..200 {
-        let committed: i64 = sqlx::query_scalar("SELECT count(*) FROM resource")
+        let committed: i64 = sqlx::query_scalar("SELECT count(*) FROM entity WHERE subtype<>''")
             .fetch_one(&independent)
             .await
             .unwrap();
@@ -468,7 +468,7 @@ async fn s01_lost_ack_retry_returns_one_durable_resource() {
     assert_eq!(replay["data"]["title"], "Incomplete offer");
     let id = replay["data"]["id"].as_str().unwrap().to_owned();
     for (table, query) in [
-        ("resource", "SELECT count(*) FROM resource"),
+        ("resource", "SELECT count(*) FROM entity WHERE subtype<>''"),
         ("event", "SELECT count(*) FROM event"),
         (
             "idempotency_receipt",
@@ -481,7 +481,7 @@ async fn s01_lost_ack_retry_returns_one_durable_resource() {
             .unwrap();
         assert_eq!(count, 1, "{table} must have one committed row");
     }
-    let stored: String = sqlx::query_scalar("SELECT id FROM resource")
+    let stored: String = sqlx::query_scalar("SELECT id FROM entity WHERE subtype<>''")
         .fetch_one(&independent)
         .await
         .unwrap();

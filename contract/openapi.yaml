@@ -6023,13 +6023,14 @@ components:
       additionalProperties: false
     ResourceCardSummary:
       type: object
-      required: [resource_id, subtype, title, readiness, revision, placement, counts, gaps, etag]
+      required: [resource_id, subtype, title, readiness, revision, content_revision, placement, counts, gaps, etag]
       properties:
         resource_id: {type: string}
         subtype: {type: string}
         title: {type: string}
         readiness: {type: string}
         revision: {type: integer}
+        content_revision: {type: integer}
         placement:
           anyOf:
           - $ref: '#/components/schemas/PlacementView'
@@ -6042,13 +6043,14 @@ components:
       additionalProperties: false
     OffBoardResource:
       type: object
-      required: [resource_id, subtype, title, readiness, revision, legacy, counts, gaps, etag]
+      required: [resource_id, subtype, title, readiness, revision, content_revision, legacy, counts, gaps, etag]
       properties:
         resource_id: {type: string}
         subtype: {type: string}
         title: {type: string}
         readiness: {type: string}
         revision: {type: integer}
+        content_revision: {type: integer}
         legacy: {type: boolean}
         counts: {$ref: '#/components/schemas/ResourceCounts'}
         gaps:
@@ -6203,7 +6205,7 @@ components:
       additionalProperties: false
     EntityCard:
       type: object
-      required: [id, kind, title, subtype, body, readiness, revision, notes, etag]
+      required: [id, kind, title, subtype, body, readiness, revision, content_revision, notes, etag]
       properties:
         id: {type: string}
         kind: {type: string}
@@ -6214,6 +6216,7 @@ components:
           additionalProperties: true
         readiness: {type: string}
         revision: {type: integer}
+        content_revision: {type: integer}
         notes:
           type: object
           required: [markdown, revision]

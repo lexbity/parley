@@ -2098,36 +2098,43 @@ impl Workspace {
         body_override: Option<&Value>,
     ) -> Result<(), WorkspaceError> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let (kind, body, status, revision): (String, String, String, i64) =
-            sqlx::query_as("SELECT kind,body_json,readiness,revision FROM resource WHERE id=?")
+        let content_revision: Option<i64> =
+            sqlx::query_scalar("SELECT resource_content_revision FROM entity WHERE id=? AND subtype<>'' AND retired_at IS NULL AND readiness<>'retired'")
                 .bind(id)
                 .fetch_optional(&mut *tx)
-                .await?
-                .ok_or_else(|| WorkspaceError::Invalid("resource does not exist".into()))?;
-        if status != "draft" {
-            return Err(WorkspaceError::Invalid(
-                "only a draft resource can transition to ready".into(),
-            ));
-        }
-        let value = if let Some(value) = body_override {
-            value.clone()
-        } else {
-            serde_json::from_str(&body).map_err(|e| WorkspaceError::Invalid(e.to_string()))?
+                .await?;
+        let Some(content_revision) = content_revision else {
+            return Err(WorkspaceError::NotFound);
         };
-        validate_resource(&kind, &value)?;
-        let updated =
-            serde_json::to_string(&value).map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
-        let now = now_utc();
-        sqlx::query("UPDATE resource SET body_json=?,readiness='ready',revision=revision+1,updated_at=? WHERE id=? AND revision=?").bind(updated).bind(&now).bind(id).bind(revision).execute(&mut *tx).await?;
-        event(
+        let outcome = crate::application::resources::mark_ready(
             &mut tx,
-            "resource",
-            id,
-            revision + 1,
-            "resource.readied",
-            json!({"kind":kind}),
+            &crate::application::resources::ResourceReadyInput {
+                id: id.to_owned(),
+                expected_content_revision: content_revision,
+                body_override: body_override.cloned(),
+                operation_key_digest: crate::digest(format!("rest-ready\0{id}").as_bytes()),
+            },
         )
-        .await?;
+        .await
+        .map_err(|error| match error {
+            crate::application::resources::ResourceReadyError::NotFound => WorkspaceError::NotFound,
+            crate::application::resources::ResourceReadyError::StaleRevision => {
+                WorkspaceError::StaleRevision
+            }
+            crate::application::resources::ResourceReadyError::NotDraft => {
+                WorkspaceError::Invalid("only a draft resource can transition to ready".into())
+            }
+            crate::application::resources::ResourceReadyError::MissingFields(fields) => {
+                WorkspaceError::Invalid(format!(
+                    "resource is missing required fields: {}",
+                    fields.join(", ")
+                ))
+            }
+            crate::application::resources::ResourceReadyError::UnsupportedSubtype => {
+                WorkspaceError::Invalid("unsupported resource kind".into())
+            }
+        })?;
+        let _ = outcome;
         tx.commit().await?;
         Ok(())
     }
@@ -2150,7 +2157,7 @@ async fn persist_material_references(
     for fill in fills {
         if let Some(resource_id) = &fill.resource_id {
             let revision: Option<i64> = sqlx::query_scalar(
-                "SELECT revision FROM resource WHERE id=? AND readiness='ready'",
+                "SELECT resource_content_revision FROM entity WHERE id=? AND subtype<>'' AND readiness='ready' AND retired_at IS NULL",
             )
             .bind(resource_id)
             .fetch_optional(&mut **tx)
@@ -2230,7 +2237,7 @@ async fn validate_slot_fills(
                     ))
                 })?;
                 let row: Option<(String, String, String)> =
-                    sqlx::query_as("SELECT kind,readiness,body_json FROM resource WHERE id=?")
+                    sqlx::query_as("SELECT subtype,readiness,body_json FROM entity WHERE id=? AND retired_at IS NULL")
                         .bind(resource_id)
                         .fetch_optional(&mut **tx)
                         .await?;
@@ -2433,138 +2440,6 @@ pub(crate) fn validate_override_reasons(
                 "soft-gate override {id} requires a reason of at least ten characters"
             )));
         }
-    }
-    Ok(())
-}
-
-fn validate_resource(kind: &str, value: &Value) -> Result<(), WorkspaceError> {
-    let string = |name: &str, required: bool| -> bool {
-        value
-            .get(name)
-            .and_then(Value::as_str)
-            .is_some_and(|v| !v.trim().is_empty())
-            || (!required && value.get(name).is_none())
-    };
-    let missing = match kind {
-        "gift" => {
-            let mut fields = Vec::new();
-            for key in ["what", "format", "delivery", "cost_to_me"] {
-                if !string(key, true) {
-                    fields.push(key);
-                }
-            }
-            match value.get("delivery").and_then(Value::as_str) {
-                Some("on_request") => {
-                    if !value
-                        .get("time_to_produce_minutes")
-                        .and_then(Value::as_u64)
-                        .is_some()
-                    {
-                        fields.push("time_to_produce_minutes")
-                    }
-                }
-                Some("exists") => {
-                    if !string("evidence_ref", true) {
-                        fields.push("evidence_ref")
-                    }
-                    if value.get("permission_to_share").and_then(Value::as_bool) != Some(true) {
-                        fields.push("permission_to_share")
-                    }
-                }
-                _ => fields.push("delivery (exists or on_request)"),
-            }
-            if !matches!(
-                value.get("cost_to_me").and_then(Value::as_str),
-                Some("low" | "medium" | "high")
-            ) {
-                fields.push("cost_to_me (low, medium or high)");
-            }
-            if !matches!(
-                value.get("format").and_then(Value::as_str),
-                Some(
-                    "teardown"
-                        | "intro"
-                        | "resource"
-                        | "audit"
-                        | "bug report"
-                        | "template"
-                        | "other"
-                )
-            ) {
-                fields.push("format");
-            }
-            fields
-        }
-        "proof" => {
-            let mut fields = Vec::new();
-            for key in [
-                "what_i_did",
-                "for_whom",
-                "problem",
-                "result_unit",
-                "period",
-                "my_role",
-            ] {
-                if !string(key, true) {
-                    fields.push(key);
-                }
-            }
-            if !value
-                .get("permission_to_name")
-                .is_some_and(Value::is_boolean)
-            {
-                fields.push("permission_to_name")
-            }
-            if value
-                .get("for_whom")
-                .and_then(Value::as_str)
-                .is_some_and(|who| who.split_whitespace().count() < 2)
-            {
-                fields.push("for_whom (named recipient or a two-attribute descriptor)");
-            }
-            if !value.get("result_value").is_some_and(|v| v.is_number()) {
-                fields.push("result_value")
-            }
-            if value.get("result_unit").and_then(Value::as_str) == Some("%")
-                && !string("baseline", true)
-            {
-                fields.push("baseline")
-            }
-            if value
-                .get("what_i_did")
-                .and_then(Value::as_str)
-                .is_some_and(|text| text.split_whitespace().count() < 6)
-            {
-                fields.push("what_i_did (at least six words)")
-            }
-            fields
-        }
-        "artifact" => {
-            let mut fields = Vec::new();
-            for key in ["title", "location", "what_it_shows"] {
-                if !string(key, true) {
-                    fields.push(key);
-                }
-            }
-            if !value.get("public").is_some_and(Value::is_boolean) {
-                fields.push("public")
-            };
-            if value
-                .get("location")
-                .and_then(Value::as_str)
-                .is_some_and(|location| location.trim().is_empty())
-            {
-                fields.push("location (URL or local path)");
-            }
-            fields
-        }
-        _ => return Err(WorkspaceError::Invalid("unsupported resource kind".into())),
-    };
-    if !missing.is_empty() {
-        return Err(WorkspaceError::Invalid(format!(
-            "resource is missing required fields: {}",
-            missing.join(", ")
-        )));
     }
     Ok(())
 }

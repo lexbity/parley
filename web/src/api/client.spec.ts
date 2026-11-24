@@ -383,12 +383,11 @@ describe('ParleyClient', () => {
     expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).has('X-Parley-Token')).toBe(false);
   });
 
-  it('loads resources, one resource, and ordered events with decoded data', async () => {
+  it('loads resources and ordered events with decoded data', async () => {
     const client = new ParleyClient();
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(sessionResponse())
       .mockResolvedValueOnce(response({ data: [resource], cursor: '1' }))
-      .mockResolvedValueOnce(response({ data: resource }))
       .mockResolvedValueOnce(response({
         items: [{ cursor: '1', event_id: 'event-1', entity_type: 'resource', entity_id: resource.id,
           revision: 1, event_type: 'resource.created', occurred_at: '2026-11-22T09:00:00Z', payload: { kind: 'gift' } }],
@@ -402,12 +401,10 @@ describe('ParleyClient', () => {
 
     await client.connect();
     expect(await client.listResources()).toEqual([resource]);
-    expect(await client.getResource(resource.id)).toEqual(resource);
     expect(await client.getEvents('7/8')).toMatchObject({ next_cursor: '1', items: [{ entity_id: resource.id, occurred_at: '2026-11-22T09:00:00Z' }] });
     expect(await client.getEvents('7/8', { entity_type: 'opportunity', entity_id: 'o1' })).toMatchObject({ next_cursor: '1' });
     expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual([
       '/api/v1/entities?kind=resource',
-      '/api/v1/entities/resource%201',
       '/api/v1/events?after=7%2F8',
       '/api/v1/events?after=7%2F8&entity_type=opportunity&entity_id=o1',
     ]);
@@ -457,26 +454,6 @@ describe('ParleyClient', () => {
     const entity = new Headers(fetchMock.mock.calls[2]?.[1]?.headers);
     expect(entity.get('Idempotency-Key')).toBe(key);
     expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({ kind: 'person', name: 'Dana Lee' });
-  });
-
-  it('sends create and conditional update with stable operation headers', async () => {
-    const client = new ParleyClient();
-    const fetchMock = vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(sessionResponse())
-      .mockResolvedValueOnce(response({ data: resource }, 201))
-      .mockResolvedValueOnce(response({ data: { ...resource, revision: 2, etag: '"resource-2"' } }));
-    await client.connect();
-
-    await client.createResource({ kind: 'gift', title: 'Offer', body: resource.body }, 'key-create');
-    await client.updateResource(resource, { title: 'Offer revised', body: resource.body }, 'key-update');
-
-    const create = new Headers(fetchMock.mock.calls[1]?.[1]?.headers);
-    expect(create.get('Idempotency-Key')).toBe('key-create');
-    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ kind: 'gift', title: 'Offer', body: resource.body });
-    const update = new Headers(fetchMock.mock.calls[2]?.[1]?.headers);
-    expect(update.get('If-Match')).toBe(resource.etag);
-    expect(update.get('Idempotency-Key')).toBe('key-update');
-    expect(fetchMock.mock.calls[2]?.[0]).toBe('/api/v1/entities/resource%201');
   });
 
   it('validates operation keys as version 7 UUIDs', () => {

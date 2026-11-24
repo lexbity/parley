@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/CommandRunSuccess","body":{"ok":true,"command_version":1,"audit_id":"aud_u06_create_draft_01","original_audit_id":null,"replayed":false,"dry_run":false,"result":{"id":"res_draft_sample_01","title":"Fixture draft","subtype":"gift","readiness":"draft","revision":1,"content_revision":1,"event_id":"evt_u06_create_draft_01","event_cursor":401}}}
