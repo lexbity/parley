@@ -147,6 +147,11 @@ async fn owner_session(service: &RunningService) -> OwnerSession {
 }
 
 async fn setup(tag: &str) -> (PathBuf, Workspace, u16, RunningService) {
+    // Debug-only authority-test fixture: keep the pre-cut transport for
+    // these U01-U08 authority/fencing cases. AR05 proves the real worker.
+    unsafe {
+        std::env::set_var("PARLEY_TEST_NATIVE_RUN_FIXTURE", "1");
+    }
     let path = db_path(tag);
     let _ = fs::remove_file(&path);
     let service = parley_service::start_workspace(&path).await.unwrap();

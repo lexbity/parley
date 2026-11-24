@@ -542,6 +542,13 @@ onBeforeUnmount(() => {
             />
             <p v-if="runStatuses[row.run_id]">
               Turn {{ progress(row.run_id) }} of at most {{ MAX_TURNS }} · {{ runStatuses[row.run_id]?.transcript_bytes }} transcript bytes
+              · pinned profile {{ runStatuses[row.run_id]?.profile_revision ?? 'unqualified' }}
+            </p>
+            <p
+              v-if="runStatuses[row.run_id]?.wait_intent"
+              role="status"
+            >
+              Waiting on tool ordinal {{ runStatuses[row.run_id]?.wait_intent }}. Cancelling here revokes the grant and stops the run.
             </p>
             <p
               v-if="row.state === 'waiting_job'"

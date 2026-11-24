@@ -234,6 +234,7 @@ fn legacy_value(row: &sqlx::sqlite::SqliteRow, columns: &[String], field: &str) 
 }
 
 mod agent_runtime;
+
 mod application;
 mod assistant;
 mod blob;
@@ -245,6 +246,8 @@ mod jobs;
 mod maintenance;
 mod parties;
 pub mod relations;
+#[cfg(debug_assertions)]
+pub(crate) mod testing_fixture;
 pub use maintenance::{MaintenanceSettings, MaintenanceSettingsInput};
 #[doc(hidden)]
 pub use maintenance::{create_backup_for_test, prune_backups_for_test};
@@ -536,6 +539,13 @@ impl Workspace {
         let id = root.read_selector().map_err(WorkspaceError::Invalid)?;
         root.database_path(&id).map_err(WorkspaceError::Invalid)
     }
+    /// The workspace control directory that owns private runtime artifacts.
+    /// This is the identity-level directory, not a nested directory derived
+    /// from a generation database.
+    pub fn control_path(&self) -> PathBuf {
+        self.root.control_path().to_path_buf()
+    }
+
     pub fn control_directory(identity: &Path) -> Result<PathBuf, WorkspaceError> {
         let r = generation::WorkspaceRoot::new(identity).map_err(WorkspaceError::Invalid)?;
         r.ensure_control().map_err(WorkspaceError::Invalid)?;

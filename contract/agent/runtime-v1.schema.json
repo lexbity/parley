@@ -19,6 +19,21 @@
     },
     {
       "$ref": "#/$defs/cancel"
+    },
+    {
+      "$ref": "#/$defs/assistant_turn"
+    },
+    {
+      "$ref": "#/$defs/tool_request"
+    },
+    {
+      "$ref": "#/$defs/turn_accepted"
+    },
+    {
+      "$ref": "#/$defs/tool_result"
+    },
+    {
+      "$ref": "#/$defs/suspend"
     }
   ],
   "$defs": {
@@ -164,7 +179,8 @@
             },
             "capabilities": {
               "const": [
-                "structured_role"
+                "structured_role",
+                "delegated"
               ]
             },
             "namespaces": {
@@ -240,7 +256,8 @@
           "properties": {
             "capabilities": {
               "const": [
-                "structured_role"
+                "structured_role",
+                "delegated"
               ]
             },
             "max_frame_bytes": {
@@ -347,6 +364,81 @@
                   "type": "object"
                 }
               }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "mode",
+                "profile",
+                "deadline_ms",
+                "task",
+                "transcript",
+                "tools",
+                "continuation"
+              ],
+              "properties": {
+                "mode": {
+                  "const": "delegated"
+                },
+                "profile": {
+                  "$ref": "#/$defs/profile"
+                },
+                "deadline_ms": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 120000
+                },
+                "task": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 8192
+                },
+                "transcript": {
+                  "type": "array",
+                  "maxItems": 64,
+                  "items": {
+                    "$ref": "#/$defs/transcript_message"
+                  }
+                },
+                "tools": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "$ref": "#/$defs/authorized_tool"
+                  }
+                },
+                "continuation": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "turn_no",
+                        "results"
+                      ],
+                      "properties": {
+                        "turn_no": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 64
+                        },
+                        "results": {
+                          "type": "array",
+                          "minItems": 1,
+                          "maxItems": 4,
+                          "items": {
+                            "$ref": "#/$defs/tool_result_entry"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
             }
           ]
         },
@@ -424,6 +516,31 @@
                 },
                 "candidate": {
                   "type": "object"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "mode",
+                "observed",
+                "usage",
+                "text"
+              ],
+              "properties": {
+                "mode": {
+                  "const": "delegated"
+                },
+                "observed": {
+                  "$ref": "#/$defs/observed"
+                },
+                "usage": {
+                  "$ref": "#/$defs/usage"
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 32768
                 }
               }
             }
@@ -517,6 +634,379 @@
           "additionalProperties": false,
           "required": [],
           "properties": {}
+        },
+        "execution_id": {
+          "$ref": "#/$defs/opaque"
+        },
+        "lease_id": {
+          "$ref": "#/$defs/opaque"
+        }
+      }
+    },
+    "capability": {
+      "type": "string",
+      "enum": [
+        "structured_role",
+        "delegated"
+      ]
+    },
+    "tool_call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call_ref",
+        "name",
+        "args"
+      ],
+      "properties": {
+        "call_ref": {
+          "$ref": "#/$defs/opaque"
+        },
+        "name": {
+          "$ref": "#/$defs/opaque"
+        },
+        "args": {
+          "type": "object",
+          "maxProperties": 32
+        }
+      }
+    },
+    "transcript_message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "content"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "system",
+            "user",
+            "assistant",
+            "tool"
+          ]
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 32768
+        },
+        "tool_calls": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "$ref": "#/$defs/tool_call"
+          }
+        },
+        "tool_call_id": {
+          "$ref": "#/$defs/opaque"
+        }
+      }
+    },
+    "authorized_tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "description",
+        "parameters"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/opaque"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "parameters": {
+          "type": "object"
+        }
+      }
+    },
+    "tool_result_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal",
+        "result"
+      ],
+      "properties": {
+        "ordinal": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "result": {
+          "type": "object"
+        }
+      }
+    },
+    "assistant_turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "kind",
+        "seq",
+        "body",
+        "execution_id",
+        "lease_id"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "kind": {
+          "const": "assistant_turn"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "text",
+            "calls"
+          ],
+          "properties": {
+            "text": {
+              "type": "string",
+              "maxLength": 32768
+            },
+            "calls": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 4,
+              "items": {
+                "$ref": "#/$defs/tool_call"
+              }
+            }
+          }
+        },
+        "execution_id": {
+          "$ref": "#/$defs/opaque"
+        },
+        "lease_id": {
+          "$ref": "#/$defs/opaque"
+        }
+      }
+    },
+    "tool_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "kind",
+        "seq",
+        "body",
+        "execution_id",
+        "lease_id"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "kind": {
+          "const": "tool_request"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "turn_no",
+            "ordinal",
+            "name",
+            "args"
+          ],
+          "properties": {
+            "turn_no": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 64
+            },
+            "ordinal": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4
+            },
+            "name": {
+              "$ref": "#/$defs/opaque"
+            },
+            "args": {
+              "type": "object",
+              "maxProperties": 32
+            }
+          }
+        },
+        "execution_id": {
+          "$ref": "#/$defs/opaque"
+        },
+        "lease_id": {
+          "$ref": "#/$defs/opaque"
+        }
+      }
+    },
+    "turn_accepted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "kind",
+        "seq",
+        "body",
+        "execution_id",
+        "lease_id"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "kind": {
+          "const": "turn_accepted"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "turn_no",
+            "ordinals"
+          ],
+          "properties": {
+            "turn_no": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 64
+            },
+            "ordinals": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 4,
+              "uniqueItems": true,
+              "items": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4
+              }
+            }
+          }
+        },
+        "execution_id": {
+          "$ref": "#/$defs/opaque"
+        },
+        "lease_id": {
+          "$ref": "#/$defs/opaque"
+        }
+      }
+    },
+    "tool_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "kind",
+        "seq",
+        "body",
+        "execution_id",
+        "lease_id"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "kind": {
+          "const": "tool_result"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "turn_no",
+            "ordinal",
+            "result"
+          ],
+          "properties": {
+            "turn_no": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 64
+            },
+            "ordinal": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4
+            },
+            "result": {
+              "type": "object",
+              "maxProperties": 32
+            }
+          }
+        },
+        "execution_id": {
+          "$ref": "#/$defs/opaque"
+        },
+        "lease_id": {
+          "$ref": "#/$defs/opaque"
+        }
+      }
+    },
+    "suspend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "kind",
+        "seq",
+        "body",
+        "execution_id",
+        "lease_id"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "kind": {
+          "const": "suspend"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reason"
+          ],
+          "properties": {
+            "reason": {
+              "enum": [
+                "WAITING_JOB",
+                "WAITING_OWNER",
+                "CANCELLED"
+              ]
+            }
+          }
         },
         "execution_id": {
           "$ref": "#/$defs/opaque"

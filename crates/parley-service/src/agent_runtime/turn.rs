@@ -173,26 +173,6 @@ pub(crate) async fn claim(
     )))
 }
 
-/// Renew a lease only when this actor still owns it.
-pub(crate) async fn renew(
-    tx: &mut Transaction<'_, Sqlite>,
-    actor: &Actor,
-) -> Result<bool, sqlx::Error> {
-    // Renew the deadline without rotating the token: the actor keeps checking
-    // the same token on every turn, tool result and completion.
-    let deadline = new_lease().deadline;
-    let updated = sqlx::query(
-        "UPDATE agent_run SET lease_deadline=?, updated_at=? WHERE run_id=? AND lease_token=? AND state='running'",
-    )
-    .bind(&deadline)
-    .bind(crate::now_utc())
-    .bind(actor.run_id.as_deref().unwrap_or(""))
-    .bind(actor.lease_token.as_deref().unwrap_or(""))
-    .execute(&mut **tx)
-    .await?;
-    Ok(updated.rows_affected() == 1)
-}
-
 pub(crate) async fn record_turn(
     tx: &mut Transaction<'_, Sqlite>,
     actor: &Actor,
@@ -275,10 +255,29 @@ pub(crate) async fn wait(
     Ok(())
 }
 
-/// Reconstruct the committed assistant/tool message history of a run in
-/// turn order. The first message of every turn is the assistant message
-/// (with its tool calls when it had any), followed by its tool results. The
-/// system and user task are reseeded by the caller on every resume.
+/// Renew a lease only when this actor still owns it.
+#[allow(dead_code)]
+pub(crate) async fn renew(
+    tx: &mut Transaction<'_, Sqlite>,
+    actor: &Actor,
+) -> Result<bool, sqlx::Error> {
+    // Renew the deadline without rotating the token: the actor keeps checking
+    // the same token on every turn, tool result and completion.
+    let deadline = new_lease().deadline;
+    let updated = sqlx::query(
+        "UPDATE agent_run SET lease_deadline=?, updated_at=? WHERE run_id=? AND lease_token=? AND state='running'",
+    )
+    .bind(&deadline)
+    .bind(crate::now_utc())
+    .bind(actor.run_id.as_deref().unwrap_or(""))
+    .bind(actor.lease_token.as_deref().unwrap_or(""))
+    .execute(&mut **tx)
+    .await?;
+    Ok(updated.rows_affected() == 1)
+}
+
+/// Reconstruct the committed assistant/tool message history of a run.
+#[allow(dead_code)]
 pub(crate) async fn history(pool: &sqlx::SqlitePool, run_id: &str) -> Vec<Value> {
     let rows: Vec<(i64, String, i64, String, String)> = sqlx::query_as(
         "SELECT turn_no,role,ordinal,body,detail_json FROM agent_run_turn WHERE run_id=? AND role IN ('assistant','tool') ORDER BY turn_no,ordinal,role",
@@ -309,6 +308,7 @@ pub(crate) async fn history(pool: &sqlx::SqlitePool, run_id: &str) -> Vec<Value>
     messages
 }
 
+#[allow(dead_code)]
 pub(crate) fn tool_result_message(name: &str, result: &Value) -> Value {
     json!({"role": "tool", "content": serde_json::to_string(result).unwrap_or_default(), "name": name})
 }

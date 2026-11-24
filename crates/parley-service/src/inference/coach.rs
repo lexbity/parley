@@ -256,7 +256,7 @@ pub(crate) async fn run(state: &AppState, id: &str) {
     }
 }
 
-pub(super) fn installed_supervisor() -> Result<Supervisor, &'static str> {
+pub(crate) fn installed_supervisor() -> Result<Supervisor, &'static str> {
     if cfg!(debug_assertions) {
         match std::env::var_os("PARLEY_RUNTIME_BUNDLE") {
             Some(path) => Supervisor::from_bundle(&PathBuf::from(path)),
@@ -268,13 +268,12 @@ pub(super) fn installed_supervisor() -> Result<Supervisor, &'static str> {
     .map_err(|error| error.code())
 }
 
-pub(super) fn tokenizer_path(state: &AppState, profile: &Profile) -> Result<PathBuf, &'static str> {
-    Ok(
-        crate::Workspace::control_directory(state.workspace.database_path())
-            .map_err(|_| "RUNNER_INSTALL_INVALID")?
-            .join("tokenizers")
-            .join(format!("{}.json", profile.tokenizer_digest)),
-    )
+pub(crate) fn tokenizer_path(state: &AppState, profile: &Profile) -> Result<PathBuf, &'static str> {
+    Ok(state
+        .workspace
+        .control_path()
+        .join("tokenizers")
+        .join(format!("{}.json", profile.tokenizer_digest)))
 }
 
 async fn execute(
@@ -338,6 +337,7 @@ async fn execute(
             candidate, usage, ..
         } => Ok((candidate, usage)),
         Completion::Probe { .. } => Err("WORKER_PROTOCOL"),
+        Completion::Delegated { .. } => Err("WORKER_PROTOCOL"),
     }
 }
 

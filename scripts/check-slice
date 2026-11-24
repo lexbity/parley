@@ -96,7 +96,7 @@ step scripts/absent 'document\.execCommand' web/src/features/output
 step scripts/absent 'innerHTML|v-html|localStorage' web/src/shared/MarkdownEditor.vue
 step scripts/absent '86400|86_400|Duration::hours\(24\)' crates/parley-domain/src/lifecycle.rs
 step scripts/absent 'fetch\(|localStorage|v-html' web/src/features/resources/InterviewerWorkspace.vue web/src/features/leads/BriefWorkspace.vue
-step scripts/absent 'Math\.random|navigator\.clipboard' web/src/features/output/WritingWorkspace.vue
+step scripts/absent 'Math\.random|navigator\.clipboard' web/src/features/output/OutputWorkspace.vue
 step scripts/absent 'reqwest|sqlx|ollama' crates/parley-domain/src/queue.rs crates/parley-domain/src/analytics.rs
 
 printf '\ncheck-slice %s: all steps passed.\n' "$slice"

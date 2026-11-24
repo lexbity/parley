@@ -41,7 +41,7 @@ function responseBody(body, release) {
   })
 }
 
-export function createRelay(socketPath, signal) {
+export function createRelay(socketPath, signal, { chatCalls = 1 } = {}) {
   const dispatcher = new Agent({
     connect: { socketPath },
     connections: 1,
@@ -51,7 +51,7 @@ export function createRelay(socketPath, signal) {
   })
   const observedPaths = new Map()
   let busy = false
-  let usedPost = false
+  let chatUsed = 0
   async function fetchRelay(input, init) {
     const url = new URL(input instanceof Request ? input.url : input)
     const method = init?.method ?? (input instanceof Request ? input.method : "GET")
@@ -59,9 +59,9 @@ export function createRelay(socketPath, signal) {
 
     const path = url.pathname
     let body
-    if (path === "/v1/chat/completions" && method === "POST" && !usedPost) {
+    if (path === "/v1/chat/completions" && method === "POST" && chatUsed < chatCalls) {
       if (typeof init?.body !== "string" || Buffer.byteLength(init.body) > MAX_REQUEST) denied()
-      usedPost = true
+      chatUsed += 1
       body = init.body
     } else if ((path === "/api/version" || path === "/api/tags") && method === "GET") {
       const count = observedPaths.get(path) ?? 0

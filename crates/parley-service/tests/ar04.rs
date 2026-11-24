@@ -200,21 +200,50 @@ async fn set_provider(port: u16, auth: (&String, &String, &String), url: &str) {
     )
     .await;
     assert!(status == 200 || status == 204, "{status} {reply:?}");
-    let (status, reply) = request(port, auth, "POST", "/api/v1/agent/provider/health", None, "ar04-health").await;
+    let (status, reply) = request(
+        port,
+        auth,
+        "POST",
+        "/api/v1/agent/provider/health",
+        None,
+        "ar04-health",
+    )
+    .await;
     assert_eq!(status, 200, "{reply:?}");
     assert_eq!(reply["available"], true, "{reply:?}");
 }
 
-async fn wait_job(port: u16, auth: (&String, &String, &String), id: &str, states: &[&str]) -> Value {
+async fn wait_job(
+    port: u16,
+    auth: (&String, &String, &String),
+    id: &str,
+    states: &[&str],
+) -> Value {
     for _ in 0..150 {
-        let (status, value) = request(port, auth, "GET", &format!("/api/v1/jobs/{id}"), None, "job-read").await;
+        let (status, value) = request(
+            port,
+            auth,
+            "GET",
+            &format!("/api/v1/jobs/{id}"),
+            None,
+            "job-read",
+        )
+        .await;
         assert_eq!(status, 200, "{value:?}");
         if states.contains(&value["status"].as_str().unwrap_or_default()) {
             return value;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    let (_, last) = request(port, auth, "GET", &format!("/api/v1/jobs/{id}"), None, "job-read-last").await;
+    let (_, last) = request(
+        port,
+        auth,
+        "GET",
+        &format!("/api/v1/jobs/{id}"),
+        None,
+        "job-read-last",
+    )
+    .await;
     panic!("job {id} never reached {states:?}; last={last:?}");
 }
 
@@ -335,12 +364,30 @@ async fn ar04_late_chat_result_cannot_publish_after_new_turn_or_cancel() {
     assert_eq!(chat_row.0, 3);
 
     provider.release().await;
-    let first_terminal = wait_job(service.address.port(), auth, &first_job, &["succeeded", "failed", "invalid", "cancelled"]).await;
+    let first_terminal = wait_job(
+        service.address.port(),
+        auth,
+        &first_job,
+        &["succeeded", "failed", "invalid", "cancelled"],
+    )
+    .await;
     assert_eq!(first_terminal["status"], "failed", "{first_terminal:?}");
-    assert_eq!(first_terminal["last_error_code"], "STALE_INPUT", "{first_terminal:?}");
+    assert_eq!(
+        first_terminal["last_error_code"], "STALE_INPUT",
+        "{first_terminal:?}"
+    );
 
-    let second_terminal = wait_job(service.address.port(), auth, &second_job, &["succeeded", "failed"]).await;
-    assert_eq!(second_terminal["status"], "succeeded", "{second_terminal:?}");
+    let second_terminal = wait_job(
+        service.address.port(),
+        auth,
+        &second_job,
+        &["succeeded", "failed"],
+    )
+    .await;
+    assert_eq!(
+        second_terminal["status"], "succeeded",
+        "{second_terminal:?}"
+    );
 
     let chat = request(
         service.address.port(),
@@ -353,10 +400,19 @@ async fn ar04_late_chat_result_cannot_publish_after_new_turn_or_cancel() {
     .await
     .1;
     let turns = chat["turns"].as_array().unwrap();
-    let owner_turns = turns.iter().filter(|turn| turn["speaker"] == "owner").count();
-    let agent_turns = turns.iter().filter(|turn| turn["speaker"] == "agent").count();
+    let owner_turns = turns
+        .iter()
+        .filter(|turn| turn["speaker"] == "owner")
+        .count();
+    let agent_turns = turns
+        .iter()
+        .filter(|turn| turn["speaker"] == "agent")
+        .count();
     assert_eq!(owner_turns, 2, "{chat:?}");
-    assert_eq!(agent_turns, 1, "only the second job may publish an agent turn: {chat:?}");
+    assert_eq!(
+        agent_turns, 1,
+        "only the second job may publish an agent turn: {chat:?}"
+    );
     assert_eq!(chat["candidates"].as_array().unwrap().len(), 1, "{chat:?}");
     let candidate_job: Option<String> = sqlx::query_scalar(
         "SELECT job_id FROM interviewer_candidate WHERE chat_id=? ORDER BY created_at DESC LIMIT 1",
@@ -365,15 +421,18 @@ async fn ar04_late_chat_result_cannot_publish_after_new_turn_or_cancel() {
     .fetch_optional(workspace.pool())
     .await
     .unwrap();
-    assert_eq!(candidate_job.as_deref(), Some(second_job.as_str()), "late first job never created a candidate");
+    assert_eq!(
+        candidate_job.as_deref(),
+        Some(second_job.as_str()),
+        "late first job never created a candidate"
+    );
 
-    let first_attempt: (String, Option<String>) = sqlx::query_as(
-        "SELECT status,error_code FROM job_attempt WHERE job_id=? AND attempt_no=1",
-    )
-    .bind(&first_job)
-    .fetch_one(workspace.pool())
-    .await
-    .unwrap();
+    let first_attempt: (String, Option<String>) =
+        sqlx::query_as("SELECT status,error_code FROM job_attempt WHERE job_id=? AND attempt_no=1")
+            .bind(&first_job)
+            .fetch_one(workspace.pool())
+            .await
+            .unwrap();
     assert_eq!(first_attempt.0, "failed");
     assert_eq!(first_attempt.1.as_deref(), Some("STALE_INPUT"));
 
@@ -490,7 +549,13 @@ async fn ar04_coach_answer_reaches_interviewer_candidate_review() {
     let chat_id = answer["chat_id"].as_str().unwrap().to_owned();
     let job_id = answer["job_id"].as_str().unwrap().to_owned();
 
-    let terminal = wait_job(service.address.port(), auth, &job_id, &["succeeded", "failed"]).await;
+    let terminal = wait_job(
+        service.address.port(),
+        auth,
+        &job_id,
+        &["succeeded", "failed"],
+    )
+    .await;
     assert_eq!(terminal["status"], "succeeded", "{terminal:?}");
     assert_eq!(terminal["role"], "interviewer");
     assert_eq!(terminal["review_ref"]["kind"], "interviewer_candidate");
@@ -505,7 +570,13 @@ async fn ar04_coach_answer_reaches_interviewer_candidate_review() {
     )
     .await
     .1;
-    let candidate = chat["candidates"].as_array().unwrap().iter().find(|c| c["state"] == "proposed").cloned().unwrap();
+    let candidate = chat["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["state"] == "proposed")
+        .cloned()
+        .unwrap();
     let candidate_id = candidate["id"].as_str().unwrap().to_owned();
     let revision = chat["revision"].as_i64().unwrap();
 
@@ -533,7 +604,11 @@ async fn ar04_coach_answer_reaches_interviewer_candidate_review() {
     .unwrap();
     assert_eq!(question.0, "answered");
     assert_eq!(question.1, 3);
-    assert_eq!(question.2.as_deref(), Some(resource_id), "confirm links the Coach question");
+    assert_eq!(
+        question.2.as_deref(),
+        Some(resource_id),
+        "confirm links the Coach question"
+    );
 
     let promoted: i64 = sqlx::query_scalar("SELECT count(*) FROM entity WHERE subtype<>''")
         .fetch_one(workspace.pool())
@@ -546,7 +621,3 @@ async fn ar04_coach_answer_reaches_interviewer_candidate_review() {
     drop(workspace);
     let _ = fs::remove_file(path);
 }
-
-
-
-

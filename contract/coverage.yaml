@@ -2242,3 +2242,53 @@ slices:
       owner_role: owner
       package_target: rust+mock
       evidence_path: evidence/ar04.md
+  ar05:
+    - requirement: FR-10
+      operationId: startAgentRun
+      test_id: ar05_packaged_pi_run_commits_one_scoped_read_and_finishes
+      fixture_id: delegated
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar05.md
+    - requirement: FR-9
+      operationId: getAgentRun
+      test_id: ar05_lost_ack_committed_tool_is_reconciled_once
+      fixture_id: agent_run
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar05.md
+    - requirement: FR-10
+      operationId: getAgentRunTranscript
+      test_id: ar05_partial_batch_waits_releases_lane_and_resumes
+      fixture_id: agent_transcript
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar05.md
+    - requirement: FR-10
+      operationId: cancelAgentRun
+      test_id: ar05_foreign_tool_and_scope_never_reach_business_mutation
+      fixture_id: delegated
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar05.md
+    - requirement: FR-9
+      operationId: cancelAgentRun
+      test_id: ar05_cancel_and_completion_have_one_writer_order
+      fixture_id: agent_run
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar05.md
+    - requirement: FR-11
+      operationId: startAgentRun
+      test_id: ar05_browser_follows_a_delegated_brief_to_review
+      fixture_id: delegated
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar05.md
+    - requirement: FR-11
+      operationId: cancelAgentRun
+      test_id: ar05_browser_cancel_persists_across_reload
+      fixture_id: agent_run
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar05.md

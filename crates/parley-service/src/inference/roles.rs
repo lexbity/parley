@@ -324,8 +324,8 @@ async fn process_interviewer_result(
     let turns = input["turns"]
         .as_array()
         .ok_or("ROLE_INPUT: missing turns")?;
-    let allowed: std::collections::BTreeSet<&str> = crate::assistant::allowed_fields(kind)
-        .ok_or("ROLE_INPUT: unsupported asset kind")?;
+    let allowed: std::collections::BTreeSet<&str> =
+        crate::assistant::allowed_fields(kind).ok_or("ROLE_INPUT: unsupported asset kind")?;
     let mut fields = input["current_fields"]
         .as_object()
         .cloned()
@@ -546,10 +546,7 @@ async fn process_briefer_result(
         tx.rollback().await.map_err(|e| e.to_string())?;
         return Err("STALE: brief job is no longer current".into());
     }
-    if jobs::scoped_job_fence(&mut tx, job_id)
-        .await
-        .is_err()
-    {
+    if jobs::scoped_job_fence(&mut tx, job_id).await.is_err() {
         tx.rollback().await.map_err(|e| e.to_string())?;
         return Err("STALE: the initiating run revoked or the epoch changed".into());
     }

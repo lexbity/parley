@@ -8,6 +8,7 @@
     "node": "26.12.0"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "1.6.0",
     "@earendil-works/pi-ai": "1.6.0",
     "@huggingface/tokenizers": "0.2.0",
     "ajv": "8.20.0",
@@ -18,7 +19,7 @@
     "test": "node --test"
   },
   "devDependencies": {
-    "eslint": "10.15.0",
-    "esbuild": "0.28.2"
+    "esbuild": "0.28.2",
+    "eslint": "10.15.0"
   }
 }
