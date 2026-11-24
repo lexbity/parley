@@ -6,12 +6,12 @@
  * run in browser storage. Every start and cancellation carries its own
  * operation key, and a generation/epoch change stops polling immediately.
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 const props = defineProps<{
   navigate?: (path: string) => void;
 }>();
-import { newOperationKey, parley, type GraphEntity, type OpportunitySummary } from '../../api/client';
+import { newOperationKey, parley } from '../../api/client';
 import {
   RUN_PERMISSIONS, RUN_STATES,
   CommandApiError,
@@ -58,8 +58,9 @@ const selectedTargets = ref<string[]>([]);
 const permissions = ref<RunPermission[]>(['party.read', 'opportunity.read']);
 const allowCreated = ref(false);
 const acknowledged = ref(false);
-const parties = ref<GraphEntity[]>([]);
-const opportunities = ref<OpportunitySummary[]>([]);
+const targets = ref<TargetOption[]>([]);
+const domainEmpty = ref(false);
+const selectedMeta = ref<Record<string, TargetOption>>({});
 const loadingTargets = ref(true);
 const targetError = ref('');
 const runsLoading = ref(true);
@@ -91,20 +92,34 @@ function isVisible(): boolean {
 
 type TargetOption = { key: string; label: string; kind: RunTargetKind; id: string };
 
-const allTargets = computed<TargetOption[]>(() => [
-  ...parties.value.map((party): TargetOption => ({ key: `party:${party.id}`, label: `Party: ${party.name}`, kind: 'party', id: party.id })),
-  ...opportunities.value.map((opportunity): TargetOption => ({ key: `opportunity:${opportunity.id}`, label: `Opportunity: ${opportunity.title}`, kind: 'opportunity', id: opportunity.id })),
-]);
-const targetOptions = computed(() => {
-  const needle = targetQuery.value.trim().toLocaleLowerCase();
-  const matches = needle
-    ? allTargets.value.filter((target) => target.label.toLocaleLowerCase().includes(needle))
-    : allTargets.value;
-  // Only a bounded window is mounted. Selected targets stay visible so they
-  // can always be unselected, regardless of the current filter.
-  const pinned = matches.filter((target) => selectedTargets.value.includes(target.key));
-  return [...pinned, ...matches.filter((target) => !pinned.includes(target))].slice(0, 50);
+// Targets are read from the bounded server projections. Typeahead widens to
+// the whole domain instead of searching a stale client-side copy.
+async function searchTargets(q: string) {
+  const needle = q.trim();
+  const [partyPage, opportunityPage] = await Promise.all([
+    parley.queryDirectory({ q: needle || undefined, limit: 50 }),
+    parley.listOpportunitiesPage({ q: needle, limit: 50 }),
+  ]);
+  const found: TargetOption[] = [
+    ...partyPage.rows.map(party => ({ key: `party:${party.id}`, label: `Party: ${party.name}`, kind: 'party' as const, id: party.id })),
+    ...opportunityPage.items.map(item => ({ key: `opportunity:${item.id}`, label: `Opportunity: ${item.title}`, kind: 'opportunity' as const, id: item.id })),
+  ];
+  if (!needle) domainEmpty.value = found.length === 0;
+  for (const option of found) if (selectedTargets.value.includes(option.key)) selectedMeta.value[option.key] = option;
+  const pinned = Object.values(selectedMeta.value).filter(option => selectedTargets.value.includes(option.key));
+  targets.value = [...new Map([...pinned, ...found].map(option => [option.key, option])).values()].slice(0, 50);
+}
+const targetOptions = computed(() => targets.value);
+let targetTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
+watch(targetQuery, value => {
+  if (targetTimer) globalThis.clearTimeout(targetTimer);
+  targetTimer = globalThis.setTimeout(() => { void searchTargets(value); }, 120);
 });
+watch(selectedTargets, chosen => {
+  const next = { ...selectedMeta.value };
+  for (const option of targets.value) if (chosen.includes(option.key)) next[option.key] = option;
+  selectedMeta.value = next;
+}, { immediate: true });
 const taskBytes = computed(() => new TextEncoder().encode(task.value).length);
 const canStart = computed(() => !stale.value && !busy.value && !!task.value.trim()
   && taskBytes.value <= MAX_TASK_BYTES && selectedTargets.value.length > 0
@@ -192,13 +207,10 @@ async function load() {
     markStale(message(reason, 'The workspace session is unavailable.'));
     return;
   }
-  const [partyResult, opportunityResult, runResult] = await Promise.allSettled([
-    parley.listParties(), parley.listOpportunities(), commands.listRuns({ limit: 20 }),
+  const [targetResult, runResult] = await Promise.allSettled([
+    searchTargets(targetQuery.value), commands.listRuns({ limit: 20 }),
   ]);
-  if (partyResult.status === 'fulfilled') parties.value = partyResult.value;
-  else targetError.value = message(partyResult.reason, 'Could not load parties.');
-  if (opportunityResult.status === 'fulfilled') opportunities.value = opportunityResult.value;
-  else targetError.value = targetError.value || message(opportunityResult.reason, 'Could not load opportunities.');
+  if (targetResult.status === 'rejected') targetError.value = message(targetResult.reason, 'Could not load targets.');
   if (runResult.status === 'fulfilled') {
     applyRuns(runResult.value.items);
     // One authoritative read when the view opens; later polls only refresh
@@ -301,7 +313,7 @@ async function start() {
   actionError.value = '';
   status.value = '';
   const chosen = new Set(selectedTargets.value);
-  const targets = allTargets.value.filter((option) => chosen.has(option.key)).map((option) => ({ kind: option.kind, id: option.id }));
+  const targets = Object.values(selectedMeta.value).filter((option) => chosen.has(option.key)).map((option) => ({ kind: option.kind, id: option.id }));
   const key = newOperationKey();
   try {
     const started = await commands.startRun({
@@ -408,6 +420,7 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   disposed = true;
+  if (targetTimer) globalThis.clearTimeout(targetTimer);
   globalThis.removeEventListener('parley:workspace-changed', onWorkspaceChanged);
   globalThis.removeEventListener('parley:workspace-quarantined', onWorkspaceChanged);
   globalThis.document?.removeEventListener('visibilitychange', onVisibility);
@@ -485,7 +498,7 @@ onBeforeUnmount(() => {
       >
         {{ targetError }}
       </p>
-      <p v-else-if="!allTargets.length">
+      <p v-else-if="domainEmpty">
         No parties or opportunities are available to delegate.
       </p>
       <p v-else-if="!targetOptions.length">

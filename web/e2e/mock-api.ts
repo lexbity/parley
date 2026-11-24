@@ -3027,7 +3027,21 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       return json(response, 200, { archived_list: source, destination_list: destination, moved: moved.map((card, index) => ({ opportunity_id: card.opportunity.id, position: nextPosition + index, placement_revision: placements.get(String(card.opportunity.id))!.placement_revision })) });
     }
     if (url.pathname === '/api/v1/opportunities' && request.method === 'GET') {
-      return json(response, 200, [...opportunities.values()].map(opportunity => {
+      const params = url.searchParams;
+      const needle = params.get('q')?.trim().toLocaleLowerCase() ?? '';
+      const status = params.get('status');
+      const partyIds = params.getAll('party_id');
+      const tags = params.getAll('tag');
+      const sort = params.get('sort') ?? 'updated_at';
+      const descending = params.get('order') === 'desc';
+      const limitRaw = params.get('limit');
+      const limit = limitRaw === null ? null : Number(limitRaw);
+      const offset = Number(params.get('cursor') ?? 0);
+      const rows: Array<{
+        id: string; title: string; state: string; revision: number;
+        participants: Array<{ id: string; name: string; kind: string }>;
+        tags: string[]; next_task: string | null; next_deadline: string | null; missing_material: boolean;
+      }> = [...opportunities.values()].map(opportunity => {
         const id = String(opportunity.id);
         const participants = (opportunity.participant_ids as string[]).flatMap(partyId => {
           const entity = directory.get(partyId);
@@ -3037,11 +3051,32 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
           thread.opportunity_id === id && thread.state === 'waiting' && typeof thread.expires_at === 'string'
             ? [thread.expires_at] : []);
         return {
-          id, title: opportunity.title, state: opportunity.state, revision: opportunity.revision, participants,
-          tags: opportunity.tags ?? [], next_task: notesRecord(id).next_task,
+          id, title: String(opportunity.title), state: String(opportunity.state), revision: Number(opportunity.revision), participants,
+          tags: Array.isArray(opportunity.tags) ? opportunity.tags.map(String) : [], next_task: notesRecord(id).next_task,
           next_deadline: deadlines.sort()[0] ?? null, missing_material: ![...materialRecords.values()].some(material => material.opportunity_id === id),
         };
-      }));
+      }).filter(row => {
+        if (status && row.state !== status) return false;
+        if (partyIds.length && !row.participants.some(party => partyIds.includes(party.id))) return false;
+        if (tags.length && !row.tags.some(tag => tags.includes(tag))) return false;
+        if (!needle) return true;
+        return row.title.toLocaleLowerCase().includes(needle)
+          || row.participants.some(party => party.name.toLocaleLowerCase().includes(needle));
+      });
+      const value = (row: { title: string; next_task: string | null; next_deadline: string | null }) =>
+        sort === 'next_task' ? row.next_task : sort === 'deadline' ? row.next_deadline : row.title;
+      rows.sort((left, right) => {
+        const a = value(left) ?? '';
+        const b = value(right) ?? '';
+        return (a < b ? -1 : a > b ? 1 : 0) * (descending ? -1 : 1) || left.id.localeCompare(right.id);
+      });
+      if (limit === null) return json(response, 200, rows);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 200 || !Number.isInteger(offset) || offset < 0) {
+        return fail(response, 422, 'OPPORTUNITY_PAGE_INVALID', 'Invalid opportunity page.');
+      }
+      const page = rows.slice(offset, offset + limit);
+      const next = offset + page.length;
+      return json(response, 200, { items: page, next_cursor: next < rows.length ? String(next) : null });
     }
     const opportunityById = /^\/api\/v1\/opportunities\/([^/]+)$/.exec(url.pathname);
     if (opportunityById && request.method === 'GET') {
@@ -3180,6 +3215,12 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     }
     if (url.pathname === '/api/v1/outputs' && request.method === 'GET') {
       return json(response, 200, [...outputs.values()]);
+    }
+    const materialById = /^\/api\/v1\/materials\/([^/]+)$/.exec(url.pathname);
+    if (materialById && request.method === 'GET') {
+      const material = outputs.get(materialById[1]!);
+      if (!material) return fail(response, 404, 'NOT_FOUND', 'Material does not exist');
+      return json(response, 200, material);
     }
     if (url.pathname === '/api/v1/uploads' && request.method === 'POST') {
       const chunks: Buffer[] = [];

@@ -20,10 +20,14 @@ function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [],
   vi.spyOn(parley, 'connect').mockResolvedValue();
   vi.spyOn(commands, 'query').mockResolvedValue({ contract_major: 1, manifest_version: 'sha256:test', truncated: false, commands: [] });
   vi.spyOn(parley, 'getEvents').mockResolvedValue({ items: [], next_cursor: '0', observed_cursor: '0' });
+  vi.spyOn(parley, 'queryDirectory').mockResolvedValue({ rows: parties, nextCursor: null, fence: '0' });
   vi.spyOn(parley, 'listResources').mockResolvedValue([]);
   vi.spyOn(parley, 'listParties').mockResolvedValue(parties);
   vi.spyOn(parley, 'listSources').mockResolvedValue(sources);
   vi.spyOn(parley, 'listOpportunities').mockResolvedValue([]);
+  vi.spyOn(parley, 'listOpportunitiesPage').mockResolvedValue({ items: [], nextCursor: null });
+  vi.spyOn(parley, 'getOpportunity').mockRejectedValue(new Error('no opportunity'));
+  vi.spyOn(parley, 'getEntity').mockRejectedValue(new Error('no entity'));
   vi.spyOn(parley, 'listOutputs').mockResolvedValue([]);
   vi.spyOn(parley, 'listWritingTemplates').mockResolvedValue([]);
   vi.spyOn(parley, 'listTemplateFamilies').mockResolvedValue([]);
@@ -170,6 +174,7 @@ describe('AppShell', () => {
     };
     stubWorkspace([party], [source]);
     vi.spyOn(parley, 'listOpportunities').mockResolvedValue([opportunity]);
+    vi.spyOn(parley, 'listOpportunitiesPage').mockResolvedValue({ items: [opportunity], nextCursor: null });
     const openReview = vi.spyOn(parley, 'getCaptureProposals').mockResolvedValue(job);
     const resolve = vi.spyOn(parley, 'resolveProposals').mockResolvedValue({ status: 'partially_applied' });
     vi.spyOn(parley, 'getExtractorJob').mockResolvedValue(job);
@@ -381,6 +386,9 @@ describe('AppShell', () => {
     });
     vi.spyOn(parley, 'listOutputs').mockResolvedValue([queued]);
     vi.spyOn(parley, 'listOpportunities').mockResolvedValue([{ id: 'o1', title: 'Onboarding exchange', state: 'open', revision: 1, participants: [{ id: 'p1', kind: 'person', name: 'Dana Lee' }], tags: [], next_task: null, next_deadline: null, missing_material: true }]);
+    vi.spyOn(parley, 'listOpportunitiesPage').mockResolvedValue({ items: [{ id: 'o1', title: 'Onboarding exchange', state: 'open', revision: 1, participants: [{ id: 'p1', kind: 'person', name: 'Dana Lee' }], tags: [], next_task: null, next_deadline: null, missing_material: true }], nextCursor: null });
+    vi.spyOn(parley, 'getOpportunity').mockResolvedValue({ id: 'o1', title: 'Onboarding exchange', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: [] });
+    vi.spyOn(parley, 'getEntity').mockResolvedValue({ id: 'p1', kind: 'person', name: 'Dana Lee', focus: '', revision: 1 });
     const createOpportunity = vi.spyOn(parley, 'createOpportunity').mockResolvedValue(created);
     const wrapper = mount(AppShell);
     await flushPromises();
@@ -409,6 +417,9 @@ describe('AppShell', () => {
     const approved: Material = { id: 'm1', opportunity_id: 'o1', recipient_id: 'p1', recipient_name: 'Dana Lee', kind: 'outreach', version: 1, body: 'Hi Dana.', content_sha256: 'c42a55643d4c6762196d5271afcb9f8ed6beb3a828f1b201a321cfcb6b89aad2', status: 'approved', gate: null, attachment: null };
     stubWorkspace([{ id: 'p1', kind: 'person', name: 'Dana Lee', revision: 1 }]);
     vi.spyOn(parley, 'listOpportunities').mockResolvedValue([{ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participants: [{ id: 'p1', kind: 'person', name: 'Dana Lee' }], tags: [], next_task: null, next_deadline: null, missing_material: false }]);
+    vi.spyOn(parley, 'listOpportunitiesPage').mockResolvedValue({ items: [{ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participants: [{ id: 'p1', kind: 'person', name: 'Dana Lee' }], tags: [], next_task: null, next_deadline: null, missing_material: false }], nextCursor: null });
+    vi.spyOn(parley, 'getOpportunity').mockResolvedValue({ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: [] });
+    vi.spyOn(parley, 'getEntity').mockResolvedValue({ id: 'p1', kind: 'person', name: 'Dana Lee', focus: '', revision: 1 });
     vi.spyOn(parley, 'listOutputs').mockResolvedValue([approved]);
     vi.spyOn(parley, 'createOpportunity').mockRejectedValueOnce(new Error('opportunity denied'));
     const release = vi.spyOn(parley, 'releaseMaterial').mockResolvedValue({ release_id: 'r1', material_id: 'm1', version: 1, recipient_id: 'p1', body: 'Hi Dana.', content_sha256: approved.content_sha256, issued_at: '2026-11-21T12:00:00Z', attachment: null });
@@ -445,6 +456,9 @@ describe('AppShell', () => {
     const draft: Material = { ...approved, id: 'm3', version: 1, status: 'draft', gate: null, attachment: null };
     stubWorkspace([{ id: 'p1', kind: 'person', name: 'Dana Lee', revision: 1 }]);
     vi.spyOn(parley, 'listOpportunities').mockResolvedValue([{ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participants: [{ id: 'p1', kind: 'person', name: 'Dana Lee' }], tags: [], next_task: null, next_deadline: null, missing_material: false }]);
+    vi.spyOn(parley, 'listOpportunitiesPage').mockResolvedValue({ items: [{ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participants: [{ id: 'p1', kind: 'person', name: 'Dana Lee' }], tags: [], next_task: null, next_deadline: null, missing_material: false }], nextCursor: null });
+    vi.spyOn(parley, 'getOpportunity').mockResolvedValue({ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: [] });
+    vi.spyOn(parley, 'getEntity').mockResolvedValue({ id: 'p1', kind: 'person', name: 'Dana Lee', focus: '', revision: 1 });
     vi.spyOn(parley, 'listOutputs').mockResolvedValue([approved, draft]);
     vi.spyOn(parley, 'evaluateMaterialGate').mockResolvedValue({ checks: [], copy_enabled: true });
     vi.spyOn(parley, 'releaseMaterial').mockResolvedValue({ release_id: 'r2', material_id: 'm2', version: 2, recipient_id: 'p1', body: 'Hi Dana.', content_sha256: approved.content_sha256, issued_at: '2026-11-21T12:00:00Z', attachment: null });
@@ -484,36 +498,33 @@ describe('AppShell', () => {
 
   it('skips large collection refetches on tab switches when no events occurred', async () => {
     stubWorkspace();
-    const listParties = vi.spyOn(parley, 'listParties');
-    const listOpportunities = vi.spyOn(parley, 'listOpportunities');
+    const listSources = vi.spyOn(parley, 'listSources');
+    const listOutputs = vi.spyOn(parley, 'listOutputs');
     const getEvents = vi.spyOn(parley, 'getEvents');
     const wrapper = mount(AppShell);
     await flushPromises();
 
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
     await flushPromises();
-    expect(listParties).toHaveBeenCalledTimes(1);
-    expect(listOpportunities).toHaveBeenCalledTimes(1);
+    expect(listSources).toHaveBeenCalledTimes(1);
 
-    // Queue shares the parties collection, so it reads it once; returning to
-    // Parties with no new events must not re-read either unbounded collection.
+    // Returning to a tab with no new events must not re-read its collections.
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(3)').trigger('click');
     await flushPromises();
-    expect(listParties).toHaveBeenCalledTimes(2);
+    expect(listOutputs).toHaveBeenCalledTimes(1);
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(2)').trigger('click');
     await flushPromises();
-    expect(listParties).toHaveBeenCalledTimes(2);
-    expect(listOpportunities).toHaveBeenCalledTimes(1);
+    expect(listSources).toHaveBeenCalledTimes(1);
     expect(getEvents).toHaveBeenCalled();
 
-    // A new event invalidates the cached collections on the next activation.
+    // A new event invalidates the cached tab on the next activation.
     getEvents.mockResolvedValueOnce({
       items: [{ cursor: '9', event_id: 'e9', entity_type: 'entity', entity_id: 'p1', revision: 2, event_type: 'entity.created', occurred_at: '2026-11-24T00:00:00Z', payload: {} }],
       next_cursor: '9', observed_cursor: '9',
     });
     await wrapper.get('nav[aria-label="Main navigation"] a:nth-child(3)').trigger('click');
     await flushPromises();
-    expect(listParties).toHaveBeenCalledTimes(3);
+    expect(listOutputs).toHaveBeenCalledTimes(2);
     wrapper.unmount();
   });
 

@@ -20,6 +20,7 @@ const erasure: ErasePreview = {
 
 beforeEach(() => {
   vi.spyOn(parley, 'getMaintenanceSettings').mockResolvedValue({ backup_directory: '/backups', interval_hours: 24, retention_count: 14, revision: 1, last_successful_at: null });
+  vi.spyOn(parley, 'queryDirectory').mockResolvedValue({ rows: parties, nextCursor: null, fence: '0' });
   vi.spyOn(parley, 'listBackups').mockResolvedValue({ items: [backup], last_successful_at: null });
   vi.spyOn(parley, 'updateMaintenanceSettings').mockResolvedValue({ backup_directory: '/backups', interval_hours: 48, retention_count: 14, revision: 2, last_successful_at: null });
   vi.spyOn(parley, 'createBackup').mockResolvedValue(backup);
@@ -45,7 +46,7 @@ function button(wrapper: ReturnType<typeof mount>, label: string) {
 
 describe('MaintenanceSettings', () => {
   it('saves the schedule, creates a backup and exports private data', async () => {
-    const wrapper = mount(MaintenanceSettings, { props: { parties } });
+    const wrapper = mount(MaintenanceSettings);
     await flushPromises();
     expect(wrapper.text()).toContain('Verified backup');
     await wrapper.get('input[maxlength="4096"]').setValue('/new/backups');
@@ -65,7 +66,7 @@ describe('MaintenanceSettings', () => {
   });
 
   it('previews and commits a verified restore only after acknowledgement', async () => {
-    const wrapper = mount(MaintenanceSettings, { props: { parties } });
+    const wrapper = mount(MaintenanceSettings);
     await flushPromises();
     await button(wrapper, 'Verify restore preview').trigger('click');
     await flushPromises();
@@ -79,7 +80,7 @@ describe('MaintenanceSettings', () => {
   });
 
   it('validates an import archive before committing to an empty workspace', async () => {
-    const wrapper = mount(MaintenanceSettings, { props: { parties } });
+    const wrapper = mount(MaintenanceSettings);
     await flushPromises();
     const file = new File(['zip'], 'export.zip', { type: 'application/zip' });
     const input = wrapper.get('input[accept=".zip,application/zip"]');
@@ -99,7 +100,7 @@ describe('MaintenanceSettings', () => {
   });
 
   it('previews an erasure and completes it after a fresh session and cleanup', async () => {
-    const wrapper = mount(MaintenanceSettings, { props: { parties } });
+    const wrapper = mount(MaintenanceSettings);
     await flushPromises();
     const panel = wrapper.get('section[aria-label="Erase a party"]');
     await panel.get('select').setValue('p1');

@@ -1,4 +1,4 @@
-import { mount } from '@vue/test-utils';
+import { flushPromises, mount } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import SearchableSelect from './SearchableSelect.vue';
 import type { SelectOption } from './select-options';
@@ -35,6 +35,27 @@ describe('SearchableSelect', () => {
     expect(values).toContain('o150');
     expect(values.length).toBeLessThanOrEqual(50);
     expect(values.every(value => options.find(option => option.value === value)?.label.includes('15'))).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('queries the server per debounced term in async mode', async () => {
+    const search = vi.fn(async (term: string) =>
+      options.filter(option => option.label.toLocaleLowerCase().includes(term.toLocaleLowerCase())),
+    );
+    const wrapper = mount(SearchableSelect, {
+      props: { modelValue: '', options: options.slice(0, 50), label: 'Opportunity', id: 'pick', search },
+    });
+    expect(search).toHaveBeenCalledWith('');
+    search.mockClear();
+    await wrapper.get('input[type="search"]').setValue('Opportunity 15');
+    expect(search).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(120);
+    await flushPromises();
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(search).toHaveBeenCalledWith('Opportunity 15');
+    const values = wrapper.findAll('option').map(option => option.element.value);
+    expect(values).toContain('o150');
+    expect(values.length).toBeLessThanOrEqual(50);
     wrapper.unmount();
   });
 

@@ -31,8 +31,16 @@ function setup(options: {
   runStatus?: RunStatus; transcript?: TranscriptPage; failList?: boolean; failTranscript?: boolean;
 } = {}) {
   vi.spyOn(parley, 'connect').mockResolvedValue();
-  vi.spyOn(parley, 'listParties').mockResolvedValue(options.parties ?? [party]);
-  vi.spyOn(parley, 'listOpportunities').mockResolvedValue(options.opportunities ?? [opportunity]);
+  const partyList = options.parties ?? [party];
+  const opportunityList = options.opportunities ?? [opportunity];
+  vi.spyOn(parley, 'queryDirectory').mockImplementation(async (filters = {}) => ({
+    rows: partyList.filter(row => (row.name.toLocaleLowerCase().includes((filters.q ?? '').toLocaleLowerCase()))),
+    nextCursor: null, fence: '0',
+  }));
+  vi.spyOn(parley, 'listOpportunitiesPage').mockImplementation(async (filters = {}) => ({
+    items: opportunityList.filter(item => item.title.toLocaleLowerCase().includes((filters.q ?? '').toLocaleLowerCase())),
+    nextCursor: null,
+  }));
   vi.spyOn(parley, 'refreshSession').mockResolvedValue();
   const epoch = { value: 'epoch-1' };
   vi.spyOn(parley, 'workspaceEpoch', 'get').mockImplementation(() => epoch.value);
@@ -71,6 +79,7 @@ describe('DelegatedRuns U02 owner consent', () => {
   });
 
   it('distinguishes loading, empty, no-match and failure states', async () => {
+    vi.useFakeTimers();
     const empty = setup({ parties: [], opportunities: [] });
     await flushPromises();
     expect(empty.wrapper.text()).toContain('No parties or opportunities are available to delegate.');
@@ -82,6 +91,8 @@ describe('DelegatedRuns U02 owner consent', () => {
     const filtered = setup({ runs: [queued] });
     await flushPromises();
     await filtered.wrapper.get('[aria-label="Filter available targets"]').setValue('missing');
+    await vi.advanceTimersByTimeAsync(120);
+    await flushPromises();
     expect(filtered.wrapper.text()).toContain('No targets match this filter.');
     await filtered.wrapper.get('[aria-label="Filter runs by state"]').setValue('succeeded');
     expect(filtered.wrapper.text()).toContain('No runs match this state filter.');

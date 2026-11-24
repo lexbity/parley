@@ -2,9 +2,11 @@
 /* global File, URL, document, Event, HTMLInputElement, setTimeout */
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { ApiError, parley, type BackupRecord, type ErasePreview, type GraphEntity, type MaintenanceOperation, type MaintenanceSettings as Settings, type RestorePreview } from '../../api/client';
-const props=defineProps<{parties:GraphEntity[]}>(); const emit=defineEmits<{erased:[]}>();
+const emit=defineEmits<{erased:[]}>();
+const parties=ref<GraphEntity[]>([]);
+async function loadParties(){ const page=await parley.queryDirectory({limit:200}); parties.value=page.rows; }
 const settingsLoading=ref(true); const settingsDirty=ref(false);
-const settings=ref<Settings>({backup_directory:'',interval_hours:24,retention_count:14,revision:1,last_successful_at:null}); const backups=ref<BackupRecord[]>([]); const selectedBackup=ref(''); const restorePreview=ref<RestorePreview|null>(null); const importFile=ref<File|null>(null); const importPreview=ref<RestorePreview|null>(null); const emptyTarget=ref(false); const acknowledge=ref(false); const partyId=ref(''); const erasure=ref<ErasePreview|null>(null); const typedName=ref(''); const status=ref(''); const error=ref(''); const busy=ref(false); const partyName=computed(()=>props.parties.find((p)=>p.id===partyId.value)?.name??''); const nameMatches=computed(()=>typedName.value===partyName.value && !!partyName.value);
+const settings=ref<Settings>({backup_directory:'',interval_hours:24,retention_count:14,revision:1,last_successful_at:null}); const backups=ref<BackupRecord[]>([]); const selectedBackup=ref(''); const restorePreview=ref<RestorePreview|null>(null); const importFile=ref<File|null>(null); const importPreview=ref<RestorePreview|null>(null); const emptyTarget=ref(false); const acknowledge=ref(false); const partyId=ref(''); const erasure=ref<ErasePreview|null>(null); const typedName=ref(''); const status=ref(''); const error=ref(''); const busy=ref(false); const partyName=computed(()=>parties.value.find((p)=>p.id===partyId.value)?.name??''); const nameMatches=computed(()=>typedName.value===partyName.value && !!partyName.value);
 const eraseNameInput = ref<HTMLInputElement | null>(null);
 const restoreConfirmation = ref<HTMLInputElement | null>(null);
 const importConfirmation = ref<HTMLInputElement | null>(null);
@@ -90,7 +92,7 @@ async function erase() {
     await load();
   });
 }
-onMounted(()=>void load());
+onMounted(()=>{ void load(); void loadParties(); });
 </script>
 <template>
   <section

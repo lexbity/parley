@@ -1127,6 +1127,12 @@ export class ParleyClient {
     return data as GraphEntity[];
   }
 
+  async getEntity(id: string): Promise<GraphEntity> {
+    const envelope = object(await this.request(`/entities/${encodeURIComponent(id)}`));
+    if (!envelope || !object(envelope.data)) throw new Error('Invalid response: entity read is malformed');
+    return decodeGraphEntity(envelope.data);
+  }
+
   async queryDirectory(options: { kind?: GraphEntity['kind']; q?: string; sort?: string; batch_id?: string; cursor?: string; limit?: number } = {}) {
     const params = new URLSearchParams();
     for (const [name, value] of Object.entries(options)) if (value !== undefined) params.set(name, String(value));
@@ -1332,8 +1338,31 @@ export class ParleyClient {
     return decodeOpportunity(await this.request('/opportunities', { method: 'POST', body: JSON.stringify({ title, primary_party_id }) }));
   }
 
+  /** Unbounded list form is removed at the AR10 cut; use listOpportunitiesPage. */
   async listOpportunities(): Promise<OpportunitySummary[]> {
     return decodeArray(await this.request('/opportunities'), 'opportunities', decodeOpportunitySummary);
+  }
+
+  async listOpportunitiesPage(
+    filters: { q?: string; party_id?: string[]; tag?: string[]; status?: string; sort?: string; order?: string; limit?: number; cursor?: string } = {},
+    signal?: AbortSignal,
+  ): Promise<{ items: OpportunitySummary[]; nextCursor: string | null }> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value === undefined || value === null || value === '') continue;
+      if (Array.isArray(value)) for (const item of value) params.append(key, item);
+      else params.set(key, String(value));
+    }
+    if (!params.has('limit')) params.set('limit', '50');
+    const payload = object(await this.request(`/opportunities?${params.toString()}`, { signal }));
+    if (!payload || !Array.isArray(payload.items)
+      || (payload.next_cursor !== null && typeof payload.next_cursor !== 'string')) {
+      throw new Error('Invalid response: opportunity page is malformed');
+    }
+    return {
+      items: payload.items.map(decodeOpportunitySummary),
+      nextCursor: payload.next_cursor,
+    };
   }
 
   async getOpportunity(id: string, signal?: AbortSignal): Promise<Opportunity> {

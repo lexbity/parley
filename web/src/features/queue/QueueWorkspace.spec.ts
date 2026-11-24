@@ -9,6 +9,7 @@ import QueueWorkspace from './QueueWorkspace.vue';
 beforeEach(() => {
   installCommandRegistry(createCommandRegistry(vi.fn()));
   vi.spyOn(commands, 'query').mockResolvedValue({ contract_major: 1, manifest_version: 'sha256:test', truncated: false, commands: [] });
+  vi.spyOn(parley, 'queryDirectory').mockResolvedValue({ rows: [{ id: 'p1', kind: 'person', name: 'Dana Lee', revision: 1 }], nextCursor: null, fence: '0' });
 });
 
 afterEach(() => {
