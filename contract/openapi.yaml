@@ -2385,6 +2385,152 @@ paths:
         '403': {$ref: '#/components/responses/AgentError'}
         '409': {$ref: '#/components/responses/AgentError'}
         '503': {$ref: '#/components/responses/AgentError'}
+  /approvals:
+    get:
+      operationId: listApprovals
+      summary: List owner-authorized approvals with an opaque cursor.
+      description: >
+        Owner session, mutation token and epoch are required. The status
+        filter accepts the closed approval status set. Active rows carry the
+        exact normalized args and the observational preview; terminal rows
+        omit them.
+      security: [{sessionCookie: []}]
+      parameters:
+      - {in: query, name: status, required: false, schema: {type: string, enum: [pending, granted, consumed, denied, revoked, expired, stale]}}
+      - {in: query, name: limit, required: false, schema: {type: integer, minimum: 1, maximum: 100}}
+      - {in: query, name: cursor, required: false, schema: {type: string}}
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Paginated approval list; never cached or shared.
+          headers:
+            Cache-Control: {$ref: '#/components/headers/PrivateNoStore'}
+            X-Parley-Epoch: {$ref: '#/components/headers/ParleyEpoch'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApprovalList'}
+        '400': {$ref: '#/components/responses/AgentError'}
+        '401': {$ref: '#/components/responses/AgentError'}
+        '403': {$ref: '#/components/responses/AgentError'}
+  /approvals/{id}:
+    get:
+      operationId: getApproval
+      summary: Read one approval detail (owner-only).
+      description: >
+        Active records include the exact private args and the preview; any
+        terminal status omits both. Unknown, foreign or epoch-stale ids
+        return the same 404 as a missing record.
+      security: [{sessionCookie: []}]
+      parameters:
+      - {in: path, name: id, required: true, schema: {type: string, minLength: 1, maxLength: 128}}
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Approval detail with args and preview for active rows.
+          headers:
+            Cache-Control: {$ref: '#/components/headers/PrivateNoStore'}
+            X-Parley-Epoch: {$ref: '#/components/headers/ParleyEpoch'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApprovalDetail'}
+        '401': {$ref: '#/components/responses/AgentError'}
+        '403': {$ref: '#/components/responses/AgentError'}
+        '404': {$ref: '#/components/responses/AgentError'}
+  /approvals/{id}/grant:
+    post:
+      operationId: grantApproval
+      summary: Approve one frozen destructive intent.
+      description: >
+        Posts the expected approval revision and the preview digest seen by
+        the owner. A decision on a changed revision returns 409
+        approval_stale; an exact replay with the same Idempotency-Key
+        returns the original outcome. A deny at the current revision revokes
+        a previously granted approval.
+      security: [{sessionCookie: []}]
+      parameters:
+      - {in: path, name: id, required: true, schema: {type: string, minLength: 1, maxLength: 128}}
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/AgentIdempotencyKey'
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ApprovalDecisionInput'}}}
+      responses:
+        '200':
+          description: Decision committed; returns the new approval revision and status.
+          headers:
+            Cache-Control: {$ref: '#/components/headers/PrivateNoStore'}
+            X-Parley-Epoch: {$ref: '#/components/headers/ParleyEpoch'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApprovalDecisionResult'}
+        '400': {$ref: '#/components/responses/AgentError'}
+        '401': {$ref: '#/components/responses/AgentError'}
+        '403': {$ref: '#/components/responses/AgentError'}
+        '404': {$ref: '#/components/responses/AgentError'}
+        '409': {$ref: '#/components/responses/AgentError'}
+        '422': {$ref: '#/components/responses/AgentError'}
+        '503': {$ref: '#/components/responses/AgentError'}
+  /approvals/{id}/deny:
+    post:
+      operationId: denyApproval
+      summary: Deny one frozen destructive intent (revoking a grant if granted).
+      description: >
+        Same decision envelope as grant. A deny at the current revision of a
+        granted approval revokes it; terminal denials replay exactly.
+      security: [{sessionCookie: []}]
+      parameters:
+      - {in: path, name: id, required: true, schema: {type: string, minLength: 1, maxLength: 128}}
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      - $ref: '#/components/parameters/AgentIdempotencyKey'
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ApprovalDecisionInput'}}}
+      responses:
+        '200':
+          description: Decision committed; returns the new approval revision and status.
+          headers:
+            Cache-Control: {$ref: '#/components/headers/PrivateNoStore'}
+            X-Parley-Epoch: {$ref: '#/components/headers/ParleyEpoch'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApprovalDecisionResult'}
+        '400': {$ref: '#/components/responses/AgentError'}
+        '401': {$ref: '#/components/responses/AgentError'}
+        '403': {$ref: '#/components/responses/AgentError'}
+        '404': {$ref: '#/components/responses/AgentError'}
+        '409': {$ref: '#/components/responses/AgentError'}
+        '422': {$ref: '#/components/responses/AgentError'}
+        '503': {$ref: '#/components/responses/AgentError'}
+  /command-notifications:
+    get:
+      operationId: commandNotifications
+      summary: Owner-only fetch-based SSE stream for command signals.
+      description: >
+        Same-origin fetch-based SSE with owner headers. Emits only
+        approvals_changed, run_changed and epoch_changed signals plus a
+        15 s heartbeat; clients re-read authoritative state after each
+        signal and after reconnect. HTTP polling is the fallback when the
+        stream is unavailable.
+      security: [{sessionCookie: []}]
+      parameters:
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: text/event-stream with bounded signals and heartbeat.
+          headers:
+            Cache-Control: {$ref: '#/components/headers/PrivateNoStore'}
+            X-Parley-Epoch: {$ref: '#/components/headers/ParleyEpoch'}
+          content:
+            text/event-stream:
+              schema: {type: string}
+        '401': {$ref: '#/components/responses/AgentError'}
+        '403': {$ref: '#/components/responses/AgentError'}
+        '503': {$ref: '#/components/responses/AgentError'}
   /insights:
     get:
       operationId: getInsights
@@ -6696,6 +6842,51 @@ components:
       properties:
         run_id: {type: string, minLength: 1, maxLength: 128}
         state: {type: string, enum: [cancelled, unchanged]}
+      additionalProperties: false
+    ApprovalListItem:
+      type: object
+      description: Owner-visible approval row. Active rows include args and preview; terminal rows omit them (FR-8).
+      required: [id, command_id, command_version, revision, status, expires_at, preview_digest]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 128}
+        command_id: {type: string, minLength: 1, maxLength: 64}
+        command_version: {type: integer, minimum: 1}
+        revision: {type: integer, minimum: 1}
+        status: {type: string, enum: [pending, granted, consumed, denied, revoked, expired, stale]}
+        expires_at: {type: string, format: date-time}
+        preview_digest: {type: string, minLength: 64, maxLength: 64}
+        title: {type: string, maxLength: 240}
+        impacted_versions_count: {type: integer, minimum: 0}
+        run_id: {type: string, maxLength: 128}
+        args: {type: object}
+        preview: {type: object}
+      additionalProperties: false
+    ApprovalList:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ApprovalListItem'}}
+        next_cursor: {type: [string, 'null'], maxLength: 512}
+      additionalProperties: false
+    ApprovalDetail:
+      type: object
+      allOf:
+      - $ref: '#/components/schemas/ApprovalListItem'
+      additionalProperties: false
+    ApprovalDecisionInput:
+      type: object
+      required: [expected_revision, preview_digest]
+      properties:
+        expected_revision: {type: integer, minimum: 1}
+        preview_digest: {type: string, minLength: 64, maxLength: 64}
+      additionalProperties: false
+    ApprovalDecisionResult:
+      type: object
+      required: [id, revision, status]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 128}
+        revision: {type: integer, minimum: 1}
+        status: {type: string, enum: [pending, granted, consumed, denied, revoked, expired, stale]}
       additionalProperties: false
     AgentErrorEnvelope:
       type: object

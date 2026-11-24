@@ -62,6 +62,8 @@ pub(crate) struct CommandDescriptor {
     pub result_schema: &'static serde_json::Value,
     pub supports_dry_run: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_schema: Option<&'static serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub when: Option<&'static str>,
     pub palette: PaletteSpec,
 }
@@ -421,8 +423,13 @@ pub(crate) fn validate_registry(descriptors: &[CommandDescriptor]) -> Result<(),
         validate_schema(id, descriptor.args_schema)?;
         validate_schema(id, descriptor.result_schema)?;
         if descriptor.supports_dry_run {
-            // A dry-run command must expose a preview schema; phase commands
-            // do not support dry run in U01.
+            // A dry-run command must expose a generated preview schema and its
+            // result must be an object (FR-4). Preview results are validated
+            // against the preview schema before any dry-run receipt is stored.
+            let preview = descriptor.preview_schema.ok_or_else(|| {
+                format!("descriptor {id:?} supports dry run without a preview schema")
+            })?;
+            validate_schema(id, preview)?;
             if descriptor
                 .result_schema
                 .get("type")
@@ -430,9 +437,13 @@ pub(crate) fn validate_registry(descriptors: &[CommandDescriptor]) -> Result<(),
                 != Some("object")
             {
                 return Err(format!(
-                    "descriptor {id:?} supports dry run without a preview schema"
+                    "descriptor {id:?} supports dry run without an object result schema"
                 ));
             }
+        } else if descriptor.preview_schema.is_some() {
+            return Err(format!(
+                "descriptor {id:?} declares a preview schema without supporting dry run"
+            ));
         }
         if let Some(when) = descriptor.when {
             parse_expr(when).map_err(|error| {

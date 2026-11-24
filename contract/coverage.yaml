@@ -2013,3 +2013,60 @@ slices:
       owner_role: owner
       package_target: rust+mock
       evidence_path: evidence/u07.md
+  u08:
+    - requirement: UCR-FR-8
+      operationId: runCommand
+      test_id: u08_grant_then_same_key_executes_once
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u08.md
+    - requirement: UCR-FR-8
+      operationId: runCommand
+      test_id: u08_denied_intent_fails_closed
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u08.md
+    - requirement: UCR-FR-2
+      operationId: runCommand
+      test_id: u08_stale_dependency_blocks_approved_execution
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u08.md
+    - requirement: UCR-FR-4
+      operationId: runCommand
+      test_id: u08_dry_run_produces_preview_without_effect
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u08.md
+    - requirement: UCR-FR-8
+      operationId: grantApproval
+      test_id: u08_decisions_replay_exactly_and_reject_stale_changes
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u08.md
+    - requirement: UCR-FR-9
+      operationId: runCommand
+      test_id: u08_agent_request_wait_and_resume
+      fixture_id: commands
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/u08.md
+    - requirement: UCR-FR-8
+      operationId: listApprovals
+      test_id: u08_approval_inbox_grant_and_deny
+      fixture_id: commands
+      owner_role: owner
+      package_target: mock
+      evidence_path: evidence/u08.md
+    - requirement: UCR-FR-7
+      operationId: runCommand
+      test_id: u08_owner_palette_retire_waits_for_approval_and_resumes
+      fixture_id: commands
+      owner_role: owner
+      package_target: mock
+      evidence_path: evidence/u08.md

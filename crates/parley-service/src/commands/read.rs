@@ -122,6 +122,7 @@ pub(crate) fn descriptors() -> Vec<&'static CommandDescriptor> {
         args_schema: &PARTY_ARGS_SCHEMA,
         result_schema: &PARTY_RESULT_SCHEMA,
         supports_dry_run: false,
+        preview_schema: None,
         when: None,
         palette: PaletteSpec {
             context_fields: &[],
@@ -142,6 +143,7 @@ pub(crate) fn descriptors() -> Vec<&'static CommandDescriptor> {
         args_schema: &OPPORTUNITY_ARGS_SCHEMA,
         result_schema: &OPPORTUNITY_RESULT_SCHEMA,
         supports_dry_run: false,
+        preview_schema: None,
         when: None,
         palette: PaletteSpec {
             context_fields: &[],
@@ -162,6 +164,7 @@ pub(crate) fn descriptors() -> Vec<&'static CommandDescriptor> {
         args_schema: &RESOURCE_ARGS_SCHEMA,
         result_schema: &RESOURCE_RESULT_SCHEMA,
         supports_dry_run: false,
+        preview_schema: None,
         when: None,
         palette: PaletteSpec {
             context_fields: &[],

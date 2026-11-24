@@ -1271,6 +1271,106 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List owner-authorized approvals with an opaque cursor.
+         * @description Owner session, mutation token and epoch are required. The status filter accepts the closed approval status set. Active rows carry the exact normalized args and the observational preview; terminal rows omit them.
+         */
+        get: operations["listApprovals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one approval detail (owner-only).
+         * @description Active records include the exact private args and the preview; any terminal status omits both. Unknown, foreign or epoch-stale ids return the same 404 as a missing record.
+         */
+        get: operations["getApproval"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/{id}/grant": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve one frozen destructive intent.
+         * @description Posts the expected approval revision and the preview digest seen by the owner. A decision on a changed revision returns 409 approval_stale; an exact replay with the same Idempotency-Key returns the original outcome. A deny at the current revision revokes a previously granted approval.
+         */
+        post: operations["grantApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/{id}/deny": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Deny one frozen destructive intent (revoking a grant if granted).
+         * @description Same decision envelope as grant. A deny at the current revision of a granted approval revokes it; terminal denials replay exactly.
+         */
+        post: operations["denyApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/command-notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Owner-only fetch-based SSE stream for command signals.
+         * @description Same-origin fetch-based SSE with owner headers. Emits only approvals_changed, run_changed and epoch_changed signals plus a 15 s heartbeat; clients re-read authoritative state after each signal and after reconnect. HTTP polling is the fallback when the stream is unavailable.
+         */
+        get: operations["commandNotifications"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/insights": {
         parameters: {
             query?: never;
@@ -3758,6 +3858,38 @@ export interface components {
             run_id: string;
             /** @enum {string} */
             state: "cancelled" | "unchanged";
+        };
+        /** @description Owner-visible approval row. Active rows include args and preview; terminal rows omit them (FR-8). */
+        ApprovalListItem: {
+            id: string;
+            command_id: string;
+            command_version: number;
+            revision: number;
+            /** @enum {string} */
+            status: "pending" | "granted" | "consumed" | "denied" | "revoked" | "expired" | "stale";
+            /** Format: date-time */
+            expires_at: string;
+            preview_digest: string;
+            title?: string;
+            impacted_versions_count?: number;
+            run_id?: string;
+            args?: Record<string, never>;
+            preview?: Record<string, never>;
+        };
+        ApprovalList: {
+            items: components["schemas"]["ApprovalListItem"][];
+            next_cursor: string | null;
+        };
+        ApprovalDetail: components["schemas"]["ApprovalListItem"];
+        ApprovalDecisionInput: {
+            expected_revision: number;
+            preview_digest: string;
+        };
+        ApprovalDecisionResult: {
+            id: string;
+            revision: number;
+            /** @enum {string} */
+            status: "pending" | "granted" | "consumed" | "denied" | "revoked" | "expired" | "stale";
         };
         /** @description Stable delegated-run error envelope; details are typed path/problem pairs, never model text. */
         AgentErrorEnvelope: {
@@ -6694,6 +6826,176 @@ export interface operations {
             401: components["responses"]["AgentError"];
             403: components["responses"]["AgentError"];
             409: components["responses"]["AgentError"];
+            503: components["responses"]["AgentError"];
+        };
+    };
+    listApprovals: {
+        parameters: {
+            query?: {
+                status?: "pending" | "granted" | "consumed" | "denied" | "revoked" | "expired" | "stale";
+                limit?: number;
+                cursor?: string;
+            };
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Paginated approval list; never cached or shared. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalList"];
+                };
+            };
+            400: components["responses"]["AgentError"];
+            401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
+        };
+    };
+    getApproval: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Approval detail with args and preview for active rows. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalDetail"];
+                };
+            };
+            401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
+            404: components["responses"]["AgentError"];
+        };
+    };
+    grantApproval: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                /** @description Bounded run/cancel key. A retry with the same key and epoch reuses the original run. */
+                "Idempotency-Key": components["parameters"]["AgentIdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalDecisionInput"];
+            };
+        };
+        responses: {
+            /** @description Decision committed; returns the new approval revision and status. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalDecisionResult"];
+                };
+            };
+            400: components["responses"]["AgentError"];
+            401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
+            404: components["responses"]["AgentError"];
+            409: components["responses"]["AgentError"];
+            422: components["responses"]["AgentError"];
+            503: components["responses"]["AgentError"];
+        };
+    };
+    denyApproval: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                /** @description Bounded run/cancel key. A retry with the same key and epoch reuses the original run. */
+                "Idempotency-Key": components["parameters"]["AgentIdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalDecisionInput"];
+            };
+        };
+        responses: {
+            /** @description Decision committed; returns the new approval revision and status. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalDecisionResult"];
+                };
+            };
+            400: components["responses"]["AgentError"];
+            401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
+            404: components["responses"]["AgentError"];
+            409: components["responses"]["AgentError"];
+            422: components["responses"]["AgentError"];
+            503: components["responses"]["AgentError"];
+        };
+    };
+    commandNotifications: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description text/event-stream with bounded signals and heartbeat. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
             503: components["responses"]["AgentError"];
         };
     };

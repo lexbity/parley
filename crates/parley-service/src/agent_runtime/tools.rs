@@ -79,6 +79,29 @@ pub(crate) fn tool_specs(registry: &Registry, permissions: &[String]) -> Vec<Val
     tools
 }
 
+/// Tool intents dispatched but not yet completed: a run parked on an owner
+/// approval leaves its intent `dispatched`; a resume re-dispatches the exact
+/// durable invocation binding with the deterministic original key (U08).
+pub(crate) async fn pending_intents(
+    pool: &sqlx::SqlitePool,
+    run_id: &str,
+) -> Vec<(i64, i64, String, Value)> {
+    let rows: Vec<(i64, i64, String, String)> = sqlx::query_as(
+        "SELECT turn_no,ordinal,tool_name,args_json FROM agent_tool_intent \
+         WHERE run_id=? AND state='dispatched' ORDER BY turn_no,ordinal LIMIT 8",
+    )
+    .bind(run_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    rows.into_iter()
+        .map(|(turn_no, ordinal, name, args)| {
+            let args = serde_json::from_str(&args).unwrap_or_else(|_| json!({}));
+            (turn_no, ordinal, name, args)
+        })
+        .collect()
+}
+
 #[derive(Debug)]
 pub(crate) enum DispatchError {
     UnknownTool,
@@ -88,6 +111,11 @@ pub(crate) enum DispatchError {
 
 /// Persist the intent under `BEGIN IMMEDIATE` before any effect or provider
 /// acknowledgement. The same row reconciles a restart at the same ordinal.
+/// The wire args travel with the intent so a run parked on an approval can
+/// re-dispatch the exact durable invocation binding after the owner grants
+/// (Q7 / U08). The key is deterministic from the run/turn/ordinal so the
+/// same intent reconciles to the same idempotency key after a restart.
+#[allow(clippy::too_many_arguments)] // intent row fields are all required
 pub(crate) async fn record_intent(
     tx: &mut Transaction<'_, Sqlite>,
     actor: &Actor,
@@ -96,10 +124,11 @@ pub(crate) async fn record_intent(
     name: &str,
     key_digest: &str,
     args_digest: &str,
+    args_json: &str,
 ) -> Result<(), sqlx::Error> {
     let run_id = actor.run_id.as_deref().unwrap_or("");
     sqlx::query(
-        "INSERT OR IGNORE INTO agent_tool_intent(run_id,turn_no,ordinal,tool_name,key_digest,args_digest,state,created_at) VALUES(?,?,?,?,?,?,'pending',?)",
+        "INSERT OR IGNORE INTO agent_tool_intent(run_id,turn_no,ordinal,tool_name,key_digest,args_digest,args_json,state,created_at) VALUES(?,?,?,?,?,?,?,'pending',?)",
     )
     .bind(run_id)
     .bind(turn_no)
@@ -107,10 +136,16 @@ pub(crate) async fn record_intent(
     .bind(name)
     .bind(key_digest)
     .bind(args_digest)
+    .bind(args_json)
     .bind(crate::now_utc())
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+/// The deterministic operation key for a tool intent (U08).
+pub(crate) fn tool_key(run_id: &str, turn_no: i64, ordinal: i64) -> String {
+    format!("tool-{run_id}-{turn_no}-{ordinal}")
 }
 
 pub(crate) async fn mark_state(
@@ -148,13 +183,8 @@ pub(crate) async fn dispatch(
     let Some(id) = reverse_name(&state.registry, name) else {
         return Err(DispatchError::UnknownTool);
     };
-    let key = crate::new_id(&format!(
-        "{}:{}:{}",
-        actor.run_id.as_deref().unwrap_or(""),
-        turn_no,
-        ordinal
-    ));
     let run_id = actor.run_id.as_deref().unwrap_or("");
+    let key = tool_key(run_id, turn_no, ordinal);
     let secret = state.workspace.command_secret();
     let key_digest =
         crate::commands::ledger::key_digest(&secret, &actor.epoch, &actor.pseudonym, &id, &key);
@@ -179,6 +209,7 @@ pub(crate) async fn dispatch(
         name,
         &key_digest,
         &args_digest,
+        &args.to_string(),
     )
     .await
     .map_err(|_| {
@@ -238,7 +269,7 @@ pub(crate) async fn dispatch(
         let command_id = args.get("id").and_then(Value::as_str).unwrap_or_default();
         let version = args.get("version").and_then(Value::as_u64).unwrap_or(0) as u32;
         let command_args = args.get("args").cloned().unwrap_or_else(|| json!({}));
-        let (status, reply) = crate::commands::http::invoke_agent(
+        let (status, reply, approval_id) = crate::commands::http::invoke_agent(
             state,
             actor.clone(),
             command_id,
@@ -259,6 +290,30 @@ pub(crate) async fn dispatch(
                 .and_then(Value::as_str)
                 .unwrap_or("Tool call failed")
                 .to_owned();
+            if code == "approval_required"
+                && let Some(approval_id) = approval_id
+            {
+                // Park the run on the durable approval (Q7). The model sees
+                // only the safe waiting denial; the approval id never leaves
+                // the service boundary.
+                let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
+                    Ok(tx) => tx,
+                    Err(_) => {
+                        return Err(DispatchError::Denied(
+                            503,
+                            "unavailable".into(),
+                            "Ledger is unavailable".into(),
+                        ));
+                    }
+                };
+                let _ = turn::wait(&mut tx, actor, "waiting_owner", &approval_id).await;
+                let _ = tx.commit().await;
+                return Err(DispatchError::Denied(
+                    403,
+                    "waiting_for_owner".into(),
+                    "Waiting for owner approval".into(),
+                ));
+            }
             return Err(DispatchError::Denied(status, code, message));
         }
         reply
@@ -269,7 +324,7 @@ pub(crate) async fn dispatch(
             .command(&id)
             .map(|item| item.version)
             .unwrap_or(1);
-        let (status, reply) = crate::commands::http::invoke_agent(
+        let (status, reply, approval_id) = crate::commands::http::invoke_agent(
             state,
             actor.clone(),
             &id,
@@ -290,6 +345,27 @@ pub(crate) async fn dispatch(
                 .and_then(Value::as_str)
                 .unwrap_or("Tool call failed")
                 .to_owned();
+            if code == "approval_required"
+                && let Some(approval_id) = approval_id
+            {
+                let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
+                    Ok(tx) => tx,
+                    Err(_) => {
+                        return Err(DispatchError::Denied(
+                            503,
+                            "unavailable".into(),
+                            "Ledger is unavailable".into(),
+                        ));
+                    }
+                };
+                let _ = turn::wait(&mut tx, actor, "waiting_owner", &approval_id).await;
+                let _ = tx.commit().await;
+                return Err(DispatchError::Denied(
+                    403,
+                    "waiting_for_owner".into(),
+                    "Waiting for owner approval".into(),
+                ));
+            }
             return Err(DispatchError::Denied(status, code, message));
         }
         reply

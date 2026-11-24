@@ -2019,9 +2019,9 @@ pub(crate) fn new_id(seed: &str) -> String {
     digest(format!("{seed}:{nanos}:{nonce}").as_bytes())[..32].to_owned()
 }
 
-/// UTC RFC 3339 timestamp offset from trusted wall time, used for leases and
-/// run deadlines.
-fn now_utc_offset(seconds: i64) -> String {
+/// UTC RFC 3339 timestamp offset from trusted wall time, used for leases,
+/// run deadlines and approval expiry.
+pub(crate) fn now_utc_offset(seconds: i64) -> String {
     let value = chrono::Utc::now() + chrono::Duration::seconds(seconds);
     value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -2145,6 +2145,23 @@ pub(crate) struct AppState {
     pub(crate) restart: tokio::sync::watch::Sender<bool>,
     pub(crate) registry: Arc<commands::Registry>,
     pub(crate) writer: Arc<application::writer::Writer>,
+    /// Post-commit command signals for the fetch-based SSE notification
+    /// stream (UCR-001 U08 / §4.1): approvals_changed, run_changed and
+    /// epoch_changed. Bounded; a slow client drops older signals and must
+    /// poll authoritative state after reconnect.
+    pub(crate) notify: tokio::sync::broadcast::Sender<CommandSignal>,
+    /// Bounded concurrent notification connections (U08 §4.1).
+    pub(crate) sse_connections: Arc<tokio::sync::Semaphore>,
+}
+
+/// One post-commit command notification signal (U08 §4.1). The stream emits
+/// only these signal kinds plus a 15 s heartbeat; clients re-read
+/// authoritative state after each signal. `epoch_changed` is emitted at
+/// stream open and after reconnect so clients rebase their page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CommandSignal {
+    ApprovalsChanged,
+    RunChanged,
 }
 
 /// Initialize (or open) a private SQLite workspace and bind only to IPv4
@@ -2205,6 +2222,8 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         })
     };
     let backup_task = maintenance::start_scheduler(workspace.clone(), restart_receiver.clone());
+    let (notify, _notify_rx) = tokio::sync::broadcast::channel(64);
+    let sse_connections = Arc::new(tokio::sync::Semaphore::new(8));
     let state = AppState {
         workspace,
         authority: address.to_string(),
@@ -2217,6 +2236,8 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         restart: restart_sender.clone(),
         registry,
         writer,
+        notify,
+        sse_connections,
     };
     let agent_task = agent_runtime::start(Arc::new(state.clone()));
     let bootstrap_shared = state.bootstrap.clone();

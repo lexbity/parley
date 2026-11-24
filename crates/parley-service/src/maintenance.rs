@@ -24,11 +24,12 @@ use std::{
 /// scrubbed metadata only; portable exports omit the rows entirely (FR-10).
 /// Job rows carry private inputs and outputs, so scoped and fixed-role job
 /// state is scrubbed and omitted with the rest of the command ledger.
-pub(crate) const COMMAND_TABLE_POLICY_VERSION: u32 = 3;
+pub(crate) const COMMAND_TABLE_POLICY_VERSION: u32 = 4;
 pub(crate) const SCRUB_ON_BACKUP: &[&str] = &[
     "command_audit_event",
     "command_receipt",
     "command_ledger_meta",
+    "command_approval",
     "agent_run",
     "agent_run_target",
     "agent_run_turn",

@@ -388,6 +388,7 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
   const COMMAND_TASK = 'opportunity.set_task_done';
   const COMMAND_CREATE_DRAFT = 'resource.create_draft';
   const COMMAND_MARK_READY = 'resource.mark_ready';
+  const COMMAND_RETIRE = 'resource.retire';
   const COMMAND_MATCH_START = 'match.start';
   const COMMAND_COMPOSE_DRAFT = 'material.compose_draft';
   const COMMAND_GATE_CHECK = 'material.check_gate';
@@ -400,6 +401,7 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     [COMMAND_TASK]: ['opportunity_id', 'expected_notes_revision', 'byte_start', 'byte_end', 'line_sha256', 'checked'],
     [COMMAND_CREATE_DRAFT]: ['title', 'subtype'],
     [COMMAND_MARK_READY]: ['resource_id', 'expected_content_revision'],
+    [COMMAND_RETIRE]: ['resource_id', 'expected_card_revision', 'expected_content_revision'],
     [COMMAND_MATCH_START]: ['opportunity_id', 'recipient_id', 'expected_opportunity_revision', 'expected_recipient_revision'],
     [COMMAND_COMPOSE_DRAFT]: ['opportunity_id', 'recipient_id', 'expected_opportunity_revision', 'expected_recipient_revision', 'template_version_id', 'exchange_version', 'kind', 'slot_fills', 'selected_match_ids'],
     [COMMAND_GATE_CHECK]: ['material_id', 'expected_version'],
@@ -494,6 +496,18 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       palette: { context_fields: ['route', 'selection.resource'], prompts: [] },
     },
     {
+      id: COMMAND_RETIRE, version: 1, title: 'Retire resource',
+      summary: 'Remove a resource from ordinary use after human approval',
+      description: 'Retires the selected resource after an exact approval of its preview. The card and content revisions must match the current record.',
+      keywords: ['resource', 'retire', 'remove', 'archive'], effect: 'destructive', requires_permission: 'resource.retire',
+      surfaces: ['palette', 'agent'], agent_tier: 2, supports_dry_run: true,
+      when: 'route == "resources" && selection.resource',
+      args_schema: { type: 'object', additionalProperties: false, required: COMMAND_ARG_FIELDS[COMMAND_RETIRE], properties: {} },
+      result_schema: { type: 'object', additionalProperties: false },
+      preview_schema: { type: 'object', additionalProperties: false },
+      palette: { context_fields: ['route', 'selection.resource'], prompts: [] },
+    },
+    {
       id: COMMAND_MATCH_START, version: 1, title: 'Start resource matching',
       summary: 'Queue a scoped match against the granted opportunity and resources',
       description: 'Starts a matcher job for the selected open opportunity and recipient using only ready resources inside the run grant.',
@@ -529,6 +543,22 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
   ];
   const commandManifestVersion = `sha256:${createHash('sha256').update(JSON.stringify(commandDescriptors)).digest('hex')}`;
   const commandReceipts = new Map<string, { digest: string; status: number; body: RecordData; audit_id: string }>();
+
+  // U08 approvals (mock): pending/granted approvals per frozen intent key.
+  interface MockApproval {
+    id: string;
+    epoch: string;
+    command_id: string;
+    receipt_key: string;
+    status: 'pending' | 'granted' | 'consumed' | 'denied' | 'revoked' | 'expired' | 'stale';
+    revision: number;
+    expires_at: string;
+    preview_digest: string;
+    args?: RecordData;
+    preview?: RecordData;
+  }
+  const approvals = new Map<string, MockApproval>();
+  const decisionReceipts = new Map<string, { digest: string; outcome: RecordData }>();
   const commandContextAllowed = (key: string) => key === 'route'
     || (/^selection\.[a-z0-9_]+$/.test(key) && !key.includes('__'));
 
@@ -867,7 +897,7 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
   // its worker, lease or provider state.
   const AGENT_STATES = ['queued', 'running', 'waiting_owner', 'waiting_job', 'succeeded', 'failed', 'cancelled', 'expired'];
   const AGENT_TARGET_KINDS = ['party', 'opportunity', 'resource', 'material', 'segment'];
-  const AGENT_PERMISSIONS = ['party.read', 'opportunity.read', 'opportunity.create', 'opportunity.phase.edit', 'party.edit', 'opportunity.task.edit', 'brief.start', 'job.read', 'match.start', 'material.compose', 'material.gate'];
+  const AGENT_PERMISSIONS = ['party.read', 'opportunity.read', 'opportunity.create', 'opportunity.phase.edit', 'party.edit', 'opportunity.task.edit', 'brief.start', 'job.read', 'resource.read', 'resource.write', 'resource.retire', 'match.start', 'material.compose', 'material.gate'];
 
   function agentTargetLabel(target: AgentRunTarget): string {
     if (target.kind === 'party') return directory.get(target.id)?.name ?? target.id;
@@ -1311,6 +1341,98 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
         }
         return json(response, existing.status, { ...existing.body, replayed: true, original_audit_id: existing.audit_id });
       }
+      if (id === COMMAND_RETIRE) {
+        // U08 destructive retirement with human approval (mock): the mock
+        // implements the same lifecycle as the service — pending approval,
+        // owner decision, and consumption only on the exact approved intent.
+        const resourceId = String(args.resource_id);
+        const entity = entityResources.get(resourceId);
+        if (!entity || entity.readiness === 'retired') {
+          return json(response, 404, { ok: false, error: { code: 'target_unavailable', message: 'Target record is not available', details: [] } });
+        }
+        if (Number(args.expected_card_revision) !== entity.revision
+          || Number(args.expected_content_revision) !== entity.contentRevision) {
+          return json(response, 409, { ok: false, error: { code: 'version_mismatch', message: 'Expected revision is stale; reload and create a new intent', details: [] } });
+        }
+        const sample = [{ material_id: 'mock-material', version_no: 1, dependency_revision: String(entity.contentRevision) }];
+        const preview: RecordData = {
+          resource_id: resourceId,
+          title: entity.name,
+          readiness: entity.readiness,
+          card_revision: entity.revision,
+          content_revision: entity.contentRevision,
+          placement_removed: placements.has(resourceId),
+          impacted_versions_count: 1,
+          impacted_versions_sample: sample,
+        };
+        const previewDigest = createHash('sha256').update(canonicalArgs(preview)).digest('hex');
+        if (input.dry_run === true) {
+          const body = {
+            ok: true, command_version: 1, audit_id: randomHex(12), replayed: false,
+            dry_run: true, result: preview,
+          };
+          commandReceipts.set(receiptKey, { digest, status: 200, body, audit_id: body.audit_id });
+          return json(response, 200, body);
+        }
+        const presentedId = String(input.approval_id ?? '');
+        let approval = presentedId ? approvals.get(presentedId) : undefined;
+        if (!approval) {
+          approval = [...approvals.values()].find((candidate) => candidate.receipt_key === receiptKey);
+        }
+        if (!approval) {
+          const approvalId = randomHex(12);
+          approval = {
+            id: approvalId, epoch, command_id: id, receipt_key: receiptKey,
+            status: 'pending', revision: 1,
+            expires_at: new Date(testClock + 10 * 60_000).toISOString(),
+            preview_digest: previewDigest, args: { ...args }, preview,
+          };
+          approvals.set(approvalId, approval);
+          response.statusCode = 403;
+          response.setHeader('location', `/api/v1/approvals/${approvalId}`);
+          return json(response, 403, {
+            ok: false, command_version: 1, audit_id: randomHex(12),
+            error: { code: 'approval_required', message: 'Review the requested retirement in Approvals.', details: [{ path: '', problem: 'approval_pending' }] },
+          });
+        }
+        if (approval.status === 'granted') {
+          if (approval.preview_digest !== previewDigest) {
+            approval.status = 'stale' as MockApproval['status'];
+            return json(response, 409, { ok: false, error: { code: 'approval_stale', message: 'The intent dependencies changed; request a fresh preview with a new key', details: [] } });
+          }
+          approval.status = 'consumed';
+          approval.revision += 1;
+          delete approval.args;
+          delete approval.preview;
+          entity.readiness = 'retired';
+          entity.revision += 1;
+          entity.contentRevision += 1;
+          entity.etag = entityTag(entity);
+          if (placements.has(resourceId)) placements.delete(resourceId);
+          pushEvent({ event_id: randomHex(), entity_type: 'resource', entity_id: resourceId, revision: entity.revision, event_type: 'resource.retired', payload: { revision: entity.revision } });
+          const body = {
+            ok: true, command_version: 1, audit_id: randomHex(12), replayed: false,
+            dry_run: false,
+            result: {
+              resource_id: resourceId, title: entity.name, readiness: 'retired',
+              card_revision: entity.revision, content_revision: entity.contentRevision,
+              event_id: randomHex(), event_cursor: String(events.length),
+              impacted_versions_count: 1, placement_removed: true,
+            },
+          };
+          commandReceipts.set(receiptKey, { digest, status: 200, body, audit_id: body.audit_id });
+          return json(response, 200, body);
+        }
+        if (approval.status === 'denied' || approval.status === 'revoked' || approval.status === 'expired' || approval.status === 'stale') {
+          return json(response, 403, { ok: false, error: { code: 'approval_invalid', message: 'The approval is no longer valid', details: [] } });
+        }
+        response.statusCode = 403;
+        response.setHeader('location', `/api/v1/approvals/${approval.id}`);
+        return json(response, 403, {
+          ok: false, command_version: 1, audit_id: randomHex(12),
+          error: { code: 'approval_required', message: 'Review the requested retirement in Approvals.', details: [{ path: '', problem: 'approval_pending' }] },
+        });
+      }
       const outcome = commandResult(id, args);
       const auditId = randomHex(12);
       if (outcome.status === 200) {
@@ -1327,6 +1449,109 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       };
       commandReceipts.set(receiptKey, { digest, status: outcome.status, body: failure, audit_id: auditId });
       return json(response, outcome.status, failure);
+    }
+
+    if (url.pathname === '/api/v1/approvals' && request.method === 'GET') {
+      const statusFilter = url.searchParams.get('status') ?? '';
+      const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 50), 1), 100);
+      const rows = [...approvals.values()]
+        .filter((approval) => approval.epoch === epoch && (!statusFilter || approval.status === statusFilter))
+        .sort((left, right) => left.id.localeCompare(right.id))
+        .slice(0, limit);
+      const items = rows.map((approval) => {
+        const active = approval.status === 'pending' || approval.status === 'granted';
+        const item: RecordData = {
+          id: approval.id,
+          command_id: approval.command_id,
+          command_version: 1,
+          revision: approval.revision,
+          status: approval.status,
+          expires_at: approval.expires_at,
+          preview_digest: approval.preview_digest,
+        };
+        if (approval.preview) {
+          item.title = approval.preview.title;
+          item.impacted_versions_count = approval.preview.impacted_versions_count;
+        }
+        if (active) {
+          item.args = approval.args;
+          item.preview = approval.preview;
+        }
+        return item;
+      });
+      return json(response, 200, { items, next_cursor: null });
+    }
+    const approvalDetailRoute = /^\/api\/v1\/approvals\/([^/]+)$/.exec(url.pathname);
+    if (approvalDetailRoute && request.method === 'GET') {
+      const approval = approvals.get(approvalDetailRoute[1]!);
+      if (!approval || approval.epoch !== epoch) return fail(response, 404, 'target_unavailable', 'Approval is not available');
+      const active = approval.status === 'pending' || approval.status === 'granted';
+      const item: RecordData = {
+        id: approval.id,
+        command_id: approval.command_id,
+        command_version: 1,
+        revision: approval.revision,
+        status: approval.status,
+        expires_at: approval.expires_at,
+        preview_digest: approval.preview_digest,
+      };
+      if (active) {
+        item.args = approval.args;
+        item.preview = approval.preview;
+      }
+      return json(response, 200, item);
+    }
+    const approvalDecisionRoute = /^\/api\/v1\/approvals\/([^/]+)\/(grant|deny)$/.exec(url.pathname);
+    if (approvalDecisionRoute && request.method === 'POST') {
+      const approval = approvals.get(approvalDecisionRoute[1]!);
+      if (!approval || approval.epoch !== epoch) return fail(response, 404, 'target_unavailable', 'Approval is not available');
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key.trim()) return fail(response, 400, 'INVALID_KEY', 'An Idempotency-Key is required');
+      let decision: RecordData;
+      try { decision = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const expectedRevision = Number(decision.expected_revision);
+      const previewDigest = String(decision.preview_digest);
+      const decisionKey = `${epoch}|${approval.id}|${key}`;
+      const previous = decisionReceipts.get(decisionKey);
+      if (previous) {
+        if (previous.digest !== createHash('sha256').update(canonicalArgs({ expectedRevision, previewDigest })).digest('hex')) {
+          return json(response, 422, { ok: false, error: { code: 'idempotency_mismatch', message: 'Decision key was used for a different request', details: [] } });
+        }
+        return json(response, 200, previous.outcome);
+      }
+      if (expectedRevision !== approval.revision) {
+        return json(response, 409, { ok: false, error: { code: 'approval_stale', message: 'The approval changed; reload before deciding', details: [] } });
+      }
+      if (previewDigest !== approval.preview_digest) {
+        return json(response, 409, { ok: false, error: { code: 'approval_stale', message: 'The approval changed; reload before deciding', details: [] } });
+      }
+      const action = approvalDecisionRoute[2]!;
+      if (action === 'grant' && approval.status === 'granted') {
+        const outcome = { id: approval.id, revision: approval.revision, status: approval.status };
+        decisionReceipts.set(decisionKey, { digest: createHash('sha256').update(canonicalArgs({ expectedRevision, previewDigest })).digest('hex'), outcome });
+        return json(response, 200, outcome);
+      }
+      if (action === 'deny' && approval.status === 'denied') {
+        const outcome = { id: approval.id, revision: approval.revision, status: approval.status };
+        decisionReceipts.set(decisionKey, { digest: createHash('sha256').update(canonicalArgs({ expectedRevision, previewDigest })).digest('hex'), outcome });
+        return json(response, 200, outcome);
+      }
+      let nextStatus: MockApproval['status'];
+      if (action === 'grant' && approval.status === 'pending') nextStatus = 'granted';
+      else if (action === 'deny' && approval.status === 'pending') nextStatus = 'denied';
+      else if (action === 'deny' && approval.status === 'granted') nextStatus = 'revoked';
+      else {
+        return json(response, 409, { ok: false, error: { code: 'approval_stale', message: 'The approval is no longer actionable', details: [] } });
+      }
+      approval.status = nextStatus;
+      approval.revision += 1;
+      if (nextStatus !== 'granted') {
+        delete approval.args;
+        delete approval.preview;
+      }
+      const outcome = { id: approval.id, revision: approval.revision, status: approval.status };
+      decisionReceipts.set(decisionKey, { digest: createHash('sha256').update(canonicalArgs({ expectedRevision, previewDigest })).digest('hex'), outcome });
+      return json(response, 200, outcome);
     }
 
     if (url.pathname === '/api/v1/agent/runs' && request.method === 'POST') {

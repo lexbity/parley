@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/CommandRunFailure","body":{"ok":false,"command_version":1,"audit_id":"aud_u08_retire_02","error":{"code":"version_mismatch","message":"Expected revision is stale; reload and create a new intent","details":[]}}}

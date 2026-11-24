@@ -72,6 +72,7 @@ pub(crate) fn descriptors() -> Vec<&'static CommandDescriptor> {
         args_schema: &CREATE_ARGS_SCHEMA,
         result_schema: &CREATE_RESULT_SCHEMA,
         supports_dry_run: false,
+        preview_schema: None,
         when: Some(QUEUE_WHEN),
         palette: PaletteSpec {
             context_fields: CONTEXT_FIELDS,

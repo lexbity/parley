@@ -16,6 +16,7 @@ import QueueWorkspace from '../features/queue/QueueWorkspace.vue';
 import PartyDesk from '../features/parties/PartyDesk.vue';
 import AgentPolicySettings from '../features/settings/AgentPolicySettings.vue';
 import DelegatedRuns from '../features/settings/DelegatedRuns.vue';
+import ApprovalInbox from '../features/settings/ApprovalInbox.vue';
 import MaintenanceSettings from '../features/settings/MaintenanceSettings.vue';
 import CapacitySettings from '../features/settings/CapacitySettings.vue';
 import Packs from '../features/settings/Packs.vue';
@@ -677,6 +678,10 @@ watch(route, (current, previous) => {
             id="settings-delegated-runs"
             tabindex="-1"
             :navigate="navigate"
+          />
+          <ApprovalInbox
+            id="settings-approval-inbox"
+            tabindex="-1"
           />
           <CapacitySettings
             id="settings-capacity"

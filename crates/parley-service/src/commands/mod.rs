@@ -1,6 +1,7 @@
 //! UCR-001 command registry: erased dispatch, validation, output projection,
 //! policy, ledger, and HTTP transport.
 
+pub(crate) mod approval;
 pub(crate) mod descriptor;
 pub(crate) mod http;
 pub(crate) mod jobs;

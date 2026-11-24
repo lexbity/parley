@@ -8,12 +8,13 @@
 
 use std::sync::LazyLock;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
 
 use super::descriptor::{CommandDescriptor, PaletteSpec, PromptSpec};
 use super::policy::{Effect, Permission, Surface};
+use crate::application::resource_retirement::{self, RetirementError, RetirementInput};
 use crate::application::resources::{
     ResourceDraftError, ResourceDraftInput, ResourceReadyError, ResourceReadyInput, create_draft,
     mark_ready,
@@ -21,6 +22,7 @@ use crate::application::resources::{
 
 pub(crate) const CREATE_DRAFT_ID: &str = "resource.create_draft";
 pub(crate) const MARK_READY_ID: &str = "resource.mark_ready";
+pub(crate) const RETIRE_ID: &str = "resource.retire";
 
 static CREATE_ARGS_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
     json!({
@@ -78,16 +80,78 @@ static READY_RESULT_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
         }
     })
 });
+static RETIRE_ARGS_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["resource_id", "expected_card_revision", "expected_content_revision"],
+        "properties": {
+            "resource_id": {"type": "string", "minLength": 1, "maxLength": 200, "x-sensitive": true},
+            "expected_card_revision": {"type": "integer", "minimum": 1, "maximum": 9007199254740991i64},
+            "expected_content_revision": {"type": "integer", "minimum": 1, "maximum": 9007199254740991i64}
+        }
+    })
+});
+static RETIRE_RESULT_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["resource_id", "title", "readiness", "card_revision", "content_revision", "event_id", "event_cursor", "impacted_versions_count", "placement_removed"],
+        "properties": {
+            "resource_id": {"type": "string"},
+            "title": {"type": "string"},
+            "readiness": {"type": "string"},
+            "card_revision": {"type": "integer", "minimum": 1},
+            "content_revision": {"type": "integer", "minimum": 1},
+            "event_id": {"type": "string"},
+            "event_cursor": {"type": "integer", "minimum": 1},
+            "impacted_versions_count": {"type": "integer", "minimum": 0},
+            "placement_removed": {"type": "boolean"}
+        }
+    })
+});
+static RETIRE_PREVIEW_SCHEMA: LazyLock<Value> = LazyLock::new(|| {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["resource_id", "title", "readiness", "card_revision", "content_revision", "placement_removed", "impacted_versions_count", "impacted_versions_sample"],
+        "properties": {
+            "resource_id": {"type": "string"},
+            "title": {"type": "string"},
+            "readiness": {"type": "string"},
+            "card_revision": {"type": "integer", "minimum": 1},
+            "content_revision": {"type": "integer", "minimum": 1},
+            "placement_removed": {"type": "boolean"},
+            "impacted_versions_count": {"type": "integer", "minimum": 0},
+            "impacted_versions_sample": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["material_id", "version_no", "dependency_revision"],
+                    "properties": {
+                        "material_id": {"type": "string"},
+                        "version_no": {"type": "integer", "minimum": 1},
+                        "dependency_revision": {"type": "string"}
+                    }
+                }
+            }
+        }
+    })
+});
 
 const CREATE_WHEN: &str = "route == \"resources\"";
 const READY_WHEN: &str = "route == \"resources\" && selection.resource";
+const RETIRE_WHEN: &str = "route == \"resources\" && selection.resource";
 const CREATE_CONTEXT_FIELDS: &[&str] = &["route"];
 const READY_CONTEXT_FIELDS: &[&str] = &["route", "selection.resource"];
+const RETIRE_CONTEXT_FIELDS: &[&str] = &["route", "selection.resource"];
 const ARGS_ALLOWLIST: &[&str] = &[
     "title",
     "subtype",
     "resource_id",
     "expected_content_revision",
+    "expected_card_revision",
 ];
 const ARGS_SENSITIVE: &[&str] = &["resource_id"];
 
@@ -106,6 +170,7 @@ pub(crate) fn descriptors() -> Vec<&'static CommandDescriptor> {
         args_schema: &CREATE_ARGS_SCHEMA,
         result_schema: &CREATE_RESULT_SCHEMA,
         supports_dry_run: false,
+        preview_schema: None,
         when: Some(CREATE_WHEN),
         palette: PaletteSpec {
             context_fields: CREATE_CONTEXT_FIELDS,
@@ -137,19 +202,42 @@ pub(crate) fn descriptors() -> Vec<&'static CommandDescriptor> {
         args_schema: &READY_ARGS_SCHEMA,
         result_schema: &READY_RESULT_SCHEMA,
         supports_dry_run: false,
+        preview_schema: None,
         when: Some(READY_WHEN),
         palette: PaletteSpec {
             context_fields: READY_CONTEXT_FIELDS,
             prompts: &[],
         },
     });
-    vec![&CREATE, &READY]
+    static RETIRE: LazyLock<CommandDescriptor> = LazyLock::new(|| CommandDescriptor {
+        id: RETIRE_ID,
+        version: 1,
+        title: "Retire resource",
+        summary: "Remove a resource from ordinary use after human approval",
+        description: "Retires the selected resource: it leaves the board and pickers, and its current material versions are signalled for release recheck. Every destructive execution needs exact human review of a preview of this intent. The card and content revisions must match the current record; future edits and links to the retired card are rejected. Historical deliveries stay readable.",
+        keywords: &["resource", "retire", "remove", "archive"],
+        effect: Effect::Destructive,
+        requires_permission: Permission::ResourceRetire,
+        surfaces: &[Surface::Palette, Surface::Agent],
+        agent_tier: Some(2),
+        args_schema: &RETIRE_ARGS_SCHEMA,
+        result_schema: &RETIRE_RESULT_SCHEMA,
+        supports_dry_run: true,
+        preview_schema: Some(&RETIRE_PREVIEW_SCHEMA),
+        when: Some(RETIRE_WHEN),
+        palette: PaletteSpec {
+            context_fields: RETIRE_CONTEXT_FIELDS,
+            prompts: &[],
+        },
+    });
+    vec![&CREATE, &READY, &RETIRE]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResourceCommand {
     CreateDraft,
     MarkReady,
+    Retire,
 }
 
 impl ResourceCommand {
@@ -157,6 +245,7 @@ impl ResourceCommand {
         match id {
             CREATE_DRAFT_ID => Some(Self::CreateDraft),
             MARK_READY_ID => Some(Self::MarkReady),
+            RETIRE_ID => Some(Self::Retire),
             _ => None,
         }
     }
@@ -176,10 +265,19 @@ struct MarkReadyArgs {
     expected_content_revision: i64,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RetireWireArgs {
+    resource_id: String,
+    expected_card_revision: i64,
+    expected_content_revision: i64,
+}
+
 pub(crate) enum RunError {
     InvalidArgs,
     Draft(ResourceDraftError),
     Ready(ResourceReadyError),
+    Retire(RetirementError),
 }
 
 pub(crate) async fn run(
@@ -237,16 +335,75 @@ pub(crate) async fn run(
                 }
             }
         }
+        ResourceCommand::Retire => {
+            let parsed: RetireWireArgs =
+                serde_json::from_value(args.clone()).map_err(|_| RunError::InvalidArgs)?;
+            let outcome = resource_retirement::retire(
+                tx,
+                &RetirementInput {
+                    id: parsed.resource_id,
+                    expected_card_revision: parsed.expected_card_revision,
+                    expected_content_revision: parsed.expected_content_revision,
+                    operation_key_digest: operation_key_digest.to_string(),
+                },
+            )
+            .await
+            .map_err(RunError::Retire)?;
+            Ok(super::RunOutcome {
+                result: serde_json::json!({
+                    "resource_id": outcome.resource_id,
+                    "title": outcome.title,
+                    "readiness": outcome.readiness,
+                    "card_revision": outcome.card_revision,
+                    "content_revision": outcome.content_revision,
+                    "event_id": outcome.event_id,
+                    "event_cursor": outcome.event_cursor,
+                    "impacted_versions_count": outcome.impacted_versions_count,
+                    "placement_removed": outcome.placement_removed,
+                }),
+                effected: true,
+            })
+        }
     }
 }
 
-/// Serde/schema agreement for schema-valid samples.
+/// The normalized typed args (with explicit defaults applied by serde),
+/// used as the canonical approval binding digest (§4.2).
+pub(crate) fn canonical_args(args: &Value) -> Option<Value> {
+    let parsed: RetireWireArgs = serde_json::from_value(args.clone()).ok()?;
+    serde_json::to_value(&parsed).ok()
+}
+
+/// Read-only destructive planning used by previews, dry runs and the
+/// approval fingerprint (U08 / §5.3).
+pub(crate) async fn plan(
+    tx: &mut Transaction<'_, Sqlite>,
+    command: ResourceCommand,
+    args: &Value,
+) -> Result<resource_retirement::RetirementPlan, RunError> {
+    match command {
+        ResourceCommand::Retire => {
+            let parsed: RetireWireArgs =
+                serde_json::from_value(args.clone()).map_err(|_| RunError::InvalidArgs)?;
+            resource_retirement::plan_retirement(tx, &parsed.resource_id)
+                .await
+                .map_err(RunError::Retire)
+        }
+        _ => Err(RunError::InvalidArgs),
+    }
+}
+
+/// The boot-validated preview schema for the destructive retire command.
+pub(crate) fn retire_preview_schema() -> &'static Value {
+    &RETIRE_PREVIEW_SCHEMA
+}
 pub(crate) fn parse_wire_args(command: ResourceCommand, args: &Value) -> Result<(), String> {
     let ok = match command {
         ResourceCommand::CreateDraft => {
             serde_json::from_value::<CreateDraftArgs>(args.clone()).is_ok()
         }
         ResourceCommand::MarkReady => serde_json::from_value::<MarkReadyArgs>(args.clone()).is_ok(),
+        ResourceCommand::Retire => serde_json::from_value::<RetireWireArgs>(args.clone()).is_ok(),
     };
     if ok {
         Ok(())
@@ -262,6 +419,7 @@ fn command_id(command: ResourceCommand) -> &'static str {
     match command {
         ResourceCommand::CreateDraft => CREATE_DRAFT_ID,
         ResourceCommand::MarkReady => MARK_READY_ID,
+        ResourceCommand::Retire => RETIRE_ID,
     }
 }
 
@@ -274,6 +432,14 @@ pub(crate) fn validation_samples() -> (Vec<super::SampleArgs>, Vec<super::Sample
         super::SampleArgs {
             command: MARK_READY_ID.to_string(),
             args: json!({"resource_id": "res_sample", "expected_content_revision": 3}),
+        },
+        super::SampleArgs {
+            command: RETIRE_ID.to_string(),
+            args: json!({
+                "resource_id": "res_sample",
+                "expected_card_revision": 4,
+                "expected_content_revision": 3
+            }),
         },
     ];
     let invalid = vec![
@@ -296,6 +462,27 @@ pub(crate) fn validation_samples() -> (Vec<super::SampleArgs>, Vec<super::Sample
         super::SampleArgs {
             command: MARK_READY_ID.to_string(),
             args: json!({"resource_id": "res_sample", "expected_content_revision": 0}),
+        },
+        super::SampleArgs {
+            command: RETIRE_ID.to_string(),
+            args: json!({"resource_id": "res_sample", "expected_card_revision": 1}),
+        },
+        super::SampleArgs {
+            command: RETIRE_ID.to_string(),
+            args: json!({
+                "resource_id": "res_sample",
+                "expected_card_revision": 0,
+                "expected_content_revision": 1
+            }),
+        },
+        super::SampleArgs {
+            command: RETIRE_ID.to_string(),
+            args: json!({
+                "resource_id": "res_sample",
+                "expected_card_revision": 1,
+                "expected_content_revision": 1,
+                "extra": true
+            }),
         },
     ];
     (valid, invalid)

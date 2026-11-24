@@ -1,10 +1,10 @@
 <script setup lang="ts">
-/* global HTMLDialogElement, HTMLElement, HTMLInputElement, KeyboardEvent, Event, document */
+/* global HTMLDialogElement, HTMLElement, HTMLInputElement, KeyboardEvent, Event, document, setInterval */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { newOperationKey } from '../api/client';
 import {
-  CommandApiError, commands, type CommandArgs, type CommandContext, type CommandDescriptor,
-  type CommandPrompt, type CommandSuccess,
+  CommandApiError, commands, type ApprovalListItem, type CommandArgs, type CommandContext,
+  type CommandDescriptor, type CommandPrompt, type CommandSuccess,
 } from '../api/commands';
 import { contextFingerprint, type ContextSelection } from './commands/context';
 import { useCommandRegistry, type UiRunContext } from './commands/registry';
@@ -36,7 +36,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{ close: []; committed: [result: CommandSuccess] }>();
 
-type Step = 'search' | 'prompt' | 'confirm' | 'result';
+type Step = 'search' | 'prompt' | 'confirm' | 'result' | 'pending';
 const dialog = ref<HTMLDialogElement | null>(null);
 const input = ref<HTMLInputElement | null>(null);
 const step = ref<Step>('search');
@@ -51,6 +51,12 @@ const status = ref('');
 const error = ref('');
 const busy = ref(false);
 const recency = ref<Recency>({});
+// U08: an approval-pending destructive invocation stays frozen (same key,
+// version, args) inside this modal until the owner decides; on grant the
+// exact invocation resumes with the approval id.
+const approvalId = ref<string | null>(null);
+const pendingDetail = ref<ApprovalListItem | null>(null);
+let approvalTimer: ReturnType<typeof setInterval> | null = null;
 let opener: HTMLElement | null = null;
 let intent: { id: string; version: number; args: CommandArgs; key: string; fingerprint: string } | null = null;
 
@@ -85,6 +91,9 @@ function reset() {
   busy.value = false;
   staleIntent.value = false;
   intent = null;
+  approvalId.value = null;
+  pendingDetail.value = null;
+  stopApprovalPolling();
 }
 
 function focusables(): HTMLElement[] {
@@ -118,7 +127,7 @@ function onCancel(event: Event) {
 
 function onDialogKeydown(event: KeyboardEvent) {
   if (event.defaultPrevented || event.isComposing || composing.value || dialog.value?.open !== true) return;
-  if (event.key === 'Escape' && !busy.value && (step.value === 'prompt' || step.value === 'confirm')) {
+  if (event.key === 'Escape' && !busy.value && (step.value === 'prompt' || step.value === 'confirm' || step.value === 'pending')) {
     event.preventDefault();
     back();
     return;
@@ -196,12 +205,96 @@ function back() {
   const prior = step.value;
   error.value = '';
   staleIntent.value = false;
+  stopApprovalPolling();
+  approvalId.value = null;
+  pendingDetail.value = null;
   step.value = prior === 'confirm' && prompts.value.length ? 'prompt' : 'search';
   intent = null;
 }
 
 function runContext(): UiRunContext {
   return { context: { ...props.context }, selection: { ...props.selection } };
+}
+
+function stopApprovalPolling() {
+  if (approvalTimer !== null) {
+    globalThis.clearInterval(approvalTimer);
+    approvalTimer = null;
+  }
+}
+
+/**
+ * Enter the approval-pending step for a destructive command. The frozen
+ * intent (same key, version and args) is retained; when the owner grants,
+ * the exact invocation resumes with the approval id (FR-8 / U08).
+ */
+function beginApprovalWait(approvalLocation: string) {
+  const id = approvalLocation.split('/').filter(Boolean).pop() ?? null;
+  if (!id) {
+    error.value = 'The command is waiting for your review in Approvals.';
+    step.value = 'result';
+    return;
+  }
+  approvalId.value = id;
+  pendingDetail.value = null;
+  step.value = 'pending';
+  error.value = '';
+  status.value = 'Waiting for your review in Approvals.';
+  void commands.getApproval(id).then((detail) => {
+    pendingDetail.value = detail;
+  }).catch(() => undefined);
+  approvalTimer = globalThis.setInterval(() => {
+    void pollApproval(id);
+  }, 1500);
+}
+
+async function pollApproval(id: string) {
+  let detail: ApprovalListItem;
+  try {
+    detail = await commands.getApproval(id);
+  } catch {
+    return; // keep polling; authoritative polling is the fallback
+  }
+  pendingDetail.value = detail;
+  const current = intent;
+  if (!current) return;
+  if (detail.status === 'granted') {
+    stopApprovalPolling();
+    status.value = 'Approved. Executing now…';
+    await resumeApprovedInvocation(current, id);
+  } else if (detail.status === 'denied' || detail.status === 'revoked') {
+    stopApprovalPolling();
+    status.value = 'The request was denied. Nothing was changed.';
+    error.value = 'The approval was denied.';
+    step.value = 'result';
+  } else if (detail.status === 'expired' || detail.status === 'stale') {
+    stopApprovalPolling();
+    error.value = 'The approval expired or its dependencies changed. Review the intent again before retrying.';
+    step.value = 'result';
+    intent = null;
+  }
+}
+
+async function resumeApprovedInvocation(current: { id: string; version: number; args: CommandArgs; key: string; fingerprint: string }, id: string) {
+  try {
+    const result = await commands.invoke(current.id, {
+      version: current.version,
+      args: current.args,
+      dry_run: false,
+      approval_id: id,
+    }, current.key);
+    emit('committed', result);
+    status.value = `${selected.value?.title ?? 'Command'} completed.`;
+    step.value = 'result';
+  } catch (reason) {
+    if (reason instanceof CommandApiError && reason.code === 'approval_stale') {
+      error.value = 'The intent dependencies changed. Review the command again with fresh consent.';
+      intent = null;
+    } else {
+      error.value = reason instanceof Error ? reason.message : 'The approved command could not be completed.';
+    }
+    step.value = 'result';
+  }
 }
 
 async function confirm() {
@@ -232,7 +325,9 @@ async function confirm() {
     }
     step.value = 'result';
   } catch (reason) {
-    if (reason instanceof CommandApiError && reason.response) {
+    if (reason instanceof CommandApiError && reason.code === 'approval_required' && reason.approvalLocation) {
+      beginApprovalWait(reason.approvalLocation);
+    } else if (reason instanceof CommandApiError && reason.response) {
       error.value = reason.response.error.message;
     } else {
       error.value = reason instanceof Error ? reason.message : 'The command could not be completed.';
@@ -261,6 +356,7 @@ function syncOpen(open: boolean) {
 watch(() => props.open, syncOpen);
 onMounted(() => syncOpen(props.open));
 onBeforeUnmount(() => {
+  stopApprovalPolling();
   const root = dialog.value;
   if (root?.open && typeof root.close === 'function') root.close();
 });
@@ -472,6 +568,51 @@ defineExpose({ intentKey: () => intent?.key ?? null, currentStep: () => step.val
       </div>
     </form>
 
+    <div
+      v-else-if="step === 'pending'"
+      class="palette-step"
+    >
+      <h3
+        ref="dialogStep"
+        tabindex="-1"
+      >
+        Awaiting approval
+      </h3>
+      <p class="palette-hint">
+        {{ selected?.title }} needs your exact review before it can commit. Your
+        selection, revision and arguments stay frozen while the approval is
+        pending; once granted, the command executes automatically.
+      </p>
+      <dl
+        v-if="pendingDetail"
+        class="palette-preview"
+      >
+        <dt>Resource</dt>
+        <dd>{{ pendingDetail.title ?? selected?.title }}</dd>
+        <dt>Placement</dt>
+        <dd>{{ pendingDetail.preview?.placement_removed ? 'Removed from the board' : 'Unchanged' }}</dd>
+        <dt>Affected material versions</dt>
+        <dd>{{ pendingDetail.preview?.impacted_versions_count ?? 0 }}</dd>
+      </dl>
+      <p class="palette-hint">
+        {{ status }}
+      </p>
+      <p
+        v-if="error"
+        role="alert"
+      >
+        {{ error }}
+      </p>
+      <div class="palette-actions">
+        <button
+          type="button"
+          @click="back"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+
     <template v-else>
       <h3
         ref="dialogStep"
@@ -513,4 +654,7 @@ defineExpose({ intentKey: () => intent?.key ?? null, currentStep: () => step.val
 .palette-state { padding: .75rem; color: #56675d; }
 .palette-hint { color: #56675d; font-size: 13px; }
 .palette-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .9rem; }
+.palette-preview { display: grid; grid-template-columns: max-content 1fr; gap: .3rem .9rem; margin: .75rem 0; font-size: 14px; }
+.palette-preview dt { color: #56675d; }
+.palette-preview dd { margin: 0; }
 </style>

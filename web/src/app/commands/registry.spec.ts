@@ -3,7 +3,7 @@ import type { CommandDescriptor } from '../../api/commands';
 import { deriveContext } from './context';
 import {
   builtInNavigationCommands, createCommandRegistry, freezeDescriptor, installCommandRegistry,
-  mergeDescriptors, queuePhaseActions, registerScoped, resourceMarkReadyAction,
+  mergeDescriptors, queuePhaseActions, registerScoped, resourceMarkReadyAction, resourceRetireAction,
   uiDescriptor, useCommandRegistry,
 } from './registry';
 
@@ -197,5 +197,52 @@ describe('resourceMarkReadyAction', () => {
     await action.run({}, { context: { route: 'resources' }, selection: {} });
     expect(invoke.mock.calls).toHaveLength(2);
     expect(invoke.mock.calls[0]?.[2]).not.toBe(invoke.mock.calls[1]?.[2]);
+  });
+});
+
+describe('resourceRetireAction (U08)', () => {
+  it('registers a destructive front door that freezes the selected card revisions', async () => {
+    const invoke = vi.fn().mockResolvedValue({ ok: true, command_version: 1, audit_id: 'a', replayed: false, dry_run: false, result: { readiness: 'retired' } });
+    const onCommitted = vi.fn();
+    const action = resourceRetireAction({
+      resourceId: 'res-1',
+      cardRevision: 3,
+      contentRevision: 5,
+      intentFingerprint: 'epoch-1|res-1|3|5',
+      invoke,
+      onCommitted,
+    });
+    expect(action.id).toBe('ui.resources.retire');
+    expect(action.effect).toBe('destructive');
+    expect(action.replaces).toBe('resource.retire');
+    expect(action.when?.({ context: deriveContext({ tab: 'Resources' }, { resource: 'res-1' }), selection: { resource: 'res-1' } })).toBe(true);
+    expect(action.when?.({ context: deriveContext({ tab: 'Queue' }), selection: {} })).toBe(false);
+
+    await action.run({}, { context: deriveContext({ tab: 'Resources' }, { resource: 'res-1' }), selection: { resource: 'res-1' } });
+    expect(invoke).toHaveBeenCalledWith('resource.retire', {
+      resource_id: 'res-1', expected_card_revision: 3, expected_content_revision: 5,
+    }, expect.any(String));
+    expect(onCommitted).toHaveBeenCalledOnce();
+  });
+
+  it('mints a fresh operation key when the frozen fingerprint changes', async () => {
+    const invoke = vi.fn().mockResolvedValue({ ok: true, command_version: 1, audit_id: 'a', replayed: false, dry_run: false, result: {} });
+    const action = resourceRetireAction({
+      resourceId: 'res-1', cardRevision: 3, contentRevision: 5,
+      intentFingerprint: 'epoch-1|res-1|3|5',
+      invoke, onCommitted: vi.fn(),
+    });
+    const ctx = { context: deriveContext({ tab: 'Resources' }, { resource: 'res-1' }), selection: { resource: 'res-1' } };
+    await action.run({}, ctx);
+    const firstKey = invoke.mock.calls[0]![2];
+    await action.run({}, ctx);
+    expect(invoke.mock.calls[1]![2]).toBe(firstKey);
+    const changed = resourceRetireAction({
+      resourceId: 'res-1', cardRevision: 4, contentRevision: 5,
+      intentFingerprint: 'epoch-1|res-1|4|5',
+      invoke, onCommitted: vi.fn(),
+    });
+    await changed.run({}, ctx);
+    expect(invoke.mock.calls[2]![2]).not.toBe(firstKey);
   });
 });

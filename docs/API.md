@@ -349,3 +349,26 @@ const opportunities = await client.listOpportunities();
 - [GETTING_STARTED](GETTING_STARTED.md#first-launch) — obtain the bootstrap URL.
 - [ARCHITECTURE](ARCHITECTURE.md#adr-3--loopback-http-with-bootstrap-session) — why the API is local.
 - [TESTING](TESTING.md) — contract fixtures and parity checks.
+
+## Command approvals (UCR-001 U08)
+
+Destructive registry commands (`resource.retire`, and later destructive
+commands) stop at an exact human approval before they can commit. The owner
+approval surface is owner-only and epoch-bound:
+
+| Method and path | Behavior |
+|---|---|
+| `GET /api/v1/approvals?status=pending&limit=&cursor=` | Owner-authorized paged list. Active rows include the exact normalized args and the observational preview; terminal rows omit them. |
+| `GET /api/v1/approvals/{id}` | One approval detail; unknown, foreign or epoch-stale ids return the same 404 as a missing record. |
+| `POST /api/v1/approvals/{id}/grant` | Approve the frozen intent. Body `{expected_revision, preview_digest}`; decisions carry their own `Idempotency-Key`. A changed revision returns `409 approval_stale`; an exact replay returns the original outcome. |
+| `POST /api/v1/approvals/{id}/deny` | Deny the frozen intent; a deny at the current revision revokes a previously granted approval. |
+| `GET /api/v1/command-notifications` | Same-origin fetch-based SSE with owner headers. Emits only `approvals_changed`, `run_changed`, `epoch_changed` and a 15 s heartbeat; re-read authoritative state after each signal and after reconnect. |
+
+A destructive invocation that has no grant returns `403 approval_required`
+with `Location: /api/v1/approvals/{id}`. The trusted browser reads the
+approval and resumes the exact frozen intent (same key, version and args)
+with `approval_id`. Grant bindings include the epoch, principal, run when
+present, command/version, idempotency key digest, wire and canonical args
+digests, and the dependency fingerprint recomputed under reservation at
+execution; a changed dependency turns the grant stale (`409 approval_stale`)
+instead of broadening authorization.

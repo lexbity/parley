@@ -1,6 +1,6 @@
 import { mount, flushPromises } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { commands, type CommandDescriptor, type CommandSuccess } from '../api/commands';
+import { commands, CommandApiError, type CommandDescriptor, type CommandSuccess } from '../api/commands';
 import { deriveContext } from './commands/context';
 import { createCommandRegistry, installCommandRegistry, useCommandRegistry } from './commands/registry';
 import CommandPalette from './CommandPalette.vue';
@@ -228,5 +228,105 @@ describe('CommandPalette', () => {
     expect(noMatch.text()).toContain('No matching commands.');
     expect(noMatch.html()).not.toContain('<script');
     noMatch.unmount();
+  });
+});
+
+describe('CommandPalette destructive approval (U08)', () => {
+  const retireDescriptor: CommandDescriptor = {
+    ...descriptor,
+    id: 'resource.retire',
+    title: 'Retire resource',
+    effect: 'destructive',
+    supports_dry_run: true,
+    palette: { context_fields: ['route', 'selection.resource'], prompts: [] },
+  };
+
+  function mountRetire(overrides: Record<string, unknown> = {}) {
+    return mountPalette({
+      descriptors: [retireDescriptor],
+      context: deriveContext({ tab: 'Resources' }, { resource: 'res-1' }),
+      selection: { resource: 'res-1' },
+      intentFingerprint: 'epoch-1|res-1|1|1',
+      ...overrides,
+    });
+  }
+
+  it('enters the approval-pending step when the server asks for review', async () => {
+    vi.useFakeTimers();
+    const invoke = vi.spyOn(commands, 'invoke').mockRejectedValue(new CommandApiError(
+      'Review the requested retirement in Approvals.',
+      403,
+      'approval_required',
+      [],
+      null,
+      '/api/v1/approvals/aprv-1',
+    ));
+    vi.spyOn(commands, 'getApproval').mockResolvedValue({
+      id: 'aprv-1', command_id: 'resource.retire', command_version: 1, revision: 1,
+      status: 'pending', expires_at: '2026-11-23T00:10:00Z', preview_digest: 'a'.repeat(64),
+      title: 'Gift A', impacted_versions_count: 2,
+      preview: { title: 'Gift A', placement_removed: true, impacted_versions_count: 2 },
+    } as never);
+
+    const wrapper = mountRetire();
+    await flushPromises();
+    const input = wrapper.get('[role="combobox"]');
+    await input.trigger('keydown', { key: 'Enter' });
+    await wrapper.get('button.primary').trigger('click');
+    await flushPromises();
+    expect(invoke).toHaveBeenCalledWith(
+      'resource.retire',
+      expect.objectContaining({ version: 1, args: {}, dry_run: false }),
+      expect.any(String),
+    );
+    expect(wrapper.text()).toContain('Awaiting approval');
+    expect(wrapper.text()).toContain('Gift A');
+    await wrapper.findAll('button').find((button) => button.text() === 'Cancel')!.trigger('click');
+    expect(wrapper.get('[role="combobox"]').exists()).toBe(true);
+    wrapper.unmount();
+    vi.useRealTimers();
+  });
+
+  it('resumes the frozen intent with the approval id once granted', async () => {
+    vi.useFakeTimers();
+    const invoke = vi.spyOn(commands, 'invoke');
+    invoke.mockRejectedValueOnce(new CommandApiError(
+      'Review the requested retirement in Approvals.',
+      403,
+      'approval_required',
+      [],
+      null,
+      '/api/v1/approvals/aprv-1',
+    ));
+    const getApproval = vi.spyOn(commands, 'getApproval');
+    getApproval.mockResolvedValue({
+      id: 'aprv-1', command_id: 'resource.retire', command_version: 1, revision: 1,
+      status: 'pending', expires_at: '2026-11-23T00:10:00Z', preview_digest: 'a'.repeat(64),
+      title: 'Gift A',
+    } as never);
+    const wrapper = mountRetire();
+    await flushPromises();
+    await wrapper.get('[role="combobox"]').trigger('keydown', { key: 'Enter' });
+    await wrapper.get('button.primary').trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).toContain('Awaiting approval');
+
+    // The owner grants; the next poll sees the granted approval and resumes
+    // the exact frozen invocation with the approval id.
+    invoke.mockResolvedValueOnce(receipt);
+    getApproval.mockResolvedValue({
+      id: 'aprv-1', command_id: 'resource.retire', command_version: 1, revision: 2,
+      status: 'granted', expires_at: '2026-11-23T00:10:00Z', preview_digest: 'a'.repeat(64),
+      title: 'Gift A',
+    } as never);
+    await vi.advanceTimersByTimeAsync(1600);
+    expect(invoke).toHaveBeenLastCalledWith(
+      'resource.retire',
+      expect.objectContaining({ approval_id: 'aprv-1' }),
+      expect.any(String),
+    );
+    expect(wrapper.text()).toContain('Command completed');
+    wrapper.unmount();
+    vi.useRealTimers();
   });
 });
