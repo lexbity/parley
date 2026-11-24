@@ -371,8 +371,13 @@ fn tags_response() -> Value {
     json!({"models":[{"name":"fixture","digest":"sha256:u07"}]})
 }
 
-fn embed_response() -> Value {
-    json!({"embeddings":[[0.1, 0.2, 0.3]]})
+fn embed_response(body: &str) -> Value {
+    let request: Value = serde_json::from_str(body).unwrap_or_default();
+    let count = request
+        .get("input")
+        .and_then(Value::as_array)
+        .map_or(1, Vec::len);
+    json!({"embeddings": vec![json!([0.1, 0.2, 0.3]); count]})
 }
 
 fn matcher_explanation(seed: &SeedIds) -> Value {
@@ -538,7 +543,7 @@ fn writing_run_responder(seed: SeedIds) -> Responder {
         let value: Value = serde_json::from_str(body).unwrap_or_default();
         if value.get("models").is_some() || value.get("messages").is_none() {
             if value.get("input").is_some() {
-                return embed_response();
+                return embed_response(body);
             }
             return tags_response();
         }
@@ -928,7 +933,7 @@ async fn u07_stale_resource_content_fences_compose_completion() {
             let value: Value = serde_json::from_str(body).unwrap_or_default();
             if value.get("models").is_some() || value.get("messages").is_none() {
                 if value.get("input").is_some() {
-                    return embed_response();
+                    return embed_response(body);
                 }
                 return tags_response();
             }
@@ -1053,7 +1058,7 @@ async fn u07_malformed_provider_output_remains_plain_data() {
             let value: Value = serde_json::from_str(body).unwrap_or_default();
             if value.get("models").is_some() || value.get("messages").is_none() {
                 if value.get("input").is_some() {
-                    return embed_response();
+                    return embed_response(body);
                 }
                 return tags_response();
             }

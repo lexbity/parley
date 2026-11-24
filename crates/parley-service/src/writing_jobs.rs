@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     net::IpAddr,
     time::Duration,
 };
@@ -21,6 +21,8 @@ use tokio::{
 
 const MAX_RESPONSE: usize = 2_200_000;
 const HALF_LIFE_MONTHS: f64 = 24.0;
+/// Maximum inputs in one local embedding request (AR-001 §2).
+const EMBED_BATCH: usize = 16;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -460,15 +462,9 @@ async fn run_matcher(
         .ok_or_else(|| {
             RoleFailure::new("MATCH_INPUT_INVALID", "Matching input has no need text.")
         })?;
-    let need_vector = embedding(
-        workspace,
-        &attempt.provider_config.endpoint,
-        &model,
-        &model_digest,
-        need,
-        &attempt.provider_config,
-    )
-    .await?;
+    // The need text and every resource are embedded in one cache-aware batch
+    // so a cold match pays ceil(n / 16) provider calls instead of n.
+    let mut texts: Vec<String> = vec![need.to_owned()];
     let rows = input
         .get("resources")
         .and_then(Value::as_array)
@@ -514,16 +510,8 @@ async fn run_matcher(
         let body = row.get("body").cloned().unwrap_or(Value::Null);
         let title = row.get("title").and_then(Value::as_str).unwrap_or_default();
         let text = format!("{title}\n{}", body);
-        let vector = embedding(
-            workspace,
-            &attempt.provider_config.endpoint,
-            &model,
-            &model_digest,
-            &text,
-            &attempt.provider_config,
-        )
-        .await?;
         tokens_in = tokens_in.saturating_add(text.len().min(u32::MAX as usize) as u32);
+        texts.push(text);
         let tags = row
             .get("tags")
             .and_then(Value::as_array)
@@ -553,13 +541,27 @@ async fn run_matcher(
         assets.push(Asset {
             id: id.to_owned(),
             kind,
-            embedding: vector,
+            embedding: Vec::new(),
             tags,
             age_months: age,
             advances,
             sends_using_asset: sends,
         });
     }
+    let vectors = embeddings(
+        workspace,
+        &attempt.provider_config.endpoint,
+        &model,
+        &model_digest,
+        &texts,
+        &attempt.provider_config,
+    )
+    .await?;
+    let need_vector = vectors[0].clone();
+    for (asset, vector) in assets.iter_mut().zip(vectors.into_iter().skip(1)) {
+        asset.embedding = vector;
+    }
+
     let scoring_config = input
         .get("scoring_config_digest")
         .and_then(Value::as_str)
@@ -886,56 +888,100 @@ pub(super) async fn ensure_scope_current(
     Ok(())
 }
 
-async fn embedding(
+/// Resolve embeddings for `texts` in stable order. Cache hits are read in one
+/// query; misses are sent to the local provider in batches of at most
+/// `EMBED_BATCH`, so a cold match pays `ceil(n / 16)` round trips instead of
+/// `n`. Cache keys and vectors are unchanged from the single-text path.
+async fn embeddings(
     workspace: &Workspace,
     endpoint: &str,
     model: &str,
     model_digest: &str,
-    text: &str,
+    texts: &[String],
     config: &super::jobs::ProviderConfig,
-) -> Result<Vec<f32>, RoleFailure> {
-    let text_hash = digest(text.as_bytes());
-    let cached: Option<String> = sqlx::query_scalar(
-        "SELECT vector_json FROM embedding_cache WHERE model_digest=? AND text_sha256=?",
+) -> Result<Vec<Vec<f32>>, RoleFailure> {
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let hashes: Vec<String> = texts.iter().map(|text| digest(text.as_bytes())).collect();
+    let cached_rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT text_sha256,vector_json FROM embedding_cache WHERE model_digest=? AND text_sha256 IN (SELECT value FROM json_each(?))",
     )
     .bind(model_digest)
-    .bind(&text_hash)
-    .fetch_optional(workspace.pool())
+    .bind(serde_json::to_string(&hashes).unwrap_or_default())
+    .fetch_all(workspace.pool())
     .await
     .map_err(|error| RoleFailure::new("PERSISTENCE_FAILED", error.to_string()))?;
-    if let Some(cached) = cached {
-        return serde_json::from_str(&cached)
-            .map_err(|error| RoleFailure::new("EMBEDDING_CACHE_CORRUPT", error.to_string()));
+    let mut cached = HashMap::new();
+    for (hash, vector_json) in cached_rows {
+        let vector: Vec<f32> = serde_json::from_str(&vector_json)
+            .map_err(|error| RoleFailure::new("EMBEDDING_CACHE_CORRUPT", error.to_string()))?;
+        cached.insert(hash, vector);
     }
-    if text
-        .len()
-        .saturating_add(config.num_predict as usize)
-        .saturating_add(512)
-        > config.num_ctx as usize
-    {
-        return Err(RoleFailure::new(
-            "CONTEXT_BUDGET",
-            "Embedding input exceeds configured context budget.",
-        ));
+
+    // Duplicate texts share a cache key; embed each distinct text once.
+    let mut seen = HashSet::new();
+    let mut missing: Vec<(String, String)> = Vec::new();
+    for (index, text) in texts.iter().enumerate() {
+        let hash = &hashes[index];
+        if cached.contains_key(hash) || !seen.insert(hash.clone()) {
+            continue;
+        }
+        missing.push((hash.clone(), text.clone()));
     }
-    let vector = ollama_embed(endpoint, model, text)
-        .await
-        .map_err(RoleFailure::provider)?;
-    if vector.is_empty() || vector.len() > 65536 || vector.iter().any(|value| !value.is_finite()) {
-        return Err(RoleFailure::new(
-            "EMBEDDING_INVALID",
-            "Embedding response is empty, oversized or non-finite.",
-        ));
+    for (_, text) in &missing {
+        if text
+            .len()
+            .saturating_add(config.num_predict as usize)
+            .saturating_add(512)
+            > config.num_ctx as usize
+        {
+            return Err(RoleFailure::new(
+                "CONTEXT_BUDGET",
+                "Embedding input exceeds configured context budget.",
+            ));
+        }
     }
-    let json = serde_json::to_string(&vector)
-        .map_err(|error| RoleFailure::new("SERIALIZE_FAILED", error.to_string()))?;
-    sqlx::query("INSERT INTO embedding_cache(model_digest,text_sha256,dimensions,vector_json,created_at) VALUES(?,?,?,?,?) ON CONFLICT(model_digest,text_sha256) DO NOTHING").bind(model_digest).bind(text_hash).bind(vector.len() as i64).bind(json).bind(super::now_utc()).execute(workspace.pool()).await.map_err(|error|RoleFailure::new("PERSISTENCE_FAILED",error.to_string()))?;
-    Ok(vector)
+
+    let now = super::now_utc();
+    for batch in missing.chunks(EMBED_BATCH) {
+        let inputs: Vec<String> = batch.iter().map(|(_, text)| text.clone()).collect();
+        let vectors = ollama_embed(endpoint, model, &inputs)
+            .await
+            .map_err(RoleFailure::provider)?;
+        for ((hash, _), vector) in batch.iter().zip(vectors) {
+            let json = serde_json::to_string(&vector)
+                .map_err(|error| RoleFailure::new("SERIALIZE_FAILED", error.to_string()))?;
+            sqlx::query("INSERT INTO embedding_cache(model_digest,text_sha256,dimensions,vector_json,created_at) VALUES(?,?,?,?,?) ON CONFLICT(model_digest,text_sha256) DO NOTHING").bind(model_digest).bind(hash).bind(vector.len() as i64).bind(json).bind(&now).execute(workspace.pool()).await.map_err(|error|RoleFailure::new("PERSISTENCE_FAILED",error.to_string()))?;
+            cached.insert(hash.clone(), vector);
+        }
+    }
+    hashes
+        .iter()
+        .map(|hash| {
+            cached
+                .get(hash)
+                .cloned()
+                .ok_or_else(|| RoleFailure::new("EMBEDDING_INVALID", "Embedding is missing."))
+        })
+        .collect()
 }
 
-async fn ollama_embed(endpoint: &str, model: &str, text: &str) -> Result<Vec<f32>, String> {
+async fn ollama_embed(
+    endpoint: &str,
+    model: &str,
+    inputs: &[String],
+) -> Result<Vec<Vec<f32>>, String> {
+    if inputs.is_empty() {
+        return Ok(Vec::new());
+    }
+    if inputs.len() > EMBED_BATCH {
+        return Err(format!(
+            "embedding request exceeds the {EMBED_BATCH}-input batch limit"
+        ));
+    }
     let (host, port) = local_endpoint_for_settings(endpoint)?;
-    let body = json!({"model":model,"input":text,"truncate":false}).to_string();
+    let body = json!({"model":model,"input":inputs,"truncate":false}).to_string();
     let response=tokio::time::timeout(Duration::from_secs(120),async{
         let mut stream=TcpStream::connect((host.as_str(),port)).await.map_err(|error|error.to_string())?;
         stream.write_all(format!("POST /api/embed HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",body.len()).as_bytes()).await.map_err(|error|error.to_string())?;
@@ -946,9 +992,14 @@ async fn ollama_embed(endpoint: &str, model: &str, text: &str) -> Result<Vec<f32
         let payload=if head.to_ascii_lowercase().contains("transfer-encoding: chunked"){decode_chunks(payload)?}else{payload.to_owned()};
         let parsed:Value=serde_json::from_str(&payload).map_err(|error|error.to_string())?;
         let vectors=parsed.get("embeddings").and_then(Value::as_array).ok_or("embedding response has no embeddings array")?;
-        if vectors.len()!=1{return Err("embedding response must contain exactly one vector".into());}
-        serde_json::from_value(vectors[0].clone()).map_err(|error|error.to_string())
+        if vectors.len()!=inputs.len(){return Err(format!("embedding response must contain {} vectors",inputs.len()));}
+        vectors.iter().map(|value|serde_json::from_value(value.clone()).map_err(|error|error.to_string())).collect::<Result<Vec<Vec<f32>>,String>>()
     }).await.map_err(|_|"embedding request timed out".to_owned())??;
+    if response.iter().any(|vector| {
+        vector.is_empty() || vector.len() > 65536 || vector.iter().any(|value| !value.is_finite())
+    }) {
+        return Err("embedding response is empty, oversized or non-finite".into());
+    }
     Ok(response)
 }
 
@@ -1007,10 +1058,233 @@ mod tests {
     use super::*;
     use std::{
         fs,
-        sync::atomic::{AtomicU64, Ordering},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicU64, Ordering},
+        },
     };
+    use tokio::net::TcpListener;
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    /// Loopback provider that records the number of inputs in every batch and
+    /// returns one vector per input, derived from that input's length so the
+    /// caller's ordering can be checked.
+    struct RecordingEmbedder {
+        endpoint: String,
+        sizes: Arc<Mutex<Vec<usize>>>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl RecordingEmbedder {
+        async fn start() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let sizes = Arc::new(Mutex::new(Vec::new()));
+            let recorded = sizes.clone();
+            let task = tokio::spawn(async move {
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    let mut head = Vec::new();
+                    let mut byte = [0u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        if stream.read_exact(&mut byte).await.is_err() {
+                            return;
+                        }
+                        head.push(byte[0]);
+                    }
+                    let head = String::from_utf8(head).unwrap();
+                    let length: usize = head
+                        .lines()
+                        .find_map(|line| {
+                            line.split_once(':')
+                                .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                                .and_then(|(_, value)| value.trim().parse().ok())
+                        })
+                        .unwrap_or(0);
+                    let mut body = vec![0u8; length];
+                    stream.read_exact(&mut body).await.unwrap();
+                    let request: Value = serde_json::from_slice(&body).unwrap();
+                    let inputs = request["input"].as_array().unwrap();
+                    recorded.lock().unwrap().push(inputs.len());
+                    let vectors: Vec<Value> = inputs
+                        .iter()
+                        .map(|input| json!([input.as_str().unwrap().len() as f64, 0.5]))
+                        .collect();
+                    let payload = json!({"embeddings":vectors}).to_string();
+                    stream
+                        .write_all(
+                            format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}", payload.len())
+                                .as_bytes(),
+                        )
+                        .await
+                        .unwrap();
+                }
+            });
+            Self {
+                endpoint: format!("http://{address}"),
+                sizes,
+                task,
+            }
+        }
+
+        fn sizes(&self) -> Vec<usize> {
+            self.sizes.lock().unwrap().clone()
+        }
+    }
+
+    impl Drop for RecordingEmbedder {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    fn embed_config(endpoint: &str) -> super::super::jobs::ProviderConfig {
+        super::super::jobs::ProviderConfig {
+            endpoint: endpoint.to_owned(),
+            model: "fixture".to_owned(),
+            num_ctx: 4096,
+            num_predict: 64,
+            locale: "en".to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn ollama_embed_sends_one_batch_and_rejects_oversized_batches() {
+        let provider = RecordingEmbedder::start().await;
+        let inputs: Vec<String> = (0..16).map(|i| format!("text-{i}")).collect();
+        let vectors = ollama_embed(&provider.endpoint, "fixture", &inputs)
+            .await
+            .unwrap();
+        assert_eq!(provider.sizes(), vec![16]);
+        assert_eq!(vectors.len(), 16);
+        for (input, vector) in inputs.iter().zip(vectors) {
+            assert_eq!(vector, vec![input.len() as f32, 0.5]);
+        }
+
+        let over: Vec<String> = (0..17).map(|i| format!("text-{i}")).collect();
+        assert!(
+            ollama_embed(&provider.endpoint, "fixture", &over)
+                .await
+                .is_err()
+        );
+        assert_eq!(provider.sizes(), vec![16]);
+    }
+
+    #[tokio::test]
+    async fn embeddings_at_thousand_inputs_uses_sixty_three_batches() {
+        let provider = RecordingEmbedder::start().await;
+        let path = std::env::temp_dir().join(format!(
+            "parley-embed-scale-{}-{}.sqlite",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let workspace = Workspace::open(&path).await.unwrap();
+        let config = embed_config(&provider.endpoint);
+        let texts: Vec<String> = (0..1000).map(|i| format!("resource-{i}")).collect();
+        let vectors = match embeddings(
+            &workspace,
+            &provider.endpoint,
+            "fixture",
+            "sha256:fixture",
+            &texts,
+            &config,
+        )
+        .await
+        {
+            Ok(vectors) => vectors,
+            Err(error) => panic!("embedding failed: {} {}", error.code, error.message),
+        };
+        let sizes = provider.sizes();
+        assert_eq!(sizes.len(), 63, "1000 inputs at 16 per batch");
+        assert!(sizes.iter().all(|&size| size <= EMBED_BATCH));
+        assert_eq!(sizes.iter().sum::<usize>(), 1000);
+        assert_eq!(vectors.len(), 1000);
+        for (text, vector) in texts.iter().zip(vectors) {
+            assert_eq!(vector, vec![text.len() as f32, 0.5]);
+        }
+        workspace.pool().close().await;
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn embeddings_batch_only_misses_and_reuse_cache() {
+        let provider = RecordingEmbedder::start().await;
+        let path = std::env::temp_dir().join(format!(
+            "parley-embed-batch-{}-{}.sqlite",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let workspace = Workspace::open(&path).await.unwrap();
+        let config = embed_config(&provider.endpoint);
+        let model_digest = "sha256:fixture";
+        let texts: Vec<String> = (0..24).map(|i| format!("resource-{i}")).collect();
+
+        // Pre-seed one cache hit and one duplicate of it.
+        let cached_text = texts[0].clone();
+        let cached_hash = digest(cached_text.as_bytes());
+        sqlx::query("INSERT INTO embedding_cache(model_digest,text_sha256,dimensions,vector_json,created_at) VALUES(?,?,?,?,?)")
+            .bind(model_digest)
+            .bind(&cached_hash)
+            .bind(2)
+            .bind(json!([99.0, 99.0]).to_string())
+            .bind(super::super::now_utc())
+            .execute(workspace.pool())
+            .await
+            .unwrap();
+        let mut with_duplicate = texts.clone();
+        with_duplicate.push(cached_text.clone());
+
+        let vectors = match embeddings(
+            &workspace,
+            &provider.endpoint,
+            "fixture",
+            model_digest,
+            &with_duplicate,
+            &config,
+        )
+        .await
+        {
+            Ok(vectors) => vectors,
+            Err(error) => panic!("embedding failed: {} {}", error.code, error.message),
+        };
+        assert_eq!(provider.sizes(), vec![16, 7]);
+        assert_eq!(vectors.len(), 25);
+        for (index, vector) in vectors.iter().enumerate() {
+            let expected = if index == 0 || index == 24 {
+                vec![99.0, 99.0]
+            } else {
+                vec![texts[index].len() as f32, 0.5]
+            };
+            assert_eq!(*vector, expected, "index {index}");
+        }
+
+        // A second pass is entirely cached: no further provider requests.
+        let again = match embeddings(
+            &workspace,
+            &provider.endpoint,
+            "fixture",
+            model_digest,
+            &texts,
+            &config,
+        )
+        .await
+        {
+            Ok(vectors) => vectors,
+            Err(error) => panic!("embedding failed: {} {}", error.code, error.message),
+        };
+        assert_eq!(again, vectors[..24]);
+        assert_eq!(provider.sizes(), vec![16, 7]);
+        let rows: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM embedding_cache WHERE model_digest=?")
+                .bind(model_digest)
+                .fetch_one(workspace.pool())
+                .await
+                .unwrap();
+        assert_eq!(rows, 24);
+
+        workspace.pool().close().await;
+        let _ = fs::remove_file(path);
+    }
 
     #[tokio::test]
     async fn completed_proposal_is_rejected_after_scoped_revision_changes() {
