@@ -195,7 +195,7 @@ describe('OutputWorkspace', () => {
       sentence_bindings: [
         expect.objectContaining({ sentence_index: 0, claim_type: 'generic' }),
         expect.objectContaining({ sentence_index: 1, claim_type: 'offer', ref_kind: 'resource', ref_id: 'r1', ref_revision: 8 }),
-        expect.objectContaining({ sentence_index: 2, claim_type: 'ask' }),
+        expect.objectContaining({ sentence_index: 2, claim_type: 'ask', ref_kind: 'ladder', ask_rung: 1 }),
       ],
     }));
     wrapper.unmount();

@@ -83,6 +83,8 @@ const boundResource = computed(() => props.resources.find((item) => item.id === 
 const exchangeVersion = computed(() => Number(exchange.value.current?.version ?? 0));
 const exchangeAttested = computed(() => exchange.value.current?.fairness_attested === true);
 const dirty = computed(() => draft.value.body !== (boundMaterial.value?.body ?? ''));
+/** Explicit re-binding counts as a save-able change even when wording is untouched. */
+const bindingsDirty = ref(false);
 const words = computed(() => draft.value.body.trim().split(/\s+/).filter(Boolean).length);
 const channel = computed(() => boundTemplate.value?.channel ?? 'email');
 const charLimit = computed(() => channel.value === 'email' ? emailCharLimit : 300);
@@ -110,9 +112,9 @@ const slotsVerbatim = computed(() => templateSlots.value.every((slot) => {
   const value = (draft.value.fills[slot] ?? '').trim();
   return value.length > 0 && draft.value.body.includes(value);
 }));
-const canSave = computed(() => dirty.value && draft.value.body.trim().length > 0
+const canSave = computed(() => (dirty.value || bindingsDirty.value) && draft.value.body.trim().length > 0
   && boundTemplate.value?.status === 'active' && slotsResolved.value && slotsVerbatim.value && exchangeVersion.value > 0);
-const saveLabel = computed(() => dirty.value ? 'Save draft' : boundMaterial.value ? 'Saved' : 'Save draft');
+const saveLabel = computed(() => (dirty.value || bindingsDirty.value) ? 'Save draft' : boundMaterial.value ? 'Saved' : 'Save draft');
 
 const matchDigest = computed(() => embedding.value.model_digest);
 const assessment = computed<'current' | 'stale' | 'missing'>(() => {
@@ -291,6 +293,7 @@ function loadMaterial(material: Material) {
   current.body = material.body;
   current.materialId = material.id;
   current.resourceId = '';
+  bindingsDirty.value = false;
   draftsByScope.set(key, current);
   mobilePane.value = 'editor';
   leftTab.value = 'drafts';
@@ -320,6 +323,7 @@ async function saveDraft() {
     ? await parley.editMaterial(boundMaterial.value.id, input)
     : await parley.createMaterial(opportunity, input);
   draft.value.materialId = saved.id;
+  bindingsDirty.value = false;
   setNotice(`Draft v${saved.version} saved for ${saved.recipient_name}. Owner review is still required before release.`);
   emit('changed');
 }
@@ -361,7 +365,9 @@ function deriveSentenceBindings(body: string, fills: SlotFill[]): SentenceBindin
     }
     if (askFill && !askBound && sentence.includes(askFill.value)) {
       askBound = true;
-      return { sentence_index: index, claim_type: 'ask', ref_kind: 'ladder', ref_id: null, ref_revision: null, approved_wording: sentence, ask_rung: null };
+      // The deterministic gate grounds ask sentences at an explicit rung (H3,
+      // H7): the editor's single ask starts at rung 1 and must end in '?'.
+      return { sentence_index: index, claim_type: 'ask', ref_kind: 'ladder', ref_id: null, ref_revision: null, approved_wording: sentence, ask_rung: sentence.trimEnd().endsWith('?') ? 1 : null };
     }
     return { sentence_index: index, claim_type: 'generic', ref_kind: null, ref_id: null, ref_revision: null, approved_wording: sentence, ask_rung: null };
   });
@@ -458,6 +464,7 @@ async function insertResource() {
 }
 
 function applyFills() {
+  bindingsDirty.value = true;
   draft.value.templateId = pendingTemplateId.value;
   draft.value.fills = Object.fromEntries(pendingEffectiveFills.value.map((fill) => [fill.slot, fill.value]));
   draft.value.fillResources = { ...pendingFillResources.value };
@@ -686,7 +693,7 @@ async function releaseMaterial(mode: 'copy' | 'download') {
     const actual = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
     if (actual !== issued.content_sha256 || actual !== material.content_sha256) throw new Error('The authorized text failed its SHA-256 integrity check. No content was released.');
     if (mode === 'copy') {
-      await globalThis.navigator.clipboard.writeText(issued.body);
+      await writeClipboardWithDeadline(issued.body);
       delivered = true;
       try {
         await parley.acknowledgeRelease(issued.release_id, true);
@@ -728,6 +735,15 @@ async function reconcileAck() {
   pendingAck.value = null;
   deliveredReleases.value = { ...deliveredReleases.value, [issued.material_id]: issued };
   setNotice('The original release acknowledgement is now recorded.');
+}
+
+/** An unfocused document can leave the clipboard promise pending forever; the
+ * deadline hands the flow to the pending-acknowledgement reconciliation. */
+function writeClipboardWithDeadline(text: string): Promise<void> {
+  return Promise.race<void>([
+    globalThis.navigator.clipboard.writeText(text),
+    new Promise((_, reject) => globalThis.setTimeout(() => reject(new Error('The clipboard did not respond; the release acknowledgement stays pending.')), 3000)),
+  ]);
 }
 
 function filenamePart(value: string): string {

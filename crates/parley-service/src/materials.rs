@@ -1632,7 +1632,7 @@ impl Workspace {
             .bind(&now)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("INSERT INTO template_version(id,family_id,version_no,body,fallbacks_json,status,content_sha256,created_at) VALUES(?,?,1,?,?, 'draft',?,?)").bind(&id).bind(&family).bind(&input.body).bind(fallbacks).bind(digest(input.body.as_bytes())).bind(&now).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO template_version(id,family_id,version_no,body,fallbacks_json,status,content_sha256,created_at,display_name) VALUES(?,?,1,?,?, 'draft',?,?,?)").bind(&id).bind(&family).bind(&input.body).bind(fallbacks).bind(digest(input.body.as_bytes())).bind(&now).bind(input.name.trim()).execute(&mut *tx).await?;
         event(
             &mut tx,
             "template",

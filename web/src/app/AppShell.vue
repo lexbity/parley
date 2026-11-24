@@ -783,13 +783,13 @@ watch(route, () => {
           @navigate="navigate"
         />
       </div>
-      <p
-        v-else-if="!error"
-        role="status"
-      >
-        Opening workspace…
-      </p>
     </template>
+    <p
+      v-else-if="!error"
+      role="status"
+    >
+      Opening workspace…
+    </p>
   </main>
   <CommandPalette
     :open="paletteOpen"
