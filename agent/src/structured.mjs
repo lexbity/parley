@@ -41,9 +41,17 @@ function qualifiedTokenizer(bytes, digest) {
 }
 
 export async function executeStructured(execution, assets, fetch, signal) {
-  const { profile, mode } = execution
+  const { profile, mode, role } = execution
   const probe = mode === "probe"
-  const schemaBytes = probe ? Buffer.from(JSON.stringify(PROBE_SCHEMA)) : assets.coachSchema
+  const schemaName = role === "template_builder" ? "parley_template_builder"
+    : role === "interviewer" ? "parley_interviewer"
+    : role === "briefer" ? "parley_briefer"
+    : "parley_coach"
+  const schemaBytes = probe ? Buffer.from(JSON.stringify(PROBE_SCHEMA))
+    : role === "template_builder" ? assets.builderSchema
+    : role === "interviewer" ? assets.interviewerSchema
+    : role === "briefer" ? assets.brieferSchema
+    : assets.coachSchema
   if (!probe && sha256(schemaBytes) !== execution.schema_digest) reject("WORKER_PROTOCOL")
   const schema = parseJson(schemaBytes)
   const validate = compileSchema(schema)
@@ -95,7 +103,7 @@ export async function executeStructured(execution, assets, fetch, signal) {
         temperature: payload.temperature,
         response_format: {
           type: "json_schema",
-          json_schema: { name: probe ? "parley_probe" : "parley_coach", schema, strict: true },
+          json_schema: { name: probe ? "parley_probe" : schemaName, schema, strict: true },
         },
       }
       const count = tokenizer.encode(JSON.stringify(request), { add_special_tokens: false }).ids.length

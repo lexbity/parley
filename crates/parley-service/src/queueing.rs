@@ -536,111 +536,28 @@ async fn answer_question(
                 "Interviewer answer needs 1–12,000 bytes",
             );
         }
-        let chat:Option<(i64,String)>=match sqlx::query_as("SELECT revision,asset_kind FROM agent_chat WHERE id=? AND role='interviewer' AND scope_kind='owner'").bind(&chat_id).fetch_optional(&mut *tx).await{Ok(v)=>v,Err(e)=>return super::command_error(e.into())};
-        let (chat_revision, chat_kind) = if let Some(chat) = chat {
-            chat
-        } else if input.interviewer_chat_id.is_none() {
-            let now = now_utc();
-            if let Err(error) = sqlx::query("INSERT INTO agent_chat(id,role,scope_kind,asset_kind,revision,created_at,updated_at) VALUES(?,'interviewer','owner',?,1,?,?)")
-                .bind(&chat_id).bind(asset_kind).bind(&now).bind(&now).execute(&mut *tx).await {
-                return super::command_error(error.into());
-            }
-            (1, asset_kind.to_owned())
-        } else {
-            return super::error(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "INTERVIEWER_SCOPE_INVALID",
-                "Choose an owner Interviewer chat",
-            );
-        };
-        if chat_kind != asset_kind {
-            return super::error(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "INTERVIEWER_ASSET_KIND_MISMATCH",
-                "Interviewer chat must match the Coach question resource kind",
-            );
-        }
-        let turn_no: i64 = match sqlx::query_scalar(
-            "SELECT coalesce(max(turn_no),0)+1 FROM agent_turn WHERE chat_id=?",
-        )
-        .bind(&chat_id)
-        .fetch_one(&mut *tx)
-        .await
-        {
-            Ok(v) => v,
-            Err(e) => return super::command_error(e.into()),
-        };
-        let next_revision = chat_revision + 1;
-        let now = now_utc();
-        if let Err(e)=sqlx::query("INSERT INTO agent_turn(id,chat_id,turn_no,speaker,text,created_at) VALUES(?,?,?,'owner',?,?)").bind(super::new_id(&chat_id)).bind(&chat_id).bind(turn_no).bind(text).bind(&now).execute(&mut *tx).await{return super::command_error(e.into())}
-        if let Err(e) =
-            sqlx::query("UPDATE agent_chat SET revision=?,updated_at=? WHERE id=? AND revision=?")
-                .bind(next_revision)
-                .bind(&now)
-                .bind(&chat_id)
-                .bind(chat_revision)
-                .execute(&mut *tx)
-                .await
-        {
-            return super::command_error(e.into());
-        }
-        let turns: Vec<Value> = match sqlx::query_as::<_, (String, String, String)>(
-            "SELECT id,speaker,text FROM agent_turn WHERE chat_id=? ORDER BY turn_no",
-        )
-        .bind(&chat_id)
-        .fetch_all(&mut *tx)
-        .await
-        {
-            Ok(v) => v
-                .into_iter()
-                .map(|(id, speaker, text)| json!({"id":id,"speaker":speaker,"text":text}))
-                .collect(),
-            Err(e) => return super::command_error(e.into()),
-        };
-        let prompt: Option<String> = match sqlx::query_scalar(
-            "SELECT version_id FROM agent_prompt_active WHERE role='interviewer'",
-        )
-        .fetch_optional(&mut *tx)
-        .await
-        {
-            Ok(v) => v,
-            Err(e) => return super::command_error(e.into()),
-        };
-        let bank:Option<(String,String)>=match sqlx::query_as("SELECT b.version_id,b.content_json FROM interviewer_question_bank_active a JOIN interviewer_question_bank_version b ON b.version_id=a.version_id WHERE a.singleton=1").fetch_optional(&mut *tx).await{Ok(v)=>v,Err(e)=>return super::command_error(e.into())};
-        let Some((bank_id, bank_content)) = bank else {
-            return super::error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "QUESTION_BANK_MISSING",
-                "Interviewer question bank is unavailable",
-            );
-        };
-        let existing:Option<(String,String)>=match sqlx::query_as("SELECT fields_json,owner_quotes_json FROM interviewer_candidate WHERE chat_id=? AND state='proposed' ORDER BY created_at DESC LIMIT 1").bind(&chat_id).fetch_optional(&mut *tx).await{Ok(v)=>v,Err(e)=>return super::command_error(e.into())};
-        let fields = existing
-            .as_ref()
-            .and_then(|v| serde_json::from_str::<serde_json::Value>(&v.0).ok())
-            .unwrap_or(json!({}));
-        let quotes = existing
-            .as_ref()
-            .and_then(|v| serde_json::from_str::<serde_json::Value>(&v.1).ok())
-            .unwrap_or(json!({}));
-        let input_job = json!({"chat_id":chat_id,"asset_kind":asset_kind,"chat_revision":next_revision,"turns":turns,"current_fields":fields,"current_quotes":quotes,"question_bank_version_id":bank_id,"question_bank":serde_json::from_str::<serde_json::Value>(&bank_content).unwrap_or_default(),"prompt_version_id":prompt,"coach_question_id":id});
-        let job = match crate::jobs::enqueue_role_in_tx(
+        // One typed owner-turn intake: it creates the owner Interviewer chat
+        // when the answer does not target an existing one, records the turn
+        // and enqueues exactly one role job (AR-001 AR04).
+        let outcome = match crate::application::interview::start_owner_turn(
             &mut tx,
-            "interviewer",
-            "owner",
-            &chat_id,
-            next_revision,
-            &input_job,
-            3,
-            state.workspace.epoch(),
-            None,
-            None,
+            &crate::application::interview::OwnerTurnInput {
+                chat_id: chat_id.clone(),
+                text: text.to_owned(),
+                epoch: state.workspace.epoch().to_owned(),
+                create_chat_if_missing: input.interviewer_chat_id.is_none(),
+                asset_kind: Some(asset_kind.to_owned()),
+                coach_question_id: Some(id.clone()),
+            },
         )
         .await
         {
-            Ok(v) => v,
-            Err(e) => return super::materials::workspace_error(e),
+            Ok(outcome) => outcome,
+            Err(error) => return interview_answer_error(error),
         };
+        let job = outcome.job_id;
+        let chat_id = outcome.chat_id;
+        let now = now_utc();
         let disposition = json!({"answer":input.answer,"interviewer_chat_id":chat_id,"job_id":job});
         if let Err(e)=sqlx::query("UPDATE coach_question SET status='answer_pending',disposition_json=?,revision=revision+1,updated_at=? WHERE id=? AND revision=? AND status='open'").bind(disposition.to_string()).bind(&now).bind(&id).bind(input.expected_revision).execute(&mut *tx).await{return super::command_error(e.into())};
         let result = json!({"id":id,"status":"answer_pending","chat_id":chat_id,"job_id":job,"revision":input.expected_revision+1});
@@ -718,6 +635,57 @@ async fn answer_question(
     super::private_headers(&mut r, state.workspace.epoch());
     r
 }
+
+fn interview_answer_error(error: crate::application::interview::InterviewError) -> Response {
+    use axum::response::IntoResponse as _;
+    match error {
+        crate::application::interview::InterviewError::NotFound => {
+            let response = super::error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "INTERVIEWER_SCOPE_INVALID",
+                "Choose an owner Interviewer chat",
+            );
+            response.into_response()
+        }
+        crate::application::interview::InterviewError::InvalidKind => super::error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "INTERVIEWER_ASSET_KIND_MISMATCH",
+            "Interviewer chat must match the Coach question resource kind",
+        ),
+        crate::application::interview::InterviewError::StaleRevision => super::error(
+            StatusCode::CONFLICT,
+            "QUESTION_STALE",
+            "Refresh this question before recording an answer",
+        ),
+        crate::application::interview::InterviewError::InvalidTurn => super::error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "ANSWER_INVALID",
+            "Interviewer answer needs 1–12,000 bytes",
+        ),
+        crate::application::interview::InterviewError::BankMissing => super::error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "QUESTION_BANK_MISSING",
+            "Interviewer question bank is unavailable",
+        ),
+        crate::application::interview::InterviewError::QueueAtCapacity
+        | crate::application::interview::InterviewError::InferenceBusy => {
+            let mut response = super::error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "INFERENCE_BUSY",
+                "The local inference queue is full",
+            );
+            response.headers_mut().insert(
+                "retry-after",
+                axum::http::HeaderValue::from_static("2"),
+            );
+            response.into_response()
+        }
+        crate::application::interview::InterviewError::Database => {
+            super::command_error(crate::WorkspaceError::Invalid("interview intake failed".into()))
+        }
+    }
+}
+
 async fn dismiss_question(
     State(state): State<AppState>,
     Path(id): Path<String>,

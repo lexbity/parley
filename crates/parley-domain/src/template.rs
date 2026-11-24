@@ -17,9 +17,11 @@ pub const SLOT_TYPES: &[&str] = &[
     "custom",
 ];
 
-/// Resolvers implemented by the deterministic S03 authoring path. Other
-/// declared slot kinds remain invalid until their evidence bank and resolver
-/// are part of the same release path.
+/// Resolvers implemented by the deterministic authoring path. Other declared
+/// slot kinds remain invalid until their evidence bank and resolver are part
+/// of the same release path. The R5 hook resolver lands with AR03: its typed
+/// fill is an accepted, current claim revision scoped to the selected
+/// recipient and opportunity.
 pub const REGISTERED_SLOT_TYPES: &[&str] = &[
     "their_name",
     "sender_name",
@@ -29,6 +31,7 @@ pub const REGISTERED_SLOT_TYPES: &[&str] = &[
     "ask",
     "custom",
     "capacity_line",
+    "hook",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,6 +94,9 @@ pub fn validate(body: &str, proof_fallback: Option<&str>) -> TemplateValidation 
     }
     if fixed.chars().any(|ch| ch.is_ascii_digit()) {
         errors.push("fixed template text cannot contain digits".into());
+    }
+    if fixed.contains("://") || fixed.to_ascii_lowercase().contains("www.") {
+        errors.push("fixed template text cannot contain URLs".into());
     }
     if let Some(token) = first_unresolved_proper_noun(&fixed) {
         errors.push(format!(
@@ -199,6 +205,43 @@ fn sentences(body: &str) -> Vec<&str> {
         .collect()
 }
 
+/// Public sentence splitter used by the candidate renderer and the typed
+/// preview generator. Sentences are split inclusively on sentence-final
+/// punctuation and newlines, matching the validator's parser.
+pub fn split_sentences(body: &str) -> Vec<&str> {
+    sentences(body)
+}
+
+/// Apply a declared optional omission to a candidate skeleton. When a rule is
+/// explicitly optional and the skeleton declares the matching fallback, the
+/// entire dependent sentence is removed. The returned body is the skeleton
+/// with omitted sentences removed; the returned tags are the surviving
+/// per-sentence rule annotations.
+pub fn apply_optional_omission(
+    body: &str,
+    sentence_rules: &[Vec<String>],
+    optional_rule: &str,
+    fallback: &str,
+) -> Option<(String, Vec<Vec<String>>)> {
+    let parts = sentences(body);
+    if parts.len() != sentence_rules.len() {
+        return None;
+    }
+    let mut kept = Vec::with_capacity(parts.len());
+    let mut tags = Vec::with_capacity(parts.len());
+    for (sentence, rules) in parts.into_iter().zip(sentence_rules) {
+        if rules.iter().any(|rule| rule == optional_rule) {
+            if fallback != "omit_sentence" {
+                return None;
+            }
+            continue;
+        }
+        kept.push(sentence);
+        tags.push(rules.clone());
+    }
+    Some((kept.join(" "), tags))
+}
+
 fn first_unresolved_proper_noun(fixed: &str) -> Option<String> {
     let mut sentence_start = true;
     let mut seen = BTreeSet::new();
@@ -291,5 +334,28 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("do not match"))
         );
+    }
+
+    #[test]
+    fn hook_slot_is_registered_and_urls_are_rejected() {
+        let valid = validate("Hi {{their_name:name}}, see {{hook:reason}}.", None);
+        assert!(valid.errors.is_empty(), "{:?}", valid.errors);
+        assert!(valid.slots.iter().any(|slot| slot == "hook:reason"));
+        let url = validate("Look at https://example.com for details.", None);
+        assert!(url.errors.iter().any(|error| error.contains("URL")));
+        let www = validate("See www.example.com for details.", None);
+        assert!(www.errors.iter().any(|error| error.contains("URL")));
+    }
+
+    #[test]
+    fn optional_omission_removes_only_the_dependent_sentence() {
+        let body = "I can share {{proof:p}} with you. Would {{ask:question}} help?";
+        let rules: Vec<Vec<String>> = vec![vec!["R3".into()], vec!["R2".into()]];
+        let (omitted, tags) =
+            apply_optional_omission(body, &rules, "R3", "omit_sentence").unwrap();
+        assert_eq!(omitted, "Would {{ask:question}} help?");
+        assert_eq!(tags, vec![vec!["R2".to_owned()]]);
+        assert!(apply_optional_omission(body, &rules, "R3", "use_alternative_template").is_none());
+        assert!(apply_optional_omission(body, &rules[..1], "R3", "omit_sentence").is_none());
     }
 }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue';
-import { parley, type AgentChat, type AgentChatSummary, type BriefItem, type GraphEntity, type RoleJob, type VocabularyFluency } from '../../api/client';
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { parley, type AgentChat, type AgentChatSummary, type BriefItem, type GraphEntity, type VocabularyFluency } from '../../api/client';
+import { observeRoleJob } from '../../app/inference/activity';
 
 const props = defineProps<{ parties: GraphEntity[]; partyId?: string }>();
 const scopeKind = ref<'party' | 'segment'>('party');
@@ -20,6 +21,8 @@ const error = ref('');
 const status = ref('');
 
 let loadGeneration = 0;
+const jobWatchers = new Set<() => void>();
+onBeforeUnmount(() => { for (const dispose of jobWatchers) dispose(); jobWatchers.clear(); });
 
 async function load() {
   const own = ++loadGeneration;
@@ -70,20 +73,22 @@ async function generate() {
   try {
     const { job_id } = await parley.generateBrief(scopeKind.value, scopeId.value);
     status.value = 'Briefer is preparing evidence based on saved sources in this scope.';
-    for (let attempt = 0; attempt < 180; attempt += 1) {
-      await new Promise((resolve) => globalThis.setTimeout(resolve, 1000));
-      const job: RoleJob = await parley.getRoleJob(job_id);
-      if (!['queued', 'running'].includes(job.status)) {
+    const dispose = observeRoleJob(
+      job_id,
+      () => {},
+      (job) => {
         // The job belongs to the scope that started it; if the owner switched
         // scope, never attach its outcome to the current scope.
         if (scope.kind !== scopeKind.value || scope.id !== scopeId.value) return;
-        await load();
+        void load();
         if (job.status !== 'succeeded') error.value = job.last_error ?? 'Briefer could not validate its proposals.';
         else status.value = 'Brief proposals are ready for owner review; no proposal is accepted automatically.';
-        return;
-      }
-    }
-    if (scope.kind === scopeKind.value && scope.id === scopeId.value) error.value = 'Briefer is still running. Its durable job can be checked again later.';
+      },
+      (reason: unknown) => {
+        if (scope.kind === scopeKind.value && scope.id === scopeId.value) error.value = reason instanceof Error ? reason.message : 'Could not generate a brief.';
+      },
+    );
+    jobWatchers.add(dispose);
   } catch (reason) { if (scope.kind === scopeKind.value && scope.id === scopeId.value) error.value = reason instanceof Error ? reason.message : 'Could not generate a brief.'; }
   finally { busy.value = false; }
 }
@@ -138,19 +143,24 @@ async function sendResearchTurn() {
     chatMessage.value = '';
     await openResearchChat();
     status.value = 'Your scoped question is saved; any Briefer response remains a proposal.';
-    for (let attempt = 0; attempt < 180; attempt += 1) {
-      await new Promise((resolve) => globalThis.setTimeout(resolve, 1000));
-      if (chat.value?.id !== sendingChat) return;
-      const job = await parley.getRoleJob(result.job_id);
-      if (!['queued', 'running'].includes(job.status)) {
-        const updated = await parley.getAgentChat(result.chat_id);
+    const dispose = observeRoleJob(
+      result.job_id,
+      () => {},
+      (job) => {
         if (chat.value?.id !== sendingChat) return;
-        chat.value = updated;
+        void (async () => {
+          const updated = await parley.getAgentChat(result.chat_id);
+          if (chat.value?.id !== sendingChat) return;
+          chat.value = updated;
+        })();
         if (job.status !== 'succeeded') error.value = job.last_error ?? 'Briefer could not validate a response.';
-        return;
-      }
-    }
-    error.value = 'Briefer is still running. This scoped conversation is saved.';
+      },
+      (reason: unknown) => {
+        if (chat.value?.id !== sendingChat) return;
+        error.value = reason instanceof Error ? reason.message : 'Could not refresh the Briefer response.';
+      },
+    );
+    jobWatchers.add(dispose);
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not send the research question.'; }
   finally { busy.value = false; }
 }

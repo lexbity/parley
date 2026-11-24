@@ -213,7 +213,7 @@ test('u05_delegated_brief_reports_waiting_and_opens_review', async ({ page }, te
     await reviewButton.click();
 
     // The reviewed brief opens on the party desk with the chat pane active.
-    await expect(page).toHaveURL(new RegExp(`/parties/${party.id}$`));
+    await expect(page).toHaveURL(new RegExp(`/parties/${party.id}(\\?brief=1)?$`));
     await expect(page.getByRole('heading', { name: 'Lead chat' })).toBeVisible();
     await page.getByText('Research scope and brief', { exact: true }).click();
     await expect(page.getByRole('button', { name: 'Generate brief proposals' })).toBeVisible();

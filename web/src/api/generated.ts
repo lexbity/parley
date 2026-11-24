@@ -2741,6 +2741,11 @@ export interface components {
         OtherRoleJob: components["schemas"]["JobFields"] & {
             /** @enum {unknown} */
             role: "interviewer" | "briefer" | "template_builder" | "matcher" | "composer" | "linter";
+            review_ref?: null | {
+                /** @enum {unknown} */
+                kind: "interviewer_candidate" | "brief_scope" | "template_build_candidate";
+                id: string;
+            };
         } & {
             /**
              * @description discriminator enum property added by openapi-typescript

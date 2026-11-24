@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
-import { newOperationKey, parley, type ResourceColumn, type AgentChat, type AgentChatSummary, type RoleJob } from '../../api/client';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { newOperationKey, parley, type ResourceColumn, type AgentChat, type AgentChatSummary } from '../../api/client';
+import { observeRoleJob } from '../../app/inference/activity';
 
 const props = defineProps<{ columns?: ResourceColumn[] }>();
 const selectedColumn = ref('');
@@ -72,20 +73,28 @@ async function start() {
 
 async function waitForJob(id: string) {
   const startedChat = chatId.value;
-  for (let attempt = 0; attempt < 180; attempt += 1) {
-    await new Promise((resolve) => globalThis.setTimeout(resolve, 1000));
-    const job: RoleJob = await parley.getRoleJob(id);
-    if (!['queued', 'running'].includes(job.status)) {
+  const dispose = observeRoleJob(
+    id,
+    () => { /* intermediate job states are already applied by refreshChat */ },
+    (job) => {
       // The job belongs to the chat that started it; if the owner switched
       // chats, never attach its outcome or refresh to the current chat.
       if (chatId.value !== startedChat) return;
-      await refreshChat();
+      void refreshChat();
       if (job.status !== 'succeeded') error.value = job.last_error ?? 'Interviewer could not validate its proposal. Continue manually.';
-      return;
-    }
-  }
-  if (chatId.value === startedChat) error.value = 'Interviewer is still running. Your conversation is saved and can be reopened.';
+      else status.value = 'The Interviewer proposed a candidate; review before saving.';
+    },
+    (reason: unknown) => {
+      if (chatId.value !== startedChat) return;
+      error.value = reason instanceof Error ? reason.message : 'Could not refresh the Interviewer result.';
+    },
+  );
+  jobWatchers.add(dispose);
+  return dispose;
 }
+
+const jobWatchers = new Set<() => void>();
+onBeforeUnmount(() => { for (const dispose of jobWatchers) dispose(); jobWatchers.clear(); });
 
 async function sendTurn() {
   if (!message.value.trim() || busy.value) return;

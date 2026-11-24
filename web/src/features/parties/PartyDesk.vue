@@ -660,9 +660,14 @@ watch([query, kind, sort, importBatch, directoryRevision, () => props.active], (
   cleanup(() => { globalThis.clearTimeout(timer); directoryRequest++; });
 }, { immediate: true });
 watch(() => props.partyId, id => {
-  if (id && globalThis.sessionStorage.getItem('parley.open-brief') === id) {
+  // A typed route query carries the explicit Brief-pane hand-off from a
+  // delegated review (AR-001 AR04). It is consumed once and cleaned so a
+  // reload never forces the chat pane again.
+  if (id && globalThis.location.search.includes('brief=1')) {
     auxiliary.value = 'chat';
-    globalThis.sessionStorage.removeItem('parley.open-brief');
+    if (globalThis.location.search === '?brief=1') {
+      globalThis.history.replaceState(globalThis.history.state, '', globalThis.location.pathname);
+    }
   }
   if (id && id !== rootPartyId.value) selectRow(id);
 });

@@ -1,0 +1,7 @@
+{
+  "text": "Second answer",
+  "expected": {
+    "status": 202,
+    "stale_first_job": "STALE_INPUT"
+  }
+}

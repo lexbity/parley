@@ -6,7 +6,7 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use parley_domain::{lint, template};
@@ -22,6 +22,10 @@ pub(super) fn routes() -> Router<AppState> {
             post(start_match).get(get_match),
         )
         .route("/api/v1/templates/build", post(build_templates))
+        .route(
+            "/api/v1/templates/build-candidates/{job_id}",
+            get(build_candidates),
+        )
         .route(
             "/api/v1/template-families",
             get(list_template_families).post(create_template_family),
@@ -622,29 +626,33 @@ struct MatchRunRow {
     why_job_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct TemplateBuildRequest {
-    segment_id: Option<String>,
-    stage_class: String,
-    rungs: Vec<u32>,
-    rules: Vec<String>,
-    channel: String,
-    max_chars: usize,
-    #[serde(default)]
-    voice_sample_ids: Vec<String>,
-}
+pub(crate) type TemplateBuildRequest = super::application::template_build::BuildRequest;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct TemplateVersionRequest {
-    name: String,
-    body: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
     proof_fallback: Option<String>,
-    stage_class: String,
-    channel: String,
-    sentence_rules: Vec<Vec<String>>,
+    #[serde(default)]
+    stage_class: Option<String>,
+    #[serde(default)]
+    channel: Option<String>,
+    #[serde(default)]
+    sentence_rules: Option<Vec<Vec<String>>>,
+    #[serde(default)]
     parent_version_id: Option<String>,
+    #[serde(default)]
+    candidate_id: Option<String>,
+    #[serde(default)]
+    expected_candidate_revision: Option<i64>,
+    #[serde(default)]
+    expected_family_head: Option<String>,
+    #[serde(default)]
+    edits: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -873,160 +881,15 @@ async fn build_templates(
     headers: HeaderMap,
     Json(input): Json<TemplateBuildRequest>,
 ) -> impl IntoResponse {
-    if let Err(response) = authenticate(&headers, &state).await {
-        return response.into_response();
-    }
-    if !matches!(
-        input.stage_class.as_str(),
-        "identified" | "prepared" | "touched" | "responded" | "converging"
-    ) || input.rungs.is_empty()
-        || input.rungs.iter().any(|r| *r == 0 || *r > 5)
-        || !input.rungs.windows(2).all(|pair| pair[0] < pair[1])
-        || input.rules.is_empty()
-        || input.rules.iter().any(|rule| {
-            !matches!(
-                rule.as_str(),
-                "R1" | "R2" | "R3" | "R4" | "R5" | "R6" | "R7"
-            )
-        })
-        || input.max_chars == 0
-        || input.max_chars > 20_000
-        || input.channel.trim().is_empty()
-        || input.channel.len() > 80
-    {
-        return err(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "TEMPLATE_BUILD_INPUT_INVALID",
-            "Builder needs a supported stage, increasing ask rungs, valid rule set, channel, and character limit.",
-        );
-    }
-    let (scope_kind, scope_id, revision, segment_context) =
-        if let Some(segment) = input.segment_id.as_deref() {
-            match sqlx::query_as::<_, (String, Option<String>, i64)>(
-                "SELECT name,description,revision FROM segment WHERE id=?",
-            )
-            .bind(segment)
-            .fetch_optional(state.workspace.pool())
-            .await
-            {
-                Ok(Some((name, description, rev))) => (
-                    "segment",
-                    segment.to_owned(),
-                    rev,
-                    json!({"id":segment,"name":name,"description":description}),
-                ),
-                Ok(None) => {
-                    return err(
-                        StatusCode::NOT_FOUND,
-                        "SEGMENT_NOT_FOUND",
-                        "Template segment does not exist.",
-                    );
-                }
-                Err(error) => return command_error(error.into()),
-            }
-        } else {
-            ("owner", "owner".to_owned(), 1, Value::Null)
-        };
-    let mut input_json = match serde_json::to_value(&input) {
-        Ok(value) => value,
-        Err(error) => {
-            return err(
-                StatusCode::BAD_REQUEST,
-                "TEMPLATE_BUILD_INVALID",
-                &error.to_string(),
-            );
-        }
-    };
-    if let Some(object) = input_json.as_object_mut() {
-        object.insert("segment_context".into(), segment_context);
-    }
-    if !input.voice_sample_ids.is_empty() {
-        let unique = input.voice_sample_ids.iter().collect::<BTreeSet<_>>();
-        if unique.len() != input.voice_sample_ids.len() {
-            return err(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "VOICE_SAMPLE_DUPLICATE",
-                "Voice sample IDs must be unique.",
-            );
-        }
-        let ids_json = match serde_json::to_string(&input.voice_sample_ids) {
-            Ok(value) => value,
-            Err(error) => {
-                return err(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "VOICE_SAMPLE_SERIALIZE_FAILED",
-                    &error.to_string(),
-                );
-            }
-        };
-        let samples: Result<Vec<(String,String)>,sqlx::Error> = sqlx::query_as("SELECT id,text FROM voice_sample WHERE id IN (SELECT value FROM json_each(?)) AND status='active' ORDER BY id")
-            .bind(&ids_json)
-            .fetch_all(state.workspace.pool()).await;
-        let samples = match samples {
-            Ok(value) => value,
-            Err(error) => return command_error(error.into()),
-        };
-        if samples.len() != unique.len() {
-            return err(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "VOICE_SAMPLE_MISSING",
-                "Every selected voice sample must exist in the owner bank.",
-            );
-        }
-        let sample_revisions: Result<Vec<(String,i64)>,sqlx::Error> = sqlx::query_as("SELECT id,revision FROM voice_sample WHERE id IN (SELECT value FROM json_each(?)) AND status='active' ORDER BY id").bind(&ids_json).fetch_all(state.workspace.pool()).await;
-        let sample_revisions = match sample_revisions {
-            Ok(value) => value,
-            Err(error) => return command_error(error.into()),
-        };
-        if sample_revisions.len() != unique.len() {
-            return err(
-                StatusCode::CONFLICT,
-                "VOICE_SAMPLE_STALE",
-                "A selected voice sample was retired while building the template request.",
-            );
-        }
-        let revision_map = sample_revisions
-            .into_iter()
-            .map(|(id, revision)| (id, json!(revision)))
-            .collect::<serde_json::Map<String, Value>>();
-        let sample_values = samples
-            .into_iter()
-            .map(|(id, text)| json!({"id":id,"text":text}))
-            .collect::<Vec<_>>();
-        if let Some(object) = input_json.as_object_mut() {
-            object.insert("voice_samples".into(), Value::Array(sample_values));
-            object.insert("voice_sample_revisions".into(), Value::Object(revision_map));
-        }
-    }
-    let key = match command_key(&headers) {
-        Ok(value) => value,
-        Err(response) => return response,
-    };
-    let canonical = match canonical_command("POST /api/v1/templates/build", &input) {
-        Ok(value) => value,
-        Err(response) => return response,
-    };
-    match enqueue_role_command(
-        &state,
-        &key,
-        &canonical,
-        "template_builder",
-        scope_kind,
-        &scope_id,
-        revision,
-        &input_json,
-        3,
-    )
-    .await
-    {
-        Ok(EnqueueOutcome::Replay(response)) => response,
-        Ok(EnqueueOutcome::New(job_id)) => (
-            StatusCode::ACCEPTED,
-            Json(json!({"job_id":job_id,"role":"template_builder"})),
-        )
-            .into_response(),
-        Err(response) => response,
-    }
+    super::application::template_build::build_templates(State(state), headers, Json(input)).await
+}
+
+async fn build_candidates(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(job_id): Path<String>,
+) -> impl IntoResponse {
+    super::application::template_build::list_candidates(State(state), headers, Path(job_id)).await
 }
 
 async fn create_template_version(
@@ -1049,34 +912,163 @@ async fn create_template_version(
         Ok(value) => value,
         Err(response) => return response,
     };
-    if input.name.trim().is_empty()
-        || input.name.len() > 200
-        || input.body.len() > 10_000
-        || input.channel.trim().is_empty()
-        || input.channel.len() > 80
-        || !matches!(
-            input.stage_class.as_str(),
-            "identified" | "prepared" | "touched" | "responded" | "converging"
-        )
-    {
-        return err(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "TEMPLATE_VERSION_INVALID",
-            "Template metadata or content is outside supported limits.",
-        );
+    let candidate_id = input.candidate_id.as_deref();
+    let prepared = async {
+        if let Some(candidate_id) = candidate_id {
+            let expected_revision = input.expected_candidate_revision.ok_or_else(|| {
+                err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "TEMPLATE_CANDIDATE_REVISION_REQUIRED",
+                    "Candidate saves must carry the expected candidate revision.",
+                )
+            })?;
+            let mut tx = state
+                .workspace
+                .pool()
+                .begin_with("BEGIN IMMEDIATE")
+                .await
+                .map_err(|error| command_error(error.into()))?;
+            if let Some(response) =
+                receipt_replay(&mut tx, &state.workspace, &key, &canonical).await?
+            {
+                let _ = tx.commit().await;
+                return Err(response);
+            }
+            let prepared = super::application::template_build::prepare_candidate_save(
+                &mut tx,
+                candidate_id,
+                expected_revision,
+                input.expected_family_head.as_deref(),
+                input.edits.as_ref(),
+            )
+            .await
+            .map_err(|error| match error {
+                super::application::template_build::CandidateSaveError::NotFound => err(
+                    StatusCode::NOT_FOUND,
+                    "TEMPLATE_CANDIDATE_NOT_FOUND",
+                    "Template build candidate does not exist.",
+                ),
+                super::application::template_build::CandidateSaveError::NotOwnerReview => err(
+                    StatusCode::CONFLICT,
+                    "TEMPLATE_CANDIDATE_CLOSED",
+                    "This candidate was already saved or expired.",
+                ),
+                super::application::template_build::CandidateSaveError::Stale => err(
+                    StatusCode::CONFLICT,
+                    "TEMPLATE_CANDIDATE_STALE",
+                    "Refresh this candidate before saving a draft.",
+                ),
+                super::application::template_build::CandidateSaveError::FamilyHeadChanged => err(
+                    StatusCode::CONFLICT,
+                    "TEMPLATE_FAMILY_HEAD_CHANGED",
+                    "The expected family head changed; reload and retry.",
+                ),
+                super::application::template_build::CandidateSaveError::DependencyStale => err(
+                    StatusCode::CONFLICT,
+                    "STALE_INPUT",
+                    "The selected context changed after the candidate was built.",
+                ),
+                super::application::template_build::CandidateSaveError::InvalidEdits => err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "TEMPLATE_VALIDATION_FAILED",
+                    "Candidate edits failed template validation.",
+                ),
+                super::application::template_build::CandidateSaveError::Database => command_error(
+                    super::WorkspaceError::Database(sqlx::Error::Protocol(
+                        "storage failure".into(),
+                    )),
+                ),
+            })?;
+            tx.commit()
+                .await
+                .map_err(|error| command_error(error.into()))?;
+            Ok::<_, Response>(prepared)
+        } else {
+            let name = input.name.clone().ok_or_else(|| {
+                err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "TEMPLATE_VERSION_INVALID",
+                    "Manual template saves require name, body, stage, channel and sentence rules.",
+                )
+            })?;
+            let body = input.body.clone().ok_or_else(|| {
+                err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "TEMPLATE_VERSION_INVALID",
+                    "Manual template saves require name, body, stage, channel and sentence rules.",
+                )
+            })?;
+            let stage_class = input.stage_class.clone().ok_or_else(|| {
+                err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "TEMPLATE_VERSION_INVALID",
+                    "Manual template saves require name, body, stage, channel and sentence rules.",
+                )
+            })?;
+            let channel = input.channel.clone().ok_or_else(|| {
+                err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "TEMPLATE_VERSION_INVALID",
+                    "Manual template saves require name, body, stage, channel and sentence rules.",
+                )
+            })?;
+            let sentence_rules = input.sentence_rules.clone().ok_or_else(|| {
+                err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "TEMPLATE_VERSION_INVALID",
+                    "Manual template saves require name, body, stage, channel and sentence rules.",
+                )
+            })?;
+            if name.trim().is_empty()
+                || name.len() > 200
+                || body.len() > 10_000
+                || channel.trim().is_empty()
+                || channel.len() > 80
+                || !matches!(
+                    stage_class.as_str(),
+                    "identified" | "prepared" | "touched" | "responded" | "converging"
+                )
+            {
+                return Err(err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "TEMPLATE_VERSION_INVALID",
+                    "Template metadata or content is outside supported limits.",
+                ));
+            }
+            let detailed = template::validate_detailed(
+                &body,
+                input.proof_fallback.as_deref(),
+                &sentence_rules,
+            );
+            if !detailed.errors.is_empty() {
+                return Err(err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "TEMPLATE_VALIDATION_FAILED",
+                    &detailed.errors.join("; "),
+                ));
+            }
+            Ok::<_, Response>(json!({
+                "name":name,
+                "body":body,
+                "sentence_rules":sentence_rules,
+                "proof_fallback":input.proof_fallback,
+                "stage_class":stage_class,
+                "channel":channel,
+                "family_head_id":Value::Null,
+            }))
+        }
     }
-    let detailed = template::validate_detailed(
-        &input.body,
-        input.proof_fallback.as_deref(),
-        &input.sentence_rules,
-    );
-    if !detailed.errors.is_empty() {
-        return err(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "TEMPLATE_VALIDATION_FAILED",
-            &detailed.errors.join("; "),
-        );
-    }
+    .await;
+    let prepared = match prepared {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let name = prepared["name"].as_str().unwrap_or_default().to_owned();
+    let body = prepared["body"].as_str().unwrap_or_default().to_owned();
+    let sentence_rules: Vec<Vec<String>> = serde_json::from_value(prepared["sentence_rules"].clone())
+        .unwrap_or_default();
+    let proof_fallback = prepared["proof_fallback"].as_str().map(str::to_owned);
+    let family_head_id = prepared["family_head_id"].as_str().map(str::to_owned);
     let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
         Ok(tx) => tx,
         Err(error) => return command_error(error.into()),
@@ -1151,12 +1143,37 @@ async fn create_template_version(
             return command_error(error.into());
         }
     };
+    if let Some(head) = family_head_id.as_deref() {
+        let valid: Option<String> =
+            match sqlx::query_scalar(
+                "SELECT id FROM template_version WHERE id=? AND family_id=? AND status IN ('active','approved')",
+            )
+            .bind(head)
+            .bind(&family_id)
+            .fetch_optional(&mut *tx)
+            .await
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    let _ = tx.rollback().await;
+                    return command_error(error.into());
+                }
+            };
+        if valid.is_none() {
+            let _ = tx.rollback().await;
+            return err(
+                StatusCode::CONFLICT,
+                "TEMPLATE_FAMILY_HEAD_CHANGED",
+                "The expected family head is no longer current.",
+            );
+        }
+    }
     let id = super::new_id(&format!(
         "{family_id}:{version}:{}",
-        digest(input.body.as_bytes())
+        digest(body.as_bytes())
     ));
     let now = now_utc();
-    let fallbacks = match serde_json::to_string(&json!({"proof":input.proof_fallback})) {
+    let fallbacks = match serde_json::to_string(&json!({"proof":proof_fallback})) {
         Ok(value) => value,
         Err(error) => {
             let _ = tx.rollback().await;
@@ -1167,7 +1184,7 @@ async fn create_template_version(
             );
         }
     };
-    let rules = match serde_json::to_string(&input.sentence_rules) {
+    let rules = match serde_json::to_string(&sentence_rules) {
         Ok(value) => value,
         Err(error) => {
             let _ = tx.rollback().await;
@@ -1178,10 +1195,38 @@ async fn create_template_version(
             );
         }
     };
-    let inserted=sqlx::query("INSERT INTO template_version(id,family_id,version_no,body,fallbacks_json,status,content_sha256,created_at,rules_json,display_name,stage_class,channel,parent_version_id) VALUES(?,?,?,?,?,'draft',?,?,?,?,?,?,?)").bind(&id).bind(&family_id).bind(version).bind(&input.body).bind(fallbacks).bind(digest(input.body.as_bytes())).bind(&now).bind(rules).bind(&input.name).bind(&input.stage_class).bind(&input.channel).bind(parent).execute(&mut *tx).await;
+    let inserted=sqlx::query("INSERT INTO template_version(id,family_id,version_no,body,fallbacks_json,status,content_sha256,created_at,rules_json,display_name,stage_class,channel,parent_version_id) VALUES(?,?,?,?,?,'draft',?,?,?,?,?,?,?)").bind(&id).bind(&family_id).bind(version).bind(&body).bind(fallbacks).bind(digest(body.as_bytes())).bind(&now).bind(rules).bind(&name).bind(prepared["stage_class"].as_str().unwrap_or("identified")).bind(prepared["channel"].as_str().unwrap_or("email")).bind(parent).execute(&mut *tx).await;
     if let Err(error) = inserted {
         let _ = tx.rollback().await;
         return command_error(error.into());
+    }
+    if let Some(candidate_id) = candidate_id {
+        let expected_revision = input.expected_candidate_revision.unwrap_or_default();
+        if let Err(error) = super::application::template_build::link_saved_version(
+            &mut tx,
+            candidate_id,
+            expected_revision,
+            &id,
+        )
+        .await
+        {
+            let _ = tx.rollback().await;
+            return match error {
+                super::application::template_build::CandidateSaveError::NotFound => err(
+                    StatusCode::NOT_FOUND,
+                    "TEMPLATE_CANDIDATE_NOT_FOUND",
+                    "Template build candidate does not exist.",
+                ),
+                super::application::template_build::CandidateSaveError::Stale => err(
+                    StatusCode::CONFLICT,
+                    "TEMPLATE_CANDIDATE_STALE",
+                    "This candidate was already saved or changed.",
+                ),
+                _ => command_error(super::WorkspaceError::Database(sqlx::Error::Protocol(
+                    "storage failure".into(),
+                ))),
+            };
+        }
     }
     let workspace_revision: i64 = match sqlx::query_scalar(
         "UPDATE workspace_meta SET revision=revision+1 WHERE singleton=1 RETURNING revision",
@@ -1195,8 +1240,8 @@ async fn create_template_version(
             return command_error(error.into());
         }
     };
-    if let Err(error)=sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'template',?,?,?,?)").bind(super::new_id(&id)).bind(&now).bind(&id).bind(version).bind("template.version_created").bind(json!({"family_id":family_id,"workspace_revision":workspace_revision,"parent_version_id":input.parent_version_id,"content_sha256":digest(input.body.as_bytes())}).to_string()).execute(&mut *tx).await { let _=tx.rollback().await; return command_error(error.into()); }
-    let response_body = json!({"id":id,"family_id":family_id,"version":version,"status":"draft","body":input.body,"rules":input.sentence_rules,"stage_class":input.stage_class,"channel":input.channel,"parent_version_id":input.parent_version_id});
+    if let Err(error)=sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'template',?,?,?,?)").bind(super::new_id(&id)).bind(&now).bind(&id).bind(version).bind("template.version_created").bind(json!({"family_id":family_id,"workspace_revision":workspace_revision,"parent_version_id":input.parent_version_id,"candidate_id":candidate_id,"content_sha256":digest(body.as_bytes())}).to_string()).execute(&mut *tx).await { let _=tx.rollback().await; return command_error(error.into()); }
+    let response_body = json!({"id":id,"family_id":family_id,"version":version,"status":"draft","body":body,"rules":sentence_rules,"stage_class":prepared["stage_class"],"channel":prepared["channel"],"parent_version_id":input.parent_version_id,"candidate_id":candidate_id});
     if let Err(error) = receipt_store(
         &mut tx,
         &state.workspace,
@@ -2049,66 +2094,6 @@ fn canonical_command(
     bytes.push(0);
     bytes.extend_from_slice(&body);
     Ok(digest(&bytes))
-}
-
-enum EnqueueOutcome {
-    Replay(axum::response::Response),
-    New(String),
-}
-#[allow(clippy::result_large_err, clippy::too_many_arguments)]
-async fn enqueue_role_command(
-    state: &AppState,
-    key: &str,
-    canonical: &str,
-    role: &str,
-    scope_kind: &str,
-    scope_id: &str,
-    scope_revision: i64,
-    input: &Value,
-    max_attempts: i64,
-) -> Result<EnqueueOutcome, axum::response::Response> {
-    let mut tx = state
-        .workspace
-        .pool()
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .map_err(|error| command_error(error.into()))?;
-    if let Some(response) = receipt_replay(&mut tx, &state.workspace, key, canonical).await? {
-        tx.commit()
-            .await
-            .map_err(|error| command_error(error.into()))?;
-        return Ok(EnqueueOutcome::Replay(response));
-    }
-    let job_id = super::jobs::enqueue_role_in_tx(
-        &mut tx,
-        role,
-        scope_kind,
-        scope_id,
-        scope_revision,
-        input,
-        max_attempts,
-        state.workspace.epoch(),
-        None,
-        None,
-    )
-    .await
-    .map_err(super::materials::workspace_error)?;
-    let result = json!({"job_id":job_id,"role":role});
-    receipt_store(
-        &mut tx,
-        &state.workspace,
-        key,
-        canonical,
-        StatusCode::ACCEPTED,
-        &result,
-    )
-    .await
-    .map_err(command_error)?;
-    tx.commit()
-        .await
-        .map_err(|error| command_error(error.into()))?;
-    state.jobs.notify_one();
-    Ok(EnqueueOutcome::New(job_id))
 }
 
 /// Validate explanations against the exact deterministic shortlist before a

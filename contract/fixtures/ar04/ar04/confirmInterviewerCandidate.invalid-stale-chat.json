@@ -1,0 +1,5 @@
+{
+  "title": "Onboarding measurement",
+  "fields": {"what_i_did": "I measured the result in the onboarding report."},
+  "expected_chat_revision": 1
+}
