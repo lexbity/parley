@@ -5,12 +5,19 @@
 /target
 /fuzz/target/
 /fuzz/corpus/
+*.profraw
+*.profdata
 
 # Node / frontend build output
 node_modules/
 web/dist/
-web/coverage/lcov.info
-web/coverage/lcov-report/
+# coverage-summary.json stays tracked on purpose: ci/coverage.py ratchets on it
+web/coverage/*
+!web/coverage/coverage-summary.json
+
+# Python bytecode (ci verifiers)
+__pycache__/
+*.py[cod]
 
 # Test and tooling artifacts
 /artifacts/
@@ -23,12 +30,16 @@ blob-report/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+*.sqlite-journal
 *.db
 
 # Environment and editor noise
 .env
 .env.*
 *.swp
+.DS_Store
+.idea/
+.vscode/
 
 # Agent tools
 .zcode
