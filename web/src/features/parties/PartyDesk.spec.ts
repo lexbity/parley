@@ -5,7 +5,13 @@ import { parley, type Dossier, type EntityNotes, type GraphEntity } from '../../
 import PartyDesk from './PartyDesk.vue';
 import MarkdownEditor from '../../shared/MarkdownEditor.vue';
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+async function settle() {
+  await flushPromises();
+  await new Promise(resolve => globalThis.setTimeout(resolve, 5));
+  await flushPromises();
+}
 
 const fieldwork: GraphEntity = { id: 'p1', kind: 'org', name: 'Fieldwork', focus: 'CSV tools', revision: 1, etag: '"p1.epoch.entity.p1.1"' };
 const mira: GraphEntity = { id: 'p2', kind: 'person', name: 'Mira Chen', focus: 'Maintenance', revision: 1, etag: '"p1.epoch.entity.p2.1"' };
@@ -19,6 +25,8 @@ function stubDesk(parties: GraphEntity[] = [fieldwork, mira]) {
   vi.spyOn(parley, 'listAgentChats').mockResolvedValue([]);
   vi.spyOn(parley, 'listSegments').mockResolvedValue([]);
   vi.spyOn(parley, 'listFluency').mockResolvedValue([]);
+  vi.spyOn(parley, 'queryDirectory').mockResolvedValue({ rows: parties, nextCursor: null, fence: '0' });
+  vi.spyOn(parley, 'listOpportunitiesPage').mockResolvedValue({ items: [], nextCursor: null });
   vi.spyOn(parley, 'getDossier').mockResolvedValue(emptyDossier);
   vi.spyOn(parley, 'getEntityNotes').mockResolvedValue(notes);
   return parties;
@@ -28,8 +36,8 @@ describe('PartyDesk', () => {
   it('keeps the sheet root and the inspected selection distinct until a row click', async () => {
     stubDesk();
     const getDossier = vi.spyOn(parley, 'getDossier').mockResolvedValue({ ...emptyDossier, entity: mira });
-    const wrapper = mount(PartyDesk, { props: { parties: [fieldwork, mira], sources: [], opportunities: [] } });
-    await flushPromises();
+    const wrapper = mount(PartyDesk, { props: { sources: [] } });
+    await settle();
     // Row click selects the row as both root and inspection target.
     await wrapper.findAll('.row-party')[0]!.trigger('click');
     await flushPromises();
@@ -47,8 +55,8 @@ describe('PartyDesk', () => {
   it('edits a sheet focus cell through the typed party PATCH and refreshes the dossier', async () => {
     stubDesk();
     const updateParty = vi.spyOn(parley, 'updateParty').mockResolvedValue({ ...fieldwork, focus: 'CSV importer', revision: 2, etag: '"p1.epoch.entity.p1.2"' });
-    const wrapper = mount(PartyDesk, { props: { parties: [fieldwork, mira], sources: [], opportunities: [] } });
-    await flushPromises();
+    const wrapper = mount(PartyDesk, { props: { sources: [] } });
+    await settle();
     await wrapper.findAll('.focus-cell')[0]!.trigger('click');
     const input = wrapper.get('.focus-input');
     await input.setValue('CSV importer');
@@ -62,8 +70,8 @@ describe('PartyDesk', () => {
     stubDesk();
     const updateNotes = vi.spyOn(parley, 'updateEntityNotes')
       .mockRejectedValue(Object.assign(new Error('The notes changed in another session.'), { status: 412, code: 'REVISION_CONFLICT' }));
-    const wrapper = mount(PartyDesk, { props: { parties: [fieldwork, mira], sources: [], opportunities: [] } });
-    await flushPromises();
+    const wrapper = mount(PartyDesk, { props: { sources: [] } });
+    await settle();
     await wrapper.findAll('.row-party')[0]!.trigger('click');
     await flushPromises();
     await wrapper.findAll('button').find((button) => button.text() === 'Open card')!.trigger('click');
@@ -82,8 +90,8 @@ describe('PartyDesk', () => {
 
   it('promotes the inspected node to the network root via the inspector action', async () => {
     stubDesk();
-    const wrapper = mount(PartyDesk, { props: { parties: [fieldwork, mira], sources: [], opportunities: [] } });
-    await flushPromises();
+    const wrapper = mount(PartyDesk, { props: { sources: [] } });
+    await settle();
     await wrapper.findAll('.row-party')[0]!.trigger('click');
     await flushPromises();
     // A graph node selection changes the inspected record without changing the
@@ -100,8 +108,8 @@ describe('PartyDesk', () => {
   it('creates a party from the add form and selects it as the root', async () => {
     stubDesk();
     const createEntity = vi.spyOn(parley, 'createEntity').mockResolvedValue({ id: 'p9', kind: 'org', name: 'Alder', focus: '', revision: 1, etag: '"e"' });
-    const wrapper = mount(PartyDesk, { props: { parties: [fieldwork, mira], sources: [], opportunities: [] } });
-    await flushPromises();
+    const wrapper = mount(PartyDesk, { props: { sources: [] } });
+    await settle();
     await wrapper.findAll('button').find((button) => button.text() === 'Add party')!.trigger('click');
     await wrapper.get('form.add-party select').setValue('org');
     await wrapper.get('form.add-party input[required]').setValue('Alder');
@@ -117,9 +125,9 @@ describe('PartyDesk', () => {
     stubDesk();
     vi.spyOn(parley, 'getDossier').mockRejectedValue(new Error('dossier unavailable'));
     const updateNotes = vi.spyOn(parley, 'updateEntityNotes').mockResolvedValue({ entity_id: 'p1', markdown: 'New owner note\n', revision: 2, etag: '"p1.epoch.notes.p1.2"' });
-    const wrapper = mount(PartyDesk, { props: { parties: [fieldwork, mira], sources: [], opportunities: [] } });
-    await flushPromises();
-    await wrapper.findAll('.row-party')[0]!.trigger('click');
+    const wrapper = mount(PartyDesk, { props: { sources: [] } });
+    await vi.advanceTimersByTimeAsync(0);
+    await flushPromises();    await wrapper.findAll('.row-party')[0]!.trigger('click');
     await flushPromises();
     await wrapper.findAll('button').find((button) => button.text() === 'Open card')!.trigger('click');
     await flushPromises();
@@ -145,8 +153,8 @@ describe('PartyDesk', () => {
     vi.spyOn(parley, 'saveSource').mockResolvedValue({ content_id: 'c1', variant_id: 'v1', occurrence_id: 'o1', normalized_sha256: 'a', raw_sha256: 'b', job_id: 'job1', job_status: 'queued' });
     vi.spyOn(parley, 'getExtractorJob').mockResolvedValue(job);
     vi.spyOn(parley, 'resolveProposals').mockRejectedValue(new Error('decision denied'));
-    const wrapper = mount(PartyDesk, { props: { parties: [fieldwork, mira], sources: [], opportunities: [] } });
-    await flushPromises();
+    const wrapper = mount(PartyDesk, { props: { sources: [] } });
+    await settle();
     await wrapper.get('[role="navigation"][aria-label="Lead workspaces"] button').trigger('click');
     await wrapper.get('form.capture textarea').setValue('A captured sentence.');
     await wrapper.get('form.capture').trigger('submit');
@@ -164,8 +172,9 @@ describe('PartyDesk', () => {
   it('reports focus save when the row lacks an editable etag', async () => {
     stubDesk();
     const noEtag = { ...fieldwork, etag: undefined };
-    const wrapper = mount(PartyDesk, { props: { parties: [noEtag, mira], sources: [], opportunities: [] } });
-    await flushPromises();
+    vi.spyOn(parley, 'queryDirectory').mockResolvedValue({ rows: [noEtag], nextCursor: null, fence: '0' });
+    const wrapper = mount(PartyDesk, { props: { sources: [] } });
+    await settle();
     await wrapper.findAll('.focus-cell')[0]!.trigger('click');
     await wrapper.get('.focus-input').setValue('x');
     await wrapper.get('.focus-input').trigger('keydown.enter');
@@ -178,8 +187,8 @@ describe('PartyDesk', () => {
     stubDesk();
     vi.spyOn(parley, 'updateEntityNotes').mockRejectedValue(new Error('notes offline'));
     vi.spyOn(parley, 'saveSource').mockRejectedValue(new Error('capture denied'));
-    const wrapper = mount(PartyDesk, { props: { parties: [fieldwork, mira], sources: [], opportunities: [] } });
-    await flushPromises();
+    const wrapper = mount(PartyDesk, { props: { sources: [] } });
+    await settle();
     await wrapper.findAll('.row-party')[0]!.trigger('click');
     await flushPromises();
     await wrapper.findAll('button').find((button) => button.text() === 'Open card')!.trigger('click');

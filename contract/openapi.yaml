@@ -1239,15 +1239,19 @@ paths:
       - {in: query, name: deadline_before, required: false, schema: {type: string, format: date-time}}
       - {in: query, name: sort, required: false, schema: {type: string, enum: [title, next_task, deadline], default: title}}
       - {in: query, name: order, required: false, schema: {type: string, enum: [asc, desc], default: asc}}
+      - {in: query, name: limit, required: false, description: 'Bounded read. When present the response is an OpportunityPage envelope.', schema: {type: integer, minimum: 1, maximum: 200}}
+      - {in: query, name: cursor, required: false, description: 'Opaque keyset token from OpportunityPage.next_cursor; only valid with limit.', schema: {type: string, maxLength: 512}}
       - $ref: '#/components/parameters/MutationToken'
       - $ref: '#/components/parameters/Epoch'
       responses:
         '200':
-          description: Opportunity records and shared material IDs.
+          description: 'Opportunity records. Unbounded array form is removed at the AR10 cut; bounded reads use the page envelope.'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OpportunityList'
+                oneOf:
+                - $ref: '#/components/schemas/OpportunityList'
+                - $ref: '#/components/schemas/OpportunityPage'
     post:
       operationId: createOpportunity
       security:
@@ -6424,8 +6428,19 @@ components:
       additionalProperties: false
     OpportunityList:
       type: array
+      description: 'Removed at the AR10 cut; use OpportunityPage for bounded reads.'
       items:
         $ref: '#/components/schemas/OpportunitySummary'
+    OpportunityPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          maxItems: 200
+          items: {$ref: '#/components/schemas/OpportunitySummary'}
+        next_cursor: {type: [string, 'null'], maxLength: 512}
+      additionalProperties: false
     MaterialList:
       type: array
       items:

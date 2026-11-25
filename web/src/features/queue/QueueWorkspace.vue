@@ -5,7 +5,6 @@ import {
   parley,
   ApiError,
   newOperationKey,
-  type GraphEntity,
   type Material,
   type QueueSheetResponse,
   type QueueSheetRow,
@@ -26,7 +25,7 @@ import type { SelectOption } from '../../shared/select-options';
 
 defineOptions({ name: 'QueueWorkspace' });
 
-const props = withDefaults(defineProps<{ parties: GraphEntity[]; outputs: Material[]; routeId?: string | null; active?: boolean }>(), { routeId: null, active: true });
+const props = withDefaults(defineProps<{ outputs: Material[]; routeId?: string | null; active?: boolean }>(), { routeId: null, active: true });
 const emit = defineEmits<{ navigate: [path: string]; binding: [value: QueuePaletteBinding] }>();
 
 type View = 'sheet' | 'daily' | 'insights';
@@ -60,7 +59,14 @@ const inspectorHeading = ref<HTMLElement | null>(null);
 let savedScroll = 0;
 const createTitle = ref('');
 const createPartyId = ref('');
-const partyOptions = computed<SelectOption[]>(() => props.parties.map(party => ({ value: party.id, label: `${party.name} · ${party.kind}` })));
+// Typeahead reads the server directory directly: searching never stops at a
+// client-side page boundary.
+const partyOptions = ref<SelectOption[]>([]);
+async function searchParties(q: string): Promise<SelectOption[]> {
+  const page = await parley.queryDirectory({ q: q.trim() || undefined, limit: 50 });
+  partyOptions.value = page.rows.map(party => ({ value: party.id, label: `${party.name} · ${party.kind}` }));
+  return partyOptions.value;
+}
 const createBusy = ref(false);
 const rowRefs = ref<Record<string, HTMLElement | null>>({});
 // Entry restores the last valid search, filters, sort and selection for this
@@ -682,6 +688,7 @@ watch(() => props.active, async active => {
 onMounted(async () => {
   try {
     await parley.connect();
+    void searchParties('').catch(() => { /* the picker reports an empty list until retry */ });
     sessionEventReader.start({
       epoch: () => parley.workspaceEpoch ?? '',
       onEvents: page => {
@@ -788,6 +795,7 @@ onBeforeUnmount(() => {
         placeholder="Filter parties"
         :model-value="createPartyId"
         :options="partyOptions"
+        :search="searchParties"
         :disabled="createBusy"
         required
         @update:model-value="createPartyId = $event"
@@ -807,7 +815,7 @@ onBeforeUnmount(() => {
         Cancel
       </button>
       <p
-        v-if="!parties.length"
+        v-if="!partyOptions.length"
         class="hint"
       >
         <button

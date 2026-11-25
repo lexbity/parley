@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /* global MouseEvent, HTMLElement, EventTarget, KeyboardEvent */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
-import { ApiError, parley, type AdminOperation, type GraphEntity, type Material, type OpportunitySummary, type ProviderConfig, type ProviderPairing, type ProviderSettings, type StructuredReadiness, type Resource, type SavedSource } from '../api/client';
+import { ApiError, parley, type AdminOperation, type GraphEntity, type Material, type ProviderConfig, type ProviderPairing, type ProviderSettings, type StructuredReadiness, type Resource } from '../api/client';
 import type { CommandDescriptor, CommandManifest, CommandSuccess } from '../api/commands';
 import { tabs } from './tabs';
 import { resolveRoute, routeForTab } from './router';
@@ -33,7 +33,13 @@ const active = computed(() => route.value.tab);
 // These collections are replaced wholesale after a read, never mutated in
 // place. shallowRef keeps Vue from deep-proxying tens of thousands of records
 // on every tab activation; children receive new array identities on refresh.
-const parties = shallowRef<GraphEntity[]>([]);
+// Palette party choices are read from the bounded server directory when the
+// palette opens; the shell no longer caches a whole-domain table.
+const paletteParties = shallowRef<GraphEntity[]>([]);
+async function loadPaletteParties() {
+  const page = await parley.queryDirectory({ limit: 200 });
+  paletteParties.value = page.rows;
+}
 const openedTabs = ref(new Set([route.value.tab]));
 const interviewerOpen = ref(false);
 const interviewerMounted = ref(false);
@@ -47,8 +53,6 @@ function toggleInterviewer() {
 const resourcesWorkspace = ref<InstanceType<typeof ResourcesWorkspace> | null>(null);
 const partyDesk = ref<InstanceType<typeof PartyDesk> | null>(null);
 const lastTabPaths = new Map<string, string>();
-const sources = shallowRef<SavedSource[]>([]);
-const opportunities = shallowRef<OpportunitySummary[]>([]);
 const outputs = shallowRef<Material[]>([]);
 const outputError = ref('');
 const resources = shallowRef<Resource[]>([]);
@@ -143,7 +147,7 @@ const pickerOptions = computed(() => ({
   planning_stage: (queueBinding.value?.stages ?? []).map((stage) => ({ value: stage.value, label: stage.label })),
   // The same authoritative directory the owner create form uses; the palette
   // never accepts a party ID typed by the user or supplied by an agent.
-  party: parties.value.map((party) => ({ value: party.id, label: party.name })),
+  party: paletteParties.value.map((party) => ({ value: party.id, label: party.name })),
   // Reviewed resource subtypes (U06): the palette only offers the closed set
   // the boot-validated command schema accepts.
   resource_subtype: [
@@ -188,7 +192,7 @@ async function revalidatePalette(): Promise<void> {
 
 function onPaletteCommitted(result: CommandSuccess) {
   status.value = result.dry_run ? 'Command dry run completed.' : 'Command committed and visible records refreshed.';
-  void refreshTab(active.value, true);
+  void refreshTab(active.value);
   sessionEventReader.hint();
   globalThis.dispatchEvent(new globalThis.CustomEvent('parley:command-committed', { detail: result }));
 }
@@ -222,6 +226,7 @@ function togglePalette() {
   if (!connected.value || hasDialogPrecedence()) return;
   paletteOpen.value = !paletteOpen.value;
   if (paletteOpen.value) {
+    void loadPaletteParties().catch(() => { /* palette falls back to an empty party list */ });
     void manifestSource.refresh().then(applyManifest)
       .catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Command catalog is unavailable.'; });
     void loadQueueTasks();
@@ -260,23 +265,16 @@ async function workspaceChanged(): Promise<boolean> {
 }
 
 let tabRequest = 0;
-async function refreshTab(tab = active.value, force = false) {
+async function refreshTab(tab = active.value) {
   const request = ++tabRequest;
   if (tab === 'Output') outputError.value = '';
   try {
-    if (!force && loadedTabs.has(tab) && !(await workspaceChanged())) return;
-    if (tab === 'Parties') {
-      const result = await Promise.all([parley.listParties(), parley.listSources(), parley.listOpportunities()]);
-      if (request === tabRequest) [parties.value, sources.value, opportunities.value] = result;
-    } else if (tab === 'Queue') {
-      const result = await Promise.all([parley.listParties(), parley.listOutputs()]);
-      if (request === tabRequest) [parties.value, outputs.value] = result;
-    } else if (tab === 'Output') {
-      const result = await Promise.all([parley.listOpportunities(), parley.listOutputs(), parley.listResources()]);
-      if (request === tabRequest) [opportunities.value, outputs.value, resources.value] = result;
+    if (loadedTabs.has(tab) && !(await workspaceChanged())) return;
+    if (tab === 'Queue' || tab === 'Output') {
+      const result = await Promise.all([parley.listOutputs(), parley.listResources()]);
+      if (request === tabRequest) [outputs.value, resources.value] = result;
     } else if (tab === 'Settings') {
-      const [directory] = await Promise.all([parley.listParties(), loadProvider()]);
-      if (request === tabRequest) parties.value = directory;
+      await loadProvider();
     }
     if (request === tabRequest) loadedTabs.add(tab);
   } catch (reason) {
@@ -288,12 +286,12 @@ async function refreshTab(tab = active.value, force = false) {
   }
 }
 
-function onCollectionChanged() {
-  void refreshTab(active.value, true);
+// Mutations are entity-scoped: the owning view refreshes its own slice from
+// the event row instead of the shell re-reading every collection.
+function onCollectionChanged(detail?: unknown) {
+  globalThis.dispatchEvent(new globalThis.CustomEvent('parley:entity-changed', { detail: detail ?? {} }));
 }
-function onOutputChanged() {
-  void refreshTab('Output', true);
-}
+const onOutputChanged = onCollectionChanged;
 
 let historyIndex = Number(globalThis.history.state?.parleyIndex ?? 0);
 let returningFromPop = false;
@@ -444,7 +442,7 @@ async function applyWorkspaceChange(operation: AdminOperation, epoch: string, an
   try {
     if (operation === 'restore' || operation === 'erase_workspace') await parley.refreshSession();
     globalThis.dispatchEvent(new globalThis.CustomEvent('parley:workspace-changed', { detail: { operation, epoch } }));
-    await refreshTab(active.value, true);
+    await refreshTab(active.value);
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Workspace records changed; reload the current workspace before continuing.'; }
 }
 
@@ -470,7 +468,8 @@ onMounted(() => {
   void connection
     .then(() => {
       connected.value = true;
-      void manifestSource.refresh().then(applyManifest)
+      void loadPaletteParties().catch(() => { /* palette falls back to an empty party list */ });
+    void manifestSource.refresh().then(applyManifest)
         .catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Command catalog is unavailable.'; });
     })
     .catch((reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Workspace is unavailable.'; });
@@ -597,9 +596,6 @@ watch(route, () => {
         v-if="openedTabs.has('Parties')"
         v-show="active === 'Parties'"
         ref="partyDesk"
-        :parties="parties"
-        :sources="sources"
-        :opportunities="opportunities"
         :active="active === 'Parties'"
         :inbox="route.tab === 'Parties' && route.location === 'inbox'"
         :party-id="route.tab === 'Parties' ? route.recordId ?? undefined : undefined"
@@ -763,7 +759,6 @@ watch(route, () => {
           <MaintenanceSettings
             id="settings-data"
             tabindex="-1"
-            :parties="parties"
             @erased="onCollectionChanged"
           />
         </div>
@@ -773,7 +768,6 @@ watch(route, () => {
         v-show="active === 'Queue'"
       >
         <QueueWorkspace
-          :parties="parties"
           :outputs="outputs"
           :active="active === 'Queue'"
           :route-id="route.tab === 'Queue' ? route.recordId : null"
@@ -794,7 +788,7 @@ watch(route, () => {
           {{ outputError }}
           <button
             type="button"
-            @click="refreshTab('Output', true)"
+            @click="refreshTab('Output')"
           >
             Retry
           </button>
@@ -802,7 +796,6 @@ watch(route, () => {
         <!-- The workspace stays mounted across registry refreshes so unsaved
              working drafts and open reviews survive a committed change. -->
         <OutputWorkspace
-          :opportunities="opportunities"
           :resources="resources"
           :outputs="outputs"
           :active="active === 'Output'"

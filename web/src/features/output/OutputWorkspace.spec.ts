@@ -44,10 +44,37 @@ function stubAuthoring(overrides: {
   vi.spyOn(parley, 'listThreads').mockResolvedValue([]);
 }
 
-function mountWorkspace(props: Partial<InstanceType<typeof OutputWorkspace>['$props']> = {}) {
+function stubOpportunities(list: OpportunitySummary[] = [opportunity]) {
+  vi.spyOn(parley, 'listOpportunitiesPage').mockImplementation(async (filters = {}) => {
+    const q = (filters.q ?? '').trim().toLocaleLowerCase();
+    const rows = q ? list.filter(item => item.title.toLocaleLowerCase().includes(q)) : list;
+    return { items: rows.slice(0, filters.limit ?? 50), nextCursor: null };
+  });
+  vi.spyOn(parley, 'getOpportunity').mockImplementation(async (id) => {
+    const found = list.find(item => item.id === id);
+    return found ? {
+      id: found.id, title: found.title, state: found.state, revision: found.revision,
+      participant_ids: found.participants.map(party => party.id), source_variant_ids: [], material_ids: [],
+    } : (() => { throw new Error('not found'); })();
+  });
+  vi.spyOn(parley, 'getEntity').mockImplementation(async (id) => {
+    const found = list.flatMap(item => item.participants).find(party => party.id === id);
+    if (!found) throw new Error('not found');
+    return { id: found.id, kind: found.kind, name: found.name, focus: '', revision: 1 };
+  });
+}
+
+function mountWorkspace(props: Partial<InstanceType<typeof OutputWorkspace>['$props']> = {}, list: OpportunitySummary[] = [opportunity]) {
+  stubOpportunities(list);
+  const savedOutputs = (props.outputs ?? []) as Material[];
+  vi.spyOn(parley, 'getMaterial').mockImplementation(async (id) => {
+    const found = savedOutputs.find(item => item.id === id);
+    if (!found) throw new Error('not found');
+    return found;
+  });
   return mount(OutputWorkspace, {
     props: {
-      opportunities: [opportunity], resources: [], outputs: [],
+      resources: [], outputs: [],
       active: true, recordId: null, location: null, ...props,
     },
   });
@@ -208,9 +235,8 @@ describe('OutputWorkspace', () => {
     vi.spyOn(parley, 'composeWritingMaterial').mockResolvedValue({ job_id: 'job-b', role: 'composer' });
     vi.spyOn(parley, 'getRoleJob').mockResolvedValue({ status: 'succeeded', result: { body: 'generated proposal' } } as unknown as Awaited<ReturnType<typeof parley.getRoleJob>>);
     const wrapper = mountWorkspace({
-      opportunities: [opportunity, secondOpportunity],
       resources: [gift],
-    });
+    }, [opportunity, secondOpportunity]);
     await flushPromises();
 
     await openTool(wrapper, 'Insert', 'Template and fills');

@@ -1,9 +1,9 @@
 <script setup lang="ts">
-/* global HTMLElement, HTMLDialogElement, HTMLTextAreaElement, MouseEvent, Node */
+/* global HTMLElement, HTMLDialogElement, HTMLTextAreaElement, MouseEvent, Node, Event, CustomEvent */
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import {
   newOperationKey, parley,
-  type ContactThread, type GateReport, type Material, type MaterialInput, type OpportunitySummary,
+  type ContactThread, type GateReport, type Material, type MaterialInput, type Opportunity, type OpportunitySummary,
   type ReleasedMaterial, type Resource, type SentenceBinding, type SlotFill,
   type WritingInterest, type WritingMatch, type WritingTemplate,
 } from '../../api/client';
@@ -19,7 +19,6 @@ import type { SelectOption } from '../../shared/select-options';
  * workspace only freezes owner selections and re-reads committed facts.
  */
 const props = defineProps<{
-  opportunities: OpportunitySummary[];
   resources: Resource[];
   outputs: Material[];
   active: boolean;
@@ -76,9 +75,42 @@ const busy = ref(false);
 const scopeGeneration = ref(0);
 const consumedRecord = ref<string | null>(null);
 
-const selectedOpportunity = computed(() => props.opportunities.find((item) => item.id === opportunityId.value) ?? null);
-const opportunityOptions = computed<SelectOption[]>(() => props.opportunities.map(item => ({ value: item.id, label: item.title })));
-const participants = computed(() => selectedOpportunity.value?.participants ?? []);
+// Identity and typeahead no longer scan a whole-domain client cache: the
+// loaded window serves the picker, and any id outside it is resolved by an
+// authoritative single-record read.
+const opportunities = ref<OpportunitySummary[]>([]);
+const scopedRecord = ref<Opportunity | null>(null);
+async function resolveOpportunity(id: string): Promise<Opportunity | null> {
+  try { return await parley.getOpportunity(id); } catch { return null; }
+}
+async function loadOpportunityWindow(q = '') {
+  const page = await parley.listOpportunitiesPage({ q, limit: 50 });
+  opportunities.value = page.items;
+}
+async function searchOpportunities(q: string): Promise<SelectOption[]> {
+  await loadOpportunityWindow(q.trim());
+  return opportunities.value.map(item => ({ value: item.id, label: item.title }));
+}
+const participants = ref<Array<{ id: string; name: string; kind: 'person' | 'org' }>>([]);
+async function loadParticipants(ids: string[]) {
+  const results = await Promise.allSettled(ids.map(id => parley.getEntity(id)));
+  participants.value = results.flatMap(result =>
+    result.status === 'fulfilled' && (result.value.kind === 'person' || result.value.kind === 'org')
+      ? [{ id: result.value.id, name: result.value.name, kind: result.value.kind }]
+      : []);
+}
+const selectedOpportunity = computed(() => scopedRecord.value && {
+  id: scopedRecord.value.id,
+  title: scopedRecord.value.title,
+  state: scopedRecord.value.state,
+  revision: scopedRecord.value.revision,
+  participants: participants.value,
+  tags: [] as string[],
+  next_task: null,
+  next_deadline: null,
+  missing_material: false,
+} satisfies OpportunitySummary | null);
+const opportunityOptions = computed<SelectOption[]>(() => opportunities.value.map(item => ({ value: item.id, label: item.title })));
 const recipient = computed(() => participants.value.find((item) => item.id === recipientId.value) ?? null);
 const boundTemplate = computed(() => templates.value.find((item) => item.id === draft.value.templateId) ?? null);
 const boundMaterial = computed(() => (draft.value.materialId ? props.outputs.find((item) => item.id === draft.value.materialId) ?? null : null));
@@ -272,11 +304,16 @@ async function refreshScopeFacts() {
   } catch { /* No completed match is a normal state: the library offers manual selection. */ }
 }
 
-function selectScope(nextOpportunity: string, nextRecipient?: string) {
-  const target = nextRecipient ?? props.opportunities.find((item) => item.id === nextOpportunity)?.participants[0]?.id ?? '';
-  if (nextOpportunity === opportunityId.value && target === recipientId.value) return;
+async function selectScope(nextOpportunity: string, nextRecipient?: string) {
+  if (!nextOpportunity) return;
+  const record = scopedRecord.value?.id === nextOpportunity ? scopedRecord.value : await resolveOpportunity(nextOpportunity);
+  if (!record) { errorMessage.value = 'That opportunity is no longer available.'; return; }
+  const target = nextRecipient ?? opportunities.value.find(item => item.id === nextOpportunity)?.participants[0]?.id ?? record.participant_ids[0] ?? '';
+  if (nextOpportunity === opportunityId.value && target === recipientId.value && scopedRecord.value) return;
+  scopedRecord.value = record;
   opportunityId.value = nextOpportunity;
   recipientId.value = target;
+  await loadParticipants(record.participant_ids);
   manualMatching.value = false;
   query.value = '';
   selection.value = '';
@@ -795,27 +832,24 @@ async function loadAuthoringFacts() {
 }
 
 /** Deep links (/output/{id}) address one opportunity scope or one material. */
-watch(() => [props.recordId, props.outputs, props.opportunities] as const, () => {
-  const id = props.recordId;
+async function consumeDeepLink(id: string | null) {
   if (!id || consumedRecord.value === id) return;
-  const material = props.outputs.find((item) => item.id === id);
-  if (material) {
+  try {
+    const material = await parley.getMaterial(id);
     consumedRecord.value = id;
     loadMaterial(material);
     void openTool('versions');
     return;
-  }
-  if (props.opportunities.some((item) => item.id === id)) {
+  } catch { /* Not a material id; try an opportunity id. */ }
+  if (await resolveOpportunity(id)) {
     consumedRecord.value = id;
-    selectScope(id);
+    await selectScope(id);
     mobilePane.value = 'editor';
   }
-});
+}
+watch(() => props.recordId, id => { void consumeDeepLink(id); });
 watch(() => props.location, (location) => {
   if (location === 'templates') void openTool('templates');
-});
-watch(() => props.opportunities, () => {
-  if (!opportunityId.value && props.opportunities.length) selectScope(props.opportunities[0]!.id);
 });
 
 let threadTimer: ReturnType<typeof globalThis.setInterval> | undefined;
@@ -832,20 +866,26 @@ function onVisibilityChange() {
   if (globalThis.document.visibilityState === 'visible') void pollThreads();
 }
 
+function onEntityChanged(event: Event) {
+  if (!props.active || globalThis.document.visibilityState === 'hidden') return;
+  const detail = (event as CustomEvent<{ entityType?: string; entityId?: string }>).detail ?? {};
+  if (detail.entityType === 'opportunity' && detail.entityId && detail.entityId !== opportunityId.value) return;
+  void loadOpportunityWindow();
+  if (scopedRecord.value) void refreshScopeFacts();
+}
 onMounted(async () => {
+  globalThis.addEventListener('parley:entity-changed', onEntityChanged);
   threadTimer = globalThis.setInterval(() => { void pollThreads(); }, 2000);
   globalThis.document.addEventListener('visibilitychange', onVisibilityChange);
-  try { await loadAuthoringFacts(); }
-  catch (reason) { errorMessage.value = reason instanceof Error ? reason.message : 'Could not load authoring settings.'; }
-  if (!opportunityId.value && props.opportunities.length) selectScope(props.opportunities[0]!.id);
+  try {
+    await Promise.all([loadAuthoringFacts(), loadOpportunityWindow()]);
+  } catch (reason) { errorMessage.value = reason instanceof Error ? reason.message : 'Could not load authoring settings.'; }
+  if (!opportunityId.value && opportunities.value.length) await selectScope(opportunities.value[0]!.id);
   if (props.location === 'templates') void openTool('templates');
-  if (props.recordId) {
-    const material = props.outputs.find((item) => item.id === props.recordId);
-    if (material) { consumedRecord.value = props.recordId; loadMaterial(material); void openTool('versions'); }
-    else if (props.opportunities.some((item) => item.id === props.recordId)) { consumedRecord.value = props.recordId; selectScope(props.recordId); }
-  }
+  await consumeDeepLink(props.recordId);
 });
 onBeforeUnmount(() => {
+  globalThis.removeEventListener('parley:entity-changed', onEntityChanged);
   globalThis.document.removeEventListener('visibilitychange', onVisibilityChange);
   if (threadTimer) globalThis.clearInterval(threadTimer);
 });
@@ -898,7 +938,9 @@ onBeforeUnmount(() => {
             placeholder="Filter opportunities"
             :model-value="opportunityId"
             :options="opportunityOptions"
-            :disabled="busy || !props.opportunities.length"
+            :search="searchOpportunities"
+            :selected-label="selectedOpportunity?.title"
+            :disabled="busy || !opportunityOptions.length"
             @update:model-value="selectScope($event)"
           />
           <label>Recipient<select

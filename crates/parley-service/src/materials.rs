@@ -422,9 +422,19 @@ async fn list_opportunities(
     if let Err(error) = authenticate(&headers, &state).await {
         return (error.0, error.1).into_response();
     }
-    match state.workspace.opportunity_summaries(&filters).await {
-        Ok(value) => (StatusCode::OK, Json(value)).into_response(),
-        Err(error) => workspace_error(error),
+    // Bounded reads answer with the standard page envelope. The unbounded
+    // form stays only for the named removal cut (AR10) — no per-workspace flag
+    // or alias route keeps both live as compat behaviour.
+    if filters.limit.is_some() {
+        match state.workspace.opportunity_summaries_page(&filters).await {
+            Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+            Err(error) => workspace_error(error),
+        }
+    } else {
+        match state.workspace.opportunity_summaries(&filters).await {
+            Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+            Err(error) => workspace_error(error),
+        }
     }
 }
 
@@ -440,6 +450,14 @@ pub(super) struct OpportunityFilters {
     pub(super) deadline_before: Option<String>,
     pub(super) sort: Option<String>,
     pub(super) order: Option<String>,
+    pub(super) limit: Option<i64>,
+    pub(super) cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct OpportunityPage {
+    pub(super) items: Vec<OpportunitySummary>,
+    pub(super) next_cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -473,6 +491,7 @@ struct OpportunitySummaryRow {
     next_task: Option<String>,
     next_deadline: Option<String>,
     missing_material: i64,
+    sort_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1165,6 +1184,25 @@ impl Workspace {
         &self,
         f: &OpportunityFilters,
     ) -> Result<Vec<OpportunitySummary>, WorkspaceError> {
+        Ok(self.opportunity_summaries_inner(f, None).await?.0)
+    }
+
+    pub(super) async fn opportunity_summaries_page(
+        &self,
+        f: &OpportunityFilters,
+    ) -> Result<OpportunityPage, WorkspaceError> {
+        let (items, next_cursor) = self.opportunity_summaries_inner(f, f.limit).await?;
+        Ok(OpportunityPage {
+            items,
+            next_cursor,
+        })
+    }
+
+    async fn opportunity_summaries_inner(
+        &self,
+        f: &OpportunityFilters,
+        limit: Option<i64>,
+    ) -> Result<(Vec<OpportunitySummary>, Option<String>), WorkspaceError> {
         if f.status
             .as_deref()
             .is_some_and(|s| !matches!(s, "open" | "resolved" | "dormant" | "closed"))
@@ -1174,25 +1212,42 @@ impl Workspace {
             || f.order
                 .as_deref()
                 .is_some_and(|s| !matches!(s, "asc" | "desc"))
+            || limit.is_some_and(|value| !(1..=200).contains(&value))
         {
             return Err(WorkspaceError::Invalid(
-                "invalid opportunity filter or sort".into(),
+                "invalid opportunity filter, sort or page size".into(),
             ));
         }
+        let sort = match f.sort.as_deref() {
+            Some("title") => "o.title",
+            Some("next_task") => "o.notes_next_task",
+            Some("deadline") => {
+                "(SELECT min(t.expires_at) FROM contact_thread t WHERE t.opportunity_id=o.id AND t.state='waiting')"
+            }
+            _ => "o.updated_at",
+        };
+        let descending = f.order.as_deref() == Some("desc");
+        let scope = limit.map(|_| {
+            digest(
+                json!([f.q, f.party_id, f.tag, f.status, f.missing_material, f.deadline_before, f.sort, f.order])
+                    .to_string()
+                    .as_bytes(),
+            )
+        });
         let mut q = QueryBuilder::<Sqlite>::new(
             "SELECT o.id,o.title,o.state,o.revision, \
           (SELECT json_group_array(json_object('id',e.id,'name',e.name,'kind',e.kind)) FROM opportunity_party op JOIN entity e ON e.id=op.party_id WHERE op.opportunity_id=o.id ORDER BY op.role,e.id) AS participants, \
           (SELECT json_group_array(tag) FROM opportunity_tag ot WHERE ot.opportunity_id=o.id ORDER BY tag) AS tags, \
           o.notes_next_task AS next_task, (SELECT min(t.expires_at) FROM contact_thread t WHERE t.opportunity_id=o.id AND t.state='waiting') AS next_deadline, \
-          NOT EXISTS(SELECT 1 FROM material m WHERE m.opportunity_id=o.id) AS missing_material \
-          FROM opportunity o WHERE 1=1",
+          NOT EXISTS(SELECT 1 FROM material m WHERE m.opportunity_id=o.id) AS missing_material,",
         );
+        q.push(sort).push(" AS sort_key FROM opportunity o WHERE 1=1");
         if let Some(s) = &f.status {
             q.push(" AND o.state=").push_bind(s);
         }
         if let Some(term) = f.q.as_deref().filter(|s| !s.trim().is_empty()) {
             let like = format!("%{}%", term.trim());
-            q.push(" AND (o.title LIKE ").push_bind(like.clone()).push(" OR EXISTS(SELECT 1 FROM opportunity_party x JOIN entity e ON e.id=x.party_id WHERE x.opportunity_id=o.id AND e.name LIKE ").push_bind(like).push(")");
+            q.push(" AND (o.title LIKE ").push_bind(like.clone()).push(" OR EXISTS(SELECT 1 FROM opportunity_party x JOIN entity e ON e.id=x.party_id WHERE x.opportunity_id=o.id AND e.name LIKE ").push_bind(like).push("))");
         }
         if !f.party_id.is_empty() {
             q.push(" AND EXISTS(SELECT 1 FROM opportunity_party x WHERE x.opportunity_id=o.id AND x.party_id IN (");
@@ -1229,24 +1284,85 @@ impl Workspace {
         if f.deadline_before.is_some() {
             q.push(")");
         }
-        let sort = match f.sort.as_deref() {
-            Some("title") => "o.title",
-            Some("next_task") => "o.notes_next_task",
-            Some("deadline") => {
-                "(SELECT min(t.expires_at) FROM contact_thread t WHERE t.opportunity_id=o.id AND t.state='waiting')"
-            }
-            _ => "o.updated_at",
-        };
+        if let (Some(scope), Some(raw)) = (&scope, f.cursor.as_deref()) {
+            let after = hex::decode(raw)
+                .ok()
+                .and_then(|bytes| {
+                    serde_json::from_slice::<(String, Option<String>, String)>(&bytes).ok()
+                })
+                .filter(|(bound, _, _)| bound == scope)
+                .ok_or_else(|| {
+                    WorkspaceError::Invalid("cursor does not belong to this query".into())
+                })?;
+            let (_, key, id) = after;
+            // SQLite sorts NULLs first ascending and last descending. id always
+            // breaks ties ascending, matching the unbounded query.
+            q.push(" AND (");
+            match (descending, key) {
+                (false, Some(key)) => q
+                    .push(sort)
+                    .push(">")
+                    .push_bind(key.clone())
+                    .push(" OR (")
+                    .push(sort)
+                    .push("=")
+                    .push_bind(key)
+                    .push(" AND o.id>")
+                    .push_bind(id)
+                    .push(")"),
+                (false, None) => q
+                    .push("(")
+                    .push(sort)
+                    .push(" IS NULL AND o.id>")
+                    .push_bind(id)
+                    .push(" OR ")
+                    .push(sort)
+                    .push(" IS NOT NULL)"),
+                (true, Some(key)) => q
+                    .push(sort)
+                    .push("<")
+                    .push_bind(key.clone())
+                    .push(" OR (")
+                    .push(sort)
+                    .push("=")
+                    .push_bind(key)
+                    .push(" AND o.id>")
+                    .push_bind(id)
+                    .push(" OR ")
+                    .push(sort)
+                    .push(" IS NULL)"),
+                (true, None) => q
+                    .push(sort)
+                    .push(" IS NULL AND o.id>")
+                    .push_bind(id),
+            };
+            q.push(")");
+        }
         q.push(" ORDER BY ")
             .push(sort)
-            .push(if f.order.as_deref() == Some("desc") {
-                " DESC"
-            } else {
-                " ASC"
-            })
+            .push(if descending { " DESC" } else { " ASC" })
             .push(",o.id ASC");
-        let rows: Vec<OpportunitySummaryRow> = q.build_query_as().fetch_all(&self.pool).await?;
-        rows.into_iter()
+        if let Some(limit) = limit {
+            q.push(" LIMIT ").push_bind(limit + 1);
+        }
+        let mut rows: Vec<OpportunitySummaryRow> = q.build_query_as().fetch_all(&self.pool).await?;
+        let next_cursor = if let Some(limit) = limit {
+            let more = rows.len() > limit as usize;
+            rows.truncate(limit as usize);
+            if more {
+                rows.last().and_then(|row| {
+                    scope.as_ref().map(|scope| {
+                        hex::encode(json!([scope, row.sort_key, row.id]).to_string().as_bytes())
+                    })
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let items = rows
+            .into_iter()
             .map(|row| {
                 let participants = serde_json::from_str(&row.participants).map_err(|e| {
                     WorkspaceError::Invalid(format!("participant projection invalid: {e}"))
@@ -1264,7 +1380,8 @@ impl Workspace {
                     missing_material: row.missing_material != 0,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, WorkspaceError>>()?;
+        Ok((items, next_cursor))
     }
 
     async fn get_opportunity(&self, id: &str) -> Result<Option<Opportunity>, WorkspaceError> {

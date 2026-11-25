@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/* global HTMLElement, HTMLDialogElement, HTMLInputElement */
+/* global HTMLElement, HTMLDialogElement, HTMLInputElement, Event, CustomEvent */
 import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import {
   newOperationKey, parley, ApiError,
@@ -20,14 +20,20 @@ import CoachQuestions from '../coach/CoachQuestions.vue';
 import MarkdownEditor from '../../shared/MarkdownEditor.vue';
 import MarkdownPreview from '../../shared/MarkdownPreview.vue';
 
-const props = defineProps<{
-  parties: GraphEntity[];
-  sources: SavedSource[];
-  opportunities: OpportunitySummary[];
+const props = withDefaults(defineProps<{
   partyId?: string;
   active?: boolean;
   inbox?: boolean;
-}>();
+}>(), { active: true, partyId: undefined, inbox: false })
+const sources = ref<SavedSource[]>([]);
+async function loadSources() { sources.value = await parley.listSources(); }
+// Party and opportunity identity is resolved from bounded server reads. No
+// whole-domain array is passed into this view.
+const opportunities = ref<OpportunitySummary[]>([]);
+async function loadOpportunities() {
+  const page = await parley.listOpportunitiesPage({ limit: 50 });
+  opportunities.value = page.items;
+};
 
 const emit = defineEmits<{ navigate: [path: string]; changed: [] }>();
 
@@ -48,9 +54,16 @@ const partyNotes = ref('');
 const partyNotesPreviewOpen = ref(false);
 const newPartyFiles = ref<string[]>([]);
 const newPartyFilesBusy = ref(false);
-const duplicateParties = computed(() => {
-  const name = partyName.value.trim().toLocaleLowerCase();
-  return name ? props.parties.filter(p => p.kind === partyKind.value && p.name.toLocaleLowerCase() === name) : [];
+const duplicates = ref<GraphEntity[]>([]);
+let duplicateTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
+watch([partyName, partyKind], ([name, kind]) => {
+  if (duplicateTimer) globalThis.clearTimeout(duplicateTimer);
+  duplicateTimer = globalThis.setTimeout(async () => {
+    const needle = name.trim();
+    if (!needle) { duplicates.value = []; return; }
+    const page = await parley.queryDirectory({ q: needle, kind, limit: 50 });
+    duplicates.value = page.rows.filter(row => row.name.toLocaleLowerCase() === needle.toLocaleLowerCase());
+  }, 120);
 });
 let createKey = '';
 let createIntent = '';
@@ -151,7 +164,6 @@ const directoryCursor = ref<string | null>(null);
 const directoryLoading = ref(false);
 const directoryError = ref('');
 const directoryRevision = ref(0);
-const remoteDirectory = parley.supports('party.relations');
 let directoryRequest = 0;
 async function loadDirectory(cursor?: string) {
   const own = ++directoryRequest;
@@ -184,7 +196,6 @@ function returnToResults() {
   if (previousFilters.value) { query.value = previousFilters.value.query; kind.value = previousFilters.value.kind; }
   previousFilters.value = null;
 }
-const sheetRows = computed(() => remoteDirectory ? directoryRows.value : props.parties);
 const pendingSwitch = ref<(() => void) | null>(null);
 const quarantined = ref(false);
 const dirty = computed(() => cardOpen.value && (notes.value && notesDraft.value !== notes.value.markdown || nameDraft.value !== nameBase.value));
@@ -215,7 +226,7 @@ watch(() => props.inbox, open => {
   if (open) { inboxOpen.value = true; pane.value = 'details'; }
 }, { immediate: true });
 
-const selectedParty = computed(() => directoryRows.value.find(p => p.id === selectedRecordId.value) ?? props.parties.find(p => p.id === selectedRecordId.value)
+const selectedParty = computed(() => directoryRows.value.find(p => p.id === selectedRecordId.value)
   ?? graphNodes.value.find(p => p.id === selectedRecordId.value)
   ?? (dossier.value?.entity.id === selectedRecordId.value ? dossier.value.entity : null));
 
@@ -225,7 +236,7 @@ const coachChoices = computed(() => {
   const choices: Array<{ selector: CoachSelector; label: string }> = [{
     selector: { kind: 'party', id: party.id, revision: party.revision }, label: `${party.name} · party research`,
   }];
-  for (const opportunity of props.opportunities) {
+  for (const opportunity of opportunities.value) {
     if (opportunity.state !== 'open' || !opportunity.participants.some(item => item.id === party.id)) continue;
     choices.push({ selector: { kind: 'opportunity', id: opportunity.id, revision: opportunity.revision, recipient_id: party.id, recipient_revision: party.revision }, label: `${opportunity.title} · ${party.name}` });
   }
@@ -255,7 +266,7 @@ async function openCoachQuestion(question: CoachQuestion) {
 }
 const rootName = computed(() => (directoryRows.value.find(p => p.id === rootPartyId.value)
   ?? graphNodes.value.find(p => p.id === rootPartyId.value)
-  ?? props.parties.find(p => p.id === rootPartyId.value))?.name ?? '');
+  ?? dossier.value?.entity.id === rootPartyId.value ? dossier.value?.entity.name ?? '' : ''));
 
 // Scoped party commands (UCR-001 U04). The palette freezes the selected
 // party, its card revision and the prompted value; the server re-checks the
@@ -268,7 +279,7 @@ try {
   commandRegistry = null;
 }
 let disposePartyActions: (() => void) | undefined;
-watch([selectedRecordId, dossier, sheetRows], () => {
+watch([selectedRecordId, dossier, directoryRows], () => {
   disposePartyActions?.();
   disposePartyActions = undefined;
   if (!commandRegistry) return;
@@ -372,7 +383,7 @@ function returnToRootList() {
 }
 function makeRoot(id: string) {
   selectRow(id);
-  status.value = `Network root is now ${props.parties.find(p => p.id === id)?.name ?? id}.`;
+  status.value = `Network root is now ${directoryRows.value.find(p => p.id === id)?.name ?? id}.`;
 }
 function inspectEdge(edge: GraphSnapshot['edges'][number]) {
   requestSwitch(() => {
@@ -388,7 +399,7 @@ function inspectEdge(edge: GraphSnapshot['edges'][number]) {
 }
 
 function startFocusEdit(id: string) {
-  const party = sheetRows.value.find((item) => item.id === id);
+  const party = directoryRows.value.find((item) => item.id === id);
   if (!party) return;
   requestSwitch(() => {
     focusEdit.value = id;
@@ -399,7 +410,7 @@ function startFocusEdit(id: string) {
 
 async function saveFocus(id: string) {
   if (busy.value || focusEdit.value !== id) return;
-  const party = sheetRows.value.find((item) => item.id === id);
+  const party = directoryRows.value.find((item) => item.id === id);
   if (!party || !party.etag) { error.value = 'The party row is not editable in this session.'; return; }
   busy.value = true; error.value = ''; status.value = '';
   try {
@@ -655,10 +666,10 @@ watch([query,kind,sort,rootPartyId,selectedRecordId,pane,auxiliary], () => {
   if (prefsKey) try { globalThis.sessionStorage.setItem(prefsKey, JSON.stringify({ query:query.value,kind:kind.value,sort:sort.value,root:rootPartyId.value,selected:selectedRecordId.value,pane:pane.value,auxiliary:auxiliary.value })); } catch { /* Keep in-memory navigation. */ }
 });
 watch([query, kind, sort, importBatch, directoryRevision, () => props.active], (_, previous, cleanup) => {
-  if (!remoteDirectory || props.active === false) return;
+  if (props.active === false) return;
   directoryRequest++;
   directoryCursor.value = null;
-  const timer = globalThis.setTimeout(() => { void loadDirectory(); }, previous.length ? 120 : 0);
+  const timer = globalThis.setTimeout(() => { void loadDirectory(); }, previous?.length ? 120 : 0);
   cleanup(() => { globalThis.clearTimeout(timer); directoryRequest++; });
 }, { immediate: true });
 watch(() => props.partyId, id => {
@@ -678,14 +689,14 @@ let eventCursor = parley.eventCursor;
 let eventTimer: ReturnType<typeof globalThis.setInterval> | undefined;
 let polling = false;
 async function pollChanges() {
-  if (!remoteDirectory || props.active === false || globalThis.document.visibilityState === 'hidden' || polling || quarantined.value) return;
+  if (props.active === false || globalThis.document.visibilityState === 'hidden' || polling || quarantined.value) return;
   polling = true;
   try {
     const result = await parley.getEvents(eventCursor);
     eventCursor = result.next_cursor;
     const items = result.items;
     const selected = selectedRecordId.value;
-    const relatedOpportunities = new Set(props.opportunities
+    const relatedOpportunities = new Set(opportunities.value
       .filter(opportunity => opportunity.participants.some(party => party.id === selected))
       .map(opportunity => opportunity.id));
     // The directory only changes on entity events. Relationship and
@@ -710,15 +721,32 @@ async function pollChanges() {
     }
   } finally { polling = false; }
 }
-onMounted(() => { if (remoteDirectory) eventTimer = globalThis.setInterval(pollChanges, 2000); });
+function onEntityChanged(event: Event) {
+  if (!props.active || globalThis.document.visibilityState === 'hidden') return;
+  const detail = (event as CustomEvent<{ entityType?: string; entityId?: string }>).detail ?? {};
+  if (!detail.entityType || detail.entityType === 'entity') directoryRevision.value++;
+  void loadSources();
+  if (!detail.entityId || detail.entityId === selectedRecordId.value) {
+    graphRevision.value++;
+    void loadDossier();
+  }
+}
+onMounted(() => {
+  eventTimer = globalThis.setInterval(pollChanges, 2000);
+  void loadOpportunities();
+  void loadSources();
+  globalThis.addEventListener('parley:entity-changed', onEntityChanged);
+});
 globalThis.addEventListener('parley:workspace-quarantined', quarantine);
 globalThis.addEventListener('parley:workspace-changed', quarantine);
 onBeforeUnmount(() => {
   if (notesTimer) globalThis.clearTimeout(notesTimer);
   if (eventTimer) globalThis.clearInterval(eventTimer);
+  if (duplicateTimer) globalThis.clearTimeout(duplicateTimer);
   selectionVersion++; requestVersion++;
   globalThis.removeEventListener('parley:workspace-quarantined', quarantine);
   globalThis.removeEventListener('parley:workspace-changed', quarantine);
+  globalThis.removeEventListener('parley:entity-changed', onEntityChanged);
 });
 </script>
 
@@ -793,8 +821,8 @@ onBeforeUnmount(() => {
       aria-label="Party sheet"
     >
       <PartySheet
-        :parties="sheetRows"
-        :server-paged="remoteDirectory"
+        :parties="directoryRows"
+        :server-paged="true"
         :loading="directoryLoading"
         :root-known="!!rootName"
         :more="!!directoryCursor"
@@ -859,11 +887,11 @@ onBeforeUnmount(() => {
           maxlength="250"
           autocomplete="off"
         ></label>
-        <div v-if="duplicateParties.length">
+        <div v-if="duplicates.length">
           <p>Same-name parties</p>
           <ul>
             <li
-              v-for="match in duplicateParties"
+              v-for="match in duplicates"
               :key="match.id"
             >
               <button
@@ -902,7 +930,7 @@ onBeforeUnmount(() => {
           type="submit"
           :disabled="busy || newPartyFilesBusy || quarantined"
         >
-          {{ duplicateParties.length ? 'Create distinct party' : 'Add party' }}
+          {{ duplicates.length ? 'Create distinct party' : 'Add party' }}
         </button>
 
         <button
@@ -917,7 +945,7 @@ onBeforeUnmount(() => {
     <div class="graph-column">
       <RelationshipGraph
         ref="graph"
-        :sources="props.sources"
+        :sources="sources"
         :active="props.active"
         :root-name="rootName"
         :refresh="graphRevision"
@@ -1081,7 +1109,7 @@ onBeforeUnmount(() => {
             <ClaimCorrection
               v-if="correctingClaim"
               :edge="inspectedEdge"
-              :parties="props.parties"
+              :parties="directoryRows"
               @cancel="correctingClaim = false"
               @saved="claimSaved"
             />
@@ -1208,7 +1236,7 @@ onBeforeUnmount(() => {
         </div>
         <BriefWorkspace
           v-show="auxiliary === 'chat'"
-          :parties="props.parties"
+          :parties="directoryRows"
           :party-id="rootPartyId || undefined"
         />
         <section
@@ -1248,7 +1276,7 @@ onBeforeUnmount(() => {
               </button>
               <ul>
                 <li
-                  v-for="source in props.sources"
+                  v-for="source in sources"
                   :key="source.occurrence_id"
                 >
                   Saved source {{ source.content_id.slice(0, 12) }} · occurrence {{ source.occurrence_id.slice(0, 8) }}
@@ -1287,12 +1315,12 @@ onBeforeUnmount(() => {
                   {{ reviewJob.last_error }}. The captured source remains saved; you can review it manually.
                 </p>
                 <label>Claim subject<select v-model="reviewTargetId"><option value="">Choose explicitly</option><option
-                  v-for="party in props.parties"
+                  v-for="party in directoryRows"
                   :key="party.id"
                   :value="party.id"
                 >{{ party.name }} · {{ party.kind }}</option></select></label>
                 <label>Optional opportunity<select v-model="reviewOpportunityId"><option value="">Save independently</option><option
-                  v-for="opportunity in props.opportunities"
+                  v-for="opportunity in opportunities"
                   :key="opportunity.id"
                   :value="opportunity.id"
                 >{{ opportunity.title }}</option></select></label>

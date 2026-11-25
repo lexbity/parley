@@ -3686,7 +3686,12 @@ export interface components {
             issued_at: string;
             attachment: components["schemas"]["AttachmentInfo"] | null;
         };
+        /** @description Removed at the AR10 cut; use OpportunityPage for bounded reads. */
         OpportunityList: components["schemas"]["OpportunitySummary"][];
+        OpportunityPage: {
+            items: components["schemas"]["OpportunitySummary"][];
+            next_cursor: string | null;
+        };
         MaterialList: components["schemas"]["MaterialRecord"][];
         CreateResourceColumn: {
             title: string;
@@ -5404,6 +5409,10 @@ export interface operations {
                 deadline_before?: string;
                 sort?: "title" | "next_task" | "deadline";
                 order?: "asc" | "desc";
+                /** @description Bounded read. When present the response is an OpportunityPage envelope. */
+                limit?: number;
+                /** @description Opaque keyset token from OpportunityPage.next_cursor; only valid with limit. */
+                cursor?: string;
             };
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
@@ -5414,13 +5423,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Opportunity records and shared material IDs. */
+            /** @description Opportunity records. Unbounded array form is removed at the AR10 cut; bounded reads use the page envelope. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["OpportunityList"];
+                    "application/json": components["schemas"]["OpportunityList"] | components["schemas"]["OpportunityPage"];
                 };
             };
         };
