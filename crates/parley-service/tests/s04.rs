@@ -11,7 +11,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::TcpStream,
 };
 
 #[path = "support/mod.rs"]
@@ -31,6 +31,17 @@ fn db_path() -> PathBuf {
 }
 
 async fn request(port: u16, method: &str, path: &str, body: Option<Value>) -> (u16, Value) {
+    let key = REQUESTS.fetch_add(1, Ordering::Relaxed);
+    request_with_key(port, method, path, body, &format!("s04-{key}")).await
+}
+
+async fn request_with_key(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+    key: &str,
+) -> (u16, Value) {
     let (cookie, token, epoch) = SESSIONS
         .get()
         .unwrap()
@@ -41,8 +52,7 @@ async fn request(port: u16, method: &str, path: &str, body: Option<Value>) -> (u
         .clone();
     let body = body.map(|value| value.to_string()).unwrap_or_default();
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let key = REQUESTS.fetch_add(1, Ordering::Relaxed);
-    stream.write_all(format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\nCookie: {cookie}\r\nX-Parley-Token: {token}\r\nX-Parley-Epoch: {epoch}\r\nIdempotency-Key: s04-{key}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+    stream.write_all(format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\nCookie: {cookie}\r\nX-Parley-Token: {token}\r\nX-Parley-Epoch: {epoch}\r\nIdempotency-Key: {key}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
     let mut response = String::new();
     stream.read_to_string(&mut response).await.unwrap();
     let (head, payload) = response.split_once("\r\n\r\n").unwrap();
@@ -345,54 +355,19 @@ async fn s04_schema_repair_budget_is_two_retries_after_the_first_attempt() {
     let _ = fs::remove_file(path);
 }
 
-async fn digest_flip_ollama() -> (String, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let task = tokio::spawn(async move {
-        let mut calls = 0u32;
-        loop {
-            let Ok((mut stream, _)) = listener.accept().await else {
-                return;
-            };
-            let mut request = Vec::new();
-            let mut buffer = [0u8; 8192];
-            loop {
-                let n = stream.read(&mut buffer).await.unwrap_or(0);
-                if n == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..n]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            calls += 1;
-            let digest = if calls <= 2 {
-                "sha256:one"
-            } else {
-                "sha256:two"
-            };
-            let payload = json!({"models":[{"name":"fixture","digest":digest}]}).to_string();
-            let _ = stream
-                .write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}", payload.len()).as_bytes())
-                .await;
-        }
-    });
-    (format!("http://{address}"), task)
-}
-
 #[tokio::test]
 async fn s04_provider_health_records_digest_change_event_once() {
-    // provider_health refreshes the stored model digest that gates dispatch.
-    // The refresh must be transactional and evented; a probe that observes
-    // the same digest again must not duplicate the event.
+    // The provider settings surface is profile-backed (AR-001 AR08). A PUT is
+    // transactional and evented; replaying the same canonical configuration
+    // returns the stored receipt without duplicating the event, and the
+    // profile store (not a direct provider catalog) owns the model digest.
     let (path, workspace, port, service) = setup().await;
-    let (endpoint, fake) = digest_flip_ollama().await;
-    let (status, configured) = request(
+    let (status, configured) = request_with_key(
         port,
         "PUT",
         "/api/v1/agent/provider",
-        Some(json!({"endpoint":endpoint,"model":"fixture","num_ctx":8192,"num_predict":512,"locale":"en"})),
+        Some(json!({"endpoint":"http://127.0.0.1:11434","model":"fixture","num_ctx":8192,"num_predict":512,"locale":"en"})),
+        "s04-provider-once",
     )
     .await;
     assert_eq!(status, 204, "{configured:?}");
@@ -406,45 +381,46 @@ async fn s04_provider_health_records_digest_change_event_once() {
         .unwrap()
     };
     let baseline = events().await;
+    assert_eq!(baseline, 1, "the config update recorded exactly one event");
 
+    // The stored profile is the single authority; there is no legacy provider
+    // table holding a separate digest.
+    let profile: (i64, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT revision,chat_model,chat_model_digest FROM inference_profile ORDER BY revision DESC LIMIT 1",
+    )
+    .fetch_one(workspace.pool())
+    .await
+    .unwrap();
+    assert_eq!(profile.1.as_deref(), Some("fixture"));
+    assert_eq!(profile.2, None, "settings are not evidence of readiness");
+
+    let (status, view) = request(port, "GET", "/api/v1/agent/provider", None).await;
+    assert_eq!(status, 200, "{view:?}");
+    assert_eq!(view["model"], "fixture");
+    assert_eq!(view["profile_revision"], profile.0);
+
+    // Replaying the same PUT with the same canonical key is idempotent:
+    // same receipt, no second event.
+    let (status, replay) = request_with_key(
+        port,
+        "PUT",
+        "/api/v1/agent/provider",
+        Some(json!({"endpoint":"http://127.0.0.1:11434","model":"fixture","num_ctx":8192,"num_predict":512,"locale":"en"})),
+        "s04-provider-once",
+    )
+    .await;
+    assert_eq!(status, 204, "{replay:?}");
+    assert_eq!(
+        events().await,
+        baseline,
+        "a canonical replay must not duplicate the event"
+    );
+
+    // Unpaired readiness is a closed typed state, never a direct catalog call.
     let (status, health) = request(port, "POST", "/api/v1/agent/provider/health", None).await;
     assert_eq!(status, 200, "{health:?}");
-    assert_eq!(health["available"], true);
-    assert_eq!(
-        events().await,
-        baseline + 1,
-        "the first digest observation must record one event"
-    );
-    let stored: String =
-        sqlx::query_scalar("SELECT model_digest FROM agent_provider WHERE singleton=1")
-            .fetch_one(workspace.pool())
-            .await
-            .unwrap();
-    assert_eq!(stored, "sha256:one");
+    assert_eq!(health["available"], false);
 
-    let (status, second) = request(port, "POST", "/api/v1/agent/provider/health", None).await;
-    assert_eq!(status, 200, "{second}");
-    assert_eq!(
-        events().await,
-        baseline + 1,
-        "an unchanged digest must not duplicate the event"
-    );
-
-    let (status, third) = request(port, "POST", "/api/v1/agent/provider/health", None).await;
-    assert_eq!(status, 200, "{third}");
-    assert_eq!(
-        events().await,
-        baseline + 2,
-        "a changed digest must record a new event"
-    );
-    let stored: String =
-        sqlx::query_scalar("SELECT model_digest FROM agent_provider WHERE singleton=1")
-            .fetch_one(workspace.pool())
-            .await
-            .unwrap();
-    assert_eq!(stored, "sha256:two");
-
-    fake.abort();
     service.shutdown().await;
     let _ = fs::remove_file(path);
 }
