@@ -578,6 +578,10 @@ async fn s01_capture_retry_is_one_occurrence() {
     .await;
     assert_eq!(status(&second), 201, "{second}");
     assert_eq!(json_body(&first), json_body(&second));
+    // Without a qualified structured profile the typed admission (AR-001
+    // AR06) saves the source on its own; no durable Extractor job is created.
+    assert_eq!(json_body(&first)["job_status"], "not_queued");
+    assert!(json_body(&first)["job_id"].is_null());
 
     let db = SqlitePoolOptions::new()
         .connect(&format!(
@@ -597,7 +601,7 @@ async fn s01_capture_retry_is_one_occurrence() {
         .fetch_one(&db)
         .await
         .unwrap();
-    assert_eq!(jobs, 1);
+    assert_eq!(jobs, 0);
     let events: i64 =
         sqlx::query_scalar("SELECT count(*) FROM event WHERE event_type='source.captured'")
             .fetch_one(&db)
@@ -661,6 +665,10 @@ async fn s01_capture_concurrent_same_key_retry_returns_one_occurrence() {
             "every concurrent same-key caller must receive the identical response"
         );
     }
+    // No qualified structured profile in this harness: the typed admission
+    // (AR-001 AR06) commits the source alone and enqueues no Extractor job.
+    assert_eq!(first_body["job_status"], "not_queued");
+    assert!(first_body["job_id"].is_null());
 
     let db = SqlitePoolOptions::new()
         .connect(&format!(
@@ -673,7 +681,6 @@ async fn s01_capture_concurrent_same_key_retry_returns_one_occurrence() {
         .unwrap();
     for (label, sql) in [
         ("occurrences", "SELECT count(*) FROM source_occurrence"),
-        ("jobs", "SELECT count(*) FROM durable_job"),
         (
             "events",
             "SELECT count(*) FROM event WHERE event_type='source.captured'",
@@ -686,6 +693,11 @@ async fn s01_capture_concurrent_same_key_retry_returns_one_occurrence() {
             "{label} count must be exactly one after a concurrent same-key retry"
         );
     }
+    let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM durable_job")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(jobs, 0, "no Extractor job without a qualified profile");
     db.close().await;
     stop(service, &path).await;
 }

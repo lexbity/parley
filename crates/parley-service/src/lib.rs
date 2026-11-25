@@ -1795,9 +1795,12 @@ impl Workspace {
     /// idempotency receipt in one writer transaction (B-FR-1, EVT-1, BQ1):
     /// a lost-ack retry must produce exactly one occurrence and one job, and
     /// a crash between "capture" and "enqueue" is impossible because the job
-    /// row commits atomically with the source. Returns the job id (when the
-    /// queue admitted it) and the final response payload, which is also what
-    /// the receipt stores.
+    /// row commits atomically with the source. The typed admission lives in
+    /// `application::extract` (AR-001 AR06): the source is always saved, and
+    /// a durable Extractor job is admitted only when a qualified structured
+    /// profile is active and the full chunk plan fits the context budget.
+    /// Returns the job id (when the queue admitted it) and the final response
+    /// payload, which is also what the receipt stores.
     pub async fn save_capture_commit(
         &self,
         key: &str,
@@ -1806,94 +1809,7 @@ impl Workspace {
         title: Option<&str>,
         url: Option<&str>,
     ) -> Result<(Option<String>, Value), WorkspaceError> {
-        if key.trim().is_empty() || key.len() > 100 {
-            return Err(WorkspaceError::Invalid(
-                "idempotency key must contain 1–100 bytes".into(),
-            ));
-        }
-        if text.trim().is_empty() {
-            return Err(WorkspaceError::Invalid("source text is empty".into()));
-        }
-        if text.len() > 2_000_000 {
-            return Err(WorkspaceError::Invalid("source exceeds 2 MB".into()));
-        }
-        let normalized = parley_domain::evidence::normalize(text);
-        let normalized_hash = digest(normalized.as_bytes());
-        let raw_hash = digest(text.as_bytes());
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let content_id = match sqlx::query_scalar::<_, String>("SELECT id FROM source_content WHERE normalized_sha256=? AND normalization_version=? ORDER BY id LIMIT 1")
-            .bind(&normalized_hash).bind(parley_domain::evidence::NORMALIZATION_VERSION as i64).fetch_optional(&mut *tx).await? {
-                Some(id) => id,
-                None => {
-                    let id = new_id(&normalized_hash);
-                    sqlx::query("INSERT INTO source_content(id,normalized_sha256,normalization_version,normalized_text,created_at) VALUES(?,?,?,?,?)")
-                        .bind(&id).bind(&normalized_hash).bind(parley_domain::evidence::NORMALIZATION_VERSION as i64).bind(&normalized).bind(now_utc()).execute(&mut *tx).await?;
-                    id
-                }
-            };
-        let variant_id = match sqlx::query_scalar::<_, String>(
-            "SELECT id FROM source_variant WHERE content_id=? AND raw_sha256=? ORDER BY id LIMIT 1",
-        )
-        .bind(&content_id)
-        .bind(&raw_hash)
-        .fetch_optional(&mut *tx)
-        .await?
-        {
-            Some(id) => id,
-            None => {
-                let id = new_id(&raw_hash);
-                sqlx::query("INSERT INTO source_variant(id,content_id,raw_sha256,raw_text,title,url,captured_at) VALUES(?,?,?,?,?,?,?)")
-                        .bind(&id).bind(&content_id).bind(&raw_hash).bind(text).bind(title).bind(url).bind(now_utc()).execute(&mut *tx).await?;
-                id
-            }
-        };
-        let occurrence_id = new_id(&variant_id);
-        sqlx::query("INSERT INTO source_occurrence(id,source_variant_id,actor_kind,actor_entity_id,captured_at) VALUES(?,?, 'unknown',NULL,?)")
-            .bind(&occurrence_id).bind(&variant_id).bind(now_utc()).execute(&mut *tx).await?;
-        let event_payload = json!({
-            "content_id": content_id,
-            "variant_id": variant_id,
-            "occurrence_id": occurrence_id,
-            "normalized_sha256": normalized_hash,
-            "raw_sha256": raw_hash,
-        });
-        let captured_cursor: i64 = sqlx::query_scalar("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'source',?,1,'source.captured',?) RETURNING cursor")
-            .bind(new_id(&occurrence_id)).bind(now_utc()).bind(&occurrence_id).bind(event_payload.to_string()).fetch_one(&mut *tx).await?;
-        // The extraction job commits in the same transaction: a crash right
-        // after this commit can never leave a capture without its job.
-        let now = now_utc();
-        let input = json!({"occurrence_id": occurrence_id, "source_variant_id": variant_id});
-        let input_json =
-            serde_json::to_string(&input).map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
-        let input_sha = digest(input_json.as_bytes());
-        let in_flight: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM durable_job WHERE status IN ('queued','running')",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        let (job_id, job_status, last_cursor) = if in_flight < 32 {
-            let id = new_id(&input_sha);
-            sqlx::query("INSERT INTO durable_job(id,role,status,input_json,input_sha256,source_occurrence_id,source_variant_id,scope_kind,scope_id,scope_revision,current_attempt,max_attempts,created_at,updated_at) VALUES(?,'extractor','queued',?,?,?,?, 'source',?,1,0,3,?,?)")
-                .bind(&id).bind(&input_json).bind(&input_sha).bind(&occurrence_id).bind(&variant_id).bind(&occurrence_id).bind(&now).bind(&now).execute(&mut *tx).await?;
-            let job_cursor: i64 = sqlx::query_scalar("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'job',?,1,'job.queued',?) RETURNING cursor")
-                .bind(new_id(&id)).bind(&now).bind(&id).bind(json!({"role":"extractor","source_occurrence_id":occurrence_id}).to_string()).fetch_one(&mut *tx).await?;
-            (Some(id), "queued", job_cursor)
-        } else {
-            (None, "not_queued", captured_cursor)
-        };
-        let full = json!({
-            "content_id": content_id,
-            "variant_id": variant_id,
-            "occurrence_id": occurrence_id,
-            "normalized_sha256": normalized_hash,
-            "raw_sha256": raw_hash,
-            "job_id": job_id,
-            "job_status": job_status,
-        });
-        sqlx::query("INSERT INTO idempotency_receipt(owner_id,epoch,key,canonical_digest,status_code,result_json,last_event_cursor,created_at) VALUES(1,?,?,?,201,?,?,?)")
-            .bind(&self.epoch).bind(key).bind(canonical).bind(full.to_string()).bind(last_cursor).bind(now_utc()).execute(&mut *tx).await?;
-        tx.commit().await?;
-        Ok((job_id, full))
+        application::extract::save_capture_commit(self, key, canonical, text, title, url).await
     }
 
     /// Create a distinct graph identity. Names are deliberately not keys: two

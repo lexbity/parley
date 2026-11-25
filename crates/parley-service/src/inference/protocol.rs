@@ -42,6 +42,7 @@ pub enum Role {
     TemplateBuilder,
     Interviewer,
     Briefer,
+    Extractor,
 }
 
 /// One server correlation id bound to a named, frozen tool descriptor. The

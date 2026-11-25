@@ -139,6 +139,7 @@ pub fn verified_bundle() -> &'static Path {
             ("template_builder.schema.json", "crates/parley-service/roles/template_builder/schema.json"),
             ("interviewer.schema.json", "crates/parley-service/roles/interviewer/schema.json"),
             ("briefer.schema.json", "crates/parley-service/roles/briefer/schema.json"),
+            ("extractor.schema.json", "crates/parley-service/roles/extractor/schema.json"),
         ] {
             copy_mode(&root.join(source), &dir.join(name));
         }
@@ -198,6 +199,20 @@ pub async fn install_qualified_profile(
     workspace_path: &Path,
     endpoint: SocketAddr,
 ) -> i64 {
+    install_qualified_profile_with(pool, workspace_path, endpoint, 8192, 256, 64).await
+}
+
+/// Same as [`install_qualified_profile`] with explicit context/output tokens
+/// and template allowance so tests can shape the extractor chunk plan.
+#[allow(clippy::too_many_arguments)]
+pub async fn install_qualified_profile_with(
+    pool: &SqlitePool,
+    workspace_path: &Path,
+    endpoint: SocketAddr,
+    context_tokens: i64,
+    output_tokens: i64,
+    template_tokens: i64,
+) -> i64 {
     verified_bundle();
     let artifact = tokenizer_artifact().to_string();
     let tokenizer_digest = digest(artifact.as_bytes());
@@ -221,7 +236,7 @@ pub async fn install_qualified_profile(
         "INSERT INTO inference_profile(revision,runner_kind,runner_build_digest,protocol_major,
            provider_version,endpoint,chat_model,chat_model_digest,tokenizer_digest,recipe_json,
            context_tokens,output_tokens,locale,created_at)
-         VALUES(?,'pi',?,1,?,?,?,?,?,?,8192,256,'en',?)",
+         VALUES(?,'pi',?,1,?,?,?,?,?,?,?,?,'en',?)",
     )
     .bind(revision)
     .bind(&runner)
@@ -230,7 +245,9 @@ pub async fn install_qualified_profile(
     .bind(MODEL_TAG)
     .bind(model_digest())
     .bind(&tokenizer_digest)
-    .bind(json!({"template_tokens": 64}).to_string())
+    .bind(json!({"template_tokens": template_tokens}).to_string())
+    .bind(context_tokens)
+    .bind(output_tokens)
     .bind(&now)
     .execute(pool)
     .await

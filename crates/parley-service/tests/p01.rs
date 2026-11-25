@@ -364,7 +364,15 @@ async fn p01_opportunity_list_page_is_bounded_searchable_and_keyset_paginated() 
     let service = parley_service::start_workspace(&db).await.unwrap();
     let session = owner_session(&service).await;
 
-    let first = request(&service, &session, "GET", "/api/v1/opportunities?limit=5&sort=title", None, &[]).await;
+    let first = request(
+        &service,
+        &session,
+        "GET",
+        "/api/v1/opportunities?limit=5&sort=title",
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(first.status, 200, "{:?}", first.body);
     let page = &first.body;
     assert!(page.get("items").is_some(), "paged shape: {page:?}");
@@ -372,22 +380,52 @@ async fn p01_opportunity_list_page_is_bounded_searchable_and_keyset_paginated() 
     assert_eq!(page["items"][0]["title"], "Scoped title 01");
     let cursor = page["next_cursor"].as_str().unwrap().to_owned();
 
-    let second = request(&service, &session, "GET", &format!("/api/v1/opportunities?limit=5&sort=title&cursor={cursor}"), None, &[]).await;
+    let second = request(
+        &service,
+        &session,
+        "GET",
+        &format!("/api/v1/opportunities?limit=5&sort=title&cursor={cursor}"),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(second.status, 200, "{:?}", second.body);
-    let ids: Vec<&str> = page["items"].as_array().unwrap().iter()
+    let ids: Vec<&str> = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
         .chain(second.body["items"].as_array().unwrap().iter())
         .map(|row| row["id"].as_str().unwrap())
         .collect();
     assert_eq!(ids.len(), 10);
-    assert_eq!(ids.iter().collect::<std::collections::HashSet<_>>().len(), 10);
+    assert_eq!(
+        ids.iter().collect::<std::collections::HashSet<_>>().len(),
+        10
+    );
     assert_eq!(second.body["items"][0]["title"], "Scoped title 06");
 
     // A cursor bound to another query is rejected rather than silently widening.
-    let wrong = request(&service, &session, "GET", &format!("/api/v1/opportunities?limit=5&sort=title&q=missing&cursor={cursor}"), None, &[]).await;
+    let wrong = request(
+        &service,
+        &session,
+        "GET",
+        &format!("/api/v1/opportunities?limit=5&sort=title&q=missing&cursor={cursor}"),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(wrong.status, 422, "{:?}", wrong.body);
 
     // Server-side typeahead narrows the whole domain, not just the first page.
-    let search = request(&service, &session, "GET", "/api/v1/opportunities?limit=5&q=title%2011", None, &[]).await;
+    let search = request(
+        &service,
+        &session,
+        "GET",
+        "/api/v1/opportunities?limit=5&q=title%2011",
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(search.status, 200, "{:?}", search.body);
     let rows = search.body["items"].as_array().unwrap();
     assert_eq!(rows.len(), 1);

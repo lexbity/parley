@@ -2242,6 +2242,56 @@ slices:
       owner_role: owner
       package_target: rust+mock
       evidence_path: evidence/ar04.md
+  ar06:
+    - requirement: FR-6
+      operationId: saveCapture
+      test_id: ar06_chunk_budget_and_original_span_round_trip
+      fixture_id: ar06
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar06.md
+    - requirement: FR-9
+      operationId: cancelJob
+      test_id: ar06_cancel_or_bad_chunk_leaves_saved_source_only
+      fixture_id: ar06
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar06.md
+    - requirement: FR-9
+      operationId: saveCapture
+      test_id: ar06_bad_chunk_invalidates_the_candidate_batch
+      fixture_id: ar06
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar06.md
+    - requirement: FR-9
+      operationId: saveCapture
+      test_id: ar06_identical_source_keeps_independent_scope_edges
+      fixture_id: ar06
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar06.md
+    - requirement: FR-9
+      operationId: saveCapture
+      test_id: ar06_capture_admission_is_atomic_and_typed
+      fixture_id: ar06
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar06.md
+    - requirement: FR-11
+      operationId: saveCapture
+      test_id: ar06_capture_activity_returns_to_review
+      fixture_id: ar06
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar06.md
+    - requirement: FR-1
+      operationId: saveCapture
+      test_id: ar06_provider_disabled_source_survives
+      fixture_id: ar06
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar06.md
   ar05:
     - requirement: FR-10
       operationId: startAgentRun

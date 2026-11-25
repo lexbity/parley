@@ -1,5 +1,6 @@
 pub(crate) mod coach;
 pub(crate) mod dispatch;
+pub(crate) mod extractor;
 pub(crate) mod probe;
 pub(crate) mod profile;
 pub(crate) mod protocol;
@@ -22,4 +23,8 @@ pub(crate) fn interviewer_schema() -> &'static [u8] {
 
 pub(crate) fn briefer_schema() -> &'static [u8] {
     crate::jobs::briefer_schema().as_bytes()
+}
+
+pub(crate) fn extractor_schema() -> &'static [u8] {
+    crate::application::extract::SCHEMA.as_bytes()
 }

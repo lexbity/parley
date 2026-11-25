@@ -8,6 +8,7 @@ import {
   type CoachSelector, type CoachQuestion,
 } from '../../api/client';
 import { commands } from '../../api/commands';
+import { observeRoleJob } from '../../app/inference/activity';
 import { partyActions, registerScoped, useCommandRegistry } from '../../app/commands/registry';
 import ClaimCorrection from './ClaimCorrection.vue';
 import PartyFiles from './PartyFiles.vue';
@@ -607,20 +608,33 @@ async function saveCapture() {
       ? 'Source saved independently. Extractor is unavailable or at capacity; review the source manually or retry later.'
       : 'Source saved independently. No person was inferred or linked.';
     reviewJob.value = source.job_id ? await parley.getExtractorJob(source.job_id) : null;
-    if (source.job_id) void pollExtractor(source.job_id);
+    if (source.job_id) watchExtractorJob(source.job_id);
   } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not save the source.'; }
   finally { busy.value = false; }
 }
 
-async function pollExtractor(id: string) {
-  for (let attempt = 0; attempt < 180; attempt += 1) {
-    await new Promise((resolve) => globalThis.setTimeout(resolve, 1000));
-    try {
-      const job = await parley.getExtractorJob(id);
-      if (reviewJob.value?.id === id) reviewJob.value = job;
-      if (!['queued', 'running'].includes(job.status)) return;
-    } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not refresh Extractor review.'; return; }
-  }
+const extractorWatchers = new Set<() => void>();
+function watchExtractorJob(id: string) {
+  const dispose = observeRoleJob(
+    id,
+    () => { status.value = 'Extractor is analyzing the saved source.'; },
+    (job) => {
+      // The durable job is terminal: read its staged proposal batch once.
+      // This read is a bounded projection, never inference.
+      void parley.getExtractorJob(id).then((full) => {
+        if (reviewJob.value?.id === id) reviewJob.value = full;
+      }).catch((reason: unknown) => {
+        error.value = reason instanceof Error ? reason.message : 'Could not refresh Extractor review.';
+      });
+      if (job.status === 'succeeded') {
+        status.value = 'Extractor finished; review the proposed claims below.';
+      } else if (['failed', 'invalid', 'cancelled'].includes(job.status)) {
+        error.value = job.last_error ?? 'Extractor did not stage proposals.';
+      }
+    },
+    (reason: unknown) => { error.value = reason instanceof Error ? reason.message : 'Could not refresh Extractor review.'; },
+  );
+  extractorWatchers.add(dispose);
 }
 
 async function openCaptureReview(source: SavedSource) {
@@ -743,6 +757,8 @@ onBeforeUnmount(() => {
   if (notesTimer) globalThis.clearTimeout(notesTimer);
   if (eventTimer) globalThis.clearInterval(eventTimer);
   if (duplicateTimer) globalThis.clearTimeout(duplicateTimer);
+  for (const dispose of extractorWatchers) dispose();
+  extractorWatchers.clear();
   selectionVersion++; requestVersion++;
   globalThis.removeEventListener('parley:workspace-quarantined', quarantine);
   globalThis.removeEventListener('parley:workspace-changed', quarantine);

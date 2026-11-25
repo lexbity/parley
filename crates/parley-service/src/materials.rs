@@ -1192,10 +1192,7 @@ impl Workspace {
         f: &OpportunityFilters,
     ) -> Result<OpportunityPage, WorkspaceError> {
         let (items, next_cursor) = self.opportunity_summaries_inner(f, f.limit).await?;
-        Ok(OpportunityPage {
-            items,
-            next_cursor,
-        })
+        Ok(OpportunityPage { items, next_cursor })
     }
 
     async fn opportunity_summaries_inner(
@@ -1229,9 +1226,18 @@ impl Workspace {
         let descending = f.order.as_deref() == Some("desc");
         let scope = limit.map(|_| {
             digest(
-                json!([f.q, f.party_id, f.tag, f.status, f.missing_material, f.deadline_before, f.sort, f.order])
-                    .to_string()
-                    .as_bytes(),
+                json!([
+                    f.q,
+                    f.party_id,
+                    f.tag,
+                    f.status,
+                    f.missing_material,
+                    f.deadline_before,
+                    f.sort,
+                    f.order
+                ])
+                .to_string()
+                .as_bytes(),
             )
         });
         let mut q = QueryBuilder::<Sqlite>::new(
@@ -1241,7 +1247,8 @@ impl Workspace {
           o.notes_next_task AS next_task, (SELECT min(t.expires_at) FROM contact_thread t WHERE t.opportunity_id=o.id AND t.state='waiting') AS next_deadline, \
           NOT EXISTS(SELECT 1 FROM material m WHERE m.opportunity_id=o.id) AS missing_material,",
         );
-        q.push(sort).push(" AS sort_key FROM opportunity o WHERE 1=1");
+        q.push(sort)
+            .push(" AS sort_key FROM opportunity o WHERE 1=1");
         if let Some(s) = &f.status {
             q.push(" AND o.state=").push_bind(s);
         }
@@ -1331,10 +1338,7 @@ impl Workspace {
                     .push(" OR ")
                     .push(sort)
                     .push(" IS NULL)"),
-                (true, None) => q
-                    .push(sort)
-                    .push(" IS NULL AND o.id>")
-                    .push_bind(id),
+                (true, None) => q.push(sort).push(" IS NULL AND o.id>").push_bind(id),
             };
             q.push(")");
         }
