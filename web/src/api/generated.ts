@@ -1999,6 +1999,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getPackSettings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/packs/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["validatePack"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/packs/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["activatePack"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/settings/maintenance": {
         parameters: {
             query?: never;
@@ -2702,6 +2750,43 @@ export interface components {
             raw_sha256: string;
             job_id?: string | null;
             job_status?: string | null;
+        };
+        AvailablePack: {
+            id: string;
+            name: string;
+            version: string;
+            document: string;
+        };
+        PackSettings: {
+            revision: number;
+            active_pack_id: string;
+            active_pack_version: string;
+            active_document: string;
+            available_packs: components["schemas"]["AvailablePack"][];
+        };
+        PackValidateInput: {
+            document: string;
+        };
+        PackValidationError: {
+            line?: number | null;
+            field?: string | null;
+            message: string;
+        };
+        PackValidation: {
+            valid: boolean;
+            pack_id?: string | null;
+            version?: string | null;
+            normalized_document?: string | null;
+            errors: components["schemas"]["PackValidationError"][];
+        };
+        PackActivateInput: {
+            pack_id: string;
+            version: string;
+            document: string;
+            expected_settings_revision: number;
+            stage_mapping: {
+                [key: string]: string;
+            };
         };
         ProviderSettings: {
             endpoint: string;
@@ -8759,6 +8844,89 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    getPackSettings: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The active config pack with every validated available pack. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PackSettings"];
+                };
+            };
+            401: components["responses"]["Error"];
+        };
+    };
+    validatePack: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PackValidateInput"];
+            };
+        };
+        responses: {
+            /** @description Validation result; a valid document is cached by its digest for activation. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PackValidation"];
+                };
+            };
+            401: components["responses"]["Error"];
+        };
+    };
+    activatePack: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PackActivateInput"];
+            };
+        };
+        responses: {
+            /** @description The pack is active for future work; historical sends keep their original pack and gate snapshot. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PackSettings"];
+                };
+            };
+            401: components["responses"]["Error"];
+            412: components["responses"]["Error"];
+            422: components["responses"]["Error"];
         };
     };
     getMaintenanceSettings: {

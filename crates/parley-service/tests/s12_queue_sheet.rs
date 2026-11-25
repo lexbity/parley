@@ -545,3 +545,175 @@ async fn s12_events_filter_returns_scoped_history_with_timestamps() {
     drop(service);
     let _ = fs::remove_file(path);
 }
+
+#[tokio::test]
+async fn s12_pack_settings_validate_activate_and_remap() {
+    // The pack settings surface (architecture-review finding G14): the UI and
+    // the mock served GET /settings, packs/validate and packs/activate long
+    // before the service did. This proof pins the default settings read, the
+    // refusal paths (stale settings revision, mismatched document, missing
+    // stage mapping) and a full activation that installs stages, remaps an
+    // open opportunity through the owner-provided mapping and derives the
+    // pack_policy fragment the queue reads.
+    let (path, workspace, port, service) = setup().await;
+
+    let lead_gen = concat!(
+        "id: lead_gen\n",
+        "name: Client lead generation\n",
+        "version: 1.0.0\n",
+        "vocabulary:\n",
+        "  party_noun: prospect\n",
+        "  win_noun: engagement\n",
+        "stages:\n",
+        "  - { name: Identified, class: identified }\n",
+        "  - { name: Briefed, class: prepared }\n",
+        "  - { name: Contacted, class: touched }\n",
+        "ask_ladder:\n",
+        "  - { rung: 1, weight: 1, label: yes/no question }\n",
+        "  - { rung: 2, weight: 2, label: review }\n",
+        "cadence:\n",
+        "  max_touches: 3\n",
+        "limits:\n",
+        "  daily_send_cap: 15\n",
+    );
+
+    let party = create_party(port, "Pack Mover").await;
+    let opportunity = create_opportunity(port, "Remap my stage", &party).await;
+    let (status, view) = phase_change(port, &opportunity, "exploring", 1, None, "pack-phase-seed").await;
+    assert_eq!(status, 200, "{view:?}");
+
+    // Default settings: the seeded pack, revision 1, the reference document.
+    let (status, settings) = request(port, "GET", "/api/v1/settings", None, "pack-settings-read").await;
+    assert_eq!(status, 200, "{settings:?}");
+    assert_eq!(settings["revision"], 1);
+    assert_eq!(settings["active_pack_id"], "job_search");
+    assert_eq!(settings["active_pack_version"], "1.0.0");
+    assert!(settings["active_document"].as_str().unwrap().contains("Exploring"));
+    assert!(settings["available_packs"].as_array().unwrap().iter().any(|pack| pack["id"] == "lead_gen"));
+
+    // An invalid document validates as invalid; the active pack is untouched.
+    let (status, result) = request(
+        port,
+        "POST",
+        "/api/v1/packs/validate",
+        Some(json!({"document":"id: lead_gen\nversion: one\n"})),
+        "pack-validate-bad",
+    )
+    .await;
+    assert_eq!(status, 200, "{result:?}");
+    assert_eq!(result["valid"], false);
+    assert!(result["errors"].as_array().unwrap().iter().any(|issue| issue["field"] == "version"));
+
+    // A valid document validates and comes back normalized.
+    let (status, result) = request(
+        port,
+        "POST",
+        "/api/v1/packs/validate",
+        Some(json!({"document": lead_gen})),
+        "pack-validate-good",
+    )
+    .await;
+    assert_eq!(status, 200, "{result:?}");
+    assert_eq!(result["valid"], true);
+    assert_eq!(result["pack_id"], "lead_gen");
+    assert_eq!(result["normalized_document"], lead_gen);
+
+    // Stale settings revision refuses before anything is written.
+    let (status, view) = request(
+        port,
+        "POST",
+        "/api/v1/packs/activate",
+        Some(json!({"pack_id":"lead_gen","version":"1.0.0","document":lead_gen,"expected_settings_revision":99,"stage_mapping":{"exploring":"identified"}})),
+        "pack-activate-stale",
+    )
+    .await;
+    assert_eq!(status, 412, "{view:?}");
+    assert_eq!(view["error"]["code"], "SETTINGS_STALE");
+
+    // A document whose identity disagrees with the request is refused.
+    let (status, view) = request(
+        port,
+        "POST",
+        "/api/v1/packs/activate",
+        Some(json!({"pack_id":"lead_gen","version":"2.0.0","document":lead_gen,"expected_settings_revision":1,"stage_mapping":{"exploring":"identified"}})),
+        "pack-activate-mismatch",
+    )
+    .await;
+    assert_eq!(status, 422, "{view:?}");
+    assert_eq!(view["error"]["code"], "PACK_NOT_VALIDATED");
+
+    // Changing pack identity without a stage mapping is refused.
+    let (status, view) = request(
+        port,
+        "POST",
+        "/api/v1/packs/activate",
+        Some(json!({"pack_id":"lead_gen","version":"1.0.0","document":lead_gen,"expected_settings_revision":1,"stage_mapping":{}})),
+        "pack-activate-no-mapping",
+    )
+    .await;
+    assert_eq!(status, 422, "{view:?}");
+    assert_eq!(view["error"]["code"], "STAGE_MAPPING_REQUIRED");
+
+    // The real activation: stages installed, opportunity remapped, policy
+    // derived, settings revision advanced.
+    let (status, activated) = request(
+        port,
+        "POST",
+        "/api/v1/packs/activate",
+        Some(json!({"pack_id":"lead_gen","version":"1.0.0","document":lead_gen,"expected_settings_revision":1,"stage_mapping":{"exploring":"identified"}})),
+        "pack-activate-real",
+    )
+    .await;
+    assert_eq!(status, 200, "{activated:?}");
+    assert_eq!(activated["revision"], 2);
+    assert_eq!(activated["active_pack_id"], "lead_gen");
+
+    let (status, settings) = request(port, "GET", "/api/v1/settings", None, "pack-settings-read-2").await;
+    assert_eq!(status, 200, "{settings:?}");
+    assert_eq!(settings["revision"], 2);
+    assert_eq!(settings["active_document"], lead_gen);
+
+    let stages: Vec<(String, String)> =
+        sqlx::query_as("SELECT stage_id,label FROM pack_stage WHERE pack_id='lead_gen' AND pack_version='1.0.0' ORDER BY ordinal")
+            .fetch_all(workspace.pool())
+            .await
+            .unwrap();
+    assert_eq!(stages, vec![("identified".into(), "Identified".into()), ("briefed".into(), "Briefed".into()), ("contacted".into(), "Contacted".into())]);
+
+    let (stage_id, stage_pack): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT stage_id,stage_pack_id FROM opportunity WHERE id=?",)
+            .bind(&opportunity)
+            .fetch_one(workspace.pool())
+            .await
+            .unwrap();
+    assert_eq!(stage_id.as_deref(), Some("identified"), "the mapping moved the stage");
+    assert_eq!(stage_pack.as_deref(), Some("lead_gen"));
+
+    let policy: i64 = sqlx::query_scalar(
+        "SELECT json_extract(settings_json,'$.pack_policy.limits.daily_send_cap') FROM owner_profile WHERE id=1",
+    )
+    .fetch_one(workspace.pool())
+    .await
+    .unwrap();
+    assert_eq!(policy, 15, "the policy fragment is derived from the document");
+
+    // Same-key replay replays the stored result: revision does not advance.
+    let (status, replay) = request(
+        port,
+        "POST",
+        "/api/v1/packs/activate",
+        Some(json!({"pack_id":"lead_gen","version":"1.0.0","document":lead_gen,"expected_settings_revision":1,"stage_mapping":{"exploring":"identified"}})),
+        "pack-activate-real",
+    )
+    .await;
+    assert_eq!(status, 200, "{replay:?}");
+    assert_eq!(replay["revision"], 2, "replay returns the stored receipt result");
+    let current: i64 = sqlx::query_scalar("SELECT settings_revision FROM owner_profile WHERE id=1")
+        .fetch_one(workspace.pool())
+        .await
+        .unwrap();
+    assert_eq!(current, 2);
+
+    service.shutdown().await;
+    let _ = fs::remove_file(path);
+}

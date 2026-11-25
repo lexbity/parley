@@ -3227,6 +3227,38 @@ paths:
         required: true
         content: {application/json: {schema: {type: object, additionalProperties: false, required: [version, content_sha256], properties: {version: {type: integer, minimum: 1}, content_sha256: {type: string, pattern: '^[a-f0-9]{64}$'}}}}}
       responses: {'202': {description: Deterministic findings persisted and advisory lint queued}}
+  /settings:
+    get:
+      operationId: getPackSettings
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}]
+      responses:
+        '200': {description: The active config pack with every validated available pack., content: {application/json: {schema: {$ref: '#/components/schemas/PackSettings'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+  /packs/validate:
+    post:
+      operationId: validatePack
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/PackValidateInput'}}}
+      responses:
+        '200': {description: Validation result; a valid document is cached by its digest for activation., content: {application/json: {schema: {$ref: '#/components/schemas/PackValidation'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+  /packs/activate:
+    post:
+      operationId: activatePack
+      security: [{sessionCookie: []}]
+      parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/PackActivateInput'}}}
+      responses:
+        '200': {description: The pack is active for future work; historical sends keep their original pack and gate snapshot., content: {application/json: {schema: {$ref: '#/components/schemas/PackSettings'}}}}
+        '412': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
   /settings/maintenance:
     get:
       operationId: getMaintenanceSettings
@@ -4613,6 +4645,59 @@ components:
           type: string
           nullable: true
       additionalProperties: false
+    AvailablePack:
+      type: object
+      required: [id, name, version, document]
+      additionalProperties: false
+      properties:
+        id: {type: string}
+        name: {type: string}
+        version: {type: string}
+        document: {type: string}
+    PackSettings:
+      type: object
+      required: [revision, active_pack_id, active_pack_version, active_document, available_packs]
+      additionalProperties: false
+      properties:
+        revision: {type: integer, minimum: 1}
+        active_pack_id: {type: string}
+        active_pack_version: {type: string}
+        active_document: {type: string}
+        available_packs: {type: array, items: {$ref: '#/components/schemas/AvailablePack'}}
+    PackValidateInput:
+      type: object
+      required: [document]
+      additionalProperties: false
+      properties:
+        document: {type: string, minLength: 1, maxLength: 65536}
+    PackValidationError:
+      type: object
+      required: [message]
+      additionalProperties: false
+      properties:
+        line: {type: [integer, 'null'], minimum: 1}
+        field: {type: [string, 'null']}
+        message: {type: string, minLength: 1}
+    PackValidation:
+      type: object
+      required: [valid, errors]
+      additionalProperties: false
+      properties:
+        valid: {type: boolean}
+        pack_id: {type: [string, 'null']}
+        version: {type: [string, 'null']}
+        normalized_document: {type: [string, 'null']}
+        errors: {type: array, items: {$ref: '#/components/schemas/PackValidationError'}}
+    PackActivateInput:
+      type: object
+      required: [pack_id, version, document, expected_settings_revision, stage_mapping]
+      additionalProperties: false
+      properties:
+        pack_id: {type: string, minLength: 1, maxLength: 64}
+        version: {type: string, minLength: 1, maxLength: 32}
+        document: {type: string, minLength: 1, maxLength: 65536}
+        expected_settings_revision: {type: integer, minimum: 1}
+        stage_mapping: {type: object, additionalProperties: {type: string}}
     ProviderSettings:
       type: object
       required: [endpoint, model, num_ctx, num_predict, locale]

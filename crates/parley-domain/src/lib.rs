@@ -16,6 +16,7 @@ pub mod lifecycle;
 pub mod lint;
 pub mod matching;
 pub mod notes;
+pub mod pack;
 pub mod queue;
 pub mod resources;
 pub mod template;

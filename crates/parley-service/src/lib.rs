@@ -244,6 +244,7 @@ mod generation;
 mod inference;
 mod jobs;
 mod maintenance;
+mod packs;
 mod parties;
 pub mod relations;
 #[cfg(debug_assertions)]
@@ -2293,6 +2294,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         .merge(parties::routes())
         .merge(thread::routes())
         .merge(jobs::routes())
+        .merge(packs::routes())
         .merge(inference::activity::routes())
         .merge(assistant::routes())
         .merge(writing::routes())

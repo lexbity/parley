@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/Error","body":{"error":{"code":"SETTINGS_STALE","message":"Pack settings changed; reload and review the current selection","details":[]}}}

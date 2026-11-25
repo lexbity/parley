@@ -1,0 +1,1 @@
+{"$schema":"#/components/schemas/PackValidation","body":{"valid":true,"pack_id":"lead_gen","version":"1.0.0","normalized_document":"id: lead_gen\nname: Client lead generation\nversion: 1.0.0\n","errors":[]}}

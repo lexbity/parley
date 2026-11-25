@@ -1201,6 +1201,27 @@ slices:
       evidence_path: evidence/r04.md
   s12:
     - requirement: UCR-FR-1
+      operationId: getPackSettings
+      test_id: s12_pack_settings_validate_activate_and_remap
+      fixture_id: packs
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s12/packs/evidence.md
+    - requirement: UCR-FR-2
+      operationId: validatePack
+      test_id: s12_pack_settings_validate_activate_and_remap
+      fixture_id: packs
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s12/packs/evidence.md
+    - requirement: UCR-FR-3
+      operationId: activatePack
+      test_id: s12_pack_settings_validate_activate_and_remap
+      fixture_id: packs
+      owner_role: owner
+      package_target: rust
+      evidence_path: contract/fixtures/s12/packs/evidence.md
+    - requirement: UCR-FR-1
       operationId: getQueue
       test_id: s12_sheet_defaults_phase_edit_undo_and_conflicts
       fixture_id: commands
