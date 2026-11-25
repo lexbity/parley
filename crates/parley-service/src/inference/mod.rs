@@ -1,3 +1,4 @@
+pub(crate) mod activity;
 pub(crate) mod calibrate;
 pub(crate) mod coach;
 pub(crate) mod dispatch;

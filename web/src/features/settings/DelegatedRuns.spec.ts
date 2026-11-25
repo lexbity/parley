@@ -1,11 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { parley, type GraphEntity, type OpportunitySummary } from '../../api/client';
+import { parley, type ActivityItem, type ActivityPage, type GraphEntity, type OpportunitySummary } from '../../api/client';
 import { CommandApiError, commands, type RunListItem, type RunStatus, type TranscriptPage } from '../../api/commands';
-
-type SignalHandler = (signal: 'approvals_changed' | 'run_changed' | 'epoch_changed') => void;
-let signalHandler: SignalHandler | undefined;
-let notifyStops = 0;
 import DelegatedRuns from './DelegatedRuns.vue';
 
 afterEach(() => {
@@ -26,6 +22,26 @@ const page: TranscriptPage = {
   next_cursor: '323a30',
 };
 
+function runItem(run: RunListItem): ActivityItem {
+  return {
+    kind: 'run',
+    id: run.run_id,
+    role: 'delegated',
+    status: run.state,
+    state_revision: run.revision,
+    attempt_count: null,
+    progress: { current: run.state === 'queued' ? 1 : 2, total: 16 },
+    scope: { kind: 'delegated', id: null },
+    error_code: null,
+    review_ref: null,
+    updated_at: '2026-11-23T10:00:00Z',
+  };
+}
+
+function activityPage(runs: RunListItem[]): ActivityPage {
+  return { items: runs.map(runItem), next_cursor: null, epoch: 'epoch-1' };
+}
+
 function setup(options: {
   parties?: GraphEntity[]; opportunities?: OpportunitySummary[]; runs?: RunListItem[];
   runStatus?: RunStatus; transcript?: TranscriptPage; failList?: boolean; failTranscript?: boolean;
@@ -44,27 +60,21 @@ function setup(options: {
   vi.spyOn(parley, 'refreshSession').mockResolvedValue();
   const epoch = { value: 'epoch-1' };
   vi.spyOn(parley, 'workspaceEpoch', 'get').mockImplementation(() => epoch.value);
-  const listRuns = vi.spyOn(commands, 'listRuns');
-  if (options.failList) listRuns.mockRejectedValue(new Error('Run list unavailable'));
-  else listRuns.mockResolvedValue({ items: options.runs ?? [], next_cursor: null });
+  const getActivity = vi.spyOn(parley, 'getActivity');
+  if (options.failList) getActivity.mockRejectedValue(new Error('Run list unavailable'));
+  else getActivity.mockImplementation(async () => activityPage(options.runs ?? []));
   vi.spyOn(commands, 'getRun').mockResolvedValue(options.runStatus ?? status);
   const getRunTranscript = vi.spyOn(commands, 'getRunTranscript');
   if (options.failTranscript) getRunTranscript.mockRejectedValue(new Error('Transcript unavailable'));
   else getRunTranscript.mockResolvedValue(options.transcript ?? { items: [], next_cursor: null });
   vi.spyOn(commands, 'startRun').mockResolvedValue(started);
   vi.spyOn(commands, 'cancelRun').mockResolvedValue({ run_id: 'run-1', state: 'cancelled' });
-  signalHandler = undefined;
-  notifyStops = 0;
-  vi.spyOn(commands, 'notify').mockImplementation(async (handlers) => {
-    signalHandler = handlers.onSignal;
-    return () => { notifyStops += 1; };
-  });
-  return { epoch, listRuns, getRunTranscript, wrapper: mount(DelegatedRuns) };
+  return { epoch, getActivity, getRunTranscript, wrapper: mount(DelegatedRuns) };
 }
 
 describe('DelegatedRuns U02 owner consent', () => {
   it('loads targets from the shell session and defaults to read-only grants', async () => {
-    const { wrapper, listRuns } = setup();
+    const { wrapper, getActivity } = setup();
     expect(wrapper.text()).toContain('Loading parties and opportunities…');
     expect(wrapper.text()).toContain('Loading delegated runs…');
     await flushPromises();
@@ -74,7 +84,7 @@ describe('DelegatedRuns U02 owner consent', () => {
     expect((wrapper.get('[aria-label="Grant opportunity.read"]').element as HTMLInputElement).checked).toBe(true);
     expect((wrapper.get('[aria-label="Grant opportunity.phase.edit"]').element as HTMLInputElement).checked).toBe(false);
     expect(wrapper.get('[aria-label="Start scoped run"]').attributes('disabled')).toBeDefined();
-    expect(listRuns).toHaveBeenCalledWith({ limit: 20 });
+    expect(getActivity).toHaveBeenCalledWith(expect.objectContaining({ kind: 'run', limit: 20 }));
     wrapper.unmount();
   });
 
@@ -106,6 +116,9 @@ describe('DelegatedRuns U02 owner consent', () => {
 
   it('starts with explicit consent, opens the result and cancels with a separate key', async () => {
     const { wrapper } = setup();
+    const startedRun = { ...started };
+    vi.mocked(commands.startRun).mockResolvedValue(startedRun);
+    vi.mocked(parley.getActivity).mockImplementation(async () => activityPage([startedRun]));
     await flushPromises();
     await wrapper.get('[aria-label="Task for delegated run"]').setValue('Summarise the granted party');
     await wrapper.get('[aria-label="Target Party: Granted Party"]').setValue(true);
@@ -120,6 +133,7 @@ describe('DelegatedRuns U02 owner consent', () => {
     expect(wrapper.get('[role="status"]').text()).toContain('Run run-1 started');
     expect(wrapper.get('[data-run-id="run-1"]').attributes('data-state')).toBe('queued');
 
+    vi.mocked(parley.getActivity).mockImplementation(async () => activityPage([{ ...startedRun, state: 'cancelled', revision: 2 }]));
     await wrapper.get('[aria-label="Cancel run run-1"]').trigger('click');
     await flushPromises();
     const [runId, cancelKey] = vi.mocked(commands.cancelRun).mock.calls[0]!;
@@ -165,27 +179,26 @@ describe('DelegatedRuns U02 owner consent', () => {
     wrapper.unmount();
   });
 
-  it('stops polling and shows a stale alert when the epoch changes', async () => {
+  it('stops observing and shows a stale alert when the epoch changes', async () => {
     vi.useFakeTimers();
-    const { wrapper, listRuns, epoch } = setup({ runs: [queued] });
+    const { wrapper, getActivity, epoch } = setup({ runs: [queued] });
     await flushPromises();
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(listRuns.mock.calls.length).toBeGreaterThan(1);
+    expect(getActivity.mock.calls.length).toBeGreaterThanOrEqual(1);
     epoch.value = 'epoch-2';
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(2100);
     await flushPromises();
     expect(wrapper.get('[data-stale]').text()).toContain('epoch changed');
-    const callsAtStale = listRuns.mock.calls.length;
+    const callsAtStale = getActivity.mock.calls.length;
     await vi.advanceTimersByTimeAsync(3000);
     await flushPromises();
-    expect(listRuns.mock.calls.length).toBe(callsAtStale);
+    expect(getActivity.mock.calls.length).toBe(callsAtStale);
     await wrapper.get('[aria-label="Cancel run run-1"]').trigger('click');
     expect(commands.cancelRun).not.toHaveBeenCalled();
     wrapper.unmount();
   });
 
   it('marks a workspace change event stale and reopens with a fresh session', async () => {
-    const { wrapper, listRuns } = setup({ runs: [queued] });
+    const { wrapper, getActivity } = setup({ runs: [queued] });
     await flushPromises();
     window.dispatchEvent(new CustomEvent('parley:workspace-changed', { detail: { operation: 'restore', epoch: 'epoch-2' } }));
     await flushPromises();
@@ -194,14 +207,14 @@ describe('DelegatedRuns U02 owner consent', () => {
     await flushPromises();
     expect(parley.refreshSession).toHaveBeenCalled();
     expect(wrapper.find('[data-stale]').exists()).toBe(false);
-    expect(listRuns.mock.calls.length).toBeGreaterThan(1);
+    expect(getActivity.mock.calls.length).toBeGreaterThan(1);
     wrapper.unmount();
   });
 
   it('treats a rejected owner session as stale and reports other run errors', async () => {
-    const { wrapper, listRuns } = setup({ runs: [] });
+    const { wrapper, getActivity } = setup({ runs: [] });
     await flushPromises();
-    listRuns.mockRejectedValueOnce(new CommandApiError('Session expired', 403, 'TOKEN_INVALID'));
+    getActivity.mockRejectedValueOnce(new CommandApiError('Session expired', 403, 'TOKEN_INVALID'));
     await wrapper.get('[aria-label="Refresh runs"]').trigger('click');
     await flushPromises();
     expect(wrapper.get('[data-stale]').text()).toContain('session expired');
@@ -216,45 +229,43 @@ describe('DelegatedRuns U02 owner consent', () => {
     failed.wrapper.unmount();
   });
 
-  it('suspends polling while the tab is hidden and resumes on visibility', async () => {
+  it('suspends observing while the tab is hidden and resumes on visibility', async () => {
     vi.useFakeTimers();
-    const { wrapper, listRuns } = setup({ runs: [queued] });
+    const { wrapper, getActivity } = setup({ runs: [queued] });
     await flushPromises();
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(2100);
     await flushPromises();
-    expect(listRuns.mock.calls.length).toBeGreaterThan(1);
+    expect(getActivity.mock.calls.length).toBeGreaterThan(1);
 
     const original = Object.getOwnPropertyDescriptor(globalThis.document, 'visibilityState');
     Object.defineProperty(globalThis.document, 'visibilityState', { configurable: true, value: 'hidden' });
     try {
-      const atHidden = listRuns.mock.calls.length;
+      const atHidden = getActivity.mock.calls.length;
       await vi.advanceTimersByTimeAsync(5000);
-      expect(listRuns.mock.calls.length).toBe(atHidden);
+      expect(getActivity.mock.calls.length).toBe(atHidden);
       Object.defineProperty(globalThis.document, 'visibilityState', { configurable: true, value: 'visible' });
       globalThis.document.dispatchEvent(new Event('visibilitychange'));
       await flushPromises();
-      expect(listRuns.mock.calls.length).toBeGreaterThan(atHidden);
+      expect(getActivity.mock.calls.length).toBeGreaterThan(atHidden);
     } finally {
       if (original) Object.defineProperty(globalThis.document, 'visibilityState', original);
     }
     wrapper.unmount();
   });
 
-  it('refreshes on a run_changed notification without waiting for the timer', async () => {
+  it('refreshes on a committed-domain event without waiting for the timer', async () => {
     vi.useFakeTimers();
-    const { wrapper, listRuns } = setup({ runs: [] });
+    const { wrapper, getActivity } = setup({ runs: [] });
     await flushPromises();
-    const before = listRuns.mock.calls.length;
-    expect(signalHandler).toBeDefined();
-    signalHandler!('run_changed');
+    const before = getActivity.mock.calls.length;
+    window.dispatchEvent(new CustomEvent('parley:command-committed', { detail: {} }));
     await flushPromises();
-    expect(listRuns.mock.calls.length).toBe(before + 1);
-    // Other notification channels do not trigger a run read here.
-    signalHandler!('approvals_changed');
+    expect(getActivity.mock.calls.length).toBe(before + 1);
+    // Other non-domain events do not trigger a run read here.
+    window.dispatchEvent(new CustomEvent('parley:nothing', { detail: {} }));
     await flushPromises();
-    expect(listRuns.mock.calls.length).toBe(before + 1);
+    expect(getActivity.mock.calls.length).toBe(before + 1);
     wrapper.unmount();
-    expect(notifyStops).toBe(1);
   });
 
   it('reads status only for nonterminal runs after the initial load', async () => {
@@ -267,7 +278,7 @@ describe('DelegatedRuns U02 owner consent', () => {
     expect(getRun).toHaveBeenCalledWith('run-2');
     getRun.mockClear();
 
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(2100);
     await flushPromises();
     expect(getRun).toHaveBeenCalledWith('run-1');
     expect(getRun).not.toHaveBeenCalledWith('run-2');

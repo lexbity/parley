@@ -191,6 +191,7 @@ Braces mark path parameters.
 | GET, PUT | `/agent/prompts/{role}` | Role prompt version |
 | GET, PUT | `/agent/question-bank` | Interviewer question bank |
 | GET, POST | `/jobs/{id}` | Read or cancel a job |
+| GET | `/agent/activity` | Owner activity union (jobs + delegated runs) |
 | GET, POST | `/segments` | Segments |
 | POST | `/segments/{id}/parties` | Update segment membership |
 | GET, POST | `/briefs/{scope_kind}/{scope_id}/items` | Brief items |
@@ -224,6 +225,19 @@ Braces mark path parameters.
 | GET, PUT | `/settings/maintenance` | Maintenance settings |
 
 Operational detail for maintenance routes lives in [OPERATIONS](OPERATIONS.md).
+
+### Activity (AR-001 AR09)
+
+`GET /agent/activity` is the one owner-only union of durable role jobs and
+delegated runs, sorted by `(updated_at DESC, kind DESC, id DESC)`. Each item
+carries typed progress, scope and review metadata only — never a transcript,
+candidate, output or raw provider row. Pagination uses a signed opaque cursor
+bound to the workspace epoch, the page size and a short expiry; a forged,
+foreign, stale or repaged cursor is rejected with `400`. Responses publish a
+private strong ETag. Filters: `kind` (job|run), `status` (per-kind closed
+set), `scope` (owner|party|segment|opportunity|material|delegated), `limit`
+(1..50), `cursor`. Cancellation and review remain on the existing job/run
+surfaces; this endpoint is read-only.
 
 ## Response shape
 

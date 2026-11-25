@@ -2412,6 +2412,43 @@ paths:
         '403': {$ref: '#/components/responses/AgentError'}
         '409': {$ref: '#/components/responses/AgentError'}
         '503': {$ref: '#/components/responses/AgentError'}
+  /agent/activity:
+    get:
+      operationId: listAgentActivity
+      summary: List the owner's durable jobs and delegated runs, newest first.
+      description: >
+        Owner-only bounded union of role jobs and delegated runs, sorted by
+        (updated_at DESC, kind DESC, id DESC). The cursor is a signed opaque
+        token bound to the workspace epoch, the page size and an expiry; a
+        forged, stale, foreign or repaged cursor is rejected. Every item
+        carries typed progress, scope and review metadata only — never a
+        transcript, candidate, output or raw provider row.
+      security: [{sessionCookie: []}]
+      parameters:
+      - {in: query, name: kind, required: false, schema: {type: string, enum: [job, run]}}
+      - {in: query, name: status, required: false, schema: {type: string, enum: [queued, running, waiting_owner, waiting_job, succeeded, invalid, failed, cancelled, expired]}}
+      - {in: query, name: scope, required: false, schema: {type: string, enum: [owner, party, segment, opportunity, material, delegated]}}
+      - {in: query, name: limit, required: false, schema: {type: integer, minimum: 1, maximum: 50, default: 20}}
+      - {in: query, name: cursor, required: false, schema: {type: string, minLength: 1, maxLength: 1024}}
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '200':
+          description: Bounded activity page; never cached or shared.
+          headers:
+            Cache-Control: {$ref: '#/components/headers/PrivateNoStore'}
+            X-Parley-Epoch: {$ref: '#/components/headers/ParleyEpoch'}
+            ETag:
+              description: Private strong ETag for a stable view; opaque and not reused across epochs.
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AgentActivityList'}
+        '400': {$ref: '#/components/responses/AgentError'}
+        '401': {$ref: '#/components/responses/AgentError'}
+        '403': {$ref: '#/components/responses/AgentError'}
+        '409': {$ref: '#/components/responses/AgentError'}
+        '503': {$ref: '#/components/responses/AgentError'}
   /approvals:
     get:
       operationId: listApprovals
@@ -7228,6 +7265,45 @@ components:
       properties:
         run_id: {type: string, minLength: 1, maxLength: 128}
         state: {type: string, enum: [cancelled, unchanged]}
+      additionalProperties: false
+    AgentActivityProgress:
+      type: object
+      required: [current, total]
+      properties:
+        current: {type: integer, minimum: 0}
+        total: {type: integer, minimum: 1}
+      additionalProperties: false
+    AgentActivityItem:
+      type: object
+      description: >
+        One activity row. `kind` discriminates a durable role job from a
+        delegated run; `role` is the role name or `delegated`. `scope` and
+        `review_ref` are typed projections, never raw payloads. `error_code`
+        is a closed diagnostic code; `progress` carries bounded counters.
+      required: [kind, id, role, status, state_revision, updated_at]
+      properties:
+        kind: {type: string, enum: [job, run]}
+        id: {type: string, minLength: 1, maxLength: 128}
+        role: {type: string, minLength: 1, maxLength: 32}
+        status: {type: string, minLength: 1, maxLength: 32}
+        state_revision: {type: integer, minimum: 1}
+        attempt_count: {type: [integer, 'null'], minimum: 0}
+        progress: {anyOf: [{$ref: '#/components/schemas/AgentActivityProgress'}, {type: 'null'}]}
+        scope: {type: [object, 'null'], additionalProperties: true}
+        error_code: {type: [string, 'null'], maxLength: 128}
+        review_ref: {type: [object, 'null'], additionalProperties: true}
+        updated_at: {type: string, format: date-time}
+      additionalProperties: false
+    AgentActivityList:
+      type: object
+      required: [items, next_cursor, epoch]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items: {$ref: '#/components/schemas/AgentActivityItem'}
+        next_cursor: {type: [string, 'null'], maxLength: 1024}
+        epoch: {type: string, minLength: 1}
       additionalProperties: false
     ApprovalListItem:
       type: object

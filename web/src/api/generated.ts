@@ -1271,6 +1271,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/agent/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the owner's durable jobs and delegated runs, newest first.
+         * @description Owner-only bounded union of role jobs and delegated runs, sorted by (updated_at DESC, kind DESC, id DESC). The cursor is a signed opaque token bound to the workspace epoch, the page size and an expiry; a forged, stale, foreign or repaged cursor is rejected. Every item carries typed progress, scope and review metadata only — never a transcript, candidate, output or raw provider row.
+         */
+        get: operations["listAgentActivity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/approvals": {
         parameters: {
             query?: never;
@@ -1360,7 +1380,7 @@ export interface paths {
         };
         /**
          * Owner-only fetch-based SSE stream for command signals.
-         * @description Same-origin fetch-based SSE with owner headers. Emits only approvals_changed, run_changed and epoch_changed signals plus a 15 s heartbeat; clients re-read authoritative state after each signal and after reconnect. HTTP polling is the fallback when the stream is unavailable.
+         * @description Same-origin fetch-based SSE with owner headers. Emits only approvals_changed, run_changed, domain_changed, job_changed and epoch_changed signals plus a 15 s heartbeat; clients re-read authoritative state after each signal and after reconnect. The domain_changed hint carries the event-log high-water mark ({"cursor": N}); job_changed carries the changed durable job id. HTTP polling is the fallback when the stream is unavailable.
          */
         get: operations["commandNotifications"];
         put?: never;
@@ -4120,6 +4140,35 @@ export interface components {
             run_id: string;
             /** @enum {string} */
             state: "cancelled" | "unchanged";
+        };
+        AgentActivityProgress: {
+            current: number;
+            total: number;
+        };
+        /** @description One activity row. `kind` discriminates a durable role job from a delegated run; `role` is the role name or `delegated`. `scope` and `review_ref` are typed projections, never raw payloads. `error_code` is a closed diagnostic code; `progress` carries bounded counters. */
+        AgentActivityItem: {
+            /** @enum {string} */
+            kind: "job" | "run";
+            id: string;
+            role: string;
+            status: string;
+            state_revision: number;
+            attempt_count?: number | null;
+            progress?: components["schemas"]["AgentActivityProgress"] | null;
+            scope?: {
+                [key: string]: unknown;
+            } | null;
+            error_code?: string | null;
+            review_ref?: {
+                [key: string]: unknown;
+            } | null;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        AgentActivityList: {
+            items: components["schemas"]["AgentActivityItem"][];
+            next_cursor: string | null;
+            epoch: string;
         };
         /** @description Owner-visible approval row. Active rows include args and preview; terminal rows omit them (FR-8). */
         ApprovalListItem: {
@@ -7109,6 +7158,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentCancelResult"];
+                };
+            };
+            400: components["responses"]["AgentError"];
+            401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
+            409: components["responses"]["AgentError"];
+            503: components["responses"]["AgentError"];
+        };
+    };
+    listAgentActivity: {
+        parameters: {
+            query?: {
+                kind?: "job" | "run";
+                status?: "queued" | "running" | "waiting_owner" | "waiting_job" | "succeeded" | "invalid" | "failed" | "cancelled" | "expired";
+                scope?: "owner" | "party" | "segment" | "opportunity" | "material" | "delegated";
+                limit?: number;
+                cursor?: string;
+            };
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded activity page; never cached or shared. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    "X-Parley-Epoch": components["headers"]["ParleyEpoch"];
+                    /** @description Private strong ETag for a stable view; opaque and not reused across epochs. */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentActivityList"];
                 };
             };
             400: components["responses"]["AgentError"];

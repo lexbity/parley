@@ -191,6 +191,18 @@ Test evidence is checked by `ci/trace.py`.
 
 ### ADR-5 · Immutable bytes and retained history
 
+### ADR-6 · One session-owned Activity reconciler (AR-001 AR09)
+
+The owner work surface (`GET /agent/activity`) is a bounded union of
+`durable_job` and `agent_run` rows ordered by
+`(updated_at DESC, kind DESC, id DESC)` with a signed keyset cursor under the
+workspace command secret. The browser has one shared reconciler
+(`web/src/app/inference/activity.ts`) that polls visible active content every
+2 s, terminal content every 8 s, stops while hidden, refreshes on focus and
+domain-event commits, and fences on epoch change. Views never keep their own
+timers; jobs remain epoch-scoped while runs stay pinned to the admitting owner
+principal, matching the UCR owner contract.
+
 **Context:** A correction must not change what was already delivered.
 Release must prove which bytes left the application.
 

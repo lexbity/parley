@@ -76,12 +76,12 @@ function partiesSection(wrapper: ReturnType<typeof mount>) {
 }
 
 describe('AppShell', () => {
-  it('renders the mandated five-tab destination set', () => {
-    expect([...tabs]).toEqual(['Resources', 'Parties', 'Queue', 'Output', 'Settings']);
+  it('renders the mandated destination set with the Activity surface', () => {
+    expect([...tabs]).toEqual(['Resources', 'Parties', 'Queue', 'Output', 'Settings', 'Activity']);
     stubWorkspace();
     const wrapper = mount(AppShell);
     const labels = wrapper.findAll('nav[aria-label="Main navigation"] a').map((link) => link.text());
-    expect(labels).toEqual(['Resources', 'Parties', 'Queue', 'Output', 'Settings']);
+    expect(labels).toEqual(['Resources', 'Parties', 'Queue', 'Output', 'Settings', 'Activity']);
     expect(wrapper.get('h1').text()).toBe('Resources');
     wrapper.unmount();
   });
@@ -622,7 +622,7 @@ describe('AppShell', () => {
     await flushPromises();
     expect(wrapper.text()).toContain('capture denied');
     const labels = wrapper.findAll('nav[aria-label="Main navigation"] a').map((link) => link.text());
-    expect(labels).toEqual(['Resources', 'Parties', 'Queue', 'Output', 'Settings']);
+    expect(labels).toEqual(['Resources', 'Parties', 'Queue', 'Output', 'Settings', 'Activity']);
     wrapper.unmount();
   });
 });
