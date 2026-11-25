@@ -5,6 +5,9 @@
 
 #![allow(dead_code)]
 
+#[path = "delegated_probe.rs"]
+pub mod delegated_probe;
+
 #[path = "model_server.rs"]
 pub mod model_server;
 

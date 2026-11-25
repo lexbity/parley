@@ -1,1 +1,23 @@
-{"placeholder": "getQueue valid"}
+{
+  "$schema": "#/components/schemas/QueueSnapshot",
+  "body": {
+    "event_cursor": "42",
+    "actionable": [
+      {
+        "id": "opp-1:party-1",
+        "opportunity_id": "opp-1",
+        "party_id": "party-1",
+        "title": "Reply follow-up",
+        "recipient_name": "Dana Lee",
+        "kind": "followup_due",
+        "due_at": "2026-11-22T12:00:00Z",
+        "blocked_reasons": [],
+        "ammo_score": 2
+      }
+    ],
+    "blocked": [],
+    "total_actionable": 1,
+    "total_blocked": 0,
+    "suggested_send_count": 1
+  }
+}

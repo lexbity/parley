@@ -31,6 +31,19 @@ async fn request(
     body: Option<Value>,
     key: &str,
 ) -> (u16, Value) {
+    let (status, value, _) = request_with_size(port, method, path, body, key).await;
+    (status, value)
+}
+
+/// Same loopback request as `request`, plus the raw response byte count used
+/// by the bounded-read payload budget.
+async fn request_with_size(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+    key: &str,
+) -> (u16, Value, usize) {
     let (cookie, token, epoch) = SESSIONS
         .get()
         .unwrap()
@@ -54,12 +67,57 @@ async fn request(
         .unwrap()
         .parse()
         .unwrap();
+    let size = payload.len();
     let value = if payload.is_empty() {
         Value::Null
     } else {
         serde_json::from_str(payload).unwrap()
     };
-    (status, value.get("data").cloned().unwrap_or(value))
+    (status, value.get("data").cloned().unwrap_or(value), size)
+}
+
+/// Warm-loop helper shared by the two s10 latency budgets. Instrumented
+/// builds get a wider budget because llvm-cov adds profiling overhead to
+/// every request.
+fn budget_ms() -> u64 {
+    if std::env::var_os("LLVM_PROFILE_FILE").is_some() {
+        300
+    } else {
+        200
+    }
+}
+
+/// The legacy daily shape stays the same except for the two required totals;
+/// each array is a bound projection of its total, never the full set.
+fn assert_daily_bounds(body: &Value, expected_total: i64) {
+    let actionable = body["actionable"]
+        .as_array()
+        .expect("daily queue has an actionable array");
+    let blocked = body["blocked"]
+        .as_array()
+        .expect("daily queue has a blocked array");
+    assert!(actionable.len() <= 200, "actionable cap exceeded");
+    assert!(blocked.len() <= 200, "blocked cap exceeded");
+    let total_actionable = body["total_actionable"]
+        .as_i64()
+        .expect("daily queue has total_actionable");
+    let total_blocked = body["total_blocked"]
+        .as_i64()
+        .expect("daily queue has total_blocked");
+    assert!(
+        total_actionable >= 0 && total_blocked >= 0,
+        "daily totals must be non-negative"
+    );
+    assert_eq!(
+        total_actionable + total_blocked,
+        expected_total,
+        "daily totals must cover the full set"
+    );
+    assert!(
+        (total_actionable as usize) >= actionable.len()
+            && (total_blocked as usize) >= blocked.len(),
+        "a capped array cannot exceed its total"
+    );
 }
 
 async fn owner_session(service: &RunningService) -> OwnerSession {
@@ -199,11 +257,7 @@ async fn s10_queue_5000_parties_meets_render_budget() {
         request(port, "GET", "/api/v1/queue", None, "s10-perf-cold").await;
     let cold_elapsed = cold_start.elapsed();
     assert_eq!(cold_status, 200, "{cold_body:?}");
-    assert_eq!(
-        cold_body["actionable"].as_array().unwrap().len()
-            + cold_body["blocked"].as_array().unwrap().len(),
-        5000
-    );
+    assert_daily_bounds(&cold_body, 5000);
     let mut samples = Vec::new();
     for i in 0..20 {
         let start = std::time::Instant::now();
@@ -211,29 +265,149 @@ async fn s10_queue_5000_parties_meets_render_budget() {
             request(port, "GET", "/api/v1/queue", None, &format!("s10-perf-{i}")).await;
         samples.push(start.elapsed());
         assert_eq!(status, 200, "{body:?}");
-        assert_eq!(
-            body["actionable"].as_array().unwrap().len()
-                + body["blocked"].as_array().unwrap().len(),
-            5000
-        );
+        assert_daily_bounds(&body, 5000);
     }
     samples.sort();
     let p95 = samples[18];
+
+    // The UI-rendered sheet route had no budget test. It shares the fixture
+    // and the same wall-clock ceiling as the legacy daily view.
+    let mut sheet_samples = Vec::new();
+    for i in 0..20 {
+        let start = std::time::Instant::now();
+        let (status, body) = request(
+            port,
+            "GET",
+            "/api/v1/queue?view=list&limit=50",
+            None,
+            &format!("s10-sheet-{i}"),
+        )
+        .await;
+        sheet_samples.push(start.elapsed());
+        assert_eq!(status, 200, "{body:?}");
+        assert!(body["rows"].as_array().unwrap().len() <= 50);
+    }
+    sheet_samples.sort();
+    let sheet_p95 = sheet_samples[18];
+
     let build_profile = if cfg!(debug_assertions) {
         "debug"
     } else {
         "release"
     };
     println!(
-        "S10 queue benchmark profile: {build_profile} build, cold first read={cold_elapsed:?}; 20 warm loopback HTTP reads, 5,000 open opportunities/parties, response JSON parsed; warm p95={p95:?}, host {}",
+        "S10 queue benchmark profile: {build_profile} build, cold first read={cold_elapsed:?}; 20 warm loopback HTTP reads, 5,000 open opportunities/parties, response JSON parsed; daily warm p95={p95:?}; sheet view=list&limit=50 warm p95={sheet_p95:?}, host {}",
         std::env::consts::OS
     );
     // Coverage instrumentation adds per-region profiling overhead to every
     // request, so the wall-clock budget binds plain builds only; under
     // llvm-cov (LLVM_PROFILE_FILE set) allow the instrumentation multiple.
-    let instrumented = std::env::var_os("LLVM_PROFILE_FILE").is_some();
-    let budget = std::time::Duration::from_millis(if instrumented { 300 } else { 200 });
-    assert!(p95 < budget, "Queue p95 {p95:?}, samples={samples:?}");
+    let budget = std::time::Duration::from_millis(budget_ms());
+    assert!(p95 < budget, "Daily queue p95 {p95:?}, samples={samples:?}");
+    assert!(
+        sheet_p95 < budget,
+        "Sheet queue p95 {sheet_p95:?}, samples={sheet_samples:?}"
+    );
+    service.shutdown().await;
+    drop(workspace);
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn s10_daily_queue_bounded_and_counts_at_scale() {
+    let (path, workspace, port, service) = setup().await;
+    let now = "2026-11-20T12:00:00.000Z";
+    // A positive touch fence keeps zero-touch parties actionable, so both
+    // classes overflow the 200-row projection and the totals must be read
+    // from the COUNT statement rather than from the arrays.
+    sqlx::query("UPDATE owner_profile SET settings_json=? WHERE id=1")
+        .bind(r#"{"pack_policy":{"limits":{"daily_send_cap":15},"cadence":{"max_touches":5},"ask_ladder":{"max_rung":3}}}"#)
+        .execute(workspace.pool())
+        .await
+        .unwrap();
+    for spec in [
+        "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<5000) INSERT INTO entity(id,kind,name,revision,created_at,updated_at) SELECT printf('s10-bound-party-%05d',i),'person',printf('Bounded Person %05d',i),1,?,? FROM n",
+        "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<300) INSERT INTO entity(id,kind,name,revision,created_at,updated_at) SELECT printf('s10-blocked-party-%03d',i),'person',printf('Blocked Person %03d',i),1,?,? FROM n",
+    ] {
+        sqlx::query(spec)
+            .bind(now)
+            .bind(now)
+            .execute(workspace.pool())
+            .await
+            .unwrap();
+    }
+    sqlx::query("INSERT INTO party_policy(party_id,do_not_contact,touch_count) SELECT id,0,0 FROM entity WHERE id LIKE 's10-bound-party-%'")
+        .execute(workspace.pool()).await.unwrap();
+    sqlx::query("INSERT INTO party_policy(party_id,do_not_contact,touch_count) SELECT id,1,0 FROM entity WHERE id LIKE 's10-blocked-party-%'")
+        .execute(workspace.pool()).await.unwrap();
+    for spec in [
+        "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<5000) INSERT INTO opportunity(id,title,state,revision,created_at,updated_at) SELECT printf('s10-bound-op-%05d',i),printf('Bounded Opportunity %05d',i),'open',1,?,? FROM n",
+        "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<300) INSERT INTO opportunity(id,title,state,revision,created_at,updated_at) SELECT printf('s10-blocked-op-%03d',i),printf('Blocked Opportunity %03d',i),'open',1,?,? FROM n",
+    ] {
+        sqlx::query(spec)
+            .bind(now)
+            .bind(now)
+            .execute(workspace.pool())
+            .await
+            .unwrap();
+    }
+    for (op, party) in [
+        ("s10-bound-op-", "s10-bound-party-"),
+        ("s10-blocked-op-", "s10-blocked-party-"),
+    ] {
+        sqlx::query("INSERT INTO opportunity_party(opportunity_id,party_id,role,added_at) SELECT o.id,e.id,'primary',? FROM opportunity o JOIN entity e ON e.id=replace(o.id,?,?) WHERE o.id LIKE ?")
+            .bind(now)
+            .bind(op)
+            .bind(party)
+            .bind(format!("{op}%"))
+            .execute(workspace.pool())
+            .await
+            .unwrap();
+    }
+
+    let (status, body, bytes) =
+        request_with_size(port, "GET", "/api/v1/queue", None, "s10-bound-cold").await;
+    assert_eq!(status, 200, "{body:?}");
+    assert_daily_bounds(&body, 5300);
+    assert_eq!(body["total_actionable"].as_i64().unwrap(), 5000);
+    assert_eq!(body["total_blocked"].as_i64().unwrap(), 300);
+    assert_eq!(body["actionable"].as_array().unwrap().len(), 200);
+    assert_eq!(body["blocked"].as_array().unwrap().len(), 200);
+    assert!(
+        bytes <= 300 * 1024,
+        "daily queue payload {bytes} exceeds 300 KiB"
+    );
+    assert!(
+        body["suggested_send_count"].as_u64().unwrap() <= 15,
+        "suggested sends stay under the pack daily cap"
+    );
+
+    let mut samples = Vec::new();
+    for i in 0..20 {
+        let start = std::time::Instant::now();
+        let (status, body) = request(
+            port,
+            "GET",
+            "/api/v1/queue",
+            None,
+            &format!("s10-bound-{i}"),
+        )
+        .await;
+        samples.push(start.elapsed());
+        assert_eq!(status, 200, "{body:?}");
+        assert_daily_bounds(&body, 5300);
+    }
+    samples.sort();
+    let p95 = samples[18];
+    println!(
+        "S10 bounded daily queue: 5,000 actionable + 300 blocked pairs, 200-row projections, raw payload={bytes} bytes, warm p95={p95:?}, host {}",
+        std::env::consts::OS
+    );
+    let budget = std::time::Duration::from_millis(budget_ms());
+    assert!(
+        p95 < budget,
+        "Bounded daily queue p95 {p95:?}, samples={samples:?}"
+    );
     service.shutdown().await;
     drop(workspace);
     let _ = fs::remove_file(path);

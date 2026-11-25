@@ -51,7 +51,7 @@ async fn p02_related_and_existing_edges() {
         "/api/v1/uploads",
         b"contents",
         "text/plain",
-        &[],
+        &[("Idempotency-Key", &next_key())],
     )
     .await;
     card["staged_upload_ids"] = json!([uploaded.body["id"]]);

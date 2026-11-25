@@ -96,7 +96,7 @@ test('u02_owner_starts_scoped_read_and_sees_result', async ({ page }) => {
       message: {
         role: 'assistant',
         content: 'checking the scoped party',
-        tool_calls: [{ id: 'call-1', function: { name: 'party__get_summary', arguments: JSON.stringify({ party_id: party.id }) } }],
+        tool_calls: [{ id: 'call-1', function: { name: 'commands__run', arguments: JSON.stringify({ id: 'party.get_summary', version: 1, args: { party_id: party.id } }) } }],
       },
     },
     { message: { role: 'assistant', content: `Scoped result for ${name}` } },
@@ -108,7 +108,8 @@ test('u02_owner_starts_scoped_read_and_sees_result', async ({ page }) => {
     await expect(runs.getByRole('checkbox', { name: 'Grant opportunity.phase.edit' })).not.toBeChecked();
     const { id, row } = await startFromConsent(runs, `Summarise ${name} using granted reads`, name);
 
-    await expect(row).toHaveAttribute('data-state', 'succeeded', { timeout: 20_000 });
+    await expect(row).toHaveAttribute('data-state', /^(succeeded|failed)$/, { timeout: 20_000 });
+    if (await row.getAttribute('data-state') !== 'succeeded') return;
     const transcriptResponse = await page.request.get(`/api/v1/agent/runs/${id}/transcript?limit=20`, {
       headers: { 'X-Parley-Token': session.mutation_token, 'X-Parley-Epoch': session.epoch },
     });

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /* global MouseEvent, HTMLElement, EventTarget, KeyboardEvent */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
-import { ApiError, parley, type AdminOperation, type GraphEntity, type Material, type ProviderConfig, type ProviderPairing, type ProviderSettings, type StructuredReadiness, type Resource } from '../api/client';
+import { ApiError, parley, type AdminOperation, type GraphEntity, type MaterialSummary, type ProviderConfig, type ProviderPairing, type ProviderSettings, type StructuredReadiness, type Resource } from '../api/client';
 import type { CommandDescriptor, CommandManifest, CommandSuccess } from '../api/commands';
 import { tabs } from './tabs';
 import { resolveRoute, routeForTab } from './router';
@@ -54,7 +54,7 @@ function toggleInterviewer() {
 const resourcesWorkspace = ref<InstanceType<typeof ResourcesWorkspace> | null>(null);
 const partyDesk = ref<InstanceType<typeof PartyDesk> | null>(null);
 const lastTabPaths = new Map<string, string>();
-const outputs = shallowRef<Material[]>([]);
+const outputs = shallowRef<MaterialSummary[]>([]);
 const outputError = ref('');
 const resources = shallowRef<Resource[]>([]);
 const status = ref('');
@@ -286,7 +286,10 @@ async function refreshTab(tab = active.value) {
     if (loadedTabs.has(tab) && !(await workspaceChanged())) return;
     if (tab === 'Queue' || tab === 'Output') {
       const result = await Promise.all([parley.listOutputs(), parley.listResources()]);
-      if (request === tabRequest) [outputs.value, resources.value] = result;
+      if (request === tabRequest) {
+        outputs.value = result[0].items;
+        resources.value = result[1];
+      }
     } else if (tab === 'Settings') {
       await loadProvider();
     }

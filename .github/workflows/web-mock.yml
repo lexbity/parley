@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PARLEY_THROUGH: ar08
+  PARLEY_THROUGH: ar09
 
 jobs:
   web:
@@ -58,6 +58,7 @@ jobs:
 
       - name: Contract and coverage verification
         run: |
+          python3 ci/routes.py --check
           python3 ci/contract.py --through "$PARLEY_THROUGH" --check-generated
           python3 ci/trace.py --through "$PARLEY_THROUGH" --check-manifest
 

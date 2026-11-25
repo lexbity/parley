@@ -6,7 +6,7 @@ import { addParty, openParties } from './parties';
 async function openDataSettings(page: Page) {
   await page.getByRole('link', { name: 'Settings', exact: true }).click();
   await page.getByRole('navigation', { name: 'Settings sections' }).getByRole('link', { name: 'Backup and data' }).click();
-  return page.getByRole('region', { name: 'Backup, export, restore, and erasure' });
+  return page.locator('section.maintenance');
 }
 
 async function configureBackups(settings: Awaited<ReturnType<typeof openDataSettings>>, directory: string) {
@@ -18,7 +18,7 @@ async function configureBackups(settings: Awaited<ReturnType<typeof openDataSett
   await expect(settings.getByRole('status')).toContainText('schedule saved');
   await settings.getByRole('button', { name: 'Create verified backup now' }).click();
   await expect(settings.getByRole('status')).toHaveText(/Verified backup .+ created\./);
-  await expect(settings.getByRole('region', { name: 'Verified backups' })).toContainText('verified');
+  await expect(settings.getByRole('region', { name: 'Verified backups' })).toContainText(/verified/i);
 }
 
 async function awaitMaintenanceRestart(page: Page, ownerSession: OwnerSession, operation: { id: string; epoch: string }) {
@@ -39,7 +39,7 @@ test('s11_backup_destination_schedule_and_verified_snapshot_are_saved', async ({
   await configureBackups(settings, testInfo.outputPath('owner-backups'));
   await page.reload();
   await expect(settings.getByLabel('Backup interval in hours')).toHaveValue('24');
-  await expect(settings.getByRole('region', { name: 'Verified backups' })).toContainText('verified');
+  await expect(settings.getByRole('region', { name: 'Verified backups' })).toContainText(/verified/i);
 });
 
 test('s11_personal_export_and_empty_target_import_are_distinct_from_recipient_material', async ({ page }) => {

@@ -67,7 +67,7 @@ struct Lease {
 
 enum Claim {
     Missing,
-    Failure(&'static str),
+    Failure,
     Ready(Box<Lease>),
 }
 
@@ -116,7 +116,7 @@ async fn claim(state: &AppState, id: &str) -> Result<Claim, WorkspaceError> {
         sqlx::query("UPDATE durable_job SET status='failed',last_error_code=?,completed_at=?,updated_at=?,lease_id=NULL WHERE id=?")
             .bind(code).bind(&now).bind(&now).bind(id).execute(&mut *tx).await?;
         tx.commit().await?;
-        return Ok(Claim::Failure(code));
+        return Ok(Claim::Failure);
     }
     let input = input.expect("validated frozen builder input");
     let input_json = frozen.input_json;
@@ -174,10 +174,7 @@ async fn claim(state: &AppState, id: &str) -> Result<Claim, WorkspaceError> {
 pub(crate) async fn run(state: &AppState, id: &str) {
     let lease = match claim(state, id).await {
         Ok(Claim::Ready(lease)) => lease,
-        Ok(Claim::Failure(code)) => {
-            eprintln!("inference claim: {code}");
-            return;
-        }
+        Ok(Claim::Failure) => return,
         Ok(Claim::Missing) | Err(_) => return,
     };
     match execute(state, id, &lease).await {

@@ -125,6 +125,7 @@ async fn seed_family(workspace: &Workspace) -> (String, String) {
     ("fam-ar03".into(), "ver-head".into())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn seed_candidate(
     workspace: &Workspace,
     candidate_id: &str,
@@ -167,7 +168,14 @@ async fn ar03_candidate_save_is_one_version_and_fences_changes() {
     let (path, workspace, service, cookie, token, epoch) = setup().await;
     let auth = (&cookie, &token, &epoch);
     let (family_id, head) = seed_family(&workspace).await;
-    seed_job(&workspace, "job-ar03-save", Value::Null, json!({}), "epoch-ar03").await;
+    seed_job(
+        &workspace,
+        "job-ar03-save",
+        Value::Null,
+        json!({}),
+        "epoch-ar03",
+    )
+    .await;
     let body = "I can share {{gift:guide}}. Would a look help {{ask:question}}?";
     let sentences = json!([{"rules":["R1"]},{"rules":["R2"]}]);
     seed_candidate(

@@ -1,0 +1,15 @@
+{
+  "$schema": "#/components/schemas/CommandRunSuccess",
+  "body": {
+    "ok": true,
+    "command_version": 1,
+    "audit_id": "aud_td10_replay_original",
+    "original_audit_id": "aud_td10_replay_original",
+    "replayed": true,
+    "dry_run": false,
+    "result": {
+      "status": "replayed",
+      "event_cursor": "701"
+    }
+  }
+}

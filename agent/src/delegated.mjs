@@ -110,7 +110,7 @@ function canonicalMessages(transcript, continuation) {
         reject("WORKER_PROTOCOL")
       }
       messages.push({
-        role: "tool",
+        role: "toolResult",
         toolCallId: item.tool_call_id,
         toolName: item.tool_call_id,
         content: [{ type: "text", text: item.content }],

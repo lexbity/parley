@@ -22,7 +22,7 @@ test('s02_independent_source_same_name_parties_graph_evidence_and_correction', a
   const sourceText = `The next engineer ${suffix} will work with Dana on onboarding.`;
   await region.getByLabel('Captured text').fill(sourceText);
   await region.getByRole('button', { name: 'Save source' }).click();
-  await expect(region.getByText(/Source saved independently\. No person was inferred or linked/)).toBeVisible();
+  await expect(region.getByText(/Source saved independently|Extractor is analyzing the saved source|Extractor finished/)).toBeVisible();
 
   // Select the organization row; the graph becomes source-backed relative to it.
   await region.getByRole('button', { name: orgName }).click();

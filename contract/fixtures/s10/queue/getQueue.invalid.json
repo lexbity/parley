@@ -1,1 +1,10 @@
-{"placeholder": "getQueue invalid"}
+{
+  "$schema": "#/components/schemas/CommandErrorEnvelope",
+  "body": {
+    "error": {
+      "code": "unavailable",
+      "message": "Daily queue snapshot could not be completed",
+      "details": []
+    }
+  }
+}

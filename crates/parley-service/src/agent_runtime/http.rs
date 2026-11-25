@@ -4,11 +4,10 @@
 //! ID or a claimed role in a body never conveys authority to a tool.
 
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -18,17 +17,9 @@ use std::time::Instant;
 use super::grants::{self, GrantTarget};
 use crate::{AppState, OwnerPrincipal, authenticate_owner, command_operation_key, private_headers};
 
-pub(super) fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/agent/runs", post(start).get(list))
-        .route("/api/v1/agent/runs/{id}", get(status))
-        .route("/api/v1/agent/runs/{id}/cancel", post(cancel))
-        .route("/api/v1/agent/runs/{id}/transcript", get(transcript))
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct StartInput {
+pub(crate) struct StartInput {
     task: String,
     targets: Vec<GrantTarget>,
     permissions: Vec<String>,
@@ -37,14 +28,14 @@ struct StartInput {
 }
 
 #[derive(Debug, Deserialize)]
-struct ListQuery {
+pub(crate) struct ListQuery {
     status: Option<String>,
     limit: Option<usize>,
     cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct TranscriptQuery {
+pub(crate) struct TranscriptQuery {
     limit: Option<usize>,
     cursor: Option<String>,
 }
@@ -67,8 +58,7 @@ fn failure(state: &AppState, status: StatusCode, code: &str, message: &str) -> R
     private_headers(&mut response, state.workspace.epoch());
     response
 }
-
-async fn start(
+pub(crate) async fn start(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<StartInput>,
@@ -266,8 +256,7 @@ fn busy_job() -> crate::application::writer::JobResult {
         failure: Some(crate::application::writer::Failure::Unavailable),
     }
 }
-
-async fn list(
+pub(crate) async fn list(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<ListQuery>,
@@ -324,7 +313,7 @@ async fn list(
 }
 
 #[allow(clippy::type_complexity)]
-async fn status(
+pub(crate) async fn status(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -416,8 +405,7 @@ async fn status(
     private_headers(&mut response, state.workspace.epoch());
     response
 }
-
-async fn transcript(
+pub(crate) async fn transcript(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -480,8 +468,7 @@ fn decode_cursor(cursor: &str) -> Option<(i64, i64)> {
     let (turn, ordinal) = text.split_once(':')?;
     Some((turn.parse().ok()?, ordinal.parse().ok()?))
 }
-
-async fn cancel(
+pub(crate) async fn cancel(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,

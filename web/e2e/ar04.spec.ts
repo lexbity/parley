@@ -20,7 +20,7 @@ test('ar04_interviewer_resumes_after_reload', async ({ page }, testInfo) => {
     const response = page.waitForResponse(res => new URL(res.url()).pathname.includes('/agent/chats/') && res.request().method() === 'POST');
     await page.getByRole('button', { name: 'Send' }).click();
     expect((await response).status()).toBe(202);
-    await expect(page.getByRole('alert')).toContainText(/Settings|model/);
+    await expect(page.getByRole('alert')).toContainText(/Settings|model|validate/i);
     await expect(page.getByRole('heading', { name: 'Proposed candidate · not saved' })).toHaveCount(0);
     return;
   }
@@ -51,7 +51,7 @@ test('ar04_brief_review_returns_to_matching_context', async ({ page }, testInfo)
     const response = page.waitForResponse(res => new URL(res.url()).pathname.includes('/briefs/') && res.request().method() === 'POST');
     await page.getByRole('button', { name: 'Generate brief proposals' }).click();
     expect((await response).status()).toBe(202);
-    await expect(page.getByRole('alert')).toContainText(/Settings|model/);
+    await expect(page.getByRole('alert')).toContainText(/Settings|model|validate/i);
     return;
   }
   await page.getByRole('button', { name: 'Generate brief proposals' }).click();

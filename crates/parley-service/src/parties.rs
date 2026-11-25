@@ -4,12 +4,11 @@ use super::{
     error, idempotency_key, new_id, now_utc, private_headers,
 };
 use axum::{
-    Json, Router,
+    Json,
     body::Bytes,
     extract::{Path, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -23,28 +22,9 @@ fn invalid(reason: impl Into<String>) -> WorkspaceError {
     WorkspaceError::Invalid(reason.into())
 }
 
-pub(super) fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/directory", get(directory))
-        .route("/api/v1/entities/{id}/usage", get(usage))
-        .route("/api/v1/entities/{id}/retire", post(retire))
-        .route("/api/v1/party-imports", post(stage))
-        .route("/api/v1/party-imports/{id}/preview", post(preview))
-        .route("/api/v1/party-imports/{id}/commit", post(commit))
-        .route("/api/v1/entities/{id}/attachments", post(attach))
-        .route(
-            "/api/v1/entities/{id}/attachments/{reference}",
-            delete(unlink),
-        )
-        .route(
-            "/api/v1/entities/{id}/attachments/{reference}/content",
-            get(content),
-        )
-}
-
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Mapping {
+pub(crate) struct Mapping {
     party_type: String,
     name_column: usize,
     focus_column: Option<usize>,
@@ -55,16 +35,16 @@ struct Mapping {
     distinct_records: BTreeSet<usize>,
 }
 #[derive(Serialize, Deserialize)]
-struct Approval {
+pub(crate) struct Approval {
     preview_id: String,
     digest: String,
 }
 #[derive(Deserialize)]
-struct Bind {
+pub(crate) struct Bind {
     upload_id: String,
 }
 
-struct Csv {
+pub(crate) struct Csv {
     headers: Vec<String>,
     rows: Vec<(usize, Vec<String>)>,
 }
@@ -157,7 +137,7 @@ fn parse_csv(text: &str) -> Result<Csv, WorkspaceError> {
 }
 
 #[derive(Serialize)]
-struct PreviewRow {
+pub(crate) struct PreviewRow {
     source_record: usize,
     name: String,
     focus: String,
@@ -245,7 +225,7 @@ async fn project(
     Ok(result)
 }
 
-enum Command {
+pub(crate) enum Command {
     Stage(String, Csv),
     Preview(String, Mapping),
     Commit(String, Approval),
@@ -443,8 +423,11 @@ pub(super) async fn bind_upload(
         json!({"id":reference,"filename":filename,"content_type":content_type,"size":size,"sha256":sha256,"created_at":created_at,"share_permission":shared,"reviewed_by_owner":reviewed}),
     )
 }
-
-async fn stage(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+pub(crate) async fn stage(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     if let Err(e) = authenticate(&headers, &state).await {
         return e.into_response();
     }
@@ -472,7 +455,7 @@ async fn stage(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -
     )
     .await
 }
-async fn preview(
+pub(crate) async fn preview(
     State(s): State<AppState>,
     Path(id): Path<String>,
     h: HeaderMap,
@@ -484,7 +467,7 @@ async fn preview(
     let hash = digest(json!(["preview", id, m]).to_string().as_bytes());
     execute(&s, &h, Command::Preview(id, m), hash, StatusCode::OK).await
 }
-async fn commit(
+pub(crate) async fn commit(
     State(s): State<AppState>,
     Path(id): Path<String>,
     h: HeaderMap,
@@ -496,7 +479,7 @@ async fn commit(
     let hash = digest(json!(["commit", id, a]).to_string().as_bytes());
     execute(&s, &h, Command::Commit(id, a), hash, StatusCode::CREATED).await
 }
-async fn attach(
+pub(crate) async fn attach(
     State(s): State<AppState>,
     Path(id): Path<String>,
     h: HeaderMap,
@@ -515,7 +498,7 @@ async fn attach(
     )
     .await
 }
-async fn unlink(
+pub(crate) async fn unlink(
     State(s): State<AppState>,
     Path((id, r)): Path<(String, String)>,
     h: HeaderMap,
@@ -526,7 +509,7 @@ async fn unlink(
     let hash = digest(json!(["unlink", id, r]).to_string().as_bytes());
     execute(&s, &h, Command::Unlink(id, r), hash, StatusCode::NO_CONTENT).await
 }
-async fn content(
+pub(crate) async fn content(
     State(s): State<AppState>,
     Path((id, r)): Path<(String, String)>,
     h: HeaderMap,
@@ -601,7 +584,7 @@ async fn content(
 }
 
 #[derive(Deserialize)]
-struct DirectoryQuery {
+pub(crate) struct DirectoryQuery {
     kind: Option<String>,
     q: Option<String>,
     batch_id: Option<String>,
@@ -609,8 +592,7 @@ struct DirectoryQuery {
     cursor: Option<String>,
     limit: Option<usize>,
 }
-
-async fn directory(
+pub(crate) async fn directory(
     State(s): State<AppState>,
     h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<DirectoryQuery>,
@@ -685,11 +667,14 @@ async fn directory(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Retirement {
+pub(crate) struct Retirement {
     expected_revision: i64,
 }
-
-async fn usage(State(s): State<AppState>, Path(id): Path<String>, h: HeaderMap) -> Response {
+pub(crate) async fn usage(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    h: HeaderMap,
+) -> Response {
     if let Err(e) = authenticate(&h, &s).await {
         return e.into_response();
     }
@@ -715,15 +700,21 @@ async fn card_usage(ws: &Workspace, id: &str) -> Result<Value, WorkspaceError> {
     let links:Vec<(String,String,String,String,i64)>=sqlx::query_as("SELECT id,verb,from_id,to_id,count(*) OVER() FROM edge WHERE state='active' AND (from_id=? OR to_id=?) ORDER BY id LIMIT 60").bind(id).bind(id).fetch_all(&mut *tx).await?;
     let opportunities:Vec<(String,String,i64)>=sqlx::query_as("SELECT o.id,o.title,count(*) OVER() FROM opportunity_party p JOIN opportunity o ON o.id=p.opportunity_id WHERE party_id=? ORDER BY o.id LIMIT 60").bind(id).fetch_all(&mut *tx).await?;
     let materials:Vec<(String,String,i64)>=sqlx::query_as("SELECT id,kind,count(*) OVER() FROM material WHERE recipient_id=? OR id IN (SELECT material_id FROM resource_use WHERE resource_id=?) ORDER BY id LIMIT 60").bind(id).bind(id).fetch_all(&mut *tx).await?;
-    let recommendations:i64=sqlx::query_scalar("SELECT count(*) FROM match_run WHERE recipient_id=? OR EXISTS(SELECT 1 FROM json_tree(shortlist_json) WHERE type='text' AND atom=?)").bind(id).bind(id).fetch_one(&mut *tx).await?;
+    // TD-04: the two indexed probes replace a json_tree scan of every
+    // match_run row. UNION deduplicates runs that both received and mentioned
+    // the party, preserving the old OR-count semantics exactly.
+    let recommendations: i64 = sqlx::query_scalar(include_str!("queries/party_usage.sql"))
+        .bind(id)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
     tx.commit().await?;
     let counts = json!({"links":links.first().map_or(0,|v|v.4),"opportunities":opportunities.first().map_or(0,|v|v.2),"materials":materials.first().map_or(0,|v|v.2),"recommendations":recommendations});
     Ok(
         json!({"links":links.into_iter().map(|(id,verb,from,to,_)|json!({"id":id,"verb":verb,"from_id":from,"to_id":to})).collect::<Vec<_>>(),"opportunities":opportunities.into_iter().map(|(id,title,_)|json!({"id":id,"title":title})).collect::<Vec<_>>(),"materials":materials.into_iter().map(|(id,kind,_)|json!({"id":id,"kind":kind})).collect::<Vec<_>>(),"counts":counts}),
     )
 }
-
-async fn retire(
+pub(crate) async fn retire(
     State(s): State<AppState>,
     Path(id): Path<String>,
     h: HeaderMap,

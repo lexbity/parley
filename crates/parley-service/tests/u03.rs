@@ -223,6 +223,14 @@ async fn count(workspace: &Workspace, sql: &str) -> i64 {
         .unwrap()
 }
 
+/// Failure context for delegated budget assertions (TD-001). Adding the
+/// durable dump to the message never weakens the counted assertion.
+async fn probe(workspace: &Workspace, run_id: &str) -> String {
+    support::delegated_probe::dump(workspace.pool(), run_id, None)
+        .await
+        .to_string()
+}
+
 /// A scripted upstream speaking the real Pi wire through the packaged worker
 /// and its private relay. The first chat connection is the first real turn
 /// (there is no separate tool probe chat in the packaged runtime), so the
@@ -354,17 +362,45 @@ async fn wait_state(port: u16, id: &str, states: &[&str]) -> Value {
     panic!("run {id} never reached {states:?}");
 }
 
-async fn transcript(port: u16, id: &str) -> Vec<Value> {
+async fn transcript_limited(port: u16, id: &str, limit: usize) -> Vec<Value> {
     let (status, value) = request(
         port,
         "GET",
-        &format!("/api/v1/agent/runs/{id}/transcript?limit=20"),
+        &format!("/api/v1/agent/runs/{id}/transcript?limit={limit}"),
         None,
         "transcript-read",
     )
     .await;
     assert_eq!(status, 200, "{value:?}");
     value["items"].as_array().unwrap().clone()
+}
+
+async fn transcript(port: u16, id: &str) -> Vec<Value> {
+    transcript_limited(port, id, 20).await
+}
+
+/// The transcript route clamps `limit` to 20, so a fully scripted batch needs
+/// cursor pagination to reach the allowance denial at the end of the run.
+async fn transcript_all(port: u16, id: &str) -> Vec<Value> {
+    let mut all = Vec::new();
+    let mut cursor = String::new();
+    for _ in 0..16 {
+        let path = if cursor.is_empty() {
+            format!("/api/v1/agent/runs/{id}/transcript?limit=20")
+        } else {
+            format!("/api/v1/agent/runs/{id}/transcript?limit=20&cursor={cursor}")
+        };
+        let (status, value) = request(port, "GET", &path, None, "transcript-read").await;
+        assert_eq!(status, 200, "{value:?}");
+        let mut items = value["items"].as_array().unwrap().clone();
+        let next = value["next_cursor"].as_str().unwrap_or_default().to_owned();
+        all.append(&mut items);
+        if next.is_empty() {
+            break;
+        }
+        cursor = next;
+    }
+    all
 }
 
 fn tool_text(turns: &[Value]) -> String {
@@ -399,9 +435,11 @@ async fn u03_noop_phase_consumes_zero_executed_write_allowance() {
                 return final_answer("probe-ok");
             }
             if index == 1 {
+                // Tier-1 tools are no longer offered directly; the granted
+                // phase command runs through the always-available meta-tool.
                 return tool_call(
-                    "opportunity__set_phase",
-                    phase_args(&tool_opportunity, 2, "preparing"),
+                    "commands__run",
+                    json!({"id":"opportunity.set_phase","version":1,"args":phase_args(&tool_opportunity, 2, "preparing")}),
                     "same-stage no-op",
                 );
             }
@@ -443,7 +481,8 @@ async fn u03_noop_phase_consumes_zero_executed_write_allowance() {
         )
         .await,
         1,
-        "the no-op is still one admitted invocation"
+        "the no-op is still one admitted invocation\n{}",
+        probe(&workspace, id).await
     );
     assert_eq!(
         count(
@@ -709,8 +748,8 @@ async fn u03_agent_create_binds_self_created_target_and_advances_phase() {
                 .unwrap_or_default();
             if index == 2 {
                 return tool_call(
-                    "opportunity__set_phase",
-                    phase_args(&created, 1, "preparing"),
+                    "commands__run",
+                    json!({"id":"opportunity.set_phase","version":1,"args":phase_args(&created, 1, "preparing")}),
                     "advance it",
                 );
             }
@@ -764,7 +803,8 @@ async fn u03_agent_create_binds_self_created_target_and_advances_phase() {
         )
         .await,
         2,
-        "create and phase each debit one executed write"
+        "create and phase each debit one executed write\n{}",
+        probe(&workspace, id).await
     );
     assert_eq!(
         count(
@@ -1077,7 +1117,8 @@ async fn u03_executed_write_allowance_is_debited_once_per_effect() {
         )
         .await,
         10,
-        "exactly ten executed writes committed"
+        "exactly ten executed writes committed\n{}",
+        probe(&workspace, id).await
     );
     assert_eq!(
         count(
@@ -1085,10 +1126,18 @@ async fn u03_executed_write_allowance_is_debited_once_per_effect() {
             &format!("SELECT executed_writes FROM agent_run_budget WHERE run_id='{id}'")
         )
         .await,
-        10
+        10,
+        "the budget debits each committed effect\n{}",
+        probe(&workspace, id).await
     );
-    let text = tool_text(&transcript(port, id).await);
-    assert!(text.contains("budget_exceeded"), "{text}");
+    // A fully scripted batch produces more than one transcript page; follow
+    // the cursor before checking the allowance denial.
+    let text = tool_text(&transcript_all(port, id).await);
+    assert!(
+        text.contains("budget_exceeded"),
+        "the eleventh effect must be denied by the allowance\n{text}\n{}",
+        probe(&workspace, id).await
+    );
 
     provider.stop().await;
     cleanup(&path, workspace, service);

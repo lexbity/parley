@@ -165,6 +165,7 @@ function restartObservation() {
     active: (item) => ACTIVE_STATES.includes(item.status as RunState),
     update(page) {
       runsLoading.value = false;
+      const previousStates = new Map(runs.value.map(row => [row.run_id, row.state]));
       const items: RunListItem[] = page.items.map(item => ({
         run_id: item.id,
         state: item.status as RunState,
@@ -172,10 +173,13 @@ function restartObservation() {
         deadline_at: '',
       }));
       applyRuns(items);
-      // Data-driven detail refresh: only runs whose status is not yet known or
-      // that are still active are re-read; terminal runs were read once.
+      // Re-read detail for unknown and active runs and for every state
+      // transition: a review reference is only published with the terminal
+      // status, so the run that just became succeeded must be read again.
       const fresh = items
-        .filter(row => !runStatuses.value[row.run_id] || ACTIVE_STATES.includes(row.state))
+        .filter(row => !runStatuses.value[row.run_id]
+          || ACTIVE_STATES.includes(row.state)
+          || previousStates.get(row.run_id) !== row.state)
         .map(row => row.run_id);
       if (fresh.length) void refreshStatuses(fresh);
       if (selectedRunId.value && fresh.includes(selectedRunId.value)) {

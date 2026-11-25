@@ -15,6 +15,9 @@ const generation = ref(0);
 const blocked = computed(() => (snapshot.value?.items ?? []).filter((item) => item.type === 'blocked'));
 const actionable = computed(() => (snapshot.value?.items ?? []).filter((item) => item.type !== 'blocked'));
 const hasFilter = computed(() => query.value.length > 0 || statusFilter.value !== 'any');
+// The daily projection is capped server-side. `deferred_count` is the
+// authoritative hidden count, so the bound is always visible, never silent.
+const hiddenCount = computed(() => Math.max(0, snapshot.value?.deferred_count ?? 0));
 
 async function load() {
   const current = ++generation.value;
@@ -123,6 +126,13 @@ onMounted(() => { void load(); });
           </button>
         </li>
       </ol>
+      <p
+        v-if="hiddenCount > 0"
+        class="daily-cap-note"
+        role="status"
+      >
+        +{{ hiddenCount }} more not shown · use the Queue sheet for the full set
+      </p>
     </section>
     <section aria-labelledby="daily-blocked-heading">
       <h4 id="daily-blocked-heading">
@@ -161,5 +171,6 @@ onMounted(() => { void load(); });
 .daily-item { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-block: .5rem; padding: .75rem; background: #fff; border: 1px solid #cbd5ce; border-radius: .35rem; }
 .blocked-item { border-inline-start: .3rem solid #80552a; }
 .daily-item p { margin-block: .25rem; }
+.daily-cap-note { margin-block: .5rem; font-style: italic; }
 @media (max-width: 600px) { .daily-item { align-items: start; flex-direction: column; } }
 </style>

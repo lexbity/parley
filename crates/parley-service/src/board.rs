@@ -4,11 +4,10 @@ use super::{
     AppState, Workspace, WorkspaceError, authenticate, digest, idempotency_key, new_id, now_utc,
 };
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, patch, post},
 };
 use parley_domain::notes::{self, Task};
 use serde::{Deserialize, Serialize};
@@ -17,24 +16,6 @@ use sqlx::{Sqlite, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
 const RANK_STEP: i64 = 1024;
-
-pub(super) fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/board", get(get_board))
-        .route("/api/v1/board/lists", post(create_list))
-        .route("/api/v1/board/lists/reorder", post(reorder_lists))
-        .route("/api/v1/board/lists/{list_id}", patch(rename_list))
-        .route("/api/v1/board/lists/{list_id}/archive", post(archive_list))
-        .route("/api/v1/opportunities/{id}/placement", post(move_card))
-        .route(
-            "/api/v1/opportunities/{id}/notes",
-            get(get_notes).patch(update_notes),
-        )
-        .route(
-            "/api/v1/opportunities/{id}/notes/tasks/toggle",
-            post(toggle_task),
-        )
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BoardList {
@@ -73,7 +54,7 @@ pub struct BoardCard {
 }
 
 #[derive(sqlx::FromRow)]
-struct BoardPlacementRow {
+pub(crate) struct BoardPlacementRow {
     opportunity_id: String,
     list_id: String,
     position: i64,
@@ -105,7 +86,7 @@ pub struct OpportunityNotes {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct CreateListInput {
+pub(crate) struct CreateListInput {
     title: String,
     #[serde(default)]
     before_list_id: Option<String>,
@@ -113,14 +94,14 @@ struct CreateListInput {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct RenameListInput {
+pub(crate) struct RenameListInput {
     title: String,
     expected_revision: i64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ArchiveListInput {
+pub(crate) struct ArchiveListInput {
     destination_list_id: String,
     expected_list_revision: i64,
     expected_destination_revision: i64,
@@ -128,14 +109,14 @@ struct ArchiveListInput {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ReorderListsInput {
+pub(crate) struct ReorderListsInput {
     ordered_ids: Vec<String>,
     expected_revisions: BTreeMap<String, i64>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct MoveCardInput {
+pub(crate) struct MoveCardInput {
     list_id: String,
     before_opportunity_id: Option<String>,
     expected_source_list_revision: i64,
@@ -145,14 +126,14 @@ struct MoveCardInput {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct UpdateNotesInput {
+pub(crate) struct UpdateNotesInput {
     markdown: String,
     expected_revision: i64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ToggleTaskInput {
+pub(crate) struct ToggleTaskInput {
     notes_revision: i64,
     byte_start: usize,
     byte_end: usize,
@@ -161,7 +142,7 @@ struct ToggleTaskInput {
 }
 
 #[derive(Debug)]
-struct Replay {
+pub(crate) struct Replay {
     status: i64,
     body: Value,
 }
@@ -253,8 +234,7 @@ impl Workspace {
             next_task,
         })
     }
-
-    async fn update_notes(
+    pub(crate) async fn update_notes(
         &self,
         id: &str,
         input: &UpdateNotesInput,
@@ -302,8 +282,7 @@ impl Workspace {
         tx.commit().await?;
         Ok(value)
     }
-
-    async fn toggle_task(
+    pub(crate) async fn toggle_task(
         &self,
         id: &str,
         input: &ToggleTaskInput,
@@ -363,8 +342,7 @@ impl Workspace {
         tx.commit().await?;
         Ok(result)
     }
-
-    async fn create_list(
+    pub(crate) async fn create_list(
         &self,
         input: &CreateListInput,
         key: &str,
@@ -442,8 +420,7 @@ impl Workspace {
         tx.commit().await?;
         Ok(json!({"_replay_status":201,"result":result}))
     }
-
-    async fn rename_list(
+    pub(crate) async fn rename_list(
         &self,
         id: &str,
         input: &RenameListInput,
@@ -492,8 +469,7 @@ impl Workspace {
         tx.commit().await?;
         Ok(result)
     }
-
-    async fn reorder_lists(
+    pub(crate) async fn reorder_lists(
         &self,
         input: &ReorderListsInput,
         key: &str,
@@ -556,8 +532,7 @@ impl Workspace {
         tx.commit().await?;
         Ok(result)
     }
-
-    async fn archive_list(
+    pub(crate) async fn archive_list(
         &self,
         id: &str,
         input: &ArchiveListInput,
@@ -689,8 +664,7 @@ impl Workspace {
         tx.commit().await?;
         Ok(result)
     }
-
-    async fn move_card(
+    pub(crate) async fn move_card(
         &self,
         id: &str,
         input: &MoveCardInput,
@@ -854,8 +828,7 @@ impl Workspace {
         Ok(result)
     }
 }
-
-async fn get_board(
+pub(crate) async fn get_board(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(filters): Query<super::materials::OpportunityFilters>,
@@ -877,8 +850,7 @@ async fn get_board(
         Err(error) => board_error(error),
     }
 }
-
-async fn create_list(
+pub(crate) async fn create_list(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<CreateListInput>,
@@ -889,8 +861,7 @@ async fn create_list(
     };
     command_handler(state.workspace.create_list(&input, &key)).await
 }
-
-async fn rename_list(
+pub(crate) async fn rename_list(
     State(state): State<AppState>,
     Path(list_id): Path<String>,
     headers: HeaderMap,
@@ -902,8 +873,7 @@ async fn rename_list(
     };
     command_handler(state.workspace.rename_list(&list_id, &input, &key)).await
 }
-
-async fn archive_list(
+pub(crate) async fn archive_list(
     State(state): State<AppState>,
     Path(list_id): Path<String>,
     headers: HeaderMap,
@@ -915,8 +885,7 @@ async fn archive_list(
     };
     command_handler(state.workspace.archive_list(&list_id, &input, &key)).await
 }
-
-async fn reorder_lists(
+pub(crate) async fn reorder_lists(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<ReorderListsInput>,
@@ -927,8 +896,7 @@ async fn reorder_lists(
     };
     command_handler(state.workspace.reorder_lists(&input, &key)).await
 }
-
-async fn move_card(
+pub(crate) async fn move_card(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -940,8 +908,7 @@ async fn move_card(
     };
     command_handler(state.workspace.move_card(&id, &input, &key)).await
 }
-
-async fn get_notes(
+pub(crate) async fn get_notes(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -954,8 +921,7 @@ async fn get_notes(
         Err(error) => board_error(error),
     }
 }
-
-async fn update_notes(
+pub(crate) async fn update_notes(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -967,8 +933,7 @@ async fn update_notes(
     };
     command_handler(state.workspace.update_notes(&id, &input, &key)).await
 }
-
-async fn toggle_task(
+pub(crate) async fn toggle_task(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,

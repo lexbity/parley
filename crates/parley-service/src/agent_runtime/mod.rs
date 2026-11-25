@@ -7,7 +7,7 @@
 //! credential, approval identity or ambient tool registry.
 
 pub(crate) mod grants;
-mod http;
+pub(crate) mod http;
 pub(crate) mod tools;
 pub(crate) mod turn;
 
@@ -39,10 +39,6 @@ use crate::{
 };
 
 pub(crate) const LEASE_SECONDS: i64 = turn::LEASE_SECONDS;
-
-pub(super) fn routes() -> axum::Router<crate::AppState> {
-    http::routes()
-}
 
 pub(crate) async fn recover(workspace: &crate::Workspace) {
     sqlx::query(
@@ -604,18 +600,34 @@ async fn run_remaining_ms(state: &AppState, run_id: &str, epoch: &str) -> u32 {
         .unwrap_or(0)
 }
 
-async fn canonical_history(pool: &sqlx::SqlitePool, run_id: &str) -> Vec<DelegatedMessage> {
-    let rows: Vec<(i64, String, i64, String, String)> = sqlx::query_as(
-        "SELECT turn_no,role,ordinal,body,detail_json FROM agent_run_turn
-          WHERE run_id=? AND role IN ('assistant','tool') ORDER BY turn_no,ordinal,role",
-    )
-    .bind(run_id)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
+/// The SDK correlation ids recorded with an assistant turn, keyed by ordinal.
+/// A resumed worker must reuse them verbatim: a synthesized id does not match
+/// the assistant `toolCall` and the SDK drops the committed result.
+fn accepted_call_refs(detail: &str) -> BTreeMap<i64, String> {
+    serde_json::from_str::<Value>(detail)
+        .ok()
+        .and_then(|value| value.get("tool_calls").cloned())
+        .and_then(|value| serde_json::from_value::<Vec<CallRef>>(value).ok())
+        .map(|calls| {
+            calls
+                .into_iter()
+                .enumerate()
+                .map(|(index, call)| (index as i64 + 1, call.call_ref))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Pure projection from committed turn rows to canonical worker messages.
+fn canonical_rows(
+    run_id: &str,
+    rows: Vec<(i64, String, i64, String, String)>,
+) -> Vec<DelegatedMessage> {
     let mut messages = Vec::new();
-    for (_turn, role, ordinal, body, detail) in rows {
+    let mut refs: BTreeMap<i64, BTreeMap<i64, String>> = BTreeMap::new();
+    for (turn, role, ordinal, body, detail) in rows {
         if role == "assistant" && ordinal == 0 {
+            refs.insert(turn, accepted_call_refs(&detail));
             let calls: Vec<CallRef> = serde_json::from_str::<Value>(&detail)
                 .ok()
                 .and_then(|value| value.get("tool_calls").cloned())
@@ -628,15 +640,32 @@ async fn canonical_history(pool: &sqlx::SqlitePool, run_id: &str) -> Vec<Delegat
                 tool_call_id: None,
             });
         } else if role == "tool" {
+            let id = refs
+                .get(&turn)
+                .and_then(|turn_refs| turn_refs.get(&ordinal))
+                .cloned()
+                .unwrap_or_else(|| format!("tool-{run_id}-{turn}-{ordinal}"));
             messages.push(DelegatedMessage {
                 role: "tool".into(),
                 content: body,
                 tool_calls: None,
-                tool_call_id: Some(format!("tool-{run_id}-{_turn}-{ordinal}")),
+                tool_call_id: Some(id),
             });
         }
     }
     messages
+}
+
+async fn canonical_history(pool: &sqlx::SqlitePool, run_id: &str) -> Vec<DelegatedMessage> {
+    let rows: Vec<(i64, String, i64, String, String)> = sqlx::query_as(
+        "SELECT turn_no,role,ordinal,body,detail_json FROM agent_run_turn
+          WHERE run_id=? AND role IN ('assistant','tool') ORDER BY turn_no,ordinal,role",
+    )
+    .bind(run_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    canonical_rows(run_id, rows)
 }
 
 async fn drain_pending(state: &AppState, actor: &Actor) -> Result<(), ()> {
@@ -718,5 +747,41 @@ async fn finish_with_error(state: &AppState, actor: &Actor, code: &str) {
         let _ = turn::record_turn(&mut tx, actor, 1, "system", 50, code, &json!({})).await;
         let _ = turn::finish(&mut tx, actor, "failed", code).await;
         let _ = tx.commit().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resumed_tool_result_reuses_the_accepted_call_ref() {
+        let detail = json!({"tool_calls":[
+            {"call_ref":"sdk-call-7","name":"commands__run","args":{}}
+        ]})
+        .to_string();
+        let rows = vec![
+            (1, "owner".into(), 1, "task".into(), "{}".into()),
+            (2, "assistant".into(), 0, "start a brief".into(), detail),
+            (
+                2,
+                "tool".into(),
+                1,
+                r#"{"result":{"job_id":"job-1"}}"#.into(),
+                r#"{"name":"commands__run"}"#.into(),
+            ),
+        ];
+        let messages = canonical_rows("run-1", rows);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(
+            messages[0].tool_calls.as_ref().unwrap()[0].call_ref,
+            "sdk-call-7"
+        );
+        assert_eq!(
+            messages[1].tool_call_id.as_deref(),
+            Some("sdk-call-7"),
+            "the resumed tool result must match the assistant toolCall id"
+        );
+        assert!(messages[1].content.contains("job-1"));
     }
 }

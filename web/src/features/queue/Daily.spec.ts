@@ -28,6 +28,32 @@ describe('Daily S10 deterministic queue view', () => {
     wrapper.unmount();
   });
 
+  it('makes the server-side daily cap visible in all three count states', async () => {
+    vi.spyOn(parley, 'connect').mockResolvedValue();
+    const get = vi.spyOn(parley, 'getDailyQueue').mockResolvedValue({
+      ...daily, actionable_count: 214, deferred_count: 212, items: daily.items.slice(0, 1),
+    });
+    const wrapper = mount(Daily);
+    await flushPromises();
+    // Capped: the authoritative hidden count is rendered, not inferred from
+    // the truncated array.
+    expect(wrapper.text()).toContain('212 more not shown');
+    expect(wrapper.text()).toContain('214 actionable');
+
+    const refresh = () => wrapper.findAll('button').find((button) => button.text() === 'Refresh daily work')!;
+    get.mockResolvedValue({ ...daily, actionable_count: 2, deferred_count: 0 });
+    await refresh().trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).not.toContain('more not shown');
+
+    get.mockResolvedValue({ ...daily, actionable_count: 0, deferred_count: 0, items: [] });
+    await refresh().trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).not.toContain('more not shown');
+    expect(wrapper.text()).toContain('No actionable work is due');
+    wrapper.unmount();
+  });
+
   it('applies filters through the server request rather than sorting or ranking locally', async () => {
     vi.spyOn(parley, 'connect').mockResolvedValue();
     vi.spyOn(parley, 'getDailyQueue').mockResolvedValue({ ...daily, items: [] });

@@ -52,7 +52,7 @@ struct Lease {
 
 enum Claim {
     Missing,
-    Failure(&'static str),
+    Failure,
     Ready(Box<Lease>),
 }
 
@@ -122,7 +122,7 @@ async fn claim(state: &AppState, id: &str) -> Result<Claim, WorkspaceError> {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        return Ok(Claim::Failure(code));
+        return Ok(Claim::Failure);
     }
     let input = input.expect("validated frozen extractor input");
     let raw_text = raw_text.expect("validated source text");
@@ -199,10 +199,7 @@ async fn claim(state: &AppState, id: &str) -> Result<Claim, WorkspaceError> {
 pub(crate) async fn run(state: &AppState, id: &str) {
     let lease = match claim(state, id).await {
         Ok(Claim::Ready(lease)) => lease,
-        Ok(Claim::Failure(code)) => {
-            eprintln!("inference claim: {code}");
-            return;
-        }
+        Ok(Claim::Failure) => return,
         Ok(Claim::Missing) | Err(_) => return,
     };
     match execute(state, id, &lease).await {

@@ -8,11 +8,9 @@
 
 use axum::{
     Json,
-    Router,
     extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use parley_domain::pack as pack_domain;
 use serde::{Deserialize, Serialize};
@@ -72,20 +70,14 @@ const REFERENCE_PACKS: [(&str, &str, &str, &str); 2] = [
     ("lead_gen", "Client lead generation", "1.0.0", LEAD_GEN_DOCUMENT),
 ];
 
-pub(super) fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/settings", get(get_pack_settings))
-        .route("/api/v1/packs/validate", post(validate_pack))
-        .route("/api/v1/packs/activate", post(activate_pack))
-}
 
 #[derive(Deserialize)]
-struct PackValidateInput {
+pub(crate) struct PackValidateInput {
     document: String,
 }
 
 #[derive(Deserialize, Serialize)]
-struct PackActivateInput {
+pub(crate) struct PackActivateInput {
     pack_id: String,
     version: String,
     document: String,
@@ -177,7 +169,7 @@ fn settings_body(active: &ActivePack, stored: &[StoredPack]) -> Value {
     })
 }
 
-async fn get_pack_settings(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub(crate) async fn get_pack_settings(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(response) = super::authenticate(&headers, &state).await {
         return response.into_response();
     }
@@ -198,7 +190,7 @@ async fn get_pack_settings(State(state): State<AppState>, headers: HeaderMap) ->
     }
 }
 
-async fn validate_pack(
+pub(crate) async fn validate_pack(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<PackValidateInput>,
@@ -267,7 +259,7 @@ fn issue_list(issues: &[pack_domain::PackIssue]) -> Value {
         .collect())
 }
 
-async fn activate_pack(
+pub(crate) async fn activate_pack(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<PackActivateInput>,

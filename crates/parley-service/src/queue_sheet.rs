@@ -11,11 +11,10 @@ use super::materials::workspace_error;
 use super::{AppState, WorkspaceError, authenticate};
 use crate::application::writer::{Failure, JobResult};
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::patch,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -40,10 +39,6 @@ type SheetRowRecord = (
     Option<String>,
     bool,
 );
-
-pub(super) fn routes() -> Router<AppState> {
-    Router::new().route("/api/v1/opportunities/{id}/phase", patch(set_phase))
-}
 
 #[derive(Debug, Deserialize)]
 pub(super) struct SheetQuery {
@@ -138,10 +133,7 @@ pub(super) async fn sheet_query(
     }
     let mut tx = match state.workspace.pool().begin().await {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("queue sheet DB: {e:?}");
-            return workspace_error(e.into());
-        }
+        Err(e) => return workspace_error(e.into()),
     };
     let result = build_sheet(&mut tx, &query).await;
     let _ = tx.commit().await;
@@ -174,7 +166,7 @@ const ACTION_DATE_SQL: &str = "(CASE WHEN o.state<>'open' THEN NULL WHEN EXISTS(
 /// shape is an implementation detail. Keyset values are the last row's sort
 /// keys, which makes pagination stable when rows change between pages.
 #[derive(Debug)]
-enum SheetCursor {
+pub(crate) enum SheetCursor {
     Name {
         title: String,
         id: String,
@@ -223,7 +215,7 @@ fn parse_sheet_cursor(raw: &str) -> Option<SheetCursor> {
     }
 }
 
-struct SheetFilters<'a> {
+pub(crate) struct SheetFilters<'a> {
     search: Option<&'a str>,
     status: Option<&'a str>,
     phase: Option<&'a str>,
@@ -574,7 +566,7 @@ async fn load_threads(
 }
 
 #[derive(Debug, Clone)]
-struct ThreadContext {
+pub(crate) struct ThreadContext {
     id: String,
     recipient_id: String,
     recipient_name: String,
@@ -763,7 +755,7 @@ fn next_action_for(
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SetPhaseInput {
+pub(crate) struct SetPhaseInput {
     target_stage_id: String,
     pack_version: String,
     expected_phase_revision: i64,
@@ -771,7 +763,7 @@ struct SetPhaseInput {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct PhaseResult {
+pub(crate) struct PhaseResult {
     row: QueueSheetRow,
     event_id: String,
     phase_revision: i64,
@@ -860,8 +852,7 @@ fn legacy_phase_error(error: crate::application::phase::PhaseError) -> (u16, &'s
         ),
     }
 }
-
-async fn set_phase(
+pub(crate) async fn set_phase(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,

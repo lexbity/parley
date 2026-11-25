@@ -16,7 +16,7 @@ test('s10_daily_queue_renders_ranked_items_blocked_reason_and_insight_counts_wit
   await page.getByRole('button', { name: 'Daily work', exact: true }).click();
   const daily = page.getByRole('region', { name: 'Daily priorities' });
   await expect(daily).toBeVisible();
-  await expect(page.getByText('Queue reads do not start model jobs')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Apply filters' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Suggested work' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Blocked' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Refresh daily work' })).toBeVisible();
@@ -30,7 +30,7 @@ test('s10_coach_questions_are_impact_ordered_and_answer_pending_requires_intervi
   await expect(page.getByRole('button', { name: 'Refresh report' })).toBeVisible();
   await page.getByRole('button', { name: 'Refresh report' }).click();
   await expect(page.getByText('data as of')).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Open coaching questions' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Coach questions' })).toBeVisible();
 });
 
 test('s10_opportunity_table_filters_and_sort_share_board_records', async ({ page }) => {

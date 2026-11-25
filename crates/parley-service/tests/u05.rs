@@ -193,6 +193,13 @@ async fn count(workspace: &Workspace, sql: &str) -> i64 {
         .unwrap()
 }
 
+/// Failure context for delegated wait/resume assertions (TD-001).
+async fn probe(workspace: &Workspace, run_id: &str) -> String {
+    support::delegated_probe::dump(workspace.pool(), run_id, None)
+        .await
+        .to_string()
+}
+
 /// A loopback provider whose responses may depend on the chat body, with an
 /// optional pause before one response index so tests can observe durable
 /// states while a provider call is in flight.
@@ -356,6 +363,7 @@ async fn wait_state(port: u16, id: &str, states: &[&str]) -> Value {
 }
 
 async fn wait_job(port: u16, id: &str, states: &[&str]) -> Value {
+    let mut last = Value::Null;
     for _ in 0..150 {
         let (status, value) =
             request(port, "GET", &format!("/api/v1/jobs/{id}"), None, "job-read").await;
@@ -363,9 +371,10 @@ async fn wait_job(port: u16, id: &str, states: &[&str]) -> Value {
         if states.contains(&value["status"].as_str().unwrap_or_default()) {
             return value;
         }
+        last = value;
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("job {id} never reached {states:?}");
+    panic!("job {id} never reached {states:?}; last={last:?}");
 }
 
 async fn transcript(port: u16, id: &str) -> Vec<Value> {
@@ -388,6 +397,36 @@ fn tool_text(turns: &[Value]) -> String {
         .map(|turn| turn["text"].as_str().unwrap_or_default())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Pi carries tool results as text blocks, not as a plain string. Scripted
+/// responders must read both shapes or they keep asking for a job id that is
+/// never present (TD-001).
+fn tool_message_text(message: &Value) -> Option<String> {
+    match &message["content"] {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(blocks) => {
+            let text = blocks
+                .iter()
+                .filter_map(|block| block["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("");
+            (!text.is_empty()).then_some(text)
+        }
+        _ => None,
+    }
+}
+
+/// A suspend placeholder can sit in the last tool slot after a wake; scan the
+/// whole transcript for the committed tool result that carries the job id.
+fn tool_result_job_id(messages: &[Value]) -> Option<String> {
+    messages
+        .iter()
+        .filter(|message| message["role"].as_str() == Some("tool"))
+        .filter_map(tool_message_text)
+        .filter_map(|text| serde_json::from_str::<Value>(&text).ok())
+        .filter_map(|value| value["result"]["job_id"].as_str().map(str::to_owned))
+        .next()
 }
 
 // ---------------------------------------------------------------------------
@@ -425,28 +464,16 @@ async fn u05_agent_brief_waits_on_job_and_resumes_with_review() {
                 return briefer_output();
             }
             // A resumed run that already sees a job-status result is done.
-            if messages.iter().any(|message| {
-                message["role"].as_str() == Some("tool")
-                    && message["content"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .contains("review_reference")
-            }) {
+            if messages
+                .iter()
+                .filter(|message| message["role"].as_str() == Some("tool"))
+                .filter_map(tool_message_text)
+                .any(|text| text.contains("review_reference"))
+            {
                 return final_answer("The brief proposal is ready for owner review.");
             }
             // After the brief job was started, answer with its job status.
-            if let Some(tool) = messages
-                .iter()
-                .rev()
-                .find(|message| message["role"].as_str() == Some("tool"))
-            {
-                let job_id = tool["content"]
-                    .as_str()
-                    .and_then(|text| serde_json::from_str::<Value>(text).ok())
-                    .and_then(|value| value.get("result").cloned())
-                    .and_then(|value| value.get("job_id").cloned())
-                    .and_then(|value| value.as_str().map(str::to_owned))
-                    .unwrap_or_default();
+            if let Some(job_id) = tool_result_job_id(&messages) {
                 return tool_call(
                     "commands__run",
                     json!({"id":"job.get_status","version":1,"args":json!({
@@ -527,7 +554,12 @@ async fn u05_agent_brief_waits_on_job_and_resumes_with_review() {
 
     provider.release().await;
     let status = wait_state(port, &run_id, &["succeeded", "failed"]).await;
-    assert_eq!(status["state"], "succeeded", "{status:?}");
+    assert_eq!(
+        status["state"],
+        "succeeded",
+        "{status:?}\n{}",
+        probe(&workspace, &run_id).await
+    );
 
     // One executed write was debited for the job start; the read turns did
     // not consume effect allowance.
@@ -807,17 +839,31 @@ async fn u05_lost_wake_is_recovered_by_the_durable_queue_poll() {
     .await;
     set_provider(&workspace, &path, &provider).await;
 
-    // Insert a queued job directly without any wake signal. Only the
-    // worker's 500 ms poll can pick it up.
+    // Insert a claimable queued job directly without any wake signal. Only
+    // the dispatcher's 1 s safety sweep can pick it up (the 500 ms poll was
+    // retired in L1). The row must carry the same frozen profile and deadline
+    // fields a `brief.start` command would have written (TD-001).
     let job_id = format!("job-lost-wake-{}", NEXT.fetch_add(1, Ordering::Relaxed));
     let now = crate_now();
+    let epoch: String = sqlx::query_scalar("SELECT epoch FROM workspace_meta WHERE singleton=1")
+        .fetch_one(workspace.pool())
+        .await
+        .unwrap();
+    let profile_revision: i64 = sqlx::query_scalar(
+        "SELECT profile_revision FROM inference_active_profile WHERE singleton=1",
+    )
+    .fetch_one(workspace.pool())
+    .await
+    .unwrap();
     let input = json!({
         "scope_kind": "party",
         "scope_id": party,
         "scope_revision": revision,
         "display_name": "Poll Party",
         "evidence": [],
-        "purpose": "poll-recovered brief"
+        "purpose": "poll-recovered brief",
+        "prompt": "Prepare a reviewable brief for the party",
+        "prompt_version": "briefer-lost-wake-v1"
     })
     .to_string();
     sqlx::query("INSERT INTO durable_job(id,role,status,input_json,input_sha256,scope_kind,scope_id,scope_revision,max_attempts,epoch,created_at,updated_at) VALUES(?,?,'queued',?,?,?,?,?,3,?,?,?)")
@@ -828,14 +874,31 @@ async fn u05_lost_wake_is_recovered_by_the_durable_queue_poll() {
         .bind("party")
         .bind(&party)
         .bind(revision)
-        .bind(&now)
+        .bind(&epoch)
         .bind(&now)
         .bind(&now)
         .execute(workspace.pool())
         .await
         .unwrap();
+    sqlx::query(
+        "UPDATE durable_job SET profile_revision=?,dependency_digest=?, \
+         eligible_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 second'), \
+         queue_deadline_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+300 seconds'), \
+         total_deadline_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','+360 seconds') WHERE id=?",
+    )
+    .bind(profile_revision)
+    .bind(hex_digest(&input))
+    .bind(&job_id)
+    .execute(workspace.pool())
+    .await
+    .unwrap();
     let job = wait_job(port, &job_id, &["succeeded", "failed"]).await;
-    assert_eq!(job["status"], "succeeded", "{job:?}");
+    assert_eq!(
+        job["status"],
+        "succeeded",
+        "{job:?}\n{}",
+        support::delegated_probe::dump_job(workspace.pool(), &job_id).await
+    );
     let items: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM brief_item WHERE job_id=?")
         .bind(&job_id)
         .fetch_one(workspace.pool())

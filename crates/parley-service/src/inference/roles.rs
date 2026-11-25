@@ -46,7 +46,7 @@ struct Lease {
 
 enum Claim {
     Missing,
-    Failure(&'static str),
+    Failure,
     Ready(Box<Lease>),
 }
 
@@ -100,7 +100,7 @@ async fn claim(state: &AppState, id: &str) -> Result<Claim, WorkspaceError> {
         sqlx::query("UPDATE durable_job SET status='failed',last_error_code='CAPABILITY_UNQUALIFIED',completed_at=?,updated_at=?,lease_id=NULL WHERE id=? AND status='queued'")
             .bind(&now).bind(&now).bind(id).execute(&mut *tx).await?;
         tx.commit().await?;
-        return Ok(Claim::Failure("CAPABILITY_UNQUALIFIED"));
+        return Ok(Claim::Failure);
     };
     let row: Option<super::coach::ProfileRow> = sqlx::query_as(
         "SELECT p.endpoint,p.runner_build_digest,p.provider_version,p.chat_model,p.chat_model_digest,
@@ -131,7 +131,7 @@ async fn claim(state: &AppState, id: &str) -> Result<Claim, WorkspaceError> {
         sqlx::query("UPDATE durable_job SET status='failed',last_error_code=?,completed_at=?,updated_at=?,lease_id=NULL WHERE id=?")
             .bind(code).bind(&now).bind(&now).bind(id).execute(&mut *tx).await?;
         tx.commit().await?;
-        return Ok(Claim::Failure(code));
+        return Ok(Claim::Failure);
     }
     let input: Value = serde_json::from_str(&frozen.input_json).unwrap_or_default();
     if input.get("prompt").and_then(Value::as_str).is_none()
@@ -143,7 +143,7 @@ async fn claim(state: &AppState, id: &str) -> Result<Claim, WorkspaceError> {
         sqlx::query("UPDATE durable_job SET status='failed',last_error_code='RESULT_INVALID',completed_at=?,updated_at=?,lease_id=NULL WHERE id=?")
             .bind(&now).bind(&now).bind(id).execute(&mut *tx).await?;
         tx.commit().await?;
-        return Ok(Claim::Failure("RESULT_INVALID"));
+        return Ok(Claim::Failure);
     }
     let input_json = frozen.input_json;
     let (endpoint, profile, runner_digest) = fields.expect("validated frozen inference profile");
@@ -207,10 +207,7 @@ async fn claim(state: &AppState, id: &str) -> Result<Claim, WorkspaceError> {
 pub(crate) async fn run(state: &AppState, id: &str) {
     let lease = match claim(state, id).await {
         Ok(Claim::Ready(lease)) => lease,
-        Ok(Claim::Failure(code)) => {
-            eprintln!("inference claim: {code}");
-            return;
-        }
+        Ok(Claim::Failure) => return,
         Ok(Claim::Missing) | Err(_) => return,
     };
     match execute(state, id, &lease).await {

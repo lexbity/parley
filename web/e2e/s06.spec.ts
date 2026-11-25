@@ -95,7 +95,7 @@ test('s06_browser_verified_file_handoff_downloads_exact_bytes_once', async ({ pa
 
   // An unreviewed upload cannot bind to a material.
   const upload = await (await page.request.post('/api/v1/uploads', {
-    headers: authHeaders(apiState, { 'Content-Type': 'application/octet-stream', 'X-Parley-Filename': encodeURIComponent('handoff.pdf') }),
+    headers: authHeaders(apiState, { 'Content-Type': 'application/octet-stream', 'X-Parley-Filename': encodeURIComponent('handoff.pdf'), 'Idempotency-Key': apiState.key() }),
     data: BODY,
   })).json();
   const unreviewed = await page.request.post(`/api/v1/opportunities/${opportunityId}/materials`, {
@@ -147,7 +147,7 @@ test('s06_browser_verified_file_handoff_downloads_exact_bytes_once', async ({ pa
   const queue = await (await page.request.get(`/api/v1/opportunities/${opportunityId}/materials`, { headers: authHeaders(apiState) })).json();
   expect(String(queue[0].id)).toBe(String(material.id));
   const outputList = await (await page.request.get('/api/v1/outputs', { headers: authHeaders(apiState) })).json();
-  expect(outputList.some((item: { id: string }) => String(item.id) === String(material.id))).toBe(true);
+  expect((outputList.items as Array<{ id: string }>).some((item) => String(item.id) === String(material.id))).toBe(true);
 
   const first = await page.request.get(`/api/v1/materials/${material.id}/download?release_id=${released.release_id}`, { headers: authHeaders(apiState) });
   expect(first.status()).toBe(200);

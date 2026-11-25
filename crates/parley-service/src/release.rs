@@ -10,12 +10,10 @@
 use super::materials::{event, validate_binding_shape, workspace_error};
 use super::{AppState, Workspace, WorkspaceError, digest, new_id, now_utc, private_headers};
 use axum::{
-    Router,
     body::Bytes,
     extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::get,
 };
 use futures_util::stream::unfold;
 use parley_domain::{gate, template};
@@ -24,22 +22,11 @@ use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(super) fn routes() -> Router<AppState> {
-    Router::new().route(
-        "/api/v1/materials/{id}/download",
-        // HEAD-as-GET is forbidden (RFC-0004 IQ2): a link preview must not
-        // consume the one-use download grant. HEAD is answered with 405
-        // before any handler runs, so no grant bytes, spool verification or
-        // issuance event can be triggered by a prefetch.
-        get(download_material).head(head_not_allowed),
-    )
-}
-
 /// RFC-0004 IQ2: HEAD-as-GET is disabled. A HEAD probe must never run the
 /// download flow (spool verification, writer reservation, issuance event,
 /// one-use grant consumption); refuse it outright before any state is
 /// touched.
-async fn head_not_allowed() -> Response {
+pub(crate) async fn head_not_allowed() -> Response {
     (
         StatusCode::METHOD_NOT_ALLOWED,
         [(header::ALLOW, HeaderValue::from_static("GET"))],
@@ -57,7 +44,7 @@ pub struct AttachmentInfo {
 }
 
 #[derive(Debug, Deserialize)]
-struct DownloadQuery {
+pub(crate) struct DownloadQuery {
     release_id: String,
 }
 
@@ -773,7 +760,7 @@ async fn owner_pack_id(tx: &mut Transaction<'_, Sqlite>) -> Result<String, Works
     )
 }
 
-struct CadenceContext {
+pub(crate) struct CadenceContext {
     last_sent_at: Option<String>,
     touch_count: i64,
 }
@@ -1362,8 +1349,7 @@ fn safe_filename(filename: &str) -> String {
         })
         .collect()
 }
-
-async fn download_material(
+pub(crate) async fn download_material(
     State(state): State<AppState>,
     Path(material_id): Path<String>,
     headers: HeaderMap,

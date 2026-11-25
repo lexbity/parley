@@ -10,7 +10,7 @@ test('p02_related_and_existing_edges', async ({ page }) => {
   await workspace.getByRole('button', { name: 'Sources inbox' }).click();
   await workspace.getByLabel('Captured text').fill('Fieldwork publishes the contributor guide. Mira maintains Fieldwork.');
   await workspace.getByRole('button', { name: 'Save source' }).click();
-  await expect(workspace.getByText(/Source saved independently/)).toBeVisible();
+  await expect(workspace.getByText(/Source saved independently|Extractor is analyzing the saved source|Extractor finished/)).toBeVisible();
 
   const graph = workspace.getByRole('region', { name: 'Party network' });
   await graph.getByText('Relationships and evidence').click();

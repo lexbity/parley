@@ -61,6 +61,10 @@ step python3 ci/architecture.py --check
 step python3 ci/coverage.py --check --rust
 step python3 ci/coverage.py --check --web
 
+# TD-10: every axum route must be declared in the committed inventory. A new
+# route outside the inventory fails here until the inventory is regenerated.
+step python3 ci/routes.py --check
+
 # Slice-gated contract, migration and trace verifiers.
 step python3 ci/contract.py --through "$slice" --check-generated
 step python3 ci/migrations.py --through "$slice"
@@ -84,6 +88,9 @@ step scripts/absent 'parley_session|X-Parley-Token|/api/v1/|std::process::Comman
 # implementations or ignored tests; this scans Rust production modules after
 # every slice, including future ones as their directories land.
 step scripts/absent 'todo!\(|unimplemented!\(|#\[ignore\]' crates/parley-service/src/commands crates/parley-service/src/application
+# TD-10 W3 / G13: debug prints in production paths are retired; failures are
+# returned as typed errors or recorded in the ledger, never written to stderr.
+step scripts/absent 'eprintln!' crates/parley-service/src
 
 # S03's mandated pattern also names navigator.clipboard; this tree's only
 # copy surface is MaterialActions.vue, which uses the modern Clipboard API

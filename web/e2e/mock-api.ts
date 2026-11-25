@@ -142,6 +142,10 @@ export function createMockApi({ pauseExtractor = false, coachOnline = false, emb
   const writingTemplates: RecordData[] = [];
   const voiceSamples: RecordData[] = [];
   let embeddingModel = '';
+  let embeddingVerified = false;
+  let maintenanceSettings = { backup_directory: '', interval_hours: 24, retention_count: 14, revision: 1, last_successful_at: null as string | null };
+  const maintenanceBackups: AdminBackupRecord[] = [];
+  const maintenanceOperations = new Map<string, RecordData>();
   const questionBank = { version_id: 'question-bank-v1', content: { version: 1, questions: { proof: [{ id: 'result', text: 'What changed, and how did you measure the result?' }], gift: [{ id: 'offer', text: 'What useful thing could you offer?' }], artifact: [{ id: 'artifact', text: 'What have you made?' }] } } };
   const prompts = new Map<string, RecordData>([['interviewer', { role: 'interviewer', version_id: 'interviewer-v1', version: 1, content: 'Bundled Interviewer policy', sha256: 'a'.repeat(64) }], ['briefer', { role: 'briefer', version_id: 'briefer-v1', version: 1, content: 'Bundled Briefer policy', sha256: 'b'.repeat(64) }]]);
   const jobsByOccurrence = new Map<string, string>();
@@ -187,6 +191,26 @@ export function createMockApi({ pauseExtractor = false, coachOnline = false, emb
     embeddingTimers.clear();
   }
   const receipts = new Map<string, { digest: string; result: RecordData; status?: number }>();
+  // TD-10 W2: board mutations require an explicit operation key and replay
+  // the original receipt. This mirrors the Rust board handlers; there is no
+  // content-derived fallback key on either side.
+  const boardMutationGate = (
+    request: IncomingMessage,
+    response: ServerResponse,
+    path: string,
+    input: RecordData,
+    store: Map<string, { digest: string; result: RecordData; status?: number }>,
+    currentEpoch: string,
+  ) => {
+    const key = request.headers['idempotency-key'];
+    if (typeof key !== 'string' || !key) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Operation key required.');
+    const digest = importDigest([currentEpoch, path, input]);
+    const prior = store.get(key);
+    if (prior) return prior.digest === digest
+      ? json(response, prior.status ?? 200, prior.result)
+      : fail(response, 409, 'KEY_REUSED', 'Operation key refers to a different request.');
+    return null;
+  };
   // U02 authoritative run and turn rows survive snapshots; worker timers,
   // replay keys and pending leases are transient and are scrubbed on restore.
   const agentRuns = new Map<string, AgentRunRecord>();
@@ -1592,6 +1616,65 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       return json(response, 200, outcome);
     }
 
+    // TD-10 W2: mutation key-presence parity with the service transport gate.
+    // Every non-exempt /api/v1 mutation requires an explicit operation key;
+    // previews, registry commands, approvals and the exempt transports skip.
+    const gatedMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+    if (
+      gatedMethods.has(request.method ?? '')
+      && (url.pathname ?? '').startsWith('/api/v1/')
+      && !(url.pathname ?? '').startsWith('/api/v1/commands')
+      && !(url.pathname ?? '').startsWith('/api/v1/approvals')
+      && !(url.pathname ?? '').endsWith('/preview')
+      && url.pathname !== '/api/v1/health'
+      && url.pathname !== '/api/v1/session/bootstrap'
+      && url.pathname !== '/api/v1/session'
+      && url.pathname !== '/api/v1/command-notifications'
+      && !((url.pathname ?? '').startsWith('/api/v1/materials/') && (url.pathname ?? '').endsWith('/download'))
+    ) {
+      const gateKey = request.headers['idempotency-key'];
+      if (typeof gateKey !== 'string' || !gateKey.trim()) {
+        return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+      }
+    }
+
+    // TD-10 W3: destructive legacy mutations stop at the approval inbox with
+    // a frozen intent digest, mirroring the service transport gate. The
+    // decision endpoints above operate on the shared approvals store.
+    const legacyDestructive = [
+      { re: /^\/api\/v1\/imports\/commit$/, id: 'import.commit' },
+      { re: /^\/api\/v1\/restore\/commit$/, id: 'workspace.restore' },
+      { re: /^\/api\/v1\/parties\/([^/]+)\/erase$/, id: 'party.erase' },
+      { re: /^\/api\/v1\/settings\/maintenance$/, id: 'maintenance.settings' },
+    ];
+    const destructiveRule = legacyDestructive.find((rule) => rule.re.test(url.pathname ?? ''));
+    if (destructiveRule && gatedMethods.has(request.method ?? '')) {
+      const opKey = request.headers['idempotency-key'];
+      const approvalKey = `${epoch}|${destructiveRule.id}|${String(opKey)}`;
+      const fingerprint = createHash('sha256').update(approvalKey).digest('hex');
+      let legacyApproval = [...approvals.values()].find(
+        (approval) => approval.command_id === destructiveRule.id && (approval as MockApproval & { _legacyKey?: string })._legacyKey === approvalKey,
+      );
+      if (!legacyApproval) {
+        const id = randomHex();
+        legacyApproval = { id, epoch, command_id: destructiveRule.id, receipt_key: approvalKey, command_version: 1, revision: 1, status: 'pending', expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(), preview_digest: fingerprint, _legacyKey: approvalKey } as unknown as MockApproval & { _legacyKey: string };
+        approvals.set(id, legacyApproval);
+        response.writeHead(403, { 'content-type': 'application/json', location: `/api/v1/approvals/${id}` });
+        response.end(JSON.stringify({ error: { code: 'approval_required', message: 'This operation requires owner approval before it can execute', details: [] } }));
+        return;
+      }
+      if (legacyApproval.status === 'pending') {
+        response.writeHead(403, { 'content-type': 'application/json', location: `/api/v1/approvals/${legacyApproval.id}` });
+        response.end(JSON.stringify({ error: { code: 'approval_required', message: 'This operation requires owner approval before it can execute', details: [] } }));
+        return;
+      }
+      if (legacyApproval.status === 'granted') {
+        legacyApproval.status = 'consumed';
+      } else {
+        return fail(response, 403, 'approval_denied', 'This intent was denied; start a new operation key');
+      }
+    }
+
     if (url.pathname === '/api/v1/agent/runs' && request.method === 'POST') {
       const key = request.headers['idempotency-key'];
       if (typeof key !== 'string' || !key.trim()) return fail(response, 400, 'INVALID_KEY', 'An Idempotency-Key is required');
@@ -1997,13 +2080,13 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     }
     const templateTransition = /^\/api\/v1\/templates\/([^/]+)\/(approve|activate)$/.exec(url.pathname);
     if (templateTransition && request.method === 'POST') { const template = writingTemplates.find((item) => item.id === templateTransition[1]); if (!template) return fail(response, 404, 'TEMPLATE_NOT_FOUND', 'Template does not exist'); template.status = templateTransition[2] === 'approve' ? 'approved' : 'active'; response.writeHead(204); response.end(); return; }
-    if (url.pathname === '/api/v1/embedding-model' && request.method === 'GET') return json(response, 200, { model: embeddingModel, model_digest: embedOnline ? 'e'.repeat(64) : null, profile_revision: provider.profile_revision, calibrated_kinds: embedOnline && matchingCalibrated ? ['gift', 'proof', 'artifact'] : [], readiness: provider.embed });
-    if (url.pathname === '/api/v1/embedding-model' && request.method === 'PUT') { let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); } if (input.expected_profile_revision !== undefined && Number(input.expected_profile_revision) !== provider.profile_revision) return fail(response, 412, 'PROFILE_CHANGED', 'Provider settings changed. Reload them before saving'); embeddingModel = String(input.model); provider.profile_revision += 1; provider.embed = { status: 'unqualified', diagnostic: null, checked_at: null, probe_id: null }; return json(response, 200, { model: embeddingModel, model_digest: null, profile_revision: provider.profile_revision, calibrated_kinds: [], readiness: provider.embed }); }
+    if (url.pathname === '/api/v1/embedding-model' && request.method === 'GET') return json(response, 200, { model: embeddingModel, model_digest: embeddingVerified ? 'e'.repeat(64) : null, profile_revision: provider.profile_revision, calibrated_kinds: embeddingVerified && matchingCalibrated ? ['gift', 'proof', 'artifact'] : [], readiness: provider.embed });
+    if (url.pathname === '/api/v1/embedding-model' && request.method === 'PUT') { let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); } if (input.expected_profile_revision !== undefined && Number(input.expected_profile_revision) !== provider.profile_revision) return fail(response, 412, 'PROFILE_CHANGED', 'Provider settings changed. Reload them before saving'); embeddingModel = String(input.model); embeddingVerified = false; provider.profile_revision += 1; provider.embed = { status: 'unqualified', diagnostic: null, checked_at: null, probe_id: null }; return json(response, 200, { model: embeddingModel, model_digest: null, profile_revision: provider.profile_revision, calibrated_kinds: [], readiness: provider.embed }); }
     if (url.pathname === '/api/v1/voice-samples' && request.method === 'GET') return json(response, 200, { items: voiceSamples });
     if (url.pathname === '/api/v1/voice-samples' && request.method === 'POST') { let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); } const sample = { id: randomHex(), ...input, revision: 1, status: 'active' }; voiceSamples.push(sample); return json(response, 201, sample); }
     const voiceRetire = /^\/api\/v1\/voice-samples\/([^/]+)\/retire$/.exec(url.pathname);
     if (voiceRetire && request.method === 'POST') { const sample = voiceSamples.find((item) => item.id === voiceRetire[1]); if (!sample) return fail(response, 404, 'VOICE_SAMPLE_NOT_FOUND', 'Voice sample does not exist'); sample.status = 'retired'; return json(response, 200, { id: sample.id, status: 'retired', revision: 2 }); }
-    if (url.pathname === '/api/v1/matching/calibrations' && request.method === 'GET') return json(response, 200, { model: embeddingModel, model_digest: embedOnline ? 'e'.repeat(64) : null, recipe_digest: embedOnline ? 'r'.repeat(64) : null, scoring_config_digest: null, calibrations: [] });
+    if (url.pathname === '/api/v1/matching/calibrations' && request.method === 'GET') return json(response, 200, { model: embeddingModel, model_digest: embeddingVerified ? 'e'.repeat(64) : null, recipe_digest: embeddingVerified ? 'r'.repeat(64) : null, scoring_config_digest: null, calibrations: [] });
     const writingInterestsMatch = /^\/api\/v1\/opportunities\/([^/]+)\/interests$/.exec(url.pathname);
     if (writingInterestsMatch && request.method === 'GET') return json(response, 200, { opportunity_id: writingInterestsMatch[1], recipient_id: url.searchParams.get('recipient_id'), items: (writingInterests.get(`${writingInterestsMatch[1]}:${url.searchParams.get('recipient_id')}`) ?? []).map((item) => ({ ...item, claim: null })) });
     if (writingInterestsMatch && request.method === 'POST') { let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); } const key = `${writingInterestsMatch[1]}:${String(input.recipient_id)}`; const item = { id: randomHex(), revision: 1, status: 'active', ...input, check_suggestion: input.check_suggestion ?? null, claim_id: null, claim_revision: null }; writingInterests.set(key, [...(writingInterests.get(key) ?? []), item]); return json(response, 201, item); }
@@ -2013,7 +2096,7 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     if (writingExchangeMatch && request.method === 'POST') { let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); } const key = `${writingExchangeMatch[1]}:${String(input.recipient_id)}`; const versions = writingExchanges.get(key) ?? []; const version = { version: versions.length + 1, they_get: input.they_get, i_get: input.i_get, fairness_attested: false, interest_ids: input.interest_ids, interests: [], attestation_digest: null, attested_at: null }; versions.push(version); writingExchanges.set(key, versions); return json(response, 201, version); }
     const writingMatch = /^\/api\/v1\/opportunities\/([^/]+)\/matches$/.exec(url.pathname);
     if (writingMatch && request.method === 'POST') {
-      if (!embedOnline) return fail(response, 503, 'EMBED_MODEL_UNAVAILABLE', 'No local embedding provider is available. Manual resource selection remains available.');
+      if (!embeddingVerified) return fail(response, 503, 'EMBED_MODEL_UNAVAILABLE', 'No local embedding provider is available. Manual resource selection remains available.');
       if (!matchingCalibrated) return fail(response, 422, 'CALIBRATION_REQUIRED', 'The embedding model is not calibrated for every resource kind.');
       let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
       const key = `${writingMatch[1]}:${String(input.recipient_id)}`;
@@ -2699,7 +2782,7 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       const questions: RecordData[] = [];
       if (scope.kind === 'opportunity') {
         const run = matchRuns.get(`${scope.id}:${scope.recipient_id}`);
-        const currentDigest = embedOnline ? 'e'.repeat(64) : null;
+        const currentDigest = embeddingVerified ? 'e'.repeat(64) : null;
         if (!run) {
           coverage.missing = 1;
           status = 'current';
@@ -2778,6 +2861,82 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       const result = { id, status: 'answered', revision: question.revision };
       receipts.set(key, { digest, result, status: 200 });
       return json(response, 200, result);
+    }
+    if (url.pathname === '/api/v1/settings/maintenance' && request.method === 'GET') {
+      return json(response, 200, maintenanceSettings);
+    }
+    if (url.pathname === '/api/v1/settings/maintenance' && request.method === 'PUT') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      if (typeof input.backup_directory !== 'string' || !input.backup_directory.trim()) {
+        return fail(response, 422, 'MAINTENANCE_INVALID', 'A backup directory is required');
+      }
+      maintenanceSettings = {
+        backup_directory: input.backup_directory.trim(),
+        interval_hours: Number(input.interval_hours ?? 24),
+        retention_count: Number(input.retention_count ?? 14),
+        revision: Number(input.expected_revision ?? maintenanceSettings.revision) + 1,
+        last_successful_at: maintenanceSettings.last_successful_at,
+      };
+      return json(response, 200, maintenanceSettings);
+    }
+    if (url.pathname === '/api/v1/backups' && request.method === 'GET') {
+      return json(response, 200, { items: maintenanceBackups, last_successful_at: maintenanceSettings.last_successful_at });
+    }
+    if (url.pathname === '/api/v1/backups' && request.method === 'POST') {
+      const record: AdminBackupRecord = {
+        id: randomHex(), created_at: now(), schema_version: 1,
+        workspace_epoch: epoch, size_bytes: 1024, integrity: 'verified', snapshot: {},
+      };
+      maintenanceBackups.push(record);
+      maintenanceSettings = { ...maintenanceSettings, last_successful_at: record.created_at };
+      return json(response, 201, record);
+    }
+    const maintenanceOperationMatch = /^\/api\/v1\/maintenance\/operations\/([^/]+)$/.exec(url.pathname);
+    if (maintenanceOperationMatch && request.method === 'GET') {
+      const id = maintenanceOperationMatch[1]!;
+      return json(response, 200, maintenanceOperations.get(id) ?? { id, kind: 'restore', state: 'complete', epoch, external_copies_requiring_disposal: 0 });
+    }
+    if (url.pathname === '/api/v1/exports' && request.method === 'POST') {
+      response.setHeader('Content-Type', 'application/zip');
+      response.setHeader('Content-Disposition', 'attachment; filename="parley-personal-export.zip"');
+      response.end(Buffer.from('PK\x03\x04parley-personal-export'));
+      return;
+    }
+    if (url.pathname === '/api/v1/imports/preview' && request.method === 'POST') {
+      return json(response, 200, {
+        id: randomHex(), digest: randomHex(), current_cursor: '0',
+        backup: { id: randomHex(), created_at: now(), schema_version: 1, workspace_epoch: epoch, size_bytes: 1024, integrity: 'verified' },
+        erasure_resurrections: 0, required_bytes: 1024,
+      });
+    }
+    if ((url.pathname === '/api/v1/imports/commit' || url.pathname === '/api/v1/restore/commit') && request.method === 'POST') {
+      const id = randomHex();
+      const operation: RecordData = { id, kind: url.pathname.includes('restore') ? 'restore' : 'import', state: 'pending_restart', epoch, external_copies_requiring_disposal: 0 };
+      maintenanceOperations.set(id, operation);
+      return json(response, url.pathname.includes('restore') ? 200 : 202, operation);
+    }
+    if (url.pathname === '/api/v1/restore/preview' && request.method === 'POST') {
+      let input: RecordData;
+      try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const backup = maintenanceBackups.find((item) => item.id === input.backup_id) ?? maintenanceBackups[0];
+      if (!backup) return fail(response, 404, 'BACKUP_UNAVAILABLE', 'No verified backup exists');
+      return json(response, 200, { id: randomHex(), digest: randomHex(), backup, current_cursor: '0', erasure_resurrections: 0, required_bytes: backup.size_bytes });
+    }
+    const erasePreviewMatch = /^\/api\/v1\/parties\/([^/]+)\/erase\/preview$/.exec(url.pathname);
+    if (erasePreviewMatch && request.method === 'POST') {
+      return json(response, 200, {
+        id: randomHex(), digest: randomHex(), domain_cursor: '0',
+        affected_counts: { parties: 1 }, shared_sources: 1, owner_managed_backups: 1,
+      });
+    }
+    const eraseMatch = /^\/api\/v1\/parties\/([^/]+)\/erase$/.exec(url.pathname);
+    if (eraseMatch && request.method === 'POST') {
+      const id = randomHex();
+      directory.delete(eraseMatch[1]!);
+      const operation: RecordData = { id, kind: 'erase', state: 'pending_restart', epoch, external_copies_requiring_disposal: 1 };
+      maintenanceOperations.set(id, operation);
+      return json(response, 202, operation);
     }
     if (url.pathname === '/api/v1/settings' && request.method === 'GET') {
       const available = PACK_DOCUMENTS.map((pack) => ({ ...pack }));
@@ -3178,6 +3337,10 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     if (url.pathname === '/api/v1/board/lists' && request.method === 'POST') {
       let input: RecordData;
       try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const gate = boardMutationGate(request, response, url.pathname, input, receipts, epoch);
+      if (gate) return gate;
+      const key = String(request.headers['idempotency-key']);
+      const digest = importDigest([epoch, url.pathname, input]);
       const title = typeof input.title === 'string' ? input.title.trim() : '';
       if (!title || title.length > 120 || boardLists.some((list) => list.title.toLowerCase() === title.toLowerCase())) return fail(response, 422, 'BOARD_LIST_INVALID', 'List title must be unique and non-empty');
       const active = boardLists.filter((list) => !list.archived).sort((a, b) => a.position - b.position);
@@ -3187,11 +3350,17 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       const list = { id: randomHex(), title, position, archived: false, revision: 1 };
       boardLists.push(list);
       boardLists.filter((item) => !item.archived && item.id !== list.id).forEach((item) => { if (item.position >= list.position) { item.position += 1; item.revision += 1; } });
-      return json(response, 201, { list, board_revision: events.length + 1 });
+      const result = { list, board_revision: events.length + 1 };
+      receipts.set(key, { digest, result, status: 201 });
+      return json(response, 201, result);
     }
     if (url.pathname === '/api/v1/board/lists/reorder' && request.method === 'POST') {
       let input: RecordData;
       try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const gate = boardMutationGate(request, response, url.pathname, input, receipts, epoch);
+      if (gate) return gate;
+      const key = String(request.headers['idempotency-key']);
+      const digest = importDigest([epoch, url.pathname, input]);
       const active = boardLists.filter((list) => !list.archived);
       const ids = input.ordered_ids;
       const revisions = input.expected_revisions;
@@ -3205,24 +3374,36 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
         list.position = position;
         list.revision += 1;
       });
-      return json(response, 200, { lists: active.slice().sort((a, b) => a.position - b.position) });
+      const result = { lists: active.slice().sort((a, b) => a.position - b.position) };
+      receipts.set(key, { digest, result, status: 200 });
+      return json(response, 200, result);
     }
     const boardListMatch = /^\/api\/v1\/board\/lists\/([^/]+)$/.exec(url.pathname);
     if (boardListMatch && request.method === 'PATCH') {
       let input: RecordData;
       try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const gate = boardMutationGate(request, response, url.pathname, input, receipts, epoch);
+      if (gate) return gate;
+      const key = String(request.headers['idempotency-key']);
+      const digest = importDigest([epoch, url.pathname, input]);
       const list = boardLists.find((item) => item.id === boardListMatch[1]);
       if (!list) return fail(response, 404, 'NOT_FOUND', 'Board list does not exist');
       if (input.expected_revision !== list.revision) return fail(response, 409, 'BOARD_LIST_STALE', 'Board list changed');
       const title = typeof input.title === 'string' ? input.title.trim() : '';
       if (!title || boardLists.some((item) => item.id !== list.id && item.title.toLowerCase() === title.toLowerCase())) return fail(response, 422, 'BOARD_LIST_INVALID', 'List title must be unique and non-empty');
       list.title = title; list.revision += 1;
-      return json(response, 200, { list });
+      const result = { list };
+      receipts.set(key, { digest, result, status: 200 });
+      return json(response, 200, result);
     }
     const archiveMatch = /^\/api\/v1\/board\/lists\/([^/]+)\/archive$/.exec(url.pathname);
     if (archiveMatch && request.method === 'POST') {
       let input: RecordData;
       try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const gate = boardMutationGate(request, response, url.pathname, input, receipts, epoch);
+      if (gate) return gate;
+      const key = String(request.headers['idempotency-key']);
+      const digest = importDigest([epoch, url.pathname, input]);
       const source = boardLists.find((item) => item.id === archiveMatch[1]);
       const destination = boardLists.find((item) => item.id === String(input.destination_list_id) && !item.archived);
       const active = boardLists.filter((item) => !item.archived);
@@ -3236,7 +3417,9 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
         placement.list_id = destination.id; placement.position = nextPosition + index; placement.placement_revision += 1;
       });
       destination.revision += 1; source.archived = true; source.revision += 1;
-      return json(response, 200, { archived_list: source, destination_list: destination, moved: moved.map((card, index) => ({ opportunity_id: card.opportunity.id, position: nextPosition + index, placement_revision: placements.get(String(card.opportunity.id))!.placement_revision })) });
+      const result = { archived_list: source, destination_list: destination, moved: moved.map((card, index) => ({ opportunity_id: card.opportunity.id, position: nextPosition + index, placement_revision: placements.get(String(card.opportunity.id))!.placement_revision })) };
+      receipts.set(key, { digest, result, status: 200 });
+      return json(response, 200, result);
     }
     if (url.pathname === '/api/v1/opportunities' && request.method === 'GET') {
       const params = url.searchParams;
@@ -3359,6 +3542,15 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     if (url.pathname === '/api/v1/opportunities' && request.method === 'POST') {
       let input: RecordData;
       try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      // TD-10 W2: explicit operation key and exactly-once replay, matching the
+      // Rust route. No content-derived fallback key exists on either side.
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Operation key required.');
+      const digest = importDigest([epoch, url.pathname, input]);
+      const oldReceipt = receipts.get(key);
+      if (oldReceipt) return oldReceipt.digest === digest
+        ? json(response, 201, oldReceipt.result)
+        : fail(response, 409, 'KEY_REUSED', 'Operation key refers to a different request.');
       const participant = directory.get(String(input.primary_party_id));
       if (!participant || !['person', 'org'].includes(participant.kind) || typeof input.title !== 'string' || !input.title.trim()) {
         return fail(response, 422, 'OPPORTUNITY_INVALID', 'A title and selected participant are required');
@@ -3369,12 +3561,17 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       const position = [...placements.values()].filter((placement) => placement.list_id === homeList.id).length;
       placements.set(record.id, { list_id: homeList.id, position, placement_revision: 1 });
       notesByOpportunity.set(record.id, { markdown: '', revision: 1 });
+      receipts.set(key, { digest, result: record });
       return json(response, 201, record);
     }
     const placementMatch = /^\/api\/v1\/opportunities\/([^/]+)\/placement$/.exec(url.pathname);
     if (placementMatch && request.method === 'POST') {
       let input: RecordData;
       try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const gate = boardMutationGate(request, response, url.pathname, input, receipts, epoch);
+      if (gate) return gate;
+      const key = String(request.headers['idempotency-key']);
+      const digest = importDigest([epoch, url.pathname, input]);
       const opportunity = opportunities.get(placementMatch[1]!);
       const placement = placements.get(placementMatch[1]!);
       const source = boardLists.find((list) => list.id === placement?.list_id);
@@ -3391,7 +3588,9 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       if (source.id !== destination.id) sourceCards.forEach((card, position) => { placements.get(String(card.opportunity.id))!.position = position; });
       source.revision += 1;
       if (source.id !== destination.id) destination.revision += 1;
-      return json(response, 200, { opportunity_id: opportunity.id, list_id: destination.id, position: targetIndex, placement_revision: placement.placement_revision, source_list_revision: source.revision, destination_list_revision: destination.revision });
+      const result = { opportunity_id: opportunity.id, list_id: destination.id, position: targetIndex, placement_revision: placement.placement_revision, source_list_revision: source.revision, destination_list_revision: destination.revision };
+      receipts.set(key, { digest, result, status: 200 });
+      return json(response, 200, result);
     }
     const notesMatch = /^\/api\/v1\/opportunities\/([^/]+)\/notes(?:\/tasks\/toggle)?$/.exec(url.pathname);
     if (notesMatch && request.method === 'GET') {
@@ -3426,7 +3625,15 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       return json(response, 200, notesRecord(notesMatch[1]!));
     }
     if (url.pathname === '/api/v1/outputs' && request.method === 'GET') {
-      return json(response, 200, [...outputs.values()]);
+      // TD-04: the registry is a bounded, body-free envelope; bodies stay on
+      // the detail route that the editor calls when it opens a material.
+      const items = [...outputs.values()].map((material) => {
+        const summary: RecordData = { ...material };
+        delete summary.body;
+        return summary;
+      });
+      const limit = Math.max(1, Math.min(500, Number(url.searchParams.get('limit') ?? '200')));
+      return json(response, 200, { items: items.slice(0, limit), next_cursor: items.length > limit ? 'mock-next' : null });
     }
     const materialById = /^\/api\/v1\/materials\/([^/]+)$/.exec(url.pathname);
     if (materialById && request.method === 'GET') {
@@ -3791,13 +3998,17 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     }
 
     const jobMatch = /^\/api\/v1\/jobs\/([^/]+)$/.exec(url.pathname);
+    // Role jobs are keyed by scope in the mock; accept lookup by their id as
+    // the real service does.
+    const findJob = (id: string) => extractorJobs.get(id) ?? roleJobs.get(id) ?? coachJobs.get(id)
+      ?? [...extractorJobs.values(), ...roleJobs.values(), ...coachJobs.values()].find((job) => job.id === id);
     if (jobMatch && request.method === 'GET') {
-      const job = extractorJobs.get(jobMatch[1]!) ?? roleJobs.get(jobMatch[1]!) ?? coachJobs.get(jobMatch[1]!);
+      const job = findJob(jobMatch[1]!);
       return job ? json(response, 200, { review_ref: null, ...job }) : fail(response, 404, 'JOB_NOT_FOUND', 'Job does not exist');
     }
     if (jobMatch && request.method === 'POST') {
       const id = jobMatch[1]!;
-      const job = extractorJobs.get(id) ?? coachJobs.get(id);
+      const job = findJob(id);
       if (!job) return fail(response, 404, 'JOB_NOT_FOUND', 'Job does not exist');
       const key = request.headers['idempotency-key'];
       if (typeof key !== 'string' || !key || key.length > 200) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
@@ -3886,8 +4097,9 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
           profile.embed = { status: 'queued', diagnostic: null, checked_at: null, probe_id: randomHex() };
           const timer = setTimeout(() => {
             if (epoch !== admittedEpoch || provider !== profile) return;
-            const status = embedOnline ? 'ready' : 'failed';
-            const diagnostic = embedOnline ? null : 'MODEL_UNAVAILABLE';
+            embeddingVerified = true;
+            const status = 'ready';
+            const diagnostic = null as string | null;
             profile.embed = { ...profile.embed, status, diagnostic, checked_at: now() };
           }, 150);
           timer.unref();

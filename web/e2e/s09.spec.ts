@@ -54,7 +54,7 @@ test('s09_recipient_exchange_template_lifecycle_and_uncalibrated_manual_path', a
   await expect(workspace.getByText('This scope has no assessment yet')).toBeVisible();
   await workspace.getByRole('button', { name: 'Run matching' }).first().click();
   const matching = page.getByRole('dialog');
-  await expect(matching.getByText('Without a matching model calibration, the system cannot rank resources.')).toBeVisible();
+  await expect(matching.getByText('without a verification and calibration, the system cannot rank resources')).toBeVisible();
   await expect(matching.getByRole('button', { name: 'Run matching' })).toBeDisabled();
   await matching.getByRole('button', { name: 'Choose manually' }).click();
   await expect(workspace.getByText('Showing eligible resources in manual selection order.')).toBeVisible();

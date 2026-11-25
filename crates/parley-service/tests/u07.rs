@@ -173,6 +173,13 @@ async fn count(workspace: &Workspace, sql: &str) -> i64 {
         .unwrap()
 }
 
+/// Failure context for scoped-run assertions (TD-001).
+async fn probe(workspace: &Workspace, run_id: &str) -> String {
+    support::delegated_probe::dump(workspace.pool(), run_id, None)
+        .await
+        .to_string()
+}
+
 fn now_str() -> String {
     "2026-11-23T00:00:00.000Z".to_owned()
 }
@@ -494,6 +501,28 @@ fn tool_text(turns: &[Value]) -> String {
         .join("\n")
 }
 
+/// Pi carries tool results as text blocks. A scripted responder that only
+/// reads `content` as a string never sees the job it just started (TD-001).
+fn last_tool_text(messages: &[Value]) -> String {
+    messages
+        .iter()
+        .rev()
+        .filter(|message| message["role"].as_str() == Some("tool"))
+        .find_map(|message| match &message["content"] {
+            Value::String(text) => Some(text.clone()),
+            Value::Array(blocks) => {
+                let text = blocks
+                    .iter()
+                    .filter_map(|block| block["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("");
+                (!text.is_empty()).then_some(text)
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 /// A writing-run provider: probe, then match.start -> (parked worker) ->
 /// The reviewed E-match fixture shape used by integration tests: the marker
 /// embedding responder separates `[N]` cases orthogonally from the need, so
@@ -541,22 +570,60 @@ async fn u07_scoped_end_to_end_match_compose_review_save_gate_release() {
             move |index: usize, body: &str| {
                 let _ = index;
                 let parsed: Value = serde_json::from_str(body).unwrap_or_default();
-                let user_text = parsed["messages"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
+                let messages = parsed["messages"].as_array().cloned().unwrap_or_default();
+                let user_text = messages
+                    .iter()
                     .filter_map(|message| message["content"].as_str())
                     .collect::<Vec<_>>()
                     .join(" ");
-                if user_text.contains("Compose only") {
+                // Structured role chats carry a response format and no tools.
+                if parsed.get("response_format").is_some() || parsed.get("format").is_some() {
+                    if user_text.contains("shortlist")
+                        || user_text.contains("Explain only these ranked matches")
+                    {
+                        return matcher_explanation(&seed);
+                    }
                     return composer_output();
                 }
-                if user_text.contains("shortlist")
-                    || user_text.contains("Explain only these ranked matches")
-                {
-                    return matcher_explanation(&seed);
+                // Delegated turns: start the granted match child, then the
+                // compose child, then finish once the compose result is seen.
+                // The earlier fixture had no branch for the delegated chat,
+                // so the run answered "Done." without committing either job.
+                let tool_text = last_tool_text(&messages);
+                if tool_text.contains("\"role\":\"composer\"") {
+                    return final_answer("The draft is ready for owner review.");
                 }
-                json!({"message":{"role":"assistant","content":"Done."},"prompt_eval_count":12,"eval_count":8})
+                if tool_text.contains("\"job_id\"") {
+                    return tool_call(
+                        "commands__run",
+                        json!({"id":"material.compose_draft","version":1,"args":json!({
+                            "opportunity_id": seed.opportunity,
+                            "recipient_id": seed.recipient,
+                            "expected_opportunity_revision": 2,
+                            "expected_recipient_revision": 2,
+                            "template_version_id": seed.template,
+                            "exchange_version": 1,
+                            "kind": "outreach",
+                            "slot_fills": [
+                                {"slot": "their_name:name", "value": "Dana"},
+                                {"slot": "gift:item", "value": "a book", "resource_id": seed.gift},
+                                {"slot": "proof:item", "value": "a report", "resource_id": seed.proof}
+                            ],
+                            "selected_match_ids": []
+                        })}),
+                        "compose the matched draft",
+                    );
+                }
+                tool_call(
+                    "commands__run",
+                    json!({"id":"match.start","version":1,"args":json!({
+                        "opportunity_id": seed.opportunity,
+                        "recipient_id": seed.recipient,
+                        "expected_opportunity_revision": 2,
+                        "expected_recipient_revision": 2
+                    })}),
+                    "match the granted resources",
+                )
             }
         }),
         None,
@@ -618,7 +685,12 @@ async fn u07_scoped_end_to_end_match_compose_review_save_gate_release() {
         .fetch_one(workspace.pool())
         .await
         .unwrap();
-    assert_eq!(match_count, 1);
+    assert_eq!(
+        match_count,
+        1,
+        "the match child must commit exactly one match_run\n{}",
+        probe(&workspace, &run_id).await
+    );
     let shortlist: String = sqlx::query_scalar("SELECT shortlist_json FROM match_run LIMIT 1")
         .fetch_one(workspace.pool())
         .await
@@ -778,7 +850,7 @@ async fn u07_scoped_end_to_end_match_compose_review_save_gate_release() {
     assert_eq!(released["material_id"], material_id, "{released:?}");
     let (status, outputs) = request(port, "GET", "/api/v1/outputs", None, "outputs-read").await;
     assert_eq!(status, 200, "{outputs:?}");
-    assert_eq!(outputs.as_array().unwrap().len(), 1);
+    assert_eq!(outputs["items"].as_array().unwrap().len(), 1);
 
     gate_provider.stop().await;
     matcher_provider.stop().await;

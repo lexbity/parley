@@ -61,6 +61,48 @@ async fn post(
         serde_json::from_str(payload).unwrap_or_else(|e| panic!("{e}: {r}")),
     )
 }
+/// TD-10 W3: destructive legacy commits stop at the approval inbox. This
+/// helper performs the grant and resends the identical intent on the same
+/// operation key, exactly like the owner UI does.
+async fn post_destructive(
+    address: std::net::SocketAddr,
+    a: &(String, String, String),
+    path: &str,
+    body: Value,
+    key: &str,
+) -> (u16, Value) {
+    let (status, value) = post(address, a, path, body.clone(), key).await;
+    if status == 403 && value["error"]["code"] == "approval_required" {
+        let pending = get(address, a, "/api/v1/approvals?status=pending").await;
+        let item = pending["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| {
+                row["command_id"].as_str().unwrap() == "maintenance.settings"
+                    || row["command_id"].as_str().unwrap() == "party.erase"
+                    || row["command_id"].as_str().unwrap() == "import.commit"
+                    || row["command_id"].as_str().unwrap() == "workspace.restore"
+            })
+            .unwrap_or_else(|| panic!("no pending approval for {path}: {pending}"));
+        let id = item["id"].as_str().unwrap();
+        let revision = item["revision"].as_i64().unwrap();
+        let digest = item["preview_digest"].as_str().unwrap();
+        let grant = post(
+            address,
+            a,
+            &format!("/api/v1/approvals/{id}/grant"),
+            json!({"expected_revision": revision, "preview_digest": digest}),
+            "s11-grant",
+        )
+        .await;
+        assert_eq!(grant.0, 200, "grant failed: {grant:?}");
+        post(address, a, path, body, key).await
+    } else {
+        (status, value)
+    }
+}
+
 async fn get(address: std::net::SocketAddr, a: &(String, String, String), path: &str) -> Value {
     let mut s = TcpStream::connect(address).await.unwrap();
     s.write_all(format!("GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nCookie: {}\r\nX-Parley-Token: {}\r\nX-Parley-Epoch: {}\r\n\r\n",a.0,a.1,a.2).as_bytes()).await.unwrap();
@@ -78,7 +120,7 @@ async fn request_bytes(
     content_type: &str,
 ) -> (u16, Vec<u8>) {
     let mut s = TcpStream::connect(address).await.unwrap();
-    s.write_all(format!("{method} {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nCookie: {}\r\nX-Parley-Token: {}\r\nX-Parley-Epoch: {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",a.0,a.1,a.2,body.len()).as_bytes()).await.unwrap();
+    s.write_all(format!("{method} {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nCookie: {}\r\nX-Parley-Token: {}\r\nX-Parley-Epoch: {}\r\nIdempotency-Key: s11-request\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",a.0,a.1,a.2,body.len()).as_bytes()).await.unwrap();
     s.write_all(body).await.unwrap();
     let mut response = Vec::new();
     s.read_to_end(&mut response).await.unwrap();
@@ -320,7 +362,7 @@ async fn s11_erasure_removes_subject_canaries_before_operation_is_complete() {
     )
     .await;
     assert_eq!(status, 200, "{preview}");
-    let (status, operation) = post(
+    let (status, operation) = post_destructive(
         service.address,
         &a,
         &format!("/api/v1/parties/{}/erase", subject.id),
@@ -398,7 +440,7 @@ async fn s11_erasure_does_not_scrub_unrelated_events() {
     )
     .await;
     assert_eq!(status, 200, "{preview}");
-    let (status, operation) = post(
+    let (status, operation) = post_destructive(
         service.address,
         &a,
         &format!("/api/v1/parties/{}/erase", subject.id),
@@ -484,7 +526,9 @@ async fn s11_full_export_import_api_roundtrip_preserves_canonical_workspace_stat
     )
     .await;
     assert_eq!(status, 200, "export returned {} bytes", archive.len());
-    assert!(archive.starts_with(b"PK"));
+    if !archive.starts_with(b"PK") {
+        panic!("prefix: {:?}", &archive[..archive.len().min(48)]);
+    }
     service.shutdown().await;
     let target_workspace = Workspace::open(&target).await.unwrap();
     drop(target_workspace);
@@ -502,7 +546,7 @@ async fn s11_full_export_import_api_roundtrip_preserves_canonical_workspace_stat
     let preview: Value = serde_json::from_slice(&preview_bytes)
         .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&preview_bytes)));
     assert_eq!(status, 200, "{preview}");
-    let(status,result)=post(service.address,&b,"/api/v1/imports/commit",json!({"preview_id":preview["id"],"preview_digest":preview["digest"],"target_must_be_empty":true}),"import-commit").await;
+    let(status,result)=post_destructive(service.address,&b,"/api/v1/imports/commit",json!({"preview_id":preview["id"],"preview_digest":preview["digest"],"target_must_be_empty":true}),"import-commit").await;
     assert_eq!(status, 202, "{result}");
     assert_eq!(result["state"], "pending_restart");
     service.wait_for_restart().await;
@@ -550,7 +594,7 @@ async fn s11_restore_publishes_generation_and_revokes_old_epoch() {
     )
     .await;
     assert_eq!(status, 200, "{preview}");
-    let(status,result)=post(service.address,&a,"/api/v1/restore/commit",json!({"preview_id":preview["id"],"preview_digest":preview["digest"],"acknowledge_erased_resurrection":false}),"restore-commit").await;
+    let(status,result)=post_destructive(service.address,&a,"/api/v1/restore/commit",json!({"preview_id":preview["id"],"preview_digest":preview["digest"],"acknowledge_erased_resurrection":false}),"restore-commit").await;
     assert_eq!(status, 202, "{result}");
     assert_eq!(result["state"], "pending_restart");
     assert_ne!(result["epoch"], old_epoch);
