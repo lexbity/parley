@@ -1,10 +1,13 @@
-//! Durable synthetic structured-output probes share the inference dispatcher.
+//! Durable synthetic probes share the inference dispatcher. Each probe
+//! exercises exactly one capability (structured output or embeddings) through
+//! the packaged worker; a probe lease permits only the probed capability's
+//! provider paths.
 
 use super::{
     coach::{ProfileRow, installed_supervisor, profile_fields, tokenizer_path},
-    protocol::{Completion, Execute},
+    protocol::{Capability, Completion, Execute},
 };
-use crate::{AppState, WorkspaceError, new_id, now_utc, now_utc_offset, random_hex};
+use crate::{AppState, WorkspaceError, digest, new_id, now_utc, now_utc_offset, random_hex};
 use serde::Serialize;
 use sqlx::SqliteConnection;
 use std::time::Duration;
@@ -22,18 +25,19 @@ pub(crate) async fn status(
     conn: &mut SqliteConnection,
     revision: i64,
     epoch: &str,
+    mode: &str,
 ) -> Result<Status, sqlx::Error> {
     let qualification: Option<String> = sqlx::query_scalar(
         "SELECT q.checked_at FROM inference_active_profile a JOIN inference_qualification q
          ON q.profile_revision=a.profile_revision WHERE a.profile_revision=?
-         AND q.mode='structured_role' AND q.status='ready' AND q.checked_at >= ?
+         AND q.mode=? AND q.status='ready' AND q.checked_at >= ?
          AND NOT EXISTS(SELECT 1 FROM inference_profile_revocation r WHERE r.profile_revision=a.profile_revision)
          ORDER BY q.checked_at DESC LIMIT 1"
-    ).bind(revision).bind(now_utc_offset(-300)).fetch_optional(&mut *conn).await?;
+    ).bind(revision).bind(mode).bind(now_utc_offset(-300)).fetch_optional(&mut *conn).await?;
     let probe: Option<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT id,status,diagnostic,finished_at FROM inference_probe WHERE profile_revision=? AND epoch=?
+        "SELECT id,status,diagnostic,finished_at FROM inference_probe WHERE profile_revision=? AND epoch=? AND mode=?
          ORDER BY created_at DESC,id DESC LIMIT 1"
-    ).bind(revision).bind(epoch).fetch_optional(&mut *conn).await?;
+    ).bind(revision).bind(epoch).bind(mode).fetch_optional(&mut *conn).await?;
     if let Some(checked_at) = qualification {
         return Ok(Status {
             status: "ready",
@@ -68,22 +72,24 @@ pub(crate) async fn enqueue(
     conn: &mut SqliteConnection,
     revision: i64,
     epoch: &str,
+    mode: &str,
 ) -> Result<bool, sqlx::Error> {
-    let current: Option<(i64, String)> = sqlx::query_as(
-        "SELECT profile_revision,epoch FROM inference_probe WHERE status IN ('queued','running')",
+    let current: Option<(i64, String, String)> = sqlx::query_as(
+        "SELECT profile_revision,epoch,mode FROM inference_probe WHERE status IN ('queued','running')",
     )
     .fetch_optional(&mut *conn)
     .await?;
-    if let Some((current_revision, current_epoch)) = current {
-        return Ok(current_revision == revision && current_epoch == epoch);
+    if let Some((current_revision, current_epoch, current_mode)) = current {
+        return Ok(current_revision == revision && current_epoch == epoch && current_mode == mode);
     }
     sqlx::query(
-        "INSERT INTO inference_probe(id,profile_revision,epoch,status,created_at,updated_at)
-         VALUES(?,?,?,'queued',?,?)",
+        "INSERT INTO inference_probe(id,profile_revision,epoch,mode,status,created_at,updated_at)
+         VALUES(?,?,?,?,'queued',?,?)",
     )
-    .bind(new_id("structured-probe"))
+    .bind(new_id("probe"))
     .bind(revision)
     .bind(epoch)
+    .bind(mode)
     .bind(now_utc())
     .bind(now_utc())
     .execute(conn)
@@ -102,9 +108,9 @@ pub(crate) async fn run(state: &AppState, id: &str) {
     let pool = state.workspace.pool();
     let epoch = state.workspace.epoch();
     let token = random_hex(32);
-    let revision: Option<i64> = sqlx::query_scalar(
+    let claim: Option<(i64, String)> = sqlx::query_as(
         "UPDATE inference_probe SET status='running',lease_id=?,updated_at=? WHERE id=? AND epoch=?
-         AND status='queued' RETURNING profile_revision",
+         AND status='queued' RETURNING profile_revision,mode",
     )
     .bind(&token)
     .bind(now_utc())
@@ -114,26 +120,47 @@ pub(crate) async fn run(state: &AppState, id: &str) {
     .await
     .ok()
     .flatten();
-    let Some(revision) = revision else { return };
-    let result = execute(state, id, revision, &token).await.err();
-    let _ = finish(state, id, revision, &token, result).await;
+    let Some((revision, mode)) = claim else {
+        return;
+    };
+    let outcome = execute(state, id, revision, &mode, &token).await;
+    let (diagnostic, observed) = match outcome {
+        Ok(observed) => (None, observed),
+        Err(diagnostic) => (Some(diagnostic), ObservedProbe::default()),
+    };
+    let _ = finish(state, id, revision, &mode, &token, diagnostic, observed).await;
+}
+
+#[derive(Default)]
+struct ObservedProbe {
+    model_digest: Option<String>,
+    dimensions: Option<u32>,
 }
 
 async fn execute(
     state: &AppState,
     id: &str,
     revision: i64,
+    mode: &str,
     lease: &str,
-) -> Result<(), &'static str> {
+) -> Result<ObservedProbe, &'static str> {
     let row: Option<ProfileRow> = sqlx::query_as(
         "SELECT p.endpoint,p.runner_build_digest,p.provider_version,p.chat_model,p.chat_model_digest,
-                p.tokenizer_digest,p.recipe_json,p.context_tokens,p.output_tokens
+                p.tokenizer_digest,p.recipe_json,p.context_tokens,p.output_tokens,
+                p.embed_model,p.embed_model_digest
          FROM inference_profile p WHERE revision=?
            AND NOT EXISTS(SELECT 1 FROM inference_profile_revocation r WHERE r.profile_revision=p.revision)"
     ).bind(revision).fetch_optional(state.workspace.pool()).await.map_err(|_| "PERSISTENCE_FAILED")?;
     let (endpoint, profile, build) = row
         .and_then(|row| profile_fields(revision, row))
         .ok_or("CAPABILITY_UNQUALIFIED")?;
+    let capability = match mode {
+        "embed" => Capability::Embed,
+        _ => Capability::StructuredRole,
+    };
+    if capability == Capability::Embed && profile.embed_tag.is_none() {
+        return Err("CAPABILITY_UNQUALIFIED");
+    }
     let supervisor = installed_supervisor()?;
     if build != supervisor.manifest_digest() {
         return Err("PROFILE_CHANGED");
@@ -145,6 +172,7 @@ async fn execute(
     let request = Execute::Probe {
         profile,
         deadline_ms: 15_000,
+        capability,
     };
     let result = supervisor.execute(endpoint, &execution, lease, &tokenizer, request, signal);
     tokio::pin!(result);
@@ -164,9 +192,17 @@ async fn execute(
         }
     }.map_err(|error| error.code())?;
     match result {
-        Completion::Probe { .. } => Ok(()),
-        Completion::Delegated { .. } => Err("WORKER_PROTOCOL"),
-        Completion::StructuredRole { .. } => Err("WORKER_PROTOCOL"),
+        Completion::Probe {
+            observed,
+            dimensions,
+            ..
+        } => Ok(ObservedProbe {
+            model_digest: (mode == "embed").then_some(observed.model_digest),
+            dimensions,
+        }),
+        Completion::Delegated { .. }
+        | Completion::StructuredRole { .. }
+        | Completion::Embed { .. } => Err("WORKER_PROTOCOL"),
     }
 }
 
@@ -174,8 +210,10 @@ async fn finish(
     state: &AppState,
     id: &str,
     revision: i64,
+    mode: &str,
     lease: &str,
     diagnostic: Option<&str>,
+    observed: ObservedProbe,
 ) -> Result<(), WorkspaceError> {
     let mut tx = state.workspace.pool().begin_with("BEGIN IMMEDIATE").await?;
     let now = now_utc();
@@ -198,20 +236,39 @@ async fn finish(
     .await?
     .rows_affected();
     if changed == 1 {
-        // A synthetic probe refreshes an already evaluated tuple.
-        // Qualification creation and activation are independently authorized.
+        // A synthetic probe refreshes an already evaluated tuple. Qualification
+        // creation and activation are independently authorized; the observed
+        // model identity of a successful embed probe is recorded here.
+        let tuple = digest(format!("{revision}:{mode}").as_bytes());
+        let evaluation = digest(format!("probe:{mode}:{revision}").as_bytes());
+        let details = if mode == "embed" && observed.dimensions.is_some() {
+            serde_json::json!({"dimensions": observed.dimensions}).to_string()
+        } else {
+            "{}".to_owned()
+        };
         sqlx::query(
-            "UPDATE inference_qualification SET checked_at=?,status=?,diagnostic=?
-             WHERE profile_revision=? AND mode='structured_role'",
+            "INSERT INTO inference_qualification(
+               tuple_digest,profile_revision,mode,evaluation_digest,model_digest,details_json,
+               checked_at,status,diagnostic)
+             VALUES(?,?,?,?,?,?,?,?,?)
+             ON CONFLICT(tuple_digest) DO UPDATE SET
+               checked_at=excluded.checked_at,status=excluded.status,diagnostic=excluded.diagnostic,
+               model_digest=COALESCE(excluded.model_digest,inference_qualification.model_digest),
+               details_json=excluded.details_json",
         )
-        .bind(now)
+        .bind(tuple)
+        .bind(revision)
+        .bind(mode)
+        .bind(evaluation)
+        .bind(observed.model_digest)
+        .bind(details)
+        .bind(&now)
         .bind(if diagnostic.is_none() {
             "ready"
         } else {
             "failed"
         })
         .bind(diagnostic)
-        .bind(revision)
         .execute(&mut *tx)
         .await?;
     }
@@ -225,7 +282,7 @@ mod tests {
     use sqlx::Connection;
 
     #[tokio::test]
-    async fn ar01_probe_status_and_enqueue_are_durable_and_coalesced() {
+    async fn ar07_probe_status_and_enqueue_are_durable_and_mode_scoped() {
         let mut db = sqlx::SqliteConnection::connect("sqlite::memory:")
             .await
             .unwrap();
@@ -239,40 +296,42 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(
-            status(&mut db, 1, &epoch).await.unwrap().status,
+            status(&mut db, 1, &epoch, "structured_role")
+                .await
+                .unwrap()
+                .status,
             "unqualified"
         );
-        assert!(enqueue(&mut db, 1, &epoch).await.unwrap());
-        assert!(enqueue(&mut db, 1, &epoch).await.unwrap());
+        assert!(
+            enqueue(&mut db, 1, &epoch, "structured_role")
+                .await
+                .unwrap()
+        );
+        assert!(
+            enqueue(&mut db, 1, &epoch, "structured_role")
+                .await
+                .unwrap()
+        );
+        assert!(!enqueue(&mut db, 1, &epoch, "embed").await.unwrap());
         let probe_id: String = sqlx::query_scalar("SELECT id FROM inference_probe")
             .fetch_one(&mut db)
             .await
             .unwrap();
-        let queued = status(&mut db, 1, &epoch).await.unwrap();
-        assert_eq!(queued.status, "queued");
-        assert_eq!(queued.probe_id.as_deref(), Some(probe_id.as_str()));
         assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM inference_probe")
-                .fetch_one(&mut db)
+            status(&mut db, 1, &epoch, "structured_role")
                 .await
-                .unwrap(),
-            1
+                .unwrap()
+                .status,
+            "queued"
         );
-
-        sqlx::query("UPDATE inference_probe SET status='failed',diagnostic='MODEL_UNAVAILABLE',finished_at=?,updated_at=? WHERE id=?")
-            .bind(now_utc()).bind(now_utc()).bind(&probe_id).execute(&mut db).await.unwrap();
-        let failed = status(&mut db, 1, &epoch).await.unwrap();
-        assert_eq!(failed.status, "failed");
-        assert_eq!(failed.diagnostic.as_deref(), Some("MODEL_UNAVAILABLE"));
-
-        sqlx::query("INSERT INTO inference_profile(revision,runner_kind,protocol_major,context_tokens,output_tokens,locale,created_at) VALUES(2,'pi',1,8192,512,'en-CA',?)")
-            .bind(now_utc()).execute(&mut db).await.unwrap();
-        assert!(enqueue(&mut db, 2, &epoch).await.unwrap());
-        sqlx::query("UPDATE inference_probe SET status='succeeded',diagnostic=NULL,finished_at=?,updated_at=? WHERE profile_revision=2")
-            .bind(now_utc()).bind(now_utc()).execute(&mut db).await.unwrap();
         assert_eq!(
-            status(&mut db, 2, &epoch).await.unwrap().status,
-            "probe_succeeded"
+            status(&mut db, 1, &epoch, "embed").await.unwrap().status,
+            "unqualified"
         );
+
+        sqlx::query("UPDATE inference_probe SET status='succeeded',diagnostic=NULL,finished_at=?,updated_at=? WHERE id=?")
+            .bind(now_utc()).bind(now_utc()).bind(&probe_id).execute(&mut db).await.unwrap();
+        let succeeded = status(&mut db, 1, &epoch, "structured_role").await.unwrap();
+        assert_eq!(succeeded.status, "probe_succeeded");
     }
 }

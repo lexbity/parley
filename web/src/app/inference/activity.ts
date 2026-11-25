@@ -119,6 +119,68 @@ class InferenceActivity {
     void this.read(true);
   };
 
+  watchEmbedProbe(
+    revision: number,
+    update: (embed: StructuredReadiness) => void,
+    profileChanged: () => void,
+    failed: () => void,
+  ): () => void {
+    const epoch = parley.workspaceEpoch;
+    let stopped = false;
+    let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
+    let request: AbortController | undefined;
+
+    function pause() {
+      globalThis.clearTimeout(timer);
+      request?.abort();
+      request = undefined;
+    }
+
+    function stop() {
+      stopped = true;
+      pause();
+      globalThis.removeEventListener('focus', refresh);
+      globalThis.document.removeEventListener('visibilitychange', refresh);
+    }
+
+    function refresh() {
+      pause();
+      if (!stopped && globalThis.document.visibilityState !== 'hidden') void read();
+    }
+
+    async function read() {
+      if (epoch !== parley.workspaceEpoch) { stop(); return; }
+      const active = new AbortController();
+      request = active;
+      try {
+        const profile = await parley.getProvider(active.signal);
+        if (active.signal.aborted || epoch !== parley.workspaceEpoch) return;
+        if (profile.profile_revision !== revision) {
+          stop();
+          profileChanged();
+          return;
+        }
+        update(profile.embed);
+        if (profile.embed.status === 'queued' || profile.embed.status === 'running') {
+          timer = globalThis.setTimeout(() => { void read(); }, 2_000);
+        } else {
+          stop();
+        }
+      } catch {
+        if (active.signal.aborted || epoch !== parley.workspaceEpoch) return;
+        failed();
+        timer = globalThis.setTimeout(() => { void read(); }, 8_000);
+      } finally {
+        if (request === active) request = undefined;
+      }
+    }
+
+    globalThis.addEventListener('focus', refresh);
+    globalThis.document.addEventListener('visibilitychange', refresh);
+    refresh();
+    return stop;
+  }
+
   watchStructuredProbe(
     revision: number,
     update: (structured: StructuredReadiness) => void,

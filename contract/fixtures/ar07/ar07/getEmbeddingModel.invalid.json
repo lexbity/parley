@@ -1,0 +1,12 @@
+{
+  "model": "local:embed",
+  "model_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "profile_revision": 2,
+  "calibrated_kinds": "gift",
+  "readiness": {
+    "status": "ready",
+    "diagnostic": null,
+    "checked_at": null,
+    "probe_id": null
+  }
+}

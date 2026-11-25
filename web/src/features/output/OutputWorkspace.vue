@@ -5,7 +5,7 @@ import {
   newOperationKey, parley,
   type ContactThread, type GateReport, type Material, type MaterialInput, type OpportunitySummary,
   type ReleasedMaterial, type Resource, type SentenceBinding, type SlotFill,
-  type WritingInterest, type WritingMatch, type WritingTemplate,
+  type StructuredReadiness, type WritingInterest, type WritingMatch, type WritingTemplate,
 } from '../../api/client';
 import ContactThreadPanel from '../queue/ContactThreadPanel.vue';
 
@@ -32,8 +32,9 @@ const recipientId = ref('');
 const interests = ref<WritingInterest[]>([]);
 const exchange = ref<{ current: Record<string, unknown> | null; versions: Array<Record<string, unknown>> }>({ current: null, versions: [] });
 const match = ref<WritingMatch | null>(null);
-const embedding = ref<{ model: string; model_digest: string | null; calibrated_kinds: string[] }>({ model: '', model_digest: null, calibrated_kinds: [] });
+const embedding = ref<{ model: string; model_digest: string | null; profile_revision: number | null; calibrated_kinds: string[]; readiness: StructuredReadiness }>({ model: '', model_digest: null, profile_revision: null, calibrated_kinds: [], readiness: { status: 'unqualified', diagnostic: null, checked_at: null, probe_id: null } });
 const embeddingDraft = ref('');
+const embedBusy = ref(false);
 const templates = ref<WritingTemplate[]>([]);
 const families = ref<Array<{ id: string; name: string }>>([]);
 const voiceSamples = ref<Array<{ id: string; text: string; channel: string | null; revision: number }>>([]);
@@ -117,6 +118,7 @@ const canSave = computed(() => (dirty.value || bindingsDirty.value) && draft.val
 const saveLabel = computed(() => (dirty.value || bindingsDirty.value) ? 'Save draft' : boundMaterial.value ? 'Saved' : 'Save draft');
 
 const matchDigest = computed(() => embedding.value.model_digest);
+const embeddingProfileRevisionUnavailable = computed(() => embedding.value.profile_revision === null);
 const assessment = computed<'current' | 'stale' | 'missing'>(() => {
   if (!match.value) return 'missing';
   return matchDigest.value !== null && match.value.embed_model_digest === matchDigest.value ? 'current' : 'stale';
@@ -531,9 +533,32 @@ async function retireVoice(id: string) {
 }
 
 async function setEmbeddingModel() {
-  await parley.setEmbeddingModel(embeddingDraft.value.trim());
+  await parley.setEmbeddingModel(embeddingDraft.value.trim(), embedding.value.profile_revision);
   embedding.value = await parley.getEmbeddingModel();
-  setNotice('Embedding model changed. Matching is unavailable until thresholds are calibrated for its digest.');
+  setNotice('Embedding model changed. Verify it, then calibrate thresholds for its digest.');
+}
+
+async function verifyEmbeddingModel() {
+  if (embedBusy.value) return;
+  embedBusy.value = true;
+  try {
+    const result = await parley.checkEmbedProvider();
+    if (result.embed && ['queued', 'running'].includes(result.embed.status)) {
+      setNotice('Embedding model verification queued. It runs in the background.');
+    } else if (result.embed?.status === 'ready') {
+      setNotice('Embedding model is verified.');
+    } else {
+      setNotice(result.message || 'Embedding model verification did not complete.');
+    }
+    // Refresh after the probe settles: the matching lane is separate, so the
+    // verifier converges within its own readiness window.
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 2400));
+    embedding.value = await parley.getEmbeddingModel();
+  } catch (reason) {
+    setNotice(reason instanceof Error ? reason.message : 'Could not verify the embedding model.');
+  } finally {
+    embedBusy.value = false;
+  }
 }
 
 function chooseManually() {
@@ -1478,9 +1503,15 @@ onBeforeUnmount(() => {
         <div class="ow-tool-card">
           <strong>{{ assessment === 'stale' ? 'Recalibration required' : assessment === 'current' ? 'Current calibrated assessment' : 'Assessment missing' }}</strong>
           <p>{{ assessment === 'stale' ? 'The previous results belong to another embedding profile.' : 'Matching uses current recipient evidence and eligible resources.' }}</p>
-          <p>Model {{ embedding.model || 'not set' }} · digest {{ embedding.model_digest ?? 'not loaded' }} · calibrated kinds: {{ embedding.calibrated_kinds.join(', ') || 'none' }}</p>
+          <p>Model {{ embedding.model || 'not set' }} · digest {{ embedding.model_digest ?? 'not verified' }} · embedding {{ embedding.readiness.status }} · calibrated kinds: {{ embedding.calibrated_kinds.join(', ') || 'none' }}</p>
+          <p v-if="embedding.readiness.status === 'failed' && embedding.readiness.diagnostic">
+            Embedding model check failed: {{ embedding.readiness.diagnostic }}
+          </p>
           <p v-if="!embedding.model_digest">
-            Without a matching model calibration, the system cannot rank resources.
+            Verify the embedding model before matching; without a verification and calibration, the system cannot rank resources.
+          </p>
+          <p v-else-if="embedding.calibrated_kinds.length === 0">
+            The embedding model is verified but not calibrated. Calibrate thresholds before ranking.
           </p>
         </div>
         <label>Embedding model<input
@@ -1494,6 +1525,13 @@ onBeforeUnmount(() => {
             @click="run(setEmbeddingModel)"
           >
             Set local embedding model
+          </button>
+          <button
+            type="button"
+            :disabled="embedBusy || embeddingProfileRevisionUnavailable"
+            @click="run(verifyEmbeddingModel)"
+          >
+            Verify embedding model
           </button>
           <button
             type="button"

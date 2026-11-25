@@ -775,6 +775,7 @@ function decodeProvider(value: unknown): ProviderConfig {
       template_tokens: nonnegativeInteger(paired.template_tokens, 'pairing template tokens'),
     } : null,
     structured: decodeStructuredReadiness(row.structured),
+    embed: decodeStructuredReadiness(row.embed),
   };
 }
 
@@ -812,6 +813,7 @@ function decodeProviderHealth(value: unknown): ProviderHealth {
     models: stringArray(row.models, 'health.models'),
     message: requiredString(row.message, 'health.message'),
     ...(row.structured === undefined ? {} : { structured: decodeStructuredReadiness(row.structured) }),
+    ...(row.embed === undefined ? {} : { embed: decodeStructuredReadiness(row.embed) }),
   };
 }
 
@@ -1383,8 +1385,9 @@ export class ParleyClient {
   async approveWritingTemplate(id: string, key = newOperationKey()): Promise<void> { await this.mutate(`/templates/${encodeURIComponent(id)}/approve`, 'POST', {}, { 'Idempotency-Key': key }); }
   async activateWritingTemplate(id: string, key = newOperationKey()): Promise<void> { await this.mutate(`/templates/${encodeURIComponent(id)}/activate`, 'POST', {}, { 'Idempotency-Key': key }); }
 
-  async getEmbeddingModel(): Promise<{ model: string; model_digest: string | null; calibrated_kinds: string[] }> { const value = object(await this.request('/embedding-model')); if (!value || !Array.isArray(value.calibrated_kinds)) throw new Error('Invalid response: embedding model is malformed'); return { model: requiredString(value.model, 'embedding_model'), model_digest: typeof value.model_digest === 'string' ? value.model_digest : null, calibrated_kinds: value.calibrated_kinds.filter((kind): kind is string => typeof kind === 'string') }; }
-  async setEmbeddingModel(model: string, key = newOperationKey()): Promise<void> { await this.mutate('/embedding-model', 'PUT', { model }, { 'Idempotency-Key': key }); }
+  async getEmbeddingModel(): Promise<{ model: string; model_digest: string | null; profile_revision: number | null; calibrated_kinds: string[]; readiness: StructuredReadiness }> { const value = object(await this.request('/embedding-model')); if (!value || !Array.isArray(value.calibrated_kinds)) throw new Error('Invalid response: embedding model is malformed'); return { model: requiredString(value.model, 'embedding_model'), model_digest: typeof value.model_digest === 'string' ? value.model_digest : null, profile_revision: typeof value.profile_revision === 'number' ? Number(value.profile_revision) : null, calibrated_kinds: value.calibrated_kinds.filter((kind): kind is string => typeof kind === 'string'), readiness: decodeStructuredReadiness(value.readiness) }; }
+  async setEmbeddingModel(model: string, expectedProfileRevision: number | null, key = newOperationKey()): Promise<void> { await this.mutate('/embedding-model', 'PUT', { model, ...(expectedProfileRevision !== null ? { expected_profile_revision: expectedProfileRevision } : {}) }, { 'Idempotency-Key': key }); }
+  async checkEmbedProvider(): Promise<ProviderHealth> { return decodeProviderHealth(await this.request('/agent/provider/health', { method: 'POST', body: JSON.stringify({ mode: 'embed' }) })); }
   async startMatching(opportunityId: string, recipientId: string, key = newOperationKey()): Promise<WritingJob> { const value = object(await this.mutate(`/opportunities/${encodeURIComponent(opportunityId)}/matches`, 'POST', { recipient_id: recipientId }, { 'Idempotency-Key': key })); if (!value) throw new Error('Invalid response: matching job is malformed'); return { job_id: requiredString(value.job_id, 'job_id'), role: requiredString(value.role, 'role') }; }
   async getWritingMatch(opportunityId: string, recipientId: string): Promise<WritingMatch> { const value = object(await this.request(`/opportunities/${encodeURIComponent(opportunityId)}/matches?recipient_id=${encodeURIComponent(recipientId)}`)); if (!value) throw new Error('Invalid response: match result is malformed'); return { id: requiredString(value.id, 'match.id'), opportunity_id: requiredString(value.opportunity_id, 'match.opportunity_id'), recipient_id: requiredString(value.recipient_id, 'match.recipient_id'), embed_model_digest: requiredString(value.embed_model_digest, 'match.embed_model_digest'), calibration_json: requiredString(value.calibration_json, 'match.calibration_json'), shortlist_json: requiredString(value.shortlist_json, 'match.shortlist_json'), why_job_id: typeof value.why_job_id === 'string' ? value.why_job_id : null }; }
   async buildWritingTemplates(input: { segment_id?: string; stage_class: string; rungs: number[]; rules: string[]; channel: string; max_chars: number; voice_sample_ids?: string[] }, key = newOperationKey()): Promise<WritingJob> { const value = object(await this.mutate('/templates/build', 'POST', input, { 'Idempotency-Key': key })); if (!value) throw new Error('Invalid response: template builder job is malformed'); return { job_id: requiredString(value.job_id, 'job_id'), role: requiredString(value.role, 'role') }; }

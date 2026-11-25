@@ -31,6 +31,8 @@ type Fixtures = {
   ownerSession: OwnerSession;
   pauseExtractor: boolean;
   coachOnline: boolean;
+  embedOnline: boolean;
+  matchingCalibrated: boolean;
 };
 
 const BOOTSTRAP_PREFIX = 'Bootstrap URL: ';
@@ -64,10 +66,12 @@ export async function openOwnerPage(page: Page, bootstrapUrl: string): Promise<v
 export const test = base.extend<Fixtures>({
   pauseExtractor: [false, { option: true }],
   coachOnline: [false, { option: true }],
+  embedOnline: [false, { option: true }],
+  matchingCalibrated: [false, { option: true }],
   ownerSession: [
-    async ({ pauseExtractor, coachOnline }, use, testInfo) => {
+    async ({ pauseExtractor, coachOnline, embedOnline, matchingCalibrated }, use, testInfo) => {
       if (testInfo.project.name === 'mock') {
-        const mock: MockApi = createMockApi({ pauseExtractor, coachOnline });
+        const mock: MockApi = createMockApi({ pauseExtractor, coachOnline, embedOnline, matchingCalibrated });
         const server = await createServer({
           root: webRoot,
           plugins: [mock.plugin],

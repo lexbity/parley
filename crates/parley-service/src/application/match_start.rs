@@ -49,6 +49,7 @@ pub(crate) enum MatchStartError {
     NeedMissing,
     TargetNotGranted,
     QueueAtCapacity,
+    ScopeTooLarge,
     Database,
 }
 
@@ -71,11 +72,14 @@ pub(crate) async fn ready_resource_snapshot(
     granted_resource_ids: &[String],
 ) -> Result<Vec<ReadyResourceSnapshot>, MatchStartError> {
     let rows: Vec<(String, String, String, String, i64, f64)> = sqlx::query_as(
-        "SELECT id,subtype,name,body_json,resource_content_revision,max(0.0,(julianday('now')-julianday(created_at))/30.4375) FROM entity WHERE subtype IN ('gift','proof','artifact') AND readiness='ready' AND retired_at IS NULL ORDER BY id",
+        "SELECT id,subtype,name,body_json,resource_content_revision,max(0.0,(julianday('now')-julianday(created_at))/30.4375) FROM entity WHERE subtype IN ('gift','proof','artifact') AND readiness='ready' AND retired_at IS NULL ORDER BY id LIMIT 4097",
     )
     .fetch_all(&mut **tx)
     .await
     .map_err(|_| MatchStartError::Database)?;
+    if rows.len() > 4096 {
+        return Err(MatchStartError::ScopeTooLarge);
+    }
     let mut snapshots = Vec::with_capacity(rows.len());
     for (id, kind, title, body_json, revision, age_months) in rows {
         if !granted_resource_ids.is_empty() && !granted_resource_ids.iter().any(|item| item == &id)
@@ -267,6 +271,32 @@ pub(crate) async fn start(
         crate::WorkspaceError::Invalid(_) => MatchStartError::RecipientInvalid,
         _ => MatchStartError::Database,
     })?;
+    // The matcher runs through the packaged worker and requires the profile
+    // revision that will serve it. Without an active qualified profile the
+    // job is admitted unbound and fails closed as unqualified at dispatch.
+    let profile_revision: Option<i64> = sqlx::query_scalar(
+        "SELECT a.profile_revision FROM inference_active_profile a
+         WHERE a.singleton=1
+           AND NOT EXISTS(SELECT 1 FROM inference_profile_revocation r
+                          WHERE r.profile_revision=a.profile_revision)
+         ORDER BY a.profile_revision DESC LIMIT 1",
+    )
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|_| MatchStartError::Database)?
+    .flatten();
+    // The matcher runs through the packaged worker under fixed queue and
+    // total deadlines (AR-001 NFR-2), independent of other role admissions.
+    sqlx::query(
+        "UPDATE durable_job SET profile_revision=?,queue_deadline_at=?,total_deadline_at=? WHERE id=?",
+    )
+    .bind(profile_revision)
+    .bind(crate::now_utc_offset(300))
+    .bind(crate::now_utc_offset(360))
+    .bind(&job_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|_| MatchStartError::Database)?;
 
     let cursor: i64 = sqlx::query_scalar(
         "INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'opportunity',?,1,'match.generation_queued',?) RETURNING cursor",

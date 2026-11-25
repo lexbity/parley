@@ -78,7 +78,8 @@ async fn claim(state: &AppState, id: &str) -> Result<Claim, WorkspaceError> {
     let input = serde_json::from_str::<ExtractInput>(&frozen.input_json).ok();
     let row: Option<ProfileRow> = sqlx::query_as(
         "SELECT p.endpoint,p.runner_build_digest,p.provider_version,p.chat_model,p.chat_model_digest,
-                p.tokenizer_digest,p.recipe_json,p.context_tokens,p.output_tokens
+                p.tokenizer_digest,p.recipe_json,p.context_tokens,p.output_tokens,
+                p.embed_model,p.embed_model_digest
          FROM inference_profile p WHERE revision=?
            AND NOT EXISTS(SELECT 1 FROM inference_profile_revocation r WHERE r.profile_revision=p.revision)
            AND EXISTS(SELECT 1 FROM inference_qualification q WHERE q.profile_revision=p.revision
@@ -316,7 +317,7 @@ async fn execute(state: &AppState, id: &str, lease: &Lease) -> Result<Aggregate,
             Completion::StructuredRole {
                 candidate, usage, ..
             } => (candidate, usage),
-            Completion::Probe { .. } | Completion::Delegated { .. } => {
+            Completion::Probe { .. } | Completion::Delegated { .. } | Completion::Embed { .. } => {
                 return Err("WORKER_PROTOCOL");
             }
         };

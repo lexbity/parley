@@ -1,6 +1,8 @@
+pub(crate) mod calibrate;
 pub(crate) mod coach;
 pub(crate) mod dispatch;
 pub(crate) mod extractor;
+pub(crate) mod matcher;
 pub(crate) mod probe;
 pub(crate) mod profile;
 pub(crate) mod protocol;
@@ -27,4 +29,8 @@ pub(crate) fn briefer_schema() -> &'static [u8] {
 
 pub(crate) fn extractor_schema() -> &'static [u8] {
     crate::application::extract::SCHEMA.as_bytes()
+}
+
+pub(crate) fn matcher_schema() -> &'static [u8] {
+    crate::jobs::matcher_schema().as_bytes()
 }

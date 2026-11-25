@@ -65,6 +65,8 @@ pub(super) fn routes() -> Router<AppState> {
 #[serde(deny_unknown_fields)]
 struct EmbeddingModelRequest {
     model: String,
+    #[serde(default)]
+    expected_profile_revision: Option<i64>,
 }
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -185,7 +187,7 @@ async fn create_template_family(
     (StatusCode::CREATED, Json(result)).into_response()
 }
 
-fn scoring_config_digest(weights: &Value, half_life: f64) -> Result<String, String> {
+pub(crate) fn scoring_config_digest(weights: &Value, half_life: f64) -> Result<String, String> {
     let bytes = serde_json::to_vec(
         &json!({"weights":weights,"proof_half_life_months":half_life,"scoring_revision":1}),
     )
@@ -193,37 +195,18 @@ fn scoring_config_digest(weights: &Value, half_life: f64) -> Result<String, Stri
     Ok(digest(&bytes))
 }
 
-async fn get_calibrations(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    if let Err(response) = authenticate(&headers, &state).await {
-        return response.into_response();
-    }
-    let provider: Result<(String, Option<String>), sqlx::Error> = sqlx::query_as(
-        "SELECT embed_model,embed_model_digest FROM agent_provider WHERE singleton=1",
-    )
-    .fetch_one(state.workspace.pool())
-    .await;
-    let (model, model_digest) = match provider {
-        Ok(value) => value,
-        Err(error) => return command_error(error.into()),
-    };
+/// Resolve the deterministic scoring configuration from owner settings: the
+/// matcher weights and proof half-life that bind calibration and cache recipe.
+pub(crate) async fn scoring_config(
+    conn: &mut sqlx::SqliteConnection,
+) -> Result<(Value, f64), WorkspaceError> {
     let settings_json: String =
-        match sqlx::query_scalar("SELECT settings_json FROM owner_profile WHERE id=1")
-            .fetch_one(state.workspace.pool())
+        sqlx::query_scalar("SELECT settings_json FROM owner_profile WHERE id=1")
+            .fetch_one(&mut *conn)
             .await
-        {
-            Ok(value) => value,
-            Err(error) => return command_error(error.into()),
-        };
-    let settings: Value = match serde_json::from_str(&settings_json) {
-        Ok(value) => value,
-        Err(error) => {
-            return err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "OWNER_SETTINGS_CORRUPT",
-                &error.to_string(),
-            );
-        }
-    };
+            .map_err(WorkspaceError::Database)?;
+    let settings: Value = serde_json::from_str(&settings_json)
+        .map_err(|_| WorkspaceError::Invalid("OWNER_SETTINGS_CORRUPT".into()))?;
     let half_life = settings
         .pointer("/pack/limits/proof_half_life_months")
         .and_then(Value::as_f64)
@@ -233,18 +216,68 @@ async fn get_calibrations(State(state): State<AppState>, headers: HeaderMap) -> 
         .pointer("/matcher/weights")
         .cloned()
         .unwrap_or(json!({"cosine":0.5,"tags":0.25,"recency":0.15,"track":0.1}));
-    let config_digest = match scoring_config_digest(&weights, half_life) {
-        Ok(value) => value,
-        Err(error) => {
-            return err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "MATCH_CONFIG_SERIALIZE_FAILED",
-                &error,
-            );
-        }
-    };
-    let rows=sqlx::query_as::<_,(String,f64,String,i64,i64,i64,i64,String)>("SELECT asset_kind,threshold,fixture_digest,positives,negatives,true_positives,false_positives,scoring_config_digest FROM matching_calibration WHERE trusted=1 AND model_digest=? AND scoring_config_digest=? AND calibration_revision=(SELECT max(c2.calibration_revision) FROM matching_calibration c2 WHERE c2.trusted=1 AND c2.model_digest=matching_calibration.model_digest AND c2.asset_kind=matching_calibration.asset_kind AND c2.scoring_config_digest=matching_calibration.scoring_config_digest) ORDER BY asset_kind").bind(model_digest.clone().unwrap_or_default()).bind(config_digest.clone()).fetch_all(state.workspace.pool()).await;
-    match rows{Ok(rows)=>Json(json!({"model":model,"model_digest":model_digest,"scoring_config_digest":config_digest,"calibrations":rows.into_iter().map(|(kind,threshold,fixture_digest,positives,negatives,true_positives,false_positives,_)|json!({"asset_kind":kind,"threshold":threshold,"fixture_digest":fixture_digest,"positives":positives,"negatives":negatives,"true_positives":true_positives,"false_positives":false_positives,"trusted":true})).collect::<Vec<_>>()})).into_response(),Err(error)=>command_error(error.into())}
+    Ok((weights, half_life))
+}
+
+async fn get_calibrations(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err(response) = authenticate(&headers, &state).await {
+        return response.into_response();
+    }
+    use super::inference::profile;
+    let result = async {
+        let mut conn = state.workspace.pool().acquire().await?;
+        let settings = profile::get_settings(&mut conn)
+            .await
+            .map_err(|_| WorkspaceError::Invalid("Local inference profile is unavailable".into()))?
+            .ok_or(WorkspaceError::NotFound)?;
+        let model = settings.embed_model;
+        let (weights, half_life) = scoring_config(&mut conn).await?;
+        let config_digest = scoring_config_digest(&weights, half_life)
+            .map_err(|_| WorkspaceError::Invalid("Scoring configuration failed to serialize".into()))?;
+        let embed: Option<(String, u32)> = sqlx::query_as(
+            "SELECT q.model_digest, json_extract(q.details_json,'$.dimensions')
+             FROM inference_qualification q
+             WHERE q.profile_revision=? AND q.mode='embed' AND q.status='ready' AND q.checked_at>=?",
+        )
+        .bind(settings.revision)
+        .bind(crate::now_utc_offset(-300))
+        .fetch_optional(&mut *conn)
+        .await?;
+        let recipe = embed.as_ref().map(|(digest, dimensions)| {
+            profile::recipe_digest(settings.revision, digest, *dimensions, &config_digest)
+        });
+        type CalibrationRow = (String, f64, String, i64, i64, i64, i64, String, Option<f64>, Option<f64>, Option<f64>);
+        let rows: Vec<CalibrationRow> =
+            sqlx::query_as(
+                "SELECT asset_kind,threshold,fixture_digest,positives,negatives,true_positives,
+                        false_positives,scoring_config_digest,accuracy,precision,recall
+                 FROM matching_calibration WHERE trusted=1 AND recipe_digest=?
+                 AND calibration_revision=(SELECT max(c2.calibration_revision) FROM matching_calibration c2
+                   WHERE c2.trusted=1 AND c2.recipe_digest=matching_calibration.recipe_digest
+                     AND c2.asset_kind=matching_calibration.asset_kind)
+                 ORDER BY asset_kind",
+            )
+            .bind(recipe.as_deref().unwrap_or(""))
+            .fetch_all(&mut *conn)
+            .await?;
+        Ok(json!({
+            "model": model,
+            "model_digest": embed.as_ref().map(|row| row.0.clone()),
+            "recipe_digest": recipe,
+            "scoring_config_digest": config_digest,
+            "calibrations": rows.into_iter().map(|(kind,threshold,fixture_digest,positives,negatives,true_positives,false_positives,_,accuracy,precision,recall)|json!({
+                "asset_kind":kind,"threshold":threshold,"fixture_digest":fixture_digest,
+                "positives":positives,"negatives":negatives,"true_positives":true_positives,
+                "false_positives":false_positives,"trusted":true,
+                "accuracy":accuracy,"precision":precision,"recall":recall
+            })).collect::<Vec<_>>()
+        }))
+    }
+    .await;
+    match result {
+        Ok(body) => Json(body).into_response(),
+        Err(error) => command_error(error),
+    }
 }
 
 async fn reject_client_calibration(
@@ -269,20 +302,72 @@ async fn get_embedding_model(
     if let Err(response) = authenticate(&headers, &state).await {
         return response.into_response();
     }
-    let row: Result<(String, Option<String>), sqlx::Error> = sqlx::query_as(
-        "SELECT embed_model,embed_model_digest FROM agent_provider WHERE singleton=1",
-    )
-    .fetch_one(state.workspace.pool())
+    use super::inference::{probe, profile};
+    let result = async {
+        let mut conn = state.workspace.pool().acquire().await?;
+        let settings = profile::get_settings(&mut conn)
+            .await
+            .map_err(|_| WorkspaceError::Invalid("Local inference profile is unavailable".into()))?
+            .ok_or(WorkspaceError::NotFound)?;
+        let readiness = probe::status(
+            &mut conn,
+            settings.revision,
+            state.workspace.epoch(),
+            "embed",
+        )
+        .await?;
+        let model = settings.embed_model;
+        let digest: Option<String> = sqlx::query_scalar(
+            "SELECT q.model_digest FROM inference_qualification q
+             WHERE q.profile_revision=? AND q.mode='embed' AND q.status='ready' AND q.checked_at>=?",
+        )
+        .bind(settings.revision)
+        .bind(crate::now_utc_offset(-300))
+        .fetch_optional(&mut *conn)
+        .await?;
+        let calibrated: Vec<String> = match digest.as_deref() {
+            Some(digest) => {
+                let (weights, half_life) = scoring_config(&mut conn).await?;
+                let scoring = scoring_config_digest(&weights, half_life)
+                    .map_err(WorkspaceError::Invalid)?;
+                let dimensions: u32 = sqlx::query_scalar(
+                    "SELECT json_extract(q.details_json,'$.dimensions') FROM inference_qualification q
+                     WHERE q.profile_revision=? AND q.mode='embed' AND q.status='ready' AND q.checked_at>=?",
+                )
+                .bind(settings.revision)
+                .bind(crate::now_utc_offset(-300))
+                .fetch_optional(&mut *conn)
+                .await?
+                .flatten()
+                .unwrap_or(1);
+                let recipe = profile::recipe_digest(
+                    settings.revision,
+                    digest,
+                    dimensions,
+                    &scoring,
+                );
+                sqlx::query_scalar(
+                    "SELECT DISTINCT asset_kind FROM matching_calibration
+                     WHERE trusted=1 AND recipe_digest=? ORDER BY asset_kind",
+                )
+                .bind(recipe)
+                .fetch_all(&mut *conn)
+                .await?
+            }
+            None => Vec::new(),
+        };
+        Ok(json!({
+            "model": model,
+            "model_digest": digest,
+            "profile_revision": settings.revision,
+            "calibrated_kinds": calibrated,
+            "readiness": readiness,
+        }))
+    }
     .await;
-    let (model, digest) = match row {
-        Ok(value) => value,
-        Err(error) => return command_error(error.into()),
-    };
-    let calibrated: Result<Vec<String>,sqlx::Error>=sqlx::query_scalar("SELECT DISTINCT asset_kind FROM matching_calibration WHERE trusted=1 AND model_digest=? ORDER BY asset_kind").bind(digest.clone().unwrap_or_default()).fetch_all(state.workspace.pool()).await;
-    match calibrated {
-        Ok(kinds) => Json(json!({"model":model,"model_digest":digest,"calibrated_kinds":kinds}))
-            .into_response(),
-        Err(error) => command_error(error.into()),
+    match result {
+        Ok(body) => Json(body).into_response(),
+        Err(error) => command_error(error),
     }
 }
 
@@ -309,25 +394,6 @@ async fn set_embedding_model(
             "Select an installed local embedding model.",
         );
     }
-    let config: Result<String, sqlx::Error> =
-        sqlx::query_scalar("SELECT endpoint FROM agent_provider WHERE singleton=1")
-            .fetch_one(state.workspace.pool())
-            .await;
-    let endpoint = match config {
-        Ok(value) => value,
-        Err(error) => return command_error(error.into()),
-    };
-    let digest = match local_model_digest(&endpoint, &input.model).await {
-        Ok(value) => value,
-        Err(error) => {
-            return err(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "EMBED_MODEL_HEALTH_FAILED",
-                &error,
-            );
-        }
-    };
-    let now = now_utc();
     let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
         Ok(value) => value,
         Err(error) => return command_error(error.into()),
@@ -343,7 +409,49 @@ async fn set_embedding_model(
             return response;
         }
     }
-    if let Err(error)=sqlx::query("UPDATE agent_provider SET embed_model=?,embed_model_digest=?,updated_at=? WHERE singleton=1").bind(&input.model).bind(&digest).bind(&now).execute(&mut *tx).await{let _=tx.rollback().await;return command_error(error.into());}
+    // The expected profile revision is required for writes; a stale client must
+    // reload before changing the embedding model.
+    let expected = match input.expected_profile_revision {
+        Some(revision) => revision,
+        None => match sqlx::query_scalar("SELECT COALESCE(MAX(revision),0) FROM inference_profile")
+            .fetch_one(&mut *tx)
+            .await
+        {
+            Ok(revision) => revision,
+            Err(error) => return command_error(error.into()),
+        },
+    };
+    let settings =
+        match super::inference::profile::set_embed_model(&mut tx, expected, input.model.clone())
+            .await
+        {
+            Ok(settings) => settings,
+            Err(super::inference::profile::ProfileError::Conflict) => {
+                let _ = tx.rollback().await;
+                return err(
+                    StatusCode::PRECONDITION_FAILED,
+                    "PROFILE_CHANGED",
+                    "Provider settings changed. Reload them before saving",
+                );
+            }
+            Err(super::inference::profile::ProfileError::Invalid(_)) => {
+                let _ = tx.rollback().await;
+                return err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "EMBED_MODEL_INVALID",
+                    "Select an installed local embedding model.",
+                );
+            }
+            Err(_) => {
+                let _ = tx.rollback().await;
+                return err(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "PERSISTENCE_FAILED",
+                    "Provider settings are unavailable",
+                );
+            }
+        };
+    let now = now_utc();
     let revision: Result<i64, sqlx::Error> = sqlx::query_scalar(
         "UPDATE workspace_meta SET revision=revision+1 WHERE singleton=1 RETURNING revision",
     )
@@ -356,9 +464,13 @@ async fn set_embedding_model(
             return command_error(error.into());
         }
     };
-    if let Err(error)=sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'embedding_model','workspace',?, 'embedding_model.changed',?)").bind(super::new_id(&digest)).bind(&now).bind(revision).bind(json!({"model":input.model,"model_digest":digest}).to_string()).execute(&mut *tx).await{let _=tx.rollback().await;return command_error(error.into());}
-    let response_body =
-        json!({"model":input.model,"model_digest":digest,"calibration_required":true});
+    if let Err(error)=sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'embedding_model','workspace',?, 'embedding_model.changed',?)").bind(super::new_id(&input.model)).bind(&now).bind(revision).bind(json!({"model":input.model,"profile_revision":settings.revision}).to_string()).execute(&mut *tx).await{let _=tx.rollback().await;return command_error(error.into());}
+    let response_body = json!({
+        "model": input.model,
+        "model_digest": Value::Null,
+        "profile_revision": settings.revision,
+        "calibration_required": true,
+    });
     if let Err(error) = receipt_store(
         &mut tx,
         &state.workspace,
@@ -548,59 +660,6 @@ async fn retire_voice_sample(
         return command_error(error.into());
     }
     (StatusCode::OK, Json(body)).into_response()
-}
-
-async fn local_model_digest(endpoint: &str, model: &str) -> Result<String, String> {
-    let (host, port) = super::writing_jobs::local_endpoint_for_settings(endpoint)?;
-    let mut stream = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        tokio::net::TcpStream::connect((host.as_str(), port)),
-    )
-    .await
-    .map_err(|_| "local model health check timed out".to_owned())?
-    .map_err(|error| error.to_string())?;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    stream
-        .write_all(
-            format!("GET /api/tags HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n")
-                .as_bytes(),
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    let mut bytes = Vec::new();
-    stream
-        .take(1_048_576)
-        .read_to_end(&mut bytes)
-        .await
-        .map_err(|error| error.to_string())?;
-    let response = String::from_utf8(bytes).map_err(|error| error.to_string())?;
-    let (head, payload) = response
-        .split_once("\r\n\r\n")
-        .ok_or("local model returned invalid HTTP")?;
-    if !head.starts_with("HTTP/1.1 200") && !head.starts_with("HTTP/1.0 200") {
-        return Err("selected embedding model is unavailable locally".into());
-    }
-    let payload = if head
-        .to_ascii_lowercase()
-        .contains("transfer-encoding: chunked")
-    {
-        super::writing_jobs::decode_chunks_for_settings(payload)?
-    } else {
-        payload.to_owned()
-    };
-    let value: Value = serde_json::from_str(&payload).map_err(|error| error.to_string())?;
-    let models = value
-        .get("models")
-        .and_then(Value::as_array)
-        .ok_or("provider model catalog is invalid")?;
-    let digest = models
-        .iter()
-        .find(|entry| entry.get("name").and_then(Value::as_str) == Some(model))
-        .and_then(|entry| entry.get("digest"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or("selected model is not installed or provider omitted its digest")?;
-    Ok(digest.to_owned())
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -823,6 +882,14 @@ async fn start_match(
                 StatusCode::NOT_FOUND,
                 "TARGET_UNAVAILABLE",
                 "Target record is not available.",
+            );
+        }
+        Err(super::application::match_start::MatchStartError::ScopeTooLarge) => {
+            let _ = tx.rollback().await;
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "CONTEXT_BUDGET",
+                "Matching is bounded to 4,096 eligible resources; narrow the scope.",
             );
         }
         Err(super::application::match_start::MatchStartError::Database) => {

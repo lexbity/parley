@@ -221,7 +221,7 @@ describe('ParleyClient agent and writing decoders', () => {
       { version_id: 'qb1', content: { questions: {} } },
       [template],
       { items: [{ id: 'f1', name: 'Introductions' }] },
-      { model: 'embed', model_digest: null, calibrated_kinds: ['proof'] },
+      { model: 'embed', model_digest: null, profile_revision: 1, calibrated_kinds: ['proof'], readiness: { status: 'unqualified', diagnostic: null, checked_at: null, probe_id: null } },
       { items: [{ id: 'vs1', text: 'Voice', channel: null, revision: 1 }] },
     );
     await client.connect();

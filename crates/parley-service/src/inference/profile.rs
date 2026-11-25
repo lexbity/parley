@@ -29,6 +29,7 @@ pub(crate) struct ProfileSettings {
     pub(crate) active_revision: Option<i64>,
     pub(crate) endpoint: Option<String>,
     pub(crate) model: Option<String>,
+    pub(crate) embed_model: Option<String>,
     pub(crate) num_ctx: i64,
     pub(crate) num_predict: i64,
     pub(crate) locale: String,
@@ -52,7 +53,7 @@ pub(crate) async fn get_settings(
     connection: &mut SqliteConnection,
 ) -> Result<Option<ProfileSettings>, ProfileError> {
     let row = sqlx::query(
-        "SELECT p.revision,p.endpoint,p.chat_model,p.context_tokens,p.output_tokens,p.locale,
+        "SELECT p.revision,p.endpoint,p.chat_model,p.embed_model,p.context_tokens,p.output_tokens,p.locale,
                 p.provider_version,p.chat_model_digest,p.tokenizer_digest,
                 json_extract(p.recipe_json,'$.template_tokens') AS template_tokens,
                 a.profile_revision AS active_revision,r.diagnostic
@@ -91,12 +92,152 @@ pub(crate) async fn get_settings(
         active_revision: row.try_get("active_revision")?,
         endpoint: row.try_get("endpoint")?,
         model: row.try_get("chat_model")?,
+        embed_model: row.try_get("embed_model")?,
         num_ctx: row.try_get("context_tokens")?,
         num_predict: row.try_get("output_tokens")?,
         locale: row.try_get("locale")?,
         pairing,
         diagnostic: row.try_get("diagnostic")?,
     }))
+}
+
+/// Record the owner's embedding model preference as a new immutable profile
+/// revision, preserving every chat setting. The digest stays `NULL` until the
+/// embed probe observes the catalog identity; activation is a CAS after that
+/// qualification. Returns the new profile settings.
+pub(crate) async fn set_embed_model(
+    connection: &mut SqliteConnection,
+    expected_revision: i64,
+    model: String,
+) -> Result<ProfileSettings, ProfileError> {
+    let latest: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(revision),0) FROM inference_profile")
+        .fetch_one(&mut *connection)
+        .await?;
+    if expected_revision != latest {
+        return Err(ProfileError::Conflict);
+    }
+    if model.trim().is_empty()
+        || model.len() > 192
+        || model.bytes().any(|byte| {
+            !byte.is_ascii_alphanumeric() && !matches!(byte, b'_' | b'-' | b'.' | b'/' | b':')
+        })
+        || model.contains("..")
+        || model.starts_with('/')
+        || model.ends_with('/')
+        || model
+            .split('/')
+            .any(|part| part.is_empty() && !model.is_empty())
+        || model
+            .to_ascii_lowercase()
+            .split(':')
+            .any(|part| part == "cloud" || part.ends_with("-cloud"))
+    {
+        return Err(ProfileError::Invalid("model"));
+    }
+    let revision = latest.checked_add(1).ok_or(ProfileError::Inconsistent)?;
+    // Keep the observed digest only when the model tag is unchanged; any new
+    // model requires a fresh embed probe before it can serve work.
+    sqlx::query(
+        "INSERT INTO inference_profile(
+           revision,runner_kind,runner_build_digest,protocol_major,provider_version,
+           endpoint,chat_model,chat_model_digest,embed_model,embed_model_digest,
+           tokenizer_digest,recipe_json,context_tokens,output_tokens,locale,created_at
+         )
+         VALUES (?, 'pi', ?, 1, ?, ?, ?, ?,
+             ?, CASE WHEN (SELECT embed_model FROM inference_profile WHERE revision=?)=?
+                    THEN (SELECT embed_model_digest FROM inference_profile WHERE revision=?)
+                    ELSE NULL END,
+             ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(revision)
+    .bind(
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT runner_build_digest FROM inference_profile WHERE revision=?",
+        )
+        .bind(latest)
+        .fetch_one(&mut *connection)
+        .await?,
+    )
+    .bind(
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT provider_version FROM inference_profile WHERE revision=?",
+        )
+        .bind(latest)
+        .fetch_one(&mut *connection)
+        .await?,
+    )
+    .bind(
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT endpoint FROM inference_profile WHERE revision=?",
+        )
+        .bind(latest)
+        .fetch_one(&mut *connection)
+        .await?,
+    )
+    .bind(
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT chat_model FROM inference_profile WHERE revision=?",
+        )
+        .bind(latest)
+        .fetch_one(&mut *connection)
+        .await?,
+    )
+    .bind(
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT chat_model_digest FROM inference_profile WHERE revision=?",
+        )
+        .bind(latest)
+        .fetch_one(&mut *connection)
+        .await?,
+    )
+    .bind(&model)
+    .bind(latest)
+    .bind(&model)
+    .bind(latest)
+    .bind(
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT tokenizer_digest FROM inference_profile WHERE revision=?",
+        )
+        .bind(latest)
+        .fetch_one(&mut *connection)
+        .await?,
+    )
+    .bind(
+        sqlx::query_scalar::<_, String>(
+            "SELECT recipe_json FROM inference_profile WHERE revision=?",
+        )
+        .bind(latest)
+        .fetch_one(&mut *connection)
+        .await?,
+    )
+    .bind(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT context_tokens FROM inference_profile WHERE revision=?",
+        )
+        .bind(latest)
+        .fetch_one(&mut *connection)
+        .await?,
+    )
+    .bind(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT output_tokens FROM inference_profile WHERE revision=?",
+        )
+        .bind(latest)
+        .fetch_one(&mut *connection)
+        .await?,
+    )
+    .bind(
+        sqlx::query_scalar::<_, String>("SELECT locale FROM inference_profile WHERE revision=?")
+            .bind(latest)
+            .fetch_one(&mut *connection)
+            .await?,
+    )
+    .bind(crate::now_utc())
+    .execute(&mut *connection)
+    .await?;
+    get_settings(connection)
+        .await?
+        .ok_or(ProfileError::Inconsistent)
 }
 
 /// Insert a new immutable candidate within the caller's writer reservation.
@@ -181,13 +322,35 @@ pub(crate) async fn qualified_delegated(
     }
     let row: Option<super::coach::ProfileRow> = sqlx::query_as(
         "SELECT endpoint,runner_build_digest,provider_version,chat_model,chat_model_digest,
-                tokenizer_digest,recipe_json,context_tokens,output_tokens
+                tokenizer_digest,recipe_json,context_tokens,output_tokens,
+                embed_model,embed_model_digest
            FROM inference_profile WHERE revision=?",
     )
     .bind(revision)
     .fetch_optional(&mut *connection)
     .await?;
     Ok(row.and_then(|row| super::coach::profile_fields(revision, row)))
+}
+
+/// Canonical recipe digest binding the provider profile, observed embedding
+/// identity, vector width and the applicable deterministic scoring
+/// configuration. Everything that reuses vectors or thresholds must bind to
+/// this digest; a changed recipe can never reuse old artifacts.
+pub(crate) fn recipe_digest(
+    profile_revision: i64,
+    embed_digest: &str,
+    dimensions: u32,
+    scoring_config_digest: &str,
+) -> String {
+    crate::digest(
+        &serde_json::to_vec(&serde_json::json!({
+            "profile_revision": profile_revision,
+            "embed_model_digest": embed_digest,
+            "dimensions": dimensions,
+            "scoring_config_digest": scoring_config_digest,
+        }))
+        .expect("recipe digest serialization"),
+    )
 }
 
 /// Parse the one configured upstream authority accepted by a profile.

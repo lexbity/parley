@@ -2,6 +2,7 @@ import { readFile, readlink } from "node:fs/promises"
 import { stdin, stdout } from "node:process"
 import { createRelay } from "./relay.mjs"
 import { executeStructured } from "./structured.mjs"
+import { executeEmbed } from "./embed.mjs"
 import { executeDelegated } from "./delegated.mjs"
 import {
   compileSchema, MAX_FRAME, parseJson, readFrames, sha256, WorkerFailure, writeFrame,
@@ -14,6 +15,7 @@ async function main() {
   const interviewerSchema = await readFile(new URL("./interviewer.schema.json", import.meta.url))
   const brieferSchema = await readFile(new URL("./briefer.schema.json", import.meta.url))
   const extractorSchema = await readFile(new URL("./extractor.schema.json", import.meta.url))
+  const matcherSchema = await readFile(new URL("./matcher.schema.json", import.meta.url))
   const build = (await readFile(new URL("./worker-build", import.meta.url), "ascii")).trim()
   const validate = compileSchema(parseJson(runtimeSchema))
   const namespaces = {}
@@ -25,7 +27,7 @@ async function main() {
     body: {
       build,
       schema_digest: sha256(runtimeSchema),
-      capabilities: ["structured_role", "delegated"],
+      capabilities: ["structured_role", "delegated", "embed"],
       namespaces,
     },
   })
@@ -33,7 +35,7 @@ async function main() {
   const frames = readFrames(stdin, validate)
   const ack = (await frames.next()).value
   if (ack?.kind !== "hello_ack" || ack.body.max_frame_bytes !== MAX_FRAME ||
-      ack.body.capabilities?.join(",") !== "structured_role,delegated") {
+      ack.body.capabilities?.join(",") !== "structured_role,delegated,embed") {
     throw new WorkerFailure("WORKER_PROTOCOL")
   }
   const execution = (await frames.next()).value
@@ -43,7 +45,12 @@ async function main() {
   const deadline = AbortSignal.timeout(execution.body.deadline_ms)
   const signal = AbortSignal.any([abort.signal, deadline])
   const delegated = execution.body.mode === "delegated"
-  const relay = createRelay("/relay/provider.sock", signal, { chatCalls: delegated ? 16 : 1 })
+  const embed = execution.body.mode === "embed" ||
+    (execution.body.mode === "probe" && execution.body.capability === "embed")
+  const relay = createRelay("/relay/provider.sock", signal, {
+    chatCalls: delegated ? 16 : 1,
+    embedCalls: embed ? 4 : 1,
+  })
   const readControl = delegated ? null : frames.next().then(({ value }) => {
     if (value?.kind === "cancel" && value.execution_id === ids.execution_id && value.lease_id === ids.lease_id) {
       throw new WorkerFailure("CANCELLED")
@@ -51,7 +58,7 @@ async function main() {
     throw new WorkerFailure("WORKER_PROTOCOL")
   })
   let workerSeq = 3
-  const assets = { tokenizer: null, coachSchema, builderSchema, interviewerSchema, brieferSchema, extractorSchema }
+  const assets = { tokenizer: null, coachSchema, builderSchema, interviewerSchema, brieferSchema, extractorSchema, matcherSchema }
   const control = {
     async next() {
       const { value } = await frames.next()
@@ -83,6 +90,12 @@ async function main() {
         return
       }
       result = result.body
+    } else if (embed) {
+      assets.tokenizer = await readFile("/tokenizer/artifact.json")
+      result = await Promise.race([
+        readControl,
+        executeEmbed(execution.body, assets, relay.fetch, signal),
+      ])
     } else {
       assets.tokenizer = await readFile("/tokenizer/artifact.json")
       result = await Promise.race([

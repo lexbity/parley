@@ -46,14 +46,25 @@ pub fn is_allowed_endpoint(endpoint: SocketAddr) -> bool {
             )
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Structured chat execution or structured probe: the exact five-step
+    /// path order (version, tags, chat, version, tags).
+    Structured,
+    /// Delegated chat leases are bounded per path instead: one chat POST per
+    /// planned step, at most two catalog observations, and never more than 16
+    /// chat calls.
+    Delegated,
+    /// Embedding execution or embed probe: version, tags, one embeddings POST,
+    /// version, tags.
+    Embed,
+}
+
 struct Policy {
     endpoint: SocketAddr,
     model: String,
     max_output_tokens: u32,
-    /// Structured executions keep the exact five-step path order. Delegated
-    /// leases are bounded per path instead: one chat POST per planned step,
-    /// at most two catalog observations, and never more than 16 chat calls.
-    delegated: bool,
+    mode: Mode,
     stage: AtomicU8,
     versions: AtomicU8,
     tags: AtomicU8,
@@ -69,7 +80,7 @@ pub struct Relay {
 
 impl Relay {
     pub fn bind(endpoint: SocketAddr, model: String, max_output_tokens: u32) -> io::Result<Self> {
-        Self::bind_mode(endpoint, model, max_output_tokens, false)
+        Self::bind_mode(endpoint, model, max_output_tokens, Mode::Structured)
     }
 
     pub fn bind_delegated(
@@ -77,14 +88,22 @@ impl Relay {
         model: String,
         max_output_tokens: u32,
     ) -> io::Result<Self> {
-        Self::bind_mode(endpoint, model, max_output_tokens, true)
+        Self::bind_mode(endpoint, model, max_output_tokens, Mode::Delegated)
+    }
+
+    pub fn bind_embed(
+        endpoint: SocketAddr,
+        model: String,
+        max_output_tokens: u32,
+    ) -> io::Result<Self> {
+        Self::bind_mode(endpoint, model, max_output_tokens, Mode::Embed)
     }
 
     fn bind_mode(
         endpoint: SocketAddr,
         model: String,
         max_output_tokens: u32,
-        delegated: bool,
+        mode: Mode,
     ) -> io::Result<Self> {
         if !is_allowed_endpoint(endpoint) {
             return Err(io::Error::new(
@@ -106,7 +125,7 @@ impl Relay {
             endpoint,
             model,
             max_output_tokens,
-            delegated,
+            mode,
             stage: AtomicU8::new(0),
             versions: AtomicU8::new(0),
             tags: AtomicU8::new(0),
@@ -216,8 +235,47 @@ fn validate_request(parts: &Parts) -> Result<&str, StatusCode> {
         {
             Ok(path)
         }
+        (&Method::POST, "/v1/embeddings")
+            if single_header(headers, header::CONTENT_TYPE) == Some("application/json") =>
+        {
+            Ok(path)
+        }
         _ => Err(StatusCode::FORBIDDEN),
     }
+}
+
+/// The worker's embed request is closed and profile-bound: exactly the model
+/// and input fields, one bounded batch, no streaming or extra framing.
+fn valid_embed(body: &[u8], policy: &Policy) -> bool {
+    let Ok(serde_json::Value::Object(request)) = parse_json(body) else {
+        return false;
+    };
+    if request.len() != 2
+        || request.get("model").and_then(serde_json::Value::as_str) != Some(&policy.model)
+        || request.get("stream").is_some()
+        || request
+            .get("input")
+            .and_then(serde_json::Value::as_array)
+            .is_none()
+    {
+        return false;
+    }
+    let inputs = request["input"].as_array().expect("checked input array");
+    if inputs.is_empty()
+        || inputs.len() > 16
+        || !inputs.iter().all(|item| {
+            item.as_str()
+                .is_some_and(|text| !text.is_empty() && text.len() <= 64 * 1024)
+        })
+    {
+        return false;
+    }
+    let total: usize = inputs
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::len)
+        .sum();
+    total <= 64 * 1024
 }
 
 fn valid_chat(body: &[u8], policy: &Policy) -> bool {
@@ -262,7 +320,7 @@ fn valid_chat(body: &[u8], policy: &Policy) -> bool {
     let Some(messages) = messages else {
         return false;
     };
-    if policy.delegated {
+    if policy.mode == Mode::Delegated {
         if request.len() != delegated_fields.len()
             || !delegated_fields
                 .iter()
@@ -369,40 +427,48 @@ async fn forward(
         return Err(StatusCode::BAD_REQUEST);
     }
     let bytes = body.to_bytes();
-    if policy.delegated {
-        let counter = match (&parts.method, path) {
-            (&Method::GET, "/api/version") => &policy.versions,
-            (&Method::GET, "/api/tags") => &policy.tags,
-            (&Method::POST, "/v1/chat/completions") => &policy.chats,
-            _ => return Err(StatusCode::FORBIDDEN),
-        };
-        let limit = if std::ptr::eq(counter, &policy.chats) {
-            MAX_DELEGATED_CHAT
-        } else {
-            2
-        };
-        if counter
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
-                (used < limit).then_some(used + 1)
-            })
-            .is_err()
-        {
-            return Err(StatusCode::FORBIDDEN);
+    match policy.mode {
+        Mode::Delegated => {
+            let counter = match (&parts.method, path) {
+                (&Method::GET, "/api/version") => &policy.versions,
+                (&Method::GET, "/api/tags") => &policy.tags,
+                (&Method::POST, "/v1/chat/completions") => &policy.chats,
+                _ => return Err(StatusCode::FORBIDDEN),
+            };
+            let limit = if std::ptr::eq(counter, &policy.chats) {
+                MAX_DELEGATED_CHAT
+            } else {
+                2
+            };
+            if counter
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                    (used < limit).then_some(used + 1)
+                })
+                .is_err()
+            {
+                return Err(StatusCode::FORBIDDEN);
+            }
         }
-    } else {
-        let stage = policy.stage.load(Ordering::Relaxed);
-        let expected_path = match stage {
-            0 | 3 => "/api/version",
-            1 | 4 => "/api/tags",
-            2 => "/v1/chat/completions",
-            _ => return Err(StatusCode::FORBIDDEN),
-        };
-        if path != expected_path {
-            return Err(StatusCode::FORBIDDEN);
+        Mode::Structured | Mode::Embed => {
+            let stage = policy.stage.load(Ordering::Relaxed);
+            let chat_path = match policy.mode {
+                Mode::Embed => "/v1/embeddings",
+                _ => "/v1/chat/completions",
+            };
+            let expected_path = match stage {
+                0 | 3 => "/api/version",
+                1 | 4 => "/api/tags",
+                2 => chat_path,
+                _ => return Err(StatusCode::FORBIDDEN),
+            };
+            if path != expected_path {
+                return Err(StatusCode::FORBIDDEN);
+            }
+            policy.stage.store(stage + 1, Ordering::Relaxed);
         }
-        policy.stage.store(stage + 1, Ordering::Relaxed);
     }
     if (path == "/v1/chat/completions" && !valid_chat(&bytes, &policy))
+        || (path == "/v1/embeddings" && !valid_embed(&bytes, &policy))
         || (parts.method == Method::GET && !bytes.is_empty())
     {
         return Err(StatusCode::FORBIDDEN);
@@ -424,7 +490,7 @@ async fn forward(
         .header(header::HOST, policy.endpoint.to_string())
         .header(header::CONNECTION, "close")
         .header(header::ACCEPT_ENCODING, "identity");
-    if path == "/v1/chat/completions" {
+    if path == "/v1/chat/completions" || path == "/v1/embeddings" {
         outgoing = outgoing.header(header::CONTENT_TYPE, "application/json");
     }
     let upstream = sender
@@ -489,7 +555,7 @@ mod tests {
             endpoint: "127.0.0.1:11434".parse().unwrap(),
             model: "local:approved".into(),
             max_output_tokens: 512,
-            delegated: false,
+            mode: Mode::Structured,
             stage: AtomicU8::new(2),
             versions: AtomicU8::new(2),
             tags: AtomicU8::new(2),
@@ -600,5 +666,44 @@ mod tests {
         ] {
             assert!(!valid_chat(&body, &policy));
         }
+    }
+
+    #[test]
+    fn ar07_relay_embed_body_is_closed_dimension_free_and_bound() {
+        let policy = policy();
+        let valid = serde_json::to_vec(&serde_json::json!({
+            "model": "local:approved",
+            "input": ["need text", "resource one"],
+        }))
+        .unwrap();
+        assert!(valid_embed(&valid, &policy));
+        for body in [
+            serde_json::to_vec(&serde_json::json!({"model":"foreign","input":["x"]})).unwrap(),
+            serde_json::to_vec(
+                &serde_json::json!({"model":"local:approved","input":["x"],"extra":true}),
+            )
+            .unwrap(),
+            serde_json::to_vec(&serde_json::json!({"model":"local:approved","input":[]})).unwrap(),
+            serde_json::to_vec(
+                &serde_json::json!({"model":"local:approved","input":["x"],"stream":true}),
+            )
+            .unwrap(),
+            serde_json::to_vec(&serde_json::json!({"model":"local:approved","input":[1,2]}))
+                .unwrap(),
+            serde_json::to_vec(&serde_json::json!({"model":"local:approved"})).unwrap(),
+            b"{\"model\":\"local:approved\",\"model\":\"foreign\",\"input\":[\"x\"]}".to_vec(),
+        ] {
+            assert!(
+                !valid_embed(&body, &policy),
+                "{}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+        let oversized = serde_json::to_vec(&serde_json::json!({
+            "model": "local:approved",
+            "input": vec!["x".repeat(64 * 1024 + 1)],
+        }))
+        .unwrap();
+        assert!(!valid_embed(&oversized, &policy));
     }
 }

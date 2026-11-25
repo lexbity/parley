@@ -2342,3 +2342,46 @@ slices:
       owner_role: owner
       package_target: rust+mock
       evidence_path: evidence/ar05.md
+  ar07:
+    - requirement: FR-12
+      operationId: startOpportunityMatch
+      test_id: ar07_matcher_embeds_through_worker_and_commits_recipe_bound_cache
+      fixture_id: ar07
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar07.md
+    - requirement: FR-8
+      operationId: startOpportunityMatch
+      test_id: ar07_embed_shape_mismatch_fails_closed
+      fixture_id: ar07
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar07.md
+    - requirement: FR-16
+      operationId: startAgentRun
+      test_id: ar07_scoped_match_cannot_read_ungranted_resources
+      fixture_id: ar07
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar07.md
+    - requirement: FR-1
+      operationId: startOpportunityMatch
+      test_id: ar07_unqualified_embed_profile_fails_closed_but_manual_survives
+      fixture_id: ar07
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar07.md
+    - requirement: FR-12
+      operationId: getEmbeddingModel
+      test_id: ar07_owner_can_choose_manual_or_calibrated_match
+      fixture_id: ar07
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar07.md
+    - requirement: FR-12
+      operationId: generateContextCoachQuestions
+      test_id: ar07_coach_retains_assessment_truth_after_model_change
+      fixture_id: ar07
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar07.md

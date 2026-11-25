@@ -156,7 +156,7 @@ describe('ParleyClient S04 local Extractor commands', () => {
 
   it('calls provider, capture review, cancellation, and proposal commands with session authority', async () => {
     const provider = { endpoint: 'http://127.0.0.1:11434', model: 'local:latest', num_ctx: 8192, num_predict: 512, locale: 'en' };
-    const saved = { ...provider, profile_revision: 9, pairing: null, structured: { status: 'unqualified', diagnostic: null, checked_at: null, probe_id: null } };
+    const saved = { ...provider, profile_revision: 9, pairing: null, structured: { status: 'unqualified', diagnostic: null, checked_at: null, probe_id: null }, embed: { status: 'unqualified', diagnostic: null, checked_at: null, probe_id: null } };
     const probe = { status: 'queued', diagnostic: null, checked_at: null, probe_id: 'probe-id' };
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(sessionResponse())
@@ -261,7 +261,7 @@ describe('ParleyClient S09 recipient writing commands', () => {
       .mockResolvedValueOnce(response({ id: 'template-1', family_id: 'family-1', version: 1, status: 'draft', body: '{{their_name:name}}', rules: [[]], stage_class: 'identified', channel: 'email', parent_version_id: null }, 201))
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
-      .mockResolvedValueOnce(response({ model: 'embed-local', model_digest: 'digest-1', calibrated_kinds: ['gift'] }))
+      .mockResolvedValueOnce(response({ model: 'embed-local', model_digest: 'digest-1', profile_revision: 1, calibrated_kinds: ['gift'], readiness: { status: 'ready', diagnostic: null, checked_at: null, probe_id: null } }))
       .mockResolvedValueOnce(response({ model: 'embed-local', model_digest: 'digest-1', calibration_required: true }))
       .mockResolvedValueOnce(response({ job_id: 'match-job', role: 'matcher' }, 202))
       .mockResolvedValueOnce(response({ id: 'match-1', opportunity_id: 'op-1', recipient_id: 'party-1', embed_model_digest: 'digest-1', calibration_json: '{}', shortlist_json: '[]', why_job_id: null }))
@@ -283,7 +283,7 @@ describe('ParleyClient S09 recipient writing commands', () => {
     await client.createTemplateFamily('One ask', 'family-key');
     expect(await client.createWritingTemplateVersion('family-1', { name: 'One ask', body: '{{their_name:name}}', stage_class: 'identified', channel: 'email', sentence_rules: [[]] }, 'version-key')).toMatchObject({ id: 'template-1', name: 'One ask' });
     await client.approveWritingTemplate('template-1', 'approve-key'); await client.activateWritingTemplate('template-1', 'activate-key');
-    expect(await client.getEmbeddingModel()).toMatchObject({ model_digest: 'digest-1', calibrated_kinds: ['gift'] }); await client.setEmbeddingModel('embed-local', 'model-key');
+    expect(await client.getEmbeddingModel()).toMatchObject({ model_digest: 'digest-1', calibrated_kinds: ['gift'] }); await client.setEmbeddingModel('embed-local', null, 'model-key');
     expect(await client.startMatching('op-1', 'party-1', 'match-key')).toEqual({ job_id: 'match-job', role: 'matcher' });
     expect(await client.getWritingMatch('op-1', 'party-1')).toMatchObject({ id: 'match-1', shortlist_json: '[]' });
     expect(await client.buildWritingTemplates({ stage_class: 'identified', rungs: [1], rules: ['R2'], channel: 'email', max_chars: 1200 }, 'builder-key')).toEqual({ job_id: 'builder-job', role: 'template_builder' });

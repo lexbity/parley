@@ -32,12 +32,12 @@ const hard = { id: 'H3 GROUNDED', severity: 'hard' as const, pass: true, detail:
 
 function stubAuthoring(overrides: {
   templates?: WritingTemplate[];
-  embedding?: { model: string; model_digest: string | null; calibrated_kinds: string[] };
+  embedding?: { model: string; model_digest: string | null; profile_revision: number | null; calibrated_kinds: string[]; readiness: { status: 'ready' | 'unqualified' | 'queued' | 'running' | 'probe_succeeded' | 'failed'; diagnostic: string | null; checked_at: string | null; probe_id: string | null } };
 } = {}) {
   vi.spyOn(parley, 'listWritingTemplates').mockResolvedValue(overrides.templates ?? []);
   vi.spyOn(parley, 'listTemplateFamilies').mockResolvedValue([{ id: 'family-1', name: 'One ask' }]);
   vi.spyOn(parley, 'listVoiceSamples').mockResolvedValue([]);
-  vi.spyOn(parley, 'getEmbeddingModel').mockResolvedValue(overrides.embedding ?? { model: '', model_digest: null, calibrated_kinds: [] });
+  vi.spyOn(parley, 'getEmbeddingModel').mockResolvedValue(overrides.embedding ?? { model: '', model_digest: null, profile_revision: 1, calibrated_kinds: [], readiness: { status: 'unqualified', diagnostic: null, checked_at: null, probe_id: null } });
   vi.spyOn(parley, 'getWritingInterests').mockResolvedValue([]);
   vi.spyOn(parley, 'getWritingExchange').mockResolvedValue({ current: null, versions: [] });
   vi.spyOn(parley, 'getWritingMatch').mockRejectedValue(new Error('no completed match'));
@@ -149,7 +149,7 @@ describe('OutputWorkspace', () => {
     expect(wrapper.text()).toContain('This scope has no assessment yet');
     await openTool(wrapper, 'Context', 'Matching and calibration');
     const matchingDialog = wrapper.get('dialog');
-    expect(wrapper.text()).toContain('Without a matching model calibration, the system cannot rank resources.');
+    expect(wrapper.text()).toContain('Verify the embedding model before matching; without a verification and calibration, the system cannot rank resources.');
     expect(matchingDialog.findAll('button').find((button) => button.text() === 'Run matching')?.attributes('disabled')).toBeDefined();
     expect(matchingDialog.findAll('button').find((button) => button.text() === 'Choose manually')?.attributes('disabled')).toBeUndefined();
 
@@ -163,7 +163,7 @@ describe('OutputWorkspace', () => {
   });
 
   it('saves the working draft with template fills and owner-reviewed sentence bindings', async () => {
-    stubAuthoring({ templates: [activeTemplate], embedding: { model: 'local', model_digest: 'digest-1', calibrated_kinds: ['gift'] } });
+    stubAuthoring({ templates: [activeTemplate], embedding: { model: 'local', model_digest: 'digest-1', profile_revision: 1, calibrated_kinds: ['gift'], readiness: { status: 'ready', diagnostic: null, checked_at: null, probe_id: null } } });
     vi.spyOn(parley, 'getWritingExchange').mockResolvedValue({ current: { version: 1, fairness_attested: true }, versions: [] });
     const createMaterial = vi.spyOn(parley, 'createMaterial').mockResolvedValue(material());
     const wrapper = mountWorkspace({ resources: [gift] });
@@ -203,7 +203,7 @@ describe('OutputWorkspace', () => {
 
   it('keeps a generated proposal scoped to its opportunity and refuses to apply it elsewhere', async () => {
     const secondOpportunity = { ...opportunity, id: 'opp-2', title: 'Second onboarding', participants: [{ id: 'person-2', kind: 'person' as const, name: 'Mina Patel' }] };
-    stubAuthoring({ templates: [activeTemplate], embedding: { model: 'local', model_digest: 'digest-1', calibrated_kinds: ['gift'] } });
+    stubAuthoring({ templates: [activeTemplate], embedding: { model: 'local', model_digest: 'digest-1', profile_revision: 1, calibrated_kinds: ['gift'], readiness: { status: 'ready', diagnostic: null, checked_at: null, probe_id: null } } });
     vi.spyOn(parley, 'getWritingExchange').mockResolvedValue({ current: { version: 1, fairness_attested: true }, versions: [] });
     vi.spyOn(parley, 'composeWritingMaterial').mockResolvedValue({ job_id: 'job-b', role: 'composer' });
     vi.spyOn(parley, 'getRoleJob').mockResolvedValue({ status: 'succeeded', result: { body: 'generated proposal' } } as unknown as Awaited<ReturnType<typeof parley.getRoleJob>>);
