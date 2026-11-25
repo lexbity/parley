@@ -21,6 +21,7 @@ from common import REPO_ROOT, VerificationError, fail
 
 SRC = REPO_ROOT / "crates" / "parley-service" / "src"
 INVENTORY = REPO_ROOT / "contract" / "fixtures" / "td10" / "route-inventory.json"
+DESTRUCTIVE_SET = REPO_ROOT / "contract" / "fixtures" / "td10" / "destructive-set.json"
 
 ROUTE_RE = re.compile(r'\.route\(\s*"([^"]+)"')
 METHOD_RE = re.compile(r"\b(get|post|put|patch|delete|head)\s*\(")
@@ -32,6 +33,17 @@ EXEMPT_RULES = (
     (re.compile(r"^/api/v1/session(/bootstrap)?$"), "session-bootstrap"),
     (re.compile(r"^/api/v1/health$"), "session-bootstrap"),
     (re.compile(r"^/(?!api/v1/)"), "embedded-ui"),
+)
+
+# TD-10 W3: conservative destructive set. These routes change or replace
+# durable owner facts and must stop at the approval inbox with a frozen intent
+# digest once their transport converges. Previews and reads are not destructive.
+DESTRUCTIVE = (
+    (re.compile(r"^/api/v1/parties/\{id\}/erase$"), "POST"),
+    (re.compile(r"^/api/v1/restore/commit$"), "POST"),
+    (re.compile(r"^/api/v1/settings/maintenance$"), "PUT"),
+    (re.compile(r"^/api/v1/resource-cards/\{id\}/retire$"), "POST"),
+    (re.compile(r"^/api/v1/imports/commit$"), "POST"),
 )
 
 # Ownership of the non-registry transport. The wave assignment is the TD-10
@@ -70,6 +82,10 @@ def route_methods(call: str) -> list[str]:
     """Methods named on a `.route(path, ...)` handler expression."""
     methods = [name.upper() for name in METHOD_RE.findall(call)]
     return list(dict.fromkeys(methods)) or ["GET"]
+
+
+def is_destructive(path: str, method: str) -> bool:
+    return any(pattern.fullmatch(path) and expected == method for pattern, expected in DESTRUCTIVE)
 
 
 def classify(path: str, module: str) -> tuple[str, str, str]:
@@ -111,6 +127,7 @@ def build_inventory() -> dict:
                         "dispatch": dispatch,
                         "wave": wave,
                         "exempt": exemption,
+                        "destructive": is_destructive(path, method),
                     }
                 )
     routes.sort(key=lambda item: (item["path"], item["method"], item["module"]))
@@ -127,6 +144,26 @@ def build_inventory() -> dict:
         },
         "routes": routes,
     }
+
+
+def verify_destructive_set(inventory: dict) -> None:
+    """FR-14: the enumerated destructive set and the inventory must agree."""
+    if not DESTRUCTIVE_SET.exists():
+        raise VerificationError("destructive set is missing; add contract/fixtures/td10/destructive-set.json")
+    declared = {
+        (item["path"], item["method"])
+        for item in json.loads(DESTRUCTIVE_SET.read_text(encoding="utf-8"))["routes"]
+    }
+    marked = {
+        (item["path"], item["method"])
+        for item in inventory["routes"]
+        if item["destructive"]
+    }
+    if declared != marked:
+        raise VerificationError(
+            "destructive set disagrees with the route inventory: "
+            f"only in artifact={sorted(declared - marked)}, only in inventory={sorted(marked - declared)}"
+        )
 
 
 def main() -> None:
@@ -147,7 +184,8 @@ def main() -> None:
         raise VerificationError(
             "route inventory is stale; run `python3 ci/routes.py --write` and commit the artifact"
         )
-    print("route inventory verified.")
+    verify_destructive_set(json.loads(generated))
+    print("route inventory and destructive set verified.")
 
 
 if __name__ == "__main__":

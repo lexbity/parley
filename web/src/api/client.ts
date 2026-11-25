@@ -1349,7 +1349,7 @@ export class ParleyClient {
   }
 
   async checkProvider(): Promise<ProviderHealth> {
-    return decodeProviderHealth(await this.request('/agent/provider/health', { method: 'POST', body: '{}' }));
+    return decodeProviderHealth(await this.request('/agent/provider/health', { method: 'POST', body: '{}', headers: { 'Idempotency-Key': newOperationKey() } }));
   }
 
   async createOpportunity(title: string, primary_party_id: string, key = newOperationKey()): Promise<Opportunity> {
@@ -1431,7 +1431,7 @@ export class ParleyClient {
 
   async getEmbeddingModel(): Promise<{ model: string; model_digest: string | null; profile_revision: number | null; calibrated_kinds: string[]; readiness: StructuredReadiness }> { const value = object(await this.request('/embedding-model')); if (!value || !Array.isArray(value.calibrated_kinds)) throw new Error('Invalid response: embedding model is malformed'); return { model: requiredString(value.model, 'embedding_model'), model_digest: typeof value.model_digest === 'string' ? value.model_digest : null, profile_revision: typeof value.profile_revision === 'number' ? Number(value.profile_revision) : null, calibrated_kinds: value.calibrated_kinds.filter((kind): kind is string => typeof kind === 'string'), readiness: decodeStructuredReadiness(value.readiness) }; }
   async setEmbeddingModel(model: string, expectedProfileRevision: number | null, key = newOperationKey()): Promise<void> { await this.mutate('/embedding-model', 'PUT', { model, ...(expectedProfileRevision !== null ? { expected_profile_revision: expectedProfileRevision } : {}) }, { 'Idempotency-Key': key }); }
-  async checkEmbedProvider(): Promise<ProviderHealth> { return decodeProviderHealth(await this.request('/agent/provider/health', { method: 'POST', body: JSON.stringify({ mode: 'embed' }) })); }
+  async checkEmbedProvider(): Promise<ProviderHealth> { return decodeProviderHealth(await this.request('/agent/provider/health', { method: 'POST', body: JSON.stringify({ mode: 'embed' }), headers: { 'Idempotency-Key': newOperationKey() } })); }
   async startMatching(opportunityId: string, recipientId: string, key = newOperationKey()): Promise<WritingJob> { const value = object(await this.mutate(`/opportunities/${encodeURIComponent(opportunityId)}/matches`, 'POST', { recipient_id: recipientId }, { 'Idempotency-Key': key })); if (!value) throw new Error('Invalid response: matching job is malformed'); return { job_id: requiredString(value.job_id, 'job_id'), role: requiredString(value.role, 'role') }; }
   async getWritingMatch(opportunityId: string, recipientId: string): Promise<WritingMatch> { const value = object(await this.request(`/opportunities/${encodeURIComponent(opportunityId)}/matches?recipient_id=${encodeURIComponent(recipientId)}`)); if (!value) throw new Error('Invalid response: match result is malformed'); return { id: requiredString(value.id, 'match.id'), opportunity_id: requiredString(value.opportunity_id, 'match.opportunity_id'), recipient_id: requiredString(value.recipient_id, 'match.recipient_id'), embed_model_digest: requiredString(value.embed_model_digest, 'match.embed_model_digest'), calibration_json: requiredString(value.calibration_json, 'match.calibration_json'), shortlist_json: requiredString(value.shortlist_json, 'match.shortlist_json'), why_job_id: typeof value.why_job_id === 'string' ? value.why_job_id : null }; }
   async buildWritingTemplates(input: { segment_id?: string; stage_class: string; rungs: number[]; rules: string[]; channel: string; max_chars: number; voice_sample_ids?: string[] }, key = newOperationKey()): Promise<WritingJob> { const value = object(await this.mutate('/templates/build', 'POST', input, { 'Idempotency-Key': key })); if (!value) throw new Error('Invalid response: template builder job is malformed'); return { job_id: requiredString(value.job_id, 'job_id'), role: requiredString(value.role, 'role') }; }
@@ -1810,31 +1810,31 @@ export class ParleyClient {
     await this.mutate('/agent/question-bank', 'PUT', { expected_version_id, content }, { 'Idempotency-Key': key });
   }
 
-  async releaseMaterial(id: string): Promise<ReleasedMaterial> {
-    return decodeReleasedMaterial(await this.request(`/materials/${encodeURIComponent(id)}/release`, { method: 'POST', body: '{}' }));
+  async releaseMaterial(id: string, key = newOperationKey()): Promise<ReleasedMaterial> {
+    return decodeReleasedMaterial(await this.request(`/materials/${encodeURIComponent(id)}/release`, { method: 'POST', body: '{}', headers: { 'Idempotency-Key': key } }));
   }
 
   async getMaterial(id: string): Promise<Material> {
     return decodeMaterial(await this.request(`/materials/${encodeURIComponent(id)}`));
   }
 
-  async approveMaterial(id: string, override_reasons: Record<string, string>): Promise<Material> {
+  async approveMaterial(id: string, override_reasons: Record<string, string>, key = newOperationKey()): Promise<Material> {
     const approval = object(await this.request(`/materials/${encodeURIComponent(id)}/approve`, {
-      method: 'POST', body: JSON.stringify({ override_reasons }),
+      method: 'POST', body: JSON.stringify({ override_reasons }), headers: { 'Idempotency-Key': key },
     }));
     if (!approval) throw new Error('Invalid response: approval receipt is malformed');
     const material = await this.getMaterial(id);
     return { ...material, gate: decodeGateReport(approval.gate) };
   }
 
-  async evaluateMaterialGate(id: string, override_reasons: Record<string, string> = {}): Promise<GateReport> {
+  async evaluateMaterialGate(id: string, override_reasons: Record<string, string> = {}, key = newOperationKey()): Promise<GateReport> {
     return decodeGateReport(await this.request(`/materials/${encodeURIComponent(id)}/gate`, {
-      method: 'POST', body: JSON.stringify({ override_reasons }),
+      method: 'POST', body: JSON.stringify({ override_reasons }), headers: { 'Idempotency-Key': key },
     }));
   }
 
-  async acknowledgeRelease(id: string, succeeded: boolean): Promise<void> {
-    await this.request(`/releases/${encodeURIComponent(id)}/ack`, { method: 'POST', body: JSON.stringify({ succeeded }) });
+  async acknowledgeRelease(id: string, succeeded: boolean, key = newOperationKey()): Promise<void> {
+    await this.request(`/releases/${encodeURIComponent(id)}/ack`, { method: 'POST', body: JSON.stringify({ succeeded }), headers: { 'Idempotency-Key': key } });
   }
 
   async listThreads(filter: { opportunity_id?: string; recipient_id?: string; cursor?: string } = {}): Promise<ContactThread[]> {

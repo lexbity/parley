@@ -465,14 +465,11 @@ impl Workspace {
         maintenance::complete_startup_operations(&workspace, removed_generation_bytes).await?;
         // Finalize attempts from an earlier process that lack a final audit
         // record (UCR-001 Q3).
-        let interrupted = commands::ledger::recover_interrupted_attempts(&workspace.pool)
+        commands::ledger::recover_interrupted_attempts(&workspace.pool)
             .await
             .map_err(|e| {
                 WorkspaceError::Invalid(format!("recover interrupted command attempts: {e}"))
             })?;
-        if interrupted > 0 {
-            eprintln!("command ledger: finalized {interrupted} interrupted attempts");
-        }
         Ok(workspace)
     }
 
@@ -516,15 +513,12 @@ impl Workspace {
     /// receipts are HMACed under the new key; old-epoch receipts are already
     /// unreachable because the epoch changed with the replacement.
     pub(crate) fn rotate_command_secret(&self) {
-        match crate::rotate_command_secret(&self.root) {
-            Ok(bytes) => {
-                let mut guard = self
-                    .command_secret
-                    .write()
-                    .expect("generation key lock poisoned");
-                *guard = bytes;
-            }
-            Err(error) => eprintln!("command ledger: key rotation failed: {error}"),
+        if let Ok(bytes) = crate::rotate_command_secret(&self.root) {
+            let mut guard = self
+                .command_secret
+                .write()
+                .expect("generation key lock poisoned");
+            *guard = bytes;
         }
     }
 
@@ -916,7 +910,11 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         .merge(maintenance::routes())
         .merge(commands::http::routes())
         .merge(agent_runtime::routes())
-        .with_state(state)
+        .with_state(state.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            http::legacy_operation_gate,
+        ))
         .layer(axum::extract::DefaultBodyLimit::max(2_100_000));
     let (shutdown, receiver) = tokio::sync::oneshot::channel();
     let mut restart_rx = restart_receiver;
@@ -1329,6 +1327,54 @@ fn idempotency_key(headers: &HeaderMap) -> Result<String, KeyRejection> {
         ));
     }
     Ok(key.to_owned())
+}
+
+/// TD-10 W2: deterministic intent digest for a legacy mutation. The digest
+/// binds method, route path and the canonicalized body, so the same key with
+/// a different intent is a terminal 409 instead of a silent replay. The
+/// epoch is bound by the receipt row itself (owner_id, epoch, key).
+pub(crate) fn canonical_intent(method: &str, path: &str, input: &Value) -> String {
+    let canonical =
+        parley_domain::jcs::canonicalize_value(input).unwrap_or_else(|_| input.to_string());
+    digest(format!("{method}\0{path}\0{canonical}").as_bytes())
+}
+
+/// TD-10 W2: replay lookup for a legacy mutation. A matching key+intent
+/// returns the stored result; the same key with a different intent fails
+/// 409 `KEY_REUSED`. Both outcomes run in a short `BEGIN IMMEDIATE`
+/// transaction so concurrent same-key requests serialize on the receipt row.
+pub(crate) async fn gate_replay(
+    pool: &sqlx::SqlitePool,
+    epoch: &str,
+    key: &str,
+    canonical: &str,
+) -> Result<Option<Value>, WorkspaceError> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let old: Option<(String, String)> = sqlx::query_as(
+        "SELECT canonical_digest,result_json FROM idempotency_receipt WHERE owner_id=1 AND epoch=? AND key=?",
+    )
+    .bind(epoch)
+    .bind(key)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some((stored, result)) = old {
+        if stored != canonical {
+            return Err(WorkspaceError::IdempotencyConflict);
+        }
+        let value: Value =
+            serde_json::from_str(&result).map_err(|e| WorkspaceError::Invalid(e.to_string()))?;
+        let _ = tx.commit().await;
+        return Ok(Some(value));
+    }
+    let _ = tx.commit().await;
+    Ok(None)
+}
+
+/// Rebuild a stored receipt as a response with the private epoch headers.
+pub(crate) fn gate_replay_response(epoch: &str, value: Value) -> Response {
+    let mut response = Json(value).into_response();
+    private_headers(&mut response, epoch);
+    response
 }
 
 pub(crate) fn command_error(err: WorkspaceError) -> Response {

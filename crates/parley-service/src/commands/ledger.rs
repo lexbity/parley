@@ -573,11 +573,9 @@ pub(crate) async fn record_rejection(
         tx.commit().await
     }
     .await;
-    if let Err(error) = result {
-        // Startup recovery finalizes the attempt pair if this best-effort
-        // write could not be committed; never turn a rejection into an effect.
-        eprintln!("command ledger: could not record rejection outcome: {error:?}");
-    }
+    // Startup recovery finalizes the attempt pair if this best-effort write
+    // could not be committed; never turn a rejection into an effect.
+    let _ = result;
 }
 
 pub(crate) struct Timing {

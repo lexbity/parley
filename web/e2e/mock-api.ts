@@ -191,6 +191,26 @@ export function createMockApi({ pauseExtractor = false, coachOnline = false, emb
     embeddingTimers.clear();
   }
   const receipts = new Map<string, { digest: string; result: RecordData; status?: number }>();
+  // TD-10 W2: board mutations require an explicit operation key and replay
+  // the original receipt. This mirrors the Rust board handlers; there is no
+  // content-derived fallback key on either side.
+  const boardMutationGate = (
+    request: IncomingMessage,
+    response: ServerResponse,
+    path: string,
+    input: RecordData,
+    store: Map<string, { digest: string; result: RecordData; status?: number }>,
+    currentEpoch: string,
+  ) => {
+    const key = request.headers['idempotency-key'];
+    if (typeof key !== 'string' || !key) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Operation key required.');
+    const digest = importDigest([currentEpoch, path, input]);
+    const prior = store.get(key);
+    if (prior) return prior.digest === digest
+      ? json(response, prior.status ?? 200, prior.result)
+      : fail(response, 409, 'KEY_REUSED', 'Operation key refers to a different request.');
+    return null;
+  };
   // U02 authoritative run and turn rows survive snapshots; worker timers,
   // replay keys and pending leases are transient and are scrubbed on restore.
   const agentRuns = new Map<string, AgentRunRecord>();
@@ -1594,6 +1614,65 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       const outcome = { id: approval.id, revision: approval.revision, status: approval.status };
       decisionReceipts.set(decisionKey, { digest: createHash('sha256').update(canonicalArgs({ expectedRevision, previewDigest })).digest('hex'), outcome });
       return json(response, 200, outcome);
+    }
+
+    // TD-10 W2: mutation key-presence parity with the service transport gate.
+    // Every non-exempt /api/v1 mutation requires an explicit operation key;
+    // previews, registry commands, approvals and the exempt transports skip.
+    const gatedMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+    if (
+      gatedMethods.has(request.method ?? '')
+      && (url.pathname ?? '').startsWith('/api/v1/')
+      && !(url.pathname ?? '').startsWith('/api/v1/commands')
+      && !(url.pathname ?? '').startsWith('/api/v1/approvals')
+      && !(url.pathname ?? '').endsWith('/preview')
+      && url.pathname !== '/api/v1/health'
+      && url.pathname !== '/api/v1/session/bootstrap'
+      && url.pathname !== '/api/v1/session'
+      && url.pathname !== '/api/v1/command-notifications'
+      && !((url.pathname ?? '').startsWith('/api/v1/materials/') && (url.pathname ?? '').endsWith('/download'))
+    ) {
+      const gateKey = request.headers['idempotency-key'];
+      if (typeof gateKey !== 'string' || !gateKey.trim()) {
+        return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+      }
+    }
+
+    // TD-10 W3: destructive legacy mutations stop at the approval inbox with
+    // a frozen intent digest, mirroring the service transport gate. The
+    // decision endpoints above operate on the shared approvals store.
+    const legacyDestructive = [
+      { re: /^\/api\/v1\/imports\/commit$/, id: 'import.commit' },
+      { re: /^\/api\/v1\/restore\/commit$/, id: 'workspace.restore' },
+      { re: /^\/api\/v1\/parties\/([^/]+)\/erase$/, id: 'party.erase' },
+      { re: /^\/api\/v1\/settings\/maintenance$/, id: 'maintenance.settings' },
+    ];
+    const destructiveRule = legacyDestructive.find((rule) => rule.re.test(url.pathname ?? ''));
+    if (destructiveRule && gatedMethods.has(request.method ?? '')) {
+      const opKey = request.headers['idempotency-key'];
+      const approvalKey = `${epoch}|${destructiveRule.id}|${String(opKey)}`;
+      const fingerprint = createHash('sha256').update(approvalKey).digest('hex');
+      let legacyApproval = [...approvals.values()].find(
+        (approval) => approval.command_id === destructiveRule.id && (approval as MockApproval & { _legacyKey?: string })._legacyKey === approvalKey,
+      );
+      if (!legacyApproval) {
+        const id = randomHex();
+        legacyApproval = { id, epoch, command_id: destructiveRule.id, receipt_key: approvalKey, command_version: 1, revision: 1, status: 'pending', expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(), preview_digest: fingerprint, _legacyKey: approvalKey } as unknown as MockApproval & { _legacyKey: string };
+        approvals.set(id, legacyApproval);
+        response.writeHead(403, { 'content-type': 'application/json', location: `/api/v1/approvals/${id}` });
+        response.end(JSON.stringify({ error: { code: 'approval_required', message: 'This operation requires owner approval before it can execute', details: [] } }));
+        return;
+      }
+      if (legacyApproval.status === 'pending') {
+        response.writeHead(403, { 'content-type': 'application/json', location: `/api/v1/approvals/${legacyApproval.id}` });
+        response.end(JSON.stringify({ error: { code: 'approval_required', message: 'This operation requires owner approval before it can execute', details: [] } }));
+        return;
+      }
+      if (legacyApproval.status === 'granted') {
+        legacyApproval.status = 'consumed';
+      } else {
+        return fail(response, 403, 'approval_denied', 'This intent was denied; start a new operation key');
+      }
     }
 
     if (url.pathname === '/api/v1/agent/runs' && request.method === 'POST') {
@@ -3258,6 +3337,10 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     if (url.pathname === '/api/v1/board/lists' && request.method === 'POST') {
       let input: RecordData;
       try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const gate = boardMutationGate(request, response, url.pathname, input, receipts, epoch);
+      if (gate) return gate;
+      const key = String(request.headers['idempotency-key']);
+      const digest = importDigest([epoch, url.pathname, input]);
       const title = typeof input.title === 'string' ? input.title.trim() : '';
       if (!title || title.length > 120 || boardLists.some((list) => list.title.toLowerCase() === title.toLowerCase())) return fail(response, 422, 'BOARD_LIST_INVALID', 'List title must be unique and non-empty');
       const active = boardLists.filter((list) => !list.archived).sort((a, b) => a.position - b.position);
@@ -3267,11 +3350,17 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       const list = { id: randomHex(), title, position, archived: false, revision: 1 };
       boardLists.push(list);
       boardLists.filter((item) => !item.archived && item.id !== list.id).forEach((item) => { if (item.position >= list.position) { item.position += 1; item.revision += 1; } });
-      return json(response, 201, { list, board_revision: events.length + 1 });
+      const result = { list, board_revision: events.length + 1 };
+      receipts.set(key, { digest, result, status: 201 });
+      return json(response, 201, result);
     }
     if (url.pathname === '/api/v1/board/lists/reorder' && request.method === 'POST') {
       let input: RecordData;
       try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const gate = boardMutationGate(request, response, url.pathname, input, receipts, epoch);
+      if (gate) return gate;
+      const key = String(request.headers['idempotency-key']);
+      const digest = importDigest([epoch, url.pathname, input]);
       const active = boardLists.filter((list) => !list.archived);
       const ids = input.ordered_ids;
       const revisions = input.expected_revisions;
@@ -3285,24 +3374,36 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
         list.position = position;
         list.revision += 1;
       });
-      return json(response, 200, { lists: active.slice().sort((a, b) => a.position - b.position) });
+      const result = { lists: active.slice().sort((a, b) => a.position - b.position) };
+      receipts.set(key, { digest, result, status: 200 });
+      return json(response, 200, result);
     }
     const boardListMatch = /^\/api\/v1\/board\/lists\/([^/]+)$/.exec(url.pathname);
     if (boardListMatch && request.method === 'PATCH') {
       let input: RecordData;
       try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const gate = boardMutationGate(request, response, url.pathname, input, receipts, epoch);
+      if (gate) return gate;
+      const key = String(request.headers['idempotency-key']);
+      const digest = importDigest([epoch, url.pathname, input]);
       const list = boardLists.find((item) => item.id === boardListMatch[1]);
       if (!list) return fail(response, 404, 'NOT_FOUND', 'Board list does not exist');
       if (input.expected_revision !== list.revision) return fail(response, 409, 'BOARD_LIST_STALE', 'Board list changed');
       const title = typeof input.title === 'string' ? input.title.trim() : '';
       if (!title || boardLists.some((item) => item.id !== list.id && item.title.toLowerCase() === title.toLowerCase())) return fail(response, 422, 'BOARD_LIST_INVALID', 'List title must be unique and non-empty');
       list.title = title; list.revision += 1;
-      return json(response, 200, { list });
+      const result = { list };
+      receipts.set(key, { digest, result, status: 200 });
+      return json(response, 200, result);
     }
     const archiveMatch = /^\/api\/v1\/board\/lists\/([^/]+)\/archive$/.exec(url.pathname);
     if (archiveMatch && request.method === 'POST') {
       let input: RecordData;
       try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const gate = boardMutationGate(request, response, url.pathname, input, receipts, epoch);
+      if (gate) return gate;
+      const key = String(request.headers['idempotency-key']);
+      const digest = importDigest([epoch, url.pathname, input]);
       const source = boardLists.find((item) => item.id === archiveMatch[1]);
       const destination = boardLists.find((item) => item.id === String(input.destination_list_id) && !item.archived);
       const active = boardLists.filter((item) => !item.archived);
@@ -3316,7 +3417,9 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
         placement.list_id = destination.id; placement.position = nextPosition + index; placement.placement_revision += 1;
       });
       destination.revision += 1; source.archived = true; source.revision += 1;
-      return json(response, 200, { archived_list: source, destination_list: destination, moved: moved.map((card, index) => ({ opportunity_id: card.opportunity.id, position: nextPosition + index, placement_revision: placements.get(String(card.opportunity.id))!.placement_revision })) });
+      const result = { archived_list: source, destination_list: destination, moved: moved.map((card, index) => ({ opportunity_id: card.opportunity.id, position: nextPosition + index, placement_revision: placements.get(String(card.opportunity.id))!.placement_revision })) };
+      receipts.set(key, { digest, result, status: 200 });
+      return json(response, 200, result);
     }
     if (url.pathname === '/api/v1/opportunities' && request.method === 'GET') {
       const params = url.searchParams;
@@ -3465,6 +3568,10 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     if (placementMatch && request.method === 'POST') {
       let input: RecordData;
       try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const gate = boardMutationGate(request, response, url.pathname, input, receipts, epoch);
+      if (gate) return gate;
+      const key = String(request.headers['idempotency-key']);
+      const digest = importDigest([epoch, url.pathname, input]);
       const opportunity = opportunities.get(placementMatch[1]!);
       const placement = placements.get(placementMatch[1]!);
       const source = boardLists.find((list) => list.id === placement?.list_id);
@@ -3481,7 +3588,9 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       if (source.id !== destination.id) sourceCards.forEach((card, position) => { placements.get(String(card.opportunity.id))!.position = position; });
       source.revision += 1;
       if (source.id !== destination.id) destination.revision += 1;
-      return json(response, 200, { opportunity_id: opportunity.id, list_id: destination.id, position: targetIndex, placement_revision: placement.placement_revision, source_list_revision: source.revision, destination_list_revision: destination.revision });
+      const result = { opportunity_id: opportunity.id, list_id: destination.id, position: targetIndex, placement_revision: placement.placement_revision, source_list_revision: source.revision, destination_list_revision: destination.revision };
+      receipts.set(key, { digest, result, status: 200 });
+      return json(response, 200, result);
     }
     const notesMatch = /^\/api\/v1\/opportunities\/([^/]+)\/notes(?:\/tasks\/toggle)?$/.exec(url.pathname);
     if (notesMatch && request.method === 'GET') {

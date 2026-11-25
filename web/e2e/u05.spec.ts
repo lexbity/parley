@@ -148,7 +148,7 @@ async function configureProvider(page: Page, session: OwnerSession, endpoint: st
   });
   expect(response.ok()).toBe(true);
   const health = await page.request.post('/api/v1/agent/provider/health', {
-    headers: { 'X-Parley-Token': session.mutation_token, 'X-Parley-Epoch': session.epoch },
+    headers: { 'X-Parley-Token': session.mutation_token, 'X-Parley-Epoch': session.epoch, 'Idempotency-Key': randomUUID() },
   });
   expect(health.ok()).toBe(true);
 }

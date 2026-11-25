@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "policy": "TD-001 FR-14: conservative by default; preview and read routes are not destructive",
+  "approval": {
+    "transport": "commands/policy.rs::Effect::Destructive -> U08 approval inbox",
+    "digest": "frozen intent digest bound to the operation key and wire body",
+    "exactly_once": "one approval grant consumed in the same savepoint as the effect"
+  },
+  "routes": [
+    { "path": "/api/v1/parties/{id}/erase", "method": "POST", "reason": "irreversible subject erasure" },
+    { "path": "/api/v1/restore/commit", "method": "POST", "reason": "replaces the live workspace with a backup" },
+    { "path": "/api/v1/settings/maintenance", "method": "PUT", "reason": "maintenance reset controls" },
+    { "path": "/api/v1/resource-cards/{id}/retire", "method": "POST", "reason": "retires a canonical card and affected versions" },
+    { "path": "/api/v1/imports/commit", "method": "POST", "reason": "bulk replacement of party facts" }
+  ],
+  "excluded": [
+    { "path": "/api/v1/parties/{id}/erase/preview", "reason": "preview has no effect" },
+    { "path": "/api/v1/restore/preview", "reason": "preview has no effect" },
+    { "path": "/api/v1/imports/preview", "reason": "preview has no effect" }
+  ]
+}

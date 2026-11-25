@@ -138,10 +138,7 @@ pub(super) async fn sheet_query(
     }
     let mut tx = match state.workspace.pool().begin().await {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("queue sheet DB: {e:?}");
-            return workspace_error(e.into());
-        }
+        Err(e) => return workspace_error(e.into()),
     };
     let result = build_sheet(&mut tx, &query).await;
     let _ = tx.commit().await;

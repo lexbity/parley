@@ -65,20 +65,14 @@ async fn queue(
     // (view=sheet|list) remains the discoverable full set.
     let mut tx = match state.workspace.pool().begin().await {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("S10 queue DB: {e:?}");
-            return super::command_error(e.into());
-        }
+        Err(e) => return super::command_error(e.into()),
     };
     let cursor: i64 = match sqlx::query_scalar("SELECT coalesce(max(cursor),0) FROM event")
         .fetch_one(&mut *tx)
         .await
     {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("S10 queue DB: {e:?}");
-            return super::command_error(e.into());
-        }
+        Err(e) => return super::command_error(e.into()),
     };
     let policy: String =
         match sqlx::query_scalar("SELECT settings_json FROM owner_profile WHERE id=1")
@@ -86,10 +80,7 @@ async fn queue(
             .await
         {
             Ok(v) => v,
-            Err(e) => {
-                eprintln!("S10 queue DB: {e:?}");
-                return super::command_error(e.into());
-            }
+            Err(e) => return super::command_error(e.into()),
         };
     let policy: serde_json::Value = serde_json::from_str(&policy).unwrap_or_default();
     let cap = policy
@@ -148,10 +139,7 @@ async fn queue(
     .await
     {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("S10 queue DB: {e:?}");
-            return super::command_error(e.into());
-        }
+        Err(e) => return super::command_error(e.into()),
     };
 
     // The classification that used to run in Rust lives in the base CTE so

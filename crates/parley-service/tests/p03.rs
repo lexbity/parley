@@ -22,6 +22,7 @@ async fn p03_private_attachments() {
             &[
                 ("X-Parley-Filename", "name=fixture.txt"),
                 ("X-Parley-Purpose", "card-attachment"),
+                ("Idempotency-Key", &next_key()),
             ],
         )
         .await;

@@ -5,8 +5,9 @@
 use crate::*;
 use axum::{
     Json,
-    extract::{Path as AxumPath, Query, RawQuery, State},
-    http::{HeaderMap, StatusCode, header},
+    extract::{Path as AxumPath, Query, RawQuery, Request, State},
+    http::{HeaderMap, Method, StatusCode, header},
+    middleware::Next,
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
@@ -1042,5 +1043,388 @@ pub(super) async fn update_graph_layout(
             response
         }
         Err(error_value) => command_error(error_value),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TD-10 W2: legacy transport operation gate.
+//
+// Every non-exempt `/api/v1` mutation (POST/PUT/PATCH/DELETE) requires an
+// explicit `Idempotency-Key` (400 `IDEMPOTENCY_KEY_REQUIRED` when missing).
+// For the mutation families whose handlers do not already manage receipts,
+// the gate additionally implements exactly-once: same key + same intent
+// replays the stored receipt with zero second effect; same key + different
+// intent fails 409 `KEY_REUSED`; a concurrently in-flight claim yields a
+// transient 503 `WRITER_BUSY`. Handler-managed families (board, resource
+// board, relations, party imports, registry commands, approvals, ...) keep
+// their native receipts; the gate only enforces key presence there.
+// ---------------------------------------------------------------------------
+
+/// Body bytes the gate is willing to buffer for an intent digest. Uploads
+/// (up to the 64 MiB blob cap) are content-addressed and pass through
+/// key-presence-only; they are never buffered here.
+const GATE_BODY_LIMIT: usize = 2 * 1024 * 1024;
+
+/// Exempt transport classes: SSE, media bytes, session/bootstrap/health and
+/// the embedded UI fall outside the mutation gate entirely. Preview routes
+/// (import/restore/erasure/party-import) are read-only intent planners and
+/// are not mutations, so they bypass the key policy too.
+fn gate_exempt_path(path: &str) -> bool {
+    path == "/api/v1/health"
+        || path == "/api/v1/session/bootstrap"
+        || path == "/api/v1/session"
+        || path == "/api/v1/command-notifications"
+        || path.starts_with("/api/v1/commands")
+        || path.starts_with("/api/v1/approvals")
+        || path.ends_with("/preview")
+        || (path.starts_with("/api/v1/materials/") && path.ends_with("/download"))
+}
+
+/// Mutation families the gate fully manages (claim + replay + receipt).
+/// These are the handlers that historically performed none of their own
+/// idempotency bookkeeping; everything else uses native receipts.
+fn gate_claimed_path(method: &Method, path: &str) -> bool {
+    let post = method == Method::POST;
+    let put = method == Method::PUT;
+    let delete = method == Method::DELETE;
+    // Blob store.
+    (post && path == "/api/v1/uploads")
+        || (post && path.starts_with("/api/v1/uploads/") && path.ends_with("/review"))
+    // Maintenance.
+        || (post && path == "/api/v1/backups")
+        || (post && path == "/api/v1/exports")
+        || (post && path == "/api/v1/imports/commit")
+        || (post && path == "/api/v1/restore/commit")
+        || (post && path.starts_with("/api/v1/parties/") && path.ends_with("/erase"))
+        || (put && path == "/api/v1/settings/maintenance")
+    // Threads / sends.
+        || (post && path.starts_with("/api/v1/threads/") && path.ends_with("/send"))
+        || (post && path.starts_with("/api/v1/sends/") && path.ends_with("/outcome"))
+        || (post && path.starts_with("/api/v1/entities/") && path.ends_with("/clear-dnc"))
+        || (post && path.starts_with("/api/v1/threads/") && path.ends_with("/reopen"))
+        || (post && path.starts_with("/api/v1/opportunities/") && path.ends_with("/resolution"))
+        || (post && path == "/api/v1/capacity")
+    // Materials families without native receipts.
+        || (post && path.starts_with("/api/v1/opportunities/") && path.ends_with("/participants"))
+        || (post && path.starts_with("/api/v1/opportunities/") && path.contains("/sources/"))
+        || (delete && path.starts_with("/api/v1/opportunities/") && path.contains("/sources/"))
+        || (post && path.starts_with("/api/v1/opportunities/") && path.ends_with("/materials"))
+        || (post && path.starts_with("/api/v1/materials/") && path.ends_with("/versions"))
+        || (post && path.starts_with("/api/v1/materials/") && path.ends_with("/approve"))
+        || (post && path.starts_with("/api/v1/materials/") && path.ends_with("/gate"))
+        || (post && path.starts_with("/api/v1/materials/") && path.ends_with("/release"))
+        || (post && path.starts_with("/api/v1/releases/") && path.ends_with("/ack"))
+}
+
+/// TD-10 W3: destructive legacy mutations are mapped to approval command ids
+/// so the exact frozen intent stops at the owner approval inbox (FR-14).
+/// These four families are the enumerated conservative destructive set that
+/// executes through the legacy transport today; previews are excluded.
+fn gate_destructive_command(path: &str) -> Option<&'static str> {
+    if path == "/api/v1/imports/commit" {
+        Some("import.commit")
+    } else if path == "/api/v1/restore/commit" {
+        Some("workspace.restore")
+    } else if path.starts_with("/api/v1/parties/") && path.ends_with("/erase") {
+        Some("party.erase")
+    } else if path == "/api/v1/settings/maintenance" {
+        Some("maintenance.settings")
+    } else {
+        None
+    }
+}
+
+/// Approval gate outcome for a destructive legacy mutation.
+enum LegacyApproval {
+    /// No approval exists yet; a pending row was created with a frozen intent
+    /// digest. The caller must reply 403 with the Location header.
+    Required(String),
+    /// The grant was consumed; execution may proceed.
+    Proceed,
+}
+
+/// TD-10 W3: check and advance the approval state for a destructive legacy
+/// mutation. A first request binds a pending approval with the canonical
+/// intent digest; a granted request consumes the grant before execution.
+async fn legacy_approval_gate(
+    pool: &sqlx::SqlitePool,
+    epoch: &str,
+    principal: &str,
+    command_id: &str,
+    key: &str,
+    canonical: &str,
+    secret: &[u8],
+) -> Result<LegacyApproval, (i64, &'static str, String)> {
+    let secret = crate::commands::ledger::key_digest(secret, epoch, principal, command_id, key);
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|_| (503, "WRITER_BUSY", "The workspace is busy".into()))?;
+    let existing =
+        crate::commands::approval::lookup_by_key(&mut tx, epoch, principal, command_id, &secret)
+            .await
+            .map_err(|_| {
+                (
+                    503,
+                    "WRITER_BUSY",
+                    "The approval store is unavailable".into(),
+                )
+            })?;
+    let Some(approval) = existing else {
+        // First destructive intent: freeze it as a pending approval.
+        let id = crate::commands::approval::create_pending(
+            &mut tx,
+            &crate::commands::approval::NewApproval {
+                epoch,
+                owner_pseudonym: principal,
+                principal_pseudonym: principal,
+                run_pseudonym: None,
+                command_id,
+                command_version: 1,
+                key_digest: &secret,
+                wire_args_digest: canonical,
+                canonical_args_digest: canonical,
+                dependency_fingerprint: canonical,
+                preview_digest: canonical,
+                args_json: canonical.to_owned(),
+                preview_json: canonical.to_owned(),
+            },
+        )
+        .await
+        .map_err(|_| (503, "WRITER_BUSY", "The approval store is full".into()))?;
+        let _ = tx.commit().await;
+        return Ok(LegacyApproval::Required(id));
+    };
+    let status = approval.status;
+    let _ = tx.commit().await;
+    match status {
+        crate::commands::approval::ApprovalStatus::Granted => {
+            // Consume the grant in its own CAS; a stale revision refuses.
+            let mut tx = pool
+                .begin_with("BEGIN IMMEDIATE")
+                .await
+                .map_err(|_| (503, "WRITER_BUSY", "The workspace is busy".into()))?;
+            let consumed = crate::commands::approval::consume(
+                &mut tx,
+                &approval.id,
+                approval.revision,
+                &crate::new_id("audit"),
+            )
+            .await
+            .map_err(|_| (503, "WRITER_BUSY", "The approval store is busy".into()))?;
+            let _ = tx.commit().await;
+            if !consumed {
+                return Err((
+                    409,
+                    "approval_stale",
+                    "The approval changed; reload before continuing".into(),
+                ));
+            }
+            Ok(LegacyApproval::Proceed)
+        }
+        crate::commands::approval::ApprovalStatus::Pending => {
+            Ok(LegacyApproval::Required(approval.id.clone()))
+        }
+        crate::commands::approval::ApprovalStatus::Denied
+        | crate::commands::approval::ApprovalStatus::Revoked => Err((
+            403,
+            "approval_denied",
+            "This intent was denied; start a new operation key".into(),
+        )),
+        crate::commands::approval::ApprovalStatus::Expired
+        | crate::commands::approval::ApprovalStatus::Stale => Err((
+            409,
+            "approval_stale",
+            "This approval expired; start a new operation key".into(),
+        )),
+        crate::commands::approval::ApprovalStatus::Consumed => Err((
+            409,
+            "approval_consumed",
+            "This approval was already consumed; start a new operation key".into(),
+        )),
+    }
+}
+
+/// TD-10 W2 gate. Mounted as the outermost layer on the composed app router.
+pub(crate) async fn legacy_operation_gate(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let method = request.method().clone();
+    if matches!(method, Method::GET | Method::HEAD) {
+        return next.run(request).await;
+    }
+    let path = request.uri().path().to_owned();
+    if !path.starts_with("/api/v1/") || gate_exempt_path(&path) {
+        return next.run(request).await;
+    }
+
+    // Preserve the auth ordering: unauthenticated mutations fail 401 before
+    // any key policy is evaluated.
+    let principal = match authenticate_owner(request.headers(), &state).await {
+        Ok(value) => value,
+        Err(response) => return response.into_response(),
+    };
+
+    let key = match idempotency_key(request.headers()) {
+        Ok(key) => key,
+        Err((status, code, message)) => return error(status, code, message),
+    };
+    let epoch = state.workspace.epoch().to_owned();
+
+    if !gate_claimed_path(&method, &path) {
+        return next.run(request).await;
+    }
+
+    let (parts, body) = request.into_parts();
+    let bytes = match axum::body::to_bytes(body, GATE_BODY_LIMIT).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            // Oversized body (upload): key-presence-only, never buffered.
+            return next.run(Request::from_parts(parts, Body::empty())).await;
+        }
+    };
+    let canonical = match serde_json::from_slice::<Value>(&bytes) {
+        Ok(value) => crate::canonical_intent(method.as_str(), &path, &value),
+        Err(_) => digest(format!("{}\0{}\0{}", method, path, digest(&bytes)).as_bytes()),
+    };
+    let pool = state.workspace.pool().clone();
+
+    let replay = crate::gate_replay(&pool, &epoch, &key, &canonical).await;
+    match replay {
+        Ok(Some(value)) => return crate::gate_replay_response(&epoch, value),
+        Err(error) => return crate::command_error(error),
+        Ok(None) => {}
+    }
+
+    // TD-10 W3: destructive legacy mutations stop at the approval inbox with
+    // a frozen intent digest (FR-14). A pending/granted approval is bound to
+    // the operation key; execution proceeds only after the grant is consumed.
+    if let Some(command_id) = gate_destructive_command(&path) {
+        let secret = state.workspace.command_secret();
+        match legacy_approval_gate(
+            &pool,
+            &epoch,
+            &principal.pseudonym,
+            command_id,
+            &key,
+            &canonical,
+            &secret,
+        )
+        .await
+        {
+            Ok(LegacyApproval::Required(id)) => {
+                let mut response = error(
+                    StatusCode::FORBIDDEN,
+                    "approval_required",
+                    "This operation requires owner approval before it can execute",
+                );
+                response.headers_mut().insert(
+                    header::LOCATION,
+                    HeaderValue::from_str(&format!("/api/v1/approvals/{id}"))
+                        .unwrap_or_else(|_| HeaderValue::from_static("/api/v1/approvals")),
+                );
+                return response;
+            }
+            Ok(LegacyApproval::Proceed) => {}
+            Err((status, code, message)) => {
+                return error(
+                    StatusCode::from_u16(status as u16)
+                        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                    code,
+                    message,
+                );
+            }
+        }
+    }
+
+    // Claim the key before running the handler so concurrent same-key
+    // requests serialize instead of double-executing.
+    let claimed = {
+        let mut tx = match pool.begin_with("BEGIN IMMEDIATE").await {
+            Ok(tx) => tx,
+            Err(_) => {
+                return error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "WRITER_BUSY",
+                    "The workspace is busy. Retry the same operation.",
+                );
+            }
+        };
+        let inserted = sqlx::query(
+            "INSERT INTO idempotency_receipt(owner_id,epoch,key,canonical_digest,status_code,result_json,last_event_cursor,created_at) VALUES(1,?,?,?,0,'{}',0,?) ON CONFLICT(owner_id,epoch,key) DO NOTHING",
+        )
+        .bind(&epoch)
+        .bind(&key)
+        .bind(&canonical)
+        .bind(crate::now_utc())
+        .execute(&mut *tx)
+        .await;
+        let inserted = match inserted {
+            Ok(result) => result.rows_affected(),
+            Err(_) => 0,
+        };
+        let _ = tx.commit().await;
+        inserted
+    };
+    if claimed == 0 {
+        // A concurrent same-key request claimed first; re-check for its
+        // result rather than executing twice.
+        match crate::gate_replay(&pool, &epoch, &key, &canonical).await {
+            Ok(Some(value)) => return crate::gate_replay_response(&epoch, value),
+            Ok(None) | Err(_) => {
+                return error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "WRITER_BUSY",
+                    "The workspace is busy. Retry the same operation.",
+                );
+            }
+        }
+    }
+
+    let response = next
+        .run(Request::from_parts(parts, Body::from(bytes)))
+        .await;
+
+    if response.status().is_success() {
+        let (resp_parts, resp_body) = response.into_parts();
+        // Exports/archives can legitimately exceed small JSON responses;
+        // capture up to the blob ceiling before refusing to store a receipt.
+        let out = match axum::body::to_bytes(resp_body, 8 * 1024 * 1024).await {
+            Ok(bytes) => bytes,
+            Err(_) => return Response::from_parts(resp_parts, Body::empty()),
+        };
+        let value: Value = serde_json::from_slice(&out).unwrap_or(Value::Null);
+        let result_json = serde_json::to_string(&value).unwrap_or_else(|_| "{}".into());
+        let status = resp_parts.status.as_u16() as i64;
+        let cursor: i64 = sqlx::query_scalar("SELECT coalesce(max(cursor),0) FROM event")
+            .fetch_one(&pool)
+            .await
+            .unwrap_or(0);
+        // Update the pending claim into a finalized receipt.
+        let _ = sqlx::query(
+            "UPDATE idempotency_receipt SET canonical_digest=?,status_code=?,result_json=?,last_event_cursor=? WHERE owner_id=1 AND epoch=? AND key=?",
+        )
+        .bind(&canonical)
+        .bind(status)
+        .bind(&result_json)
+        .bind(cursor)
+        .bind(&epoch)
+        .bind(&key)
+        .execute(&pool)
+        .await;
+        Response::from_parts(resp_parts, Body::from(out))
+    } else {
+        // Failure is not sticky: drop the claim so the client may retry the
+        // same key for a fresh attempt.
+        let _ = sqlx::query(
+            "DELETE FROM idempotency_receipt WHERE owner_id=1 AND epoch=? AND key=? AND status_code=0",
+        )
+        .bind(&epoch)
+        .bind(&key)
+        .execute(&pool)
+        .await;
+        response
     }
 }

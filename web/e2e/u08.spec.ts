@@ -165,6 +165,41 @@ test('u08_approval_inbox_grant_and_deny', async ({ page }) => {
   void approveApproval;
 });
 
+/**
+ * TD-10 W3: a legacy destructive mutation (maintenance settings) stops at
+ * the owner approval inbox with a frozen intent, and resumes only after the
+ * grant. Both browser projects exercise the same wire behavior.
+ */
+test('u08_owner_legacy_destructive_maintenance_settings_waits_for_approval', async ({ page }) => {
+  const session = await signIn(page);
+  const authHeaders = { 'X-Parley-Token': session.mutation_token, 'X-Parley-Epoch': session.epoch };
+
+  const current = await page.request.get('/api/v1/settings/maintenance', { headers: authHeaders });
+  expect(current.ok()).toBe(true);
+  const settings = await current.json() as { revision: number };
+  const intent = {
+    backup_directory: '/tmp/parley-e2e-maintenance',
+    interval_hours: 24,
+    retention_count: 14,
+    expected_revision: settings.revision,
+  };
+  const key = randomUUID();
+  const mutateHeaders = { 'content-type': 'application/json', ...authHeaders, 'Idempotency-Key': key };
+
+  const first = await page.request.put('/api/v1/settings/maintenance', { headers: mutateHeaders, data: intent });
+  expect(first.status()).toBe(403);
+  const firstBody = await first.json() as { error: { code: string } };
+  expect(firstBody.error.code).toBe('approval_required');
+  const location = first.headers()['location'] ?? '';
+  expect(location).toMatch(/^\/api\/v1\/approvals\//);
+
+  const approval = await pendingApproval(page, session, 'maintenance.settings');
+  await decideApproval(page, session, approval.id, approval.revision, approval.preview_digest, 'grant');
+
+  const second = await page.request.put('/api/v1/settings/maintenance', { headers: mutateHeaders, data: intent });
+  expect(second.ok()).toBe(true);
+});
+
 test('u08_rust_owner_surface_reports_empty_inbox', async ({ page }) => {
   const session = await signIn(page);
   await page.getByRole('link', { name: 'Settings' }).click();

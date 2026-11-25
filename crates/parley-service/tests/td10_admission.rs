@@ -256,6 +256,238 @@ async fn td10_opportunity_create_has_no_content_derived_fallback_key() {
     let _ = fs::remove_file(path);
 }
 
+/// The committed route inventory is the AC-11 oracle; this test consumes it
+/// directly to prove every non-exempt legacy mutation fails closed on a
+/// missing operation key (AC-12 first half).
+const ROUTE_INVENTORY: &str = include_str!("../../../contract/fixtures/td10/route-inventory.json");
+
+#[tokio::test]
+async fn td10_inventory_missing_key_fails_closed_on_every_legacy_mutation() {
+    let inventory: Value = serde_json::from_str(ROUTE_INVENTORY).unwrap();
+    let routes = inventory["routes"].as_array().unwrap();
+    let db = db_path();
+    let service = parley_service::start_workspace(&db).await.unwrap();
+    let port = service.address.port();
+    let owner = session(&service).await;
+    let mut checked = 0usize;
+    for route in routes {
+        let exempt = route["exempt"].as_str().unwrap();
+        let dispatch = route["dispatch"].as_str().unwrap();
+        let method = route["method"].as_str().unwrap();
+        if exempt != "—" || dispatch != "legacy-axum" {
+            continue;
+        }
+        if !matches!(method, "POST" | "PUT" | "PATCH" | "DELETE") {
+            continue;
+        }
+        let path = route["path"].as_str().unwrap();
+        if path.ends_with("/preview") {
+            continue;
+        }
+        let (status, body) = request(port, &owner, method, path, Some(json!({})), None).await;
+        assert_eq!(
+            status, 400,
+            "missing operation key on {method} {path} must fail 400, got {status} {body}"
+        );
+        assert_eq!(
+            body["error"]["code"], "IDEMPOTENCY_KEY_REQUIRED",
+            "{method} {path}: unexpected code {body}"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 90,
+        "inventory sweep must cover the legacy mutation surface (checked {checked})"
+    );
+    service.shutdown().await;
+    let _ = fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn td10_gate_claimed_replay_returns_original_receipt_without_second_effect() {
+    let path = db_path();
+    let service = parley_service::start_workspace(&path).await.unwrap();
+    let port = service.address.port();
+    let owner = session(&service).await;
+    let key = "td10-gate-backup";
+    let body = Some(json!({}));
+
+    let (first_status, first) = request(
+        port,
+        &owner,
+        "POST",
+        "/api/v1/backups",
+        body.clone(),
+        Some(key),
+    )
+    .await;
+    let (second_status, second) =
+        request(port, &owner, "POST", "/api/v1/backups", body, Some(key)).await;
+    assert_eq!(first_status, 200, "{first}");
+    assert_eq!(
+        second_status, first_status,
+        "replay must return the original status"
+    );
+    assert_eq!(
+        first, second,
+        "replay must return the original receipt bytes"
+    );
+
+    let workspace = Workspace::open(&path).await.unwrap();
+    let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM idempotency_receipt WHERE key=?")
+        .bind(key)
+        .fetch_one(workspace.pool())
+        .await
+        .unwrap();
+    assert_eq!(receipts, 1, "exactly one receipt for one effect");
+    drop(workspace);
+    service.shutdown().await;
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn td10_gate_same_key_different_intent_fails_409_key_reused() {
+    let path = db_path();
+    let service = parley_service::start_workspace(&path).await.unwrap();
+    let port = service.address.port();
+    let owner = session(&service).await;
+    let key = "td10-gate-backup-reuse";
+
+    // First intent succeeds and stores a receipt.
+    let (status, body) = request(
+        port,
+        &owner,
+        "POST",
+        "/api/v1/backups",
+        Some(json!({})),
+        Some(key),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    // Same key, different intent: terminal 409, never a second effect.
+    let (status, body) = request(
+        port,
+        &owner,
+        "POST",
+        "/api/v1/backups",
+        Some(json!({"x":1})),
+        Some(key),
+    )
+    .await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(body["error"]["code"], "KEY_REUSED", "{body}");
+    service.shutdown().await;
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn td10_legacy_destructive_stops_at_approval_inbox_and_resumes_on_grant() {
+    let path = db_path();
+    let service = parley_service::start_workspace(&path).await.unwrap();
+    let port = service.address.port();
+    let owner = session(&service).await;
+
+    // Seed a party to erase.
+    let (status, created) = request(
+        port,
+        &owner,
+        "POST",
+        "/api/v1/entities",
+        Some(json!({"kind":"person","name":"TD10 erase target","focus":""})),
+        Some("td10-w3-party-key"),
+    )
+    .await;
+    assert_eq!(status, 201, "{created}");
+    let party = created["id"].as_str().unwrap().to_owned();
+    let erase_path = format!("/api/v1/parties/{party}/erase");
+    let erase_body = Some(json!({"preview_id":"p","preview_digest":"d"}));
+    let op_key = "td10-w3-erase-key";
+
+    // First intent: frozen, parked at the approval inbox.
+    let (status, body) = request(
+        port,
+        &owner,
+        "POST",
+        &erase_path,
+        erase_body.clone(),
+        Some(op_key),
+    )
+    .await;
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(body["error"]["code"], "approval_required", "{body}");
+
+    let pending = request(
+        port,
+        &owner,
+        "GET",
+        "/api/v1/approvals?status=pending",
+        None,
+        None,
+    )
+    .await;
+    let items = pending.1["items"].as_array().unwrap();
+    let approval = items
+        .iter()
+        .find(|item| item["command_id"] == "party.erase")
+        .unwrap_or_else(|| panic!("pending party.erase approval missing: {items:?}"));
+    let approval_id = approval["id"].as_str().unwrap().to_owned();
+    let revision = approval["revision"].as_i64().unwrap();
+    let preview_digest = approval["preview_digest"].as_str().unwrap().to_owned();
+
+    // Still pending: a repeat stays parked.
+    let (status, body) = request(
+        port,
+        &owner,
+        "POST",
+        &erase_path,
+        erase_body.clone(),
+        Some(op_key),
+    )
+    .await;
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(body["error"]["code"], "approval_required", "{body}");
+
+    // Owner grants the frozen intent.
+    let (status, body) = request(
+        port,
+        &owner,
+        "POST",
+        &format!("/api/v1/approvals/{approval_id}/grant"),
+        Some(json!({"expected_revision": revision, "preview_digest": preview_digest})),
+        Some("td10-w3-grant-key"),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["status"], "granted", "{body}");
+
+    // The same intent resumes on the same operation key: the gate consumes
+    // the grant and forwards to the handler (validation now runs, so the
+    // frozen preview body fails handler-side, never the approval gate).
+    let (status, body) = request(port, &owner, "POST", &erase_path, erase_body, Some(op_key)).await;
+    assert_ne!(status, 403, "{body}");
+    assert_ne!(body["error"]["code"], "approval_required", "{body}");
+    assert!(
+        matches!(status, 409 | 422 | 404 | 400 | 500),
+        "post-grant execute should reach the handler, got {status} {body}"
+    );
+
+    let workspace = Workspace::open(&path).await.unwrap();
+    let consumed: Option<String> =
+        sqlx::query_scalar("SELECT status FROM command_approval WHERE id=?")
+            .bind(&approval_id)
+            .fetch_optional(workspace.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        consumed.as_deref(),
+        Some("consumed"),
+        "grant must be consumed exactly once"
+    );
+    drop(workspace);
+    service.shutdown().await;
+    let _ = fs::remove_file(path);
+}
+
 #[tokio::test]
 async fn td10_stale_revision_fails_with_the_pinned_412() {
     let path = db_path();
