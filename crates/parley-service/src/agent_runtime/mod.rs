@@ -672,42 +672,6 @@ async fn canonical_history(pool: &sqlx::SqlitePool, run_id: &str) -> Vec<Delegat
     canonical_rows(run_id, rows)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn resumed_tool_result_reuses_the_accepted_call_ref() {
-        let detail = json!({"tool_calls":[
-            {"call_ref":"sdk-call-7","name":"commands__run","args":{}}
-        ]})
-        .to_string();
-        let rows = vec![
-            (1, "owner".into(), 1, "task".into(), "{}".into()),
-            (2, "assistant".into(), 0, "start a brief".into(), detail),
-            (
-                2,
-                "tool".into(),
-                1,
-                r#"{"result":{"job_id":"job-1"}}"#.into(),
-                r#"{"name":"commands__run"}"#.into(),
-            ),
-        ];
-        let messages = canonical_rows("run-1", rows);
-        assert_eq!(messages.len(), 2);
-        assert_eq!(
-            messages[0].tool_calls.as_ref().unwrap()[0].call_ref,
-            "sdk-call-7"
-        );
-        assert_eq!(
-            messages[1].tool_call_id.as_deref(),
-            Some("sdk-call-7"),
-            "the resumed tool result must match the assistant toolCall id"
-        );
-        assert!(messages[1].content.contains("job-1"));
-    }
-}
-
 async fn drain_pending(state: &AppState, actor: &Actor) -> Result<(), ()> {
     let run_id = actor.run_id.as_deref().unwrap_or("");
     for (turn_no, ordinal, name, args) in
@@ -787,5 +751,41 @@ async fn finish_with_error(state: &AppState, actor: &Actor, code: &str) {
         let _ = turn::record_turn(&mut tx, actor, 1, "system", 50, code, &json!({})).await;
         let _ = turn::finish(&mut tx, actor, "failed", code).await;
         let _ = tx.commit().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resumed_tool_result_reuses_the_accepted_call_ref() {
+        let detail = json!({"tool_calls":[
+            {"call_ref":"sdk-call-7","name":"commands__run","args":{}}
+        ]})
+        .to_string();
+        let rows = vec![
+            (1, "owner".into(), 1, "task".into(), "{}".into()),
+            (2, "assistant".into(), 0, "start a brief".into(), detail),
+            (
+                2,
+                "tool".into(),
+                1,
+                r#"{"result":{"job_id":"job-1"}}"#.into(),
+                r#"{"name":"commands__run"}"#.into(),
+            ),
+        ];
+        let messages = canonical_rows("run-1", rows);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(
+            messages[0].tool_calls.as_ref().unwrap()[0].call_ref,
+            "sdk-call-7"
+        );
+        assert_eq!(
+            messages[1].tool_call_id.as_deref(),
+            Some("sdk-call-7"),
+            "the resumed tool result must match the assistant toolCall id"
+        );
+        assert!(messages[1].content.contains("job-1"));
     }
 }

@@ -924,45 +924,50 @@ async fn u04_agent_delegated_party_edit_and_task_done() {
             return final_answer("probe-ok");
         }
         if index == 1 {
+            // Tier-1 commands run through the always-available meta-tool.
             return tool_call(
-                "party__rename",
-                json!({"party_id": tool_party, "expected_card_revision": 1, "name": "Agent Renamed"}),
+                "commands__run",
+                json!({"id":"party.rename","version":1,"args":json!({
+                    "party_id": tool_party, "expected_card_revision": 1, "name": "Agent Renamed"
+                })}),
                 "rename the granted party",
             );
         }
         if index == 2 {
             return tool_call(
-                "opportunity__set_task_done",
-                json!({
+                "commands__run",
+                json!({"id":"opportunity.set_task_done","version":1,"args":json!({
                     "opportunity_id": tool_opportunity,
                     "expected_notes_revision": 2,
                     "byte_start": tool_task["byte_start"],
                     "byte_end": tool_task["byte_end"],
                     "line_sha256": tool_task["line_sha256"],
                     "checked": true
-                }),
+                })}),
                 "check the granted task",
             );
         }
         if index == 3 {
             return tool_call(
-                "party__rename",
-                json!({"party_id": "party_absent", "expected_card_revision": 1, "name": "Foreign"}),
+                "commands__run",
+                json!({"id":"party.rename","version":1,"args":json!({
+                    "party_id": "party_absent", "expected_card_revision": 1, "name": "Foreign"
+                })}),
                 "try a foreign party",
             );
         }
         let created = last_tool_result(body);
         if index == 4 {
             return tool_call(
-                "opportunity__set_task_done",
-                json!({
+                "commands__run",
+                json!({"id":"opportunity.set_task_done","version":1,"args":json!({
                     "opportunity_id": "opp_absent",
                     "expected_notes_revision": 2,
                     "byte_start": tool_task["byte_start"],
                     "byte_end": tool_task["byte_end"],
                     "line_sha256": tool_task["line_sha256"],
                     "checked": true
-                }),
+                })}),
                 "try a foreign opportunity",
             );
         }
@@ -1055,15 +1060,15 @@ async fn u04_agent_task_noop_consumes_zero_executed_write() {
         }
         if index == 1 {
             return tool_call(
-                "opportunity__set_task_done",
-                json!({
+                "commands__run",
+                json!({"id":"opportunity.set_task_done","version":1,"args":json!({
                     "opportunity_id": tool_opportunity,
                     "expected_notes_revision": 2,
                     "byte_start": tool_task["byte_start"],
                     "byte_end": tool_task["byte_end"],
                     "line_sha256": tool_task["line_sha256"],
                     "checked": true
-                }),
+                })}),
                 "already checked",
             );
         }

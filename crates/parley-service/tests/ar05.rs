@@ -471,7 +471,10 @@ async fn ar05_partial_batch_waits_releases_lane_and_resumes() {
                         "commands__run".into(),
                         json!({"id":"brief.start","version":1,"args":brief_args}),
                     ),
-                    ("party__get_summary".into(), json!({"party_id": party})),
+                    (
+                        "commands__run".into(),
+                        json!({"id":"party.get_summary","version":1,"args":{"party_id":party}}),
+                    ),
                 ],
             },
             R::final_answer("The brief was prepared and the party checked."),
@@ -506,7 +509,8 @@ async fn ar05_partial_batch_waits_releases_lane_and_resumes() {
             .unwrap();
     assert!(pinned.is_none(), "a waiting run holds no inference lease");
     let mut wait_binding: Option<String> = None;
-    for _ in 0..50 {
+    // Coverage builds run the dispatcher noticeably slower than a plain test.
+    for _ in 0..250 {
         wait_binding = sqlx::query_scalar("SELECT wait_intent FROM agent_run WHERE run_id=?")
             .bind(id)
             .fetch_one(workspace.pool())
