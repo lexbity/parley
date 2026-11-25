@@ -1,1 +1,10 @@
-[]
+{
+  "$schema": "#/components/schemas/CommandErrorEnvelope",
+  "body": {
+    "error": {
+      "code": "unavailable",
+      "message": "Output registry could not be read",
+      "details": []
+    }
+  }
+}

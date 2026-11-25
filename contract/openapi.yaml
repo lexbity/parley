@@ -1835,16 +1835,19 @@ paths:
       operationId: listOutputs
       security:
       - sessionCookie: []
+      description: Bounded keyset index. Bodies are served only by GET /materials/{id}.
+      parameters:
+      - {in: query, name: limit, required: false, schema: {type: integer, minimum: 1, maximum: 500}}
+      - {in: query, name: cursor, required: false, schema: {type: string, maxLength: 200}}
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
       responses:
         '200':
-          description: Searchable index sharing opportunity and material IDs.
+          description: Searchable index sharing opportunity and material IDs, without bodies.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/MaterialList'
-      parameters:
-      - $ref: '#/components/parameters/MutationToken'
-      - $ref: '#/components/parameters/Epoch'
+                $ref: '#/components/schemas/OutputListing'
   /uploads:
     get:
       operationId: listUploads
@@ -6581,6 +6584,44 @@ components:
       type: array
       items:
         $ref: '#/components/schemas/MaterialRecord'
+    MaterialSummary:
+      type: object
+      required:
+      - id
+      - opportunity_id
+      - recipient_id
+      - recipient_name
+      - kind
+      - version
+      - content_sha256
+      - status
+      - gate
+      - attachment
+      properties:
+        id: {type: string}
+        opportunity_id: {type: string}
+        recipient_id: {type: string}
+        recipient_name: {type: string}
+        kind: {type: string}
+        version: {type: integer, minimum: 1}
+        content_sha256: {type: string, pattern: '^[a-f0-9]{64}$'}
+        status: {type: string, enum: [draft, approved, released]}
+        gate:
+          oneOf:
+          - $ref: '#/components/schemas/GateResult'
+          - type: 'null'
+        attachment:
+          anyOf:
+          - $ref: '#/components/schemas/AttachmentInfo'
+          - type: 'null'
+      additionalProperties: false
+    OutputListing:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items: {type: array, maxItems: 500, items: {$ref: '#/components/schemas/MaterialSummary'}}
+        next_cursor: {type: [string, 'null'], nullable: true}
+      additionalProperties: false
     CreateResourceColumn:
       type: object
       required: [title]

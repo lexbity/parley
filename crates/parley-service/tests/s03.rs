@@ -353,8 +353,12 @@ async fn s03_approved_text_releases_exact_bytes_and_is_shared_by_queue_and_outpu
     assert_eq!(queue[0]["id"], material_id);
     let (status, outputs) = request(port, "GET", "/api/v1/outputs", None).await;
     assert_eq!(status, 200);
-    assert_eq!(outputs[0]["id"], material_id);
-    assert_eq!(outputs[0]["version"], 1);
+    // TD-04: the registry is a bounded envelope, not a bare array, and the
+    // body is served only by the detail route.
+    assert_eq!(outputs["items"][0]["id"], material_id);
+    assert_eq!(outputs["items"][0]["version"], 1);
+    assert!(outputs["items"][0]["body"].is_null());
+    assert!(outputs["next_cursor"].is_null());
     let (status, released) = request(
         port,
         "POST",

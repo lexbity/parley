@@ -19,6 +19,8 @@ export type OpportunitySummary = components['schemas']['OpportunitySummary'];
 export type GateCheck = { id: string; severity: 'hard' | 'soft'; pass: boolean; detail: string; overridden: boolean };
 export type GateReport = { checks: GateCheck[]; copy_enabled: boolean };
 export type Material = Omit<components['schemas']['MaterialRecord'], 'gate'> & { gate: GateReport | null };
+export type MaterialSummary = Omit<Material, 'body'>;
+export type OutputListing = { items: MaterialSummary[]; nextCursor: string | null };
 export type MaterialInput = components['schemas']['MaterialInput'];
 export type SlotFill = components['schemas']['SlotFill'];
 export type SentenceBinding = components['schemas']['SentenceBinding'];
@@ -691,7 +693,7 @@ function decodeAttachment(value: unknown): components['schemas']['AttachmentInfo
   };
 }
 
-function decodeMaterial(value: unknown): Material {
+function decodeMaterialCommon(value: unknown): MaterialSummary {
   const item = object(value);
   if (!item || !Number.isSafeInteger(item.version) || Number(item.version) < 1
     || !/^[a-f0-9]{64}$/.test(String(item.content_sha256))
@@ -710,11 +712,24 @@ function decodeMaterial(value: unknown): Material {
     recipient_name: requiredString(item.recipient_name, 'material.recipient_name'),
     kind: requiredString(item.kind, 'material.kind'),
     version: Number(item.version),
-    body: requiredString(item.body, 'material.body'),
     content_sha256: item.content_sha256 as string,
     status: item.status as Material['status'],
     gate,
     attachment: decodeAttachment(item.attachment),
+  };
+}
+
+function decodeMaterial(value: unknown): Material {
+  const summary = decodeMaterialCommon(value);
+  return { ...summary, body: requiredString(object(value)?.body, 'material.body') };
+}
+
+function decodeOutputListing(value: unknown): OutputListing {
+  const listing = object(value);
+  if (!listing || !Array.isArray(listing.items)) throw new Error('Invalid response: output listing is malformed');
+  return {
+    items: listing.items.map(decodeMaterialCommon),
+    nextCursor: typeof listing.next_cursor === 'string' ? listing.next_cursor : null,
   };
 }
 
@@ -747,11 +762,6 @@ function decodeReleasedMaterial(value: unknown): ReleasedMaterial {
     issued_at: requiredString(item.issued_at, 'release.issued_at'),
     attachment: decodeAttachment(item.attachment),
   };
-}
-
-function decodeArray<T>(value: unknown, field: string, decode: (item: unknown) => T): T[] {
-  if (!Array.isArray(value)) throw new Error(`Invalid response: ${field} must be a list`);
-  return value.map(decode);
 }
 
 function decodeSavedSource(value: unknown): SavedSource {
@@ -1372,8 +1382,12 @@ export class ParleyClient {
     return decodeOpportunity(await this.request(`/opportunities/${encodeURIComponent(id)}`, { signal }));
   }
 
-  async listOutputs(): Promise<Material[]> {
-    return decodeArray(await this.request('/outputs'), 'outputs', decodeMaterial);
+  async listOutputs(filters: { limit?: number; cursor?: string } = {}): Promise<OutputListing> {
+    const query = new URLSearchParams();
+    if (typeof filters.limit === 'number') query.set('limit', String(filters.limit));
+    if (filters.cursor) query.set('cursor', filters.cursor);
+    const suffix = query.toString();
+    return decodeOutputListing(await this.request(`/outputs${suffix ? `?${suffix}` : ''}`));
   }
 
   async getWritingInterests(opportunityId: string, recipientId: string): Promise<WritingInterest[]> {

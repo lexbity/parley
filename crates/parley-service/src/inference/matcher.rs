@@ -714,9 +714,23 @@ async fn publish(
     .bind(lease.profile.embed_digest.as_deref().unwrap_or_default())
     .bind(&lease.recipe_digest)
     .bind(calibration)
-    .bind(shortlist)
+    .bind(&shortlist)
     .bind(id)
     .bind(now_utc())
+    .execute(&mut *tx)
+    .await?;
+    // TD-04: normalize every text atom of the committed shortlist in the same
+    // transaction, using the identical extraction rule as migration 0900's
+    // backfill and the old usage-count query. The side table is what makes the
+    // party usage read O(index probe) instead of O(all match runs).
+    sqlx::query(
+        "INSERT INTO match_run_mention(match_run_id,entity_id) \
+         SELECT DISTINCT ?,j.atom FROM json_tree(?) j \
+         WHERE j.type='text' AND j.atom IS NOT NULL \
+         ON CONFLICT(match_run_id,entity_id) DO NOTHING",
+    )
+    .bind(&id_run)
+    .bind(&shortlist)
     .execute(&mut *tx)
     .await?;
     let result = json!({

@@ -91,6 +91,7 @@ const PORTABLE_TABLES: &[&str] = &[
     "maintenance_operation",
     "maintenance_settings",
     "match_run",
+    "match_run_mention",
     "matching_calibration",
     "material",
     "material_lint",

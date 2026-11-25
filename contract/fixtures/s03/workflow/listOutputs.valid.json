@@ -1,1 +1,20 @@
-{}
+{
+  "$schema": "#/components/schemas/OutputListing",
+  "body": {
+    "items": [
+      {
+        "id": "mat-1",
+        "opportunity_id": "opp-1",
+        "recipient_id": "party-1",
+        "recipient_name": "Dana Lee",
+        "kind": "outreach",
+        "version": 1,
+        "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "status": "draft",
+        "gate": null,
+        "attachment": null
+      }
+    ],
+    "next_cursor": null
+  }
+}

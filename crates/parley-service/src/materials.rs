@@ -230,6 +230,56 @@ pub struct MaterialRecord {
     pub attachment: Option<AttachmentInfo>,
 }
 
+/// Bounded registry projection. Bodies live only on the detail route; the
+/// summary keeps every field the registry pane and editor header need.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MaterialSummary {
+    pub id: String,
+    pub opportunity_id: String,
+    pub recipient_id: String,
+    pub recipient_name: String,
+    pub kind: String,
+    pub version: i64,
+    pub content_sha256: String,
+    pub status: String,
+    pub gate: Option<gate::GateResult>,
+    pub attachment: Option<AttachmentInfo>,
+    #[serde(skip)]
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OutputListing {
+    pub items: Vec<MaterialSummary>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OutputQuery {
+    limit: Option<i64>,
+    cursor: Option<String>,
+}
+
+/// Opaque keyset token over `(updated_at, id)`, ordered `updated_at DESC, id
+/// ASC` exactly like the shipped registry view. Malformed tokens fail closed.
+fn encode_output_cursor(updated_at: &str, id: &str) -> String {
+    hex::encode(format!("{updated_at}\u{0}{id}"))
+}
+
+fn decode_output_cursor(value: &str) -> Result<(String, String), WorkspaceError> {
+    let bytes = hex::decode(value)
+        .map_err(|_| WorkspaceError::Invalid("malformed output cursor".into()))?;
+    let text = String::from_utf8(bytes)
+        .map_err(|_| WorkspaceError::Invalid("malformed output cursor".into()))?;
+    let (updated_at, id) = text
+        .split_once('\u{0}')
+        .ok_or_else(|| WorkspaceError::Invalid("malformed output cursor".into()))?;
+    if id.is_empty() {
+        return Err(WorkspaceError::Invalid("malformed output cursor".into()));
+    }
+    Ok((updated_at.to_owned(), id.to_owned()))
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ReleaseAckInput {
     succeeded: bool,
@@ -1114,11 +1164,20 @@ async fn ack_release(
     }
 }
 
-async fn list_outputs(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+async fn list_outputs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<OutputQuery>,
+) -> impl IntoResponse {
     if let Err(error) = authenticate(&headers, &state).await {
         return (error.0, error.1).into_response();
     }
-    match state.workspace.list_outputs().await {
+    let limit = query.limit.unwrap_or(200).clamp(1, 500);
+    match state
+        .workspace
+        .list_outputs(limit, query.cursor.as_deref())
+        .await
+    {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
         Err(error) => workspace_error(error),
     }
@@ -2134,18 +2193,138 @@ impl Workspace {
         Ok(rows)
     }
 
-    async fn list_outputs(&self) -> Result<Vec<MaterialRecord>, WorkspaceError> {
-        let ids: Vec<String> =
-            sqlx::query_scalar("SELECT id FROM material ORDER BY updated_at DESC,id")
-                .fetch_all(&self.pool)
-                .await?;
-        let mut rows = Vec::with_capacity(ids.len());
-        for id in ids {
-            if let Some(row) = self.get_material(&id).await? {
-                rows.push(row);
-            }
+    /// TD-04: one aggregate statement replaces the old 1+3N reads and the
+    /// full-body fetch. The two derived tables collapse the approval snapshot
+    /// and latest release into the head row; the `material_updated` index
+    /// serves the keyset ordering and the LIMIT+1 page.
+    pub async fn list_outputs(
+        &self,
+        limit: i64,
+        cursor: Option<&str>,
+    ) -> Result<OutputListing, WorkspaceError> {
+        // The cap is enforced here as well as at the route so no caller can
+        // turn the registry back into an unbounded read.
+        let limit = limit.clamp(1, 500);
+        let after = cursor.map(decode_output_cursor).transpose()?;
+        type OutputRow = (
+            String,
+            String,
+            String,
+            String,
+            String,
+            i64,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            String,
+        );
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "WITH approval_snapshot AS (SELECT material_id,version_no,gate_snapshot_json FROM approval), \
+             latest_release AS (SELECT material_id,version_no,max(issued_at) AS issued_at FROM release_record GROUP BY material_id,version_no) \
+             SELECT m.id,m.opportunity_id,m.recipient_id,e.name,m.kind,mv.version_no,mv.content_sha256, \
+             CASE WHEN r.issued_at IS NOT NULL THEN 'released' \
+                  WHEN a.gate_snapshot_json IS NOT NULL THEN 'approved' ELSE 'draft' END AS status, \
+             a.gate_snapshot_json,mv.blob_upload_id,mv.blob_sha256,mv.filename,mv.content_type, \
+             mv.attachment_size,m.updated_at \
+             FROM material m JOIN entity e ON e.id=m.recipient_id \
+             JOIN material_version mv ON mv.material_id=m.id AND mv.version_no=m.head_version \
+             LEFT JOIN approval_snapshot a ON a.material_id=m.id AND a.version_no=mv.version_no \
+             LEFT JOIN latest_release r ON r.material_id=m.id AND r.version_no=mv.version_no \
+             WHERE 1=1",
+        );
+        if let Some((updated_at, id)) = after {
+            query
+                .push(" AND (m.updated_at < ")
+                .push_bind(updated_at.clone())
+                .push(" OR (m.updated_at = ")
+                .push_bind(updated_at)
+                .push(" AND m.id > ")
+                .push_bind(id)
+                .push("))");
         }
-        Ok(rows)
+        query
+            .push(" ORDER BY m.updated_at DESC,m.id ASC LIMIT ")
+            .push_bind(limit + 1);
+        let rows = query
+            .build_query_as::<OutputRow>()
+            .fetch_all(&self.pool)
+            .await?;
+        let mut items = Vec::with_capacity(rows.len());
+        for (
+            id,
+            opportunity_id,
+            recipient_id,
+            recipient_name,
+            kind,
+            version,
+            content_sha256,
+            status,
+            gate_json,
+            blob_upload_id,
+            blob_sha256,
+            filename,
+            content_type,
+            attachment_size,
+            updated_at,
+        ) in rows
+        {
+            let attachment = match (
+                blob_upload_id,
+                blob_sha256,
+                filename,
+                content_type,
+                attachment_size,
+            ) {
+                (Some(upload_id), Some(sha256), Some(filename), Some(content_type), Some(size)) => {
+                    Some(AttachmentInfo {
+                        upload_id,
+                        sha256,
+                        filename,
+                        content_type,
+                        size,
+                    })
+                }
+                (None, None, None, None, None) => None,
+                _ => {
+                    return Err(WorkspaceError::Invalid(
+                        "material attachment metadata is incomplete".into(),
+                    ));
+                }
+            };
+            let gate = gate_json
+                .map(|json| {
+                    serde_json::from_str(&json)
+                        .map_err(|error| WorkspaceError::Invalid(error.to_string()))
+                })
+                .transpose()?;
+            items.push(MaterialSummary {
+                id,
+                opportunity_id,
+                recipient_id,
+                recipient_name,
+                kind,
+                version,
+                content_sha256,
+                status,
+                gate,
+                attachment,
+                updated_at,
+            });
+        }
+        let next_cursor = if items.len() > limit as usize {
+            items.truncate(limit as usize);
+            items
+                .last()
+                .map(|last| encode_output_cursor(&last.updated_at, &last.id))
+        } else {
+            None
+        };
+        Ok(OutputListing { items, next_cursor })
     }
 
     async fn approve_material(

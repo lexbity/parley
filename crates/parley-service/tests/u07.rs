@@ -850,7 +850,7 @@ async fn u07_scoped_end_to_end_match_compose_review_save_gate_release() {
     assert_eq!(released["material_id"], material_id, "{released:?}");
     let (status, outputs) = request(port, "GET", "/api/v1/outputs", None, "outputs-read").await;
     assert_eq!(status, 200, "{outputs:?}");
-    assert_eq!(outputs.as_array().unwrap().len(), 1);
+    assert_eq!(outputs["items"].as_array().unwrap().len(), 1);
 
     gate_provider.stop().await;
     matcher_provider.stop().await;

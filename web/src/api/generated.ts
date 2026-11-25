@@ -954,6 +954,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description Bounded keyset index. Bodies are served only by GET /materials/{id}. */
         get: operations["listOutputs"];
         put?: never;
         post?: never;
@@ -3772,6 +3773,23 @@ export interface components {
             next_cursor: string | null;
         };
         MaterialList: components["schemas"]["MaterialRecord"][];
+        MaterialSummary: {
+            id: string;
+            opportunity_id: string;
+            recipient_id: string;
+            recipient_name: string;
+            kind: string;
+            version: number;
+            content_sha256: string;
+            /** @enum {string} */
+            status: "draft" | "approved" | "released";
+            gate: components["schemas"]["GateResult"] | null;
+            attachment: components["schemas"]["AttachmentInfo"] | null;
+        };
+        OutputListing: {
+            items: components["schemas"]["MaterialSummary"][];
+            next_cursor: ((string | null) | null) | null;
+        };
         CreateResourceColumn: {
             title: string;
         };
@@ -6532,7 +6550,10 @@ export interface operations {
     };
     listOutputs: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
                 "X-Parley-Epoch": components["parameters"]["Epoch"];
@@ -6542,13 +6563,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Searchable index sharing opportunity and material IDs. */
+            /** @description Searchable index sharing opportunity and material IDs, without bodies. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MaterialList"];
+                    "application/json": components["schemas"]["OutputListing"];
                 };
             };
         };

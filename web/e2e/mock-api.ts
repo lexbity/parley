@@ -3506,7 +3506,15 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       return json(response, 200, notesRecord(notesMatch[1]!));
     }
     if (url.pathname === '/api/v1/outputs' && request.method === 'GET') {
-      return json(response, 200, [...outputs.values()]);
+      // TD-04: the registry is a bounded, body-free envelope; bodies stay on
+      // the detail route that the editor calls when it opens a material.
+      const items = [...outputs.values()].map((material) => {
+        const summary: RecordData = { ...material };
+        delete summary.body;
+        return summary;
+      });
+      const limit = Math.max(1, Math.min(500, Number(url.searchParams.get('limit') ?? '200')));
+      return json(response, 200, { items: items.slice(0, limit), next_cursor: items.length > limit ? 'mock-next' : null });
     }
     const materialById = /^\/api\/v1\/materials\/([^/]+)$/.exec(url.pathname);
     if (materialById && request.method === 'GET') {

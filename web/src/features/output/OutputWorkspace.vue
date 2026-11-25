@@ -3,7 +3,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import {
   newOperationKey, parley,
-  type ContactThread, type GateReport, type Material, type MaterialInput, type Opportunity, type OpportunitySummary,
+  type ContactThread, type GateReport, type Material, type MaterialInput, type MaterialSummary, type Opportunity, type OpportunitySummary,
   type ReleasedMaterial, type Resource, type SentenceBinding, type SlotFill,
   type StructuredReadiness, type WritingInterest, type WritingMatch, type WritingTemplate,
 } from '../../api/client';
@@ -22,7 +22,7 @@ import type { SelectOption } from '../../shared/select-options';
  */
 const props = defineProps<{
   resources: Resource[];
-  outputs: Material[];
+  outputs: MaterialSummary[];
   active: boolean;
   recordId: string | null;
   location: string | null;
@@ -70,6 +70,10 @@ const manualMatching = ref(false);
 const menu = ref('');
 const popover = ref<HTMLElement | null>(null);
 const modal = ref('');
+// The versions dialog shows saved wording; fetch each detail when it opens.
+watch(modal, (value) => {
+  if (value === 'versions') for (const item of scopeMaterials.value) void ensureDetail(item.id);
+});
 const modalEl = ref<HTMLDialogElement | null>(null);
 const editorEl = ref<HTMLTextAreaElement | null>(null);
 const notice = ref('');
@@ -116,11 +120,29 @@ const selectedOpportunity = computed(() => scopedRecord.value && {
 const opportunityOptions = computed<SelectOption[]>(() => opportunities.value.map(item => ({ value: item.id, label: item.title })));
 const recipient = computed(() => participants.value.find((item) => item.id === recipientId.value) ?? null);
 const boundTemplate = computed(() => templates.value.find((item) => item.id === draft.value.templateId) ?? null);
-const boundMaterial = computed(() => (draft.value.materialId ? props.outputs.find((item) => item.id === draft.value.materialId) ?? null : null));
+// The registry is a body-free projection (TD-04). Detail is fetched on
+// demand from GET /materials/{id} and cached per material for the editing
+// session; no list payload ever carries letter bodies.
+const detailCache = reactive<Record<string, Material>>({});
+async function ensureDetail(id: string): Promise<Material> {
+  const cached = detailCache[id];
+  if (cached) return cached;
+  const detail = await parley.getMaterial(id);
+  detailCache[id] = detail;
+  return detail;
+}
+const boundMaterial = computed<Material | null>(() => {
+  const summary = draft.value.materialId ? props.outputs.find((item) => item.id === draft.value.materialId) ?? null : null;
+  if (!summary) return null;
+  const detail = detailCache[summary.id];
+  return detail ? { ...summary, ...detail } : { ...summary, body: '' };
+});
+const detailReady = computed(() => !draft.value.materialId || detailCache[draft.value.materialId]?.id === draft.value.materialId);
+watch(() => draft.value.materialId, (id) => { if (id) void ensureDetail(id); }, { immediate: true });
 const boundResource = computed(() => props.resources.find((item) => item.id === draft.value.resourceId) ?? null);
 const exchangeVersion = computed(() => Number(exchange.value.current?.version ?? 0));
 const exchangeAttested = computed(() => exchange.value.current?.fairness_attested === true);
-const dirty = computed(() => draft.value.body !== (boundMaterial.value?.body ?? ''));
+const dirty = computed(() => detailReady.value && draft.value.body !== (boundMaterial.value?.body ?? ''));
 /** Explicit re-binding counts as a save-able change even when wording is untouched. */
 const bindingsDirty = ref(false);
 const words = computed(() => draft.value.body.trim().split(/\s+/).filter(Boolean).length);
@@ -332,11 +354,11 @@ watch(recipientId, () => {
   selection.value = draft.value.resourceId;
 });
 
-function loadMaterial(material: Material) {
+async function loadMaterial(material: MaterialSummary) {
   const key = `${material.opportunity_id}\u0000${material.recipient_id}`;
   selectScope(material.opportunity_id, material.recipient_id);
   const current = draftsByScope.get(key) ?? baseDraft();
-  current.body = material.body;
+  current.body = (await ensureDetail(material.id)).body;
   current.materialId = material.id;
   current.resourceId = '';
   bindingsDirty.value = false;
@@ -1803,7 +1825,7 @@ onBeforeUnmount(() => {
             <span class="ow-pill">{{ material.status }}</span>
           </div>
           <label>Saved wording<textarea
-            :value="material.body"
+            :value="detailCache[material.id]?.body ?? ''"
             readonly
             rows="4"
           /></label>

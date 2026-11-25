@@ -715,7 +715,10 @@ async fn card_usage(ws: &Workspace, id: &str) -> Result<Value, WorkspaceError> {
     let links:Vec<(String,String,String,String,i64)>=sqlx::query_as("SELECT id,verb,from_id,to_id,count(*) OVER() FROM edge WHERE state='active' AND (from_id=? OR to_id=?) ORDER BY id LIMIT 60").bind(id).bind(id).fetch_all(&mut *tx).await?;
     let opportunities:Vec<(String,String,i64)>=sqlx::query_as("SELECT o.id,o.title,count(*) OVER() FROM opportunity_party p JOIN opportunity o ON o.id=p.opportunity_id WHERE party_id=? ORDER BY o.id LIMIT 60").bind(id).fetch_all(&mut *tx).await?;
     let materials:Vec<(String,String,i64)>=sqlx::query_as("SELECT id,kind,count(*) OVER() FROM material WHERE recipient_id=? OR id IN (SELECT material_id FROM resource_use WHERE resource_id=?) ORDER BY id LIMIT 60").bind(id).bind(id).fetch_all(&mut *tx).await?;
-    let recommendations:i64=sqlx::query_scalar("SELECT count(*) FROM match_run WHERE recipient_id=? OR EXISTS(SELECT 1 FROM json_tree(shortlist_json) WHERE type='text' AND atom=?)").bind(id).bind(id).fetch_one(&mut *tx).await?;
+    // TD-04: the two indexed probes replace a json_tree scan of every
+    // match_run row. UNION deduplicates runs that both received and mentioned
+    // the party, preserving the old OR-count semantics exactly.
+    let recommendations:i64=sqlx::query_scalar("SELECT count(*) FROM (SELECT id FROM match_run WHERE recipient_id=? UNION SELECT match_run_id FROM match_run_mention WHERE entity_id=?)").bind(id).bind(id).fetch_one(&mut *tx).await?;
     tx.commit().await?;
     let counts = json!({"links":links.first().map_or(0,|v|v.4),"opportunities":opportunities.first().map_or(0,|v|v.2),"materials":materials.first().map_or(0,|v|v.2),"recommendations":recommendations});
     Ok(

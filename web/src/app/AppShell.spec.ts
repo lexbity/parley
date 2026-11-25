@@ -27,7 +27,16 @@ function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [],
   vi.spyOn(parley, 'listOpportunitiesPage').mockResolvedValue({ items: [], nextCursor: null });
   vi.spyOn(parley, 'getOpportunity').mockRejectedValue(new Error('no opportunity'));
   vi.spyOn(parley, 'getEntity').mockRejectedValue(new Error('no entity'));
-  vi.spyOn(parley, 'listOutputs').mockResolvedValue([]);
+  vi.spyOn(parley, 'listOutputs').mockResolvedValue({ items: [], nextCursor: null });
+  // The registry carries no bodies: the editor fetches the exact detail on
+  // load. Return the fixture's full material so the shell specs keep their
+  // original body assertions.
+  vi.spyOn(parley, 'getMaterial').mockImplementation(async (id) => {
+    const listing = await parley.listOutputs();
+    const found = listing.items.find((item) => item.id === id);
+    if (!found || !('body' in found)) throw new Error('material not found');
+    return found as Material;
+  });
   vi.spyOn(parley, 'listWritingTemplates').mockResolvedValue([]);
   vi.spyOn(parley, 'listTemplateFamilies').mockResolvedValue([]);
   vi.spyOn(parley, 'listVoiceSamples').mockResolvedValue([]);
@@ -391,7 +400,7 @@ describe('AppShell', () => {
       }],
       phases: [], cursor: null, next_cursor: null,
     });
-    vi.spyOn(parley, 'listOutputs').mockResolvedValue([queued]);
+    vi.spyOn(parley, 'listOutputs').mockResolvedValue({ items: [queued], nextCursor: null });
     vi.spyOn(parley, 'listOpportunitiesPage').mockResolvedValue({ items: [{ id: 'o1', title: 'Onboarding exchange', state: 'open', revision: 1, participants: [{ id: 'p1', kind: 'person', name: 'Dana Lee' }], tags: [], next_task: null, next_deadline: null, missing_material: true }], nextCursor: null });
     vi.spyOn(parley, 'getOpportunity').mockResolvedValue({ id: 'o1', title: 'Onboarding exchange', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: [] });
     vi.spyOn(parley, 'getEntity').mockResolvedValue({ id: 'p1', kind: 'person', name: 'Dana Lee', focus: '', revision: 1 });
@@ -425,7 +434,7 @@ describe('AppShell', () => {
     vi.spyOn(parley, 'listOpportunitiesPage').mockResolvedValue({ items: [{ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participants: [{ id: 'p1', kind: 'person', name: 'Dana Lee' }], tags: [], next_task: null, next_deadline: null, missing_material: false }], nextCursor: null });
     vi.spyOn(parley, 'getOpportunity').mockResolvedValue({ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: [] });
     vi.spyOn(parley, 'getEntity').mockResolvedValue({ id: 'p1', kind: 'person', name: 'Dana Lee', focus: '', revision: 1 });
-    vi.spyOn(parley, 'listOutputs').mockResolvedValue([approved]);
+    vi.spyOn(parley, 'listOutputs').mockResolvedValue({ items: [approved], nextCursor: null });
     vi.spyOn(parley, 'createOpportunity').mockRejectedValueOnce(new Error('opportunity denied'));
     const release = vi.spyOn(parley, 'releaseMaterial').mockResolvedValue({ release_id: 'r1', material_id: 'm1', version: 1, recipient_id: 'p1', body: 'Hi Dana.', content_sha256: approved.content_sha256, issued_at: '2026-11-21T12:00:00Z', attachment: null });
     const acknowledge = vi.spyOn(parley, 'acknowledgeRelease').mockResolvedValue();
@@ -463,7 +472,7 @@ describe('AppShell', () => {
     vi.spyOn(parley, 'listOpportunitiesPage').mockResolvedValue({ items: [{ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participants: [{ id: 'p1', kind: 'person', name: 'Dana Lee' }], tags: [], next_task: null, next_deadline: null, missing_material: false }], nextCursor: null });
     vi.spyOn(parley, 'getOpportunity').mockResolvedValue({ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: [] });
     vi.spyOn(parley, 'getEntity').mockResolvedValue({ id: 'p1', kind: 'person', name: 'Dana Lee', focus: '', revision: 1 });
-    vi.spyOn(parley, 'listOutputs').mockResolvedValue([approved, draft]);
+    vi.spyOn(parley, 'listOutputs').mockResolvedValue({ items: [approved, draft], nextCursor: null });
     vi.spyOn(parley, 'evaluateMaterialGate').mockResolvedValue({ checks: [], copy_enabled: true });
     vi.spyOn(parley, 'releaseMaterial').mockResolvedValue({ release_id: 'r2', material_id: 'm2', version: 2, recipient_id: 'p1', body: 'Hi Dana.', content_sha256: approved.content_sha256, issued_at: '2026-11-21T12:00:00Z', attachment: null });
     const acknowledge = vi.spyOn(parley, 'acknowledgeRelease').mockResolvedValue();
@@ -537,7 +546,7 @@ describe('AppShell', () => {
     const queryDirectory = vi.spyOn(parley, 'queryDirectory').mockResolvedValue({ rows: [], nextCursor: null, fence: '0' });
     vi.spyOn(parley, 'listResources').mockResolvedValue([]);
     vi.spyOn(parley, 'listSources').mockResolvedValue([]);
-    vi.spyOn(parley, 'listOutputs').mockResolvedValue([]);
+    vi.spyOn(parley, 'listOutputs').mockResolvedValue({ items: [], nextCursor: null });
     const wrapper = mount(AppShell);
     await flushPromises();
     expect(connect).toHaveBeenCalled();

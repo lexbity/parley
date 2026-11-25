@@ -446,8 +446,8 @@ async fn s06_verified_file_release_download_returns_exact_bytes_and_one_grant() 
     assert_eq!(queue[0]["id"], material_id);
     let (status, outputs) = request(port, "GET", "/api/v1/outputs", None).await;
     assert_eq!(status, 200);
-    assert_eq!(outputs[0]["id"], material_id);
-    assert_eq!(outputs[0]["attachment"]["sha256"], sha);
+    assert_eq!(outputs["items"][0]["id"], material_id);
+    assert_eq!(outputs["items"][0]["attachment"]["sha256"], sha);
 
     // HEAD-as-GET must be refused without touching the one-use grant
     // (RFC-0004 IQ2: navigation, link preview and prefetch must not
