@@ -36,67 +36,14 @@ const DAILY_QUEUE_CAP: i64 = 200;
 /// Shared base projection for the daily queue. The blocked/actionable
 /// classification is computed here (not in Rust) so the count and the bounded
 /// page cannot disagree. `?1` is the owner's `max_touches` fence.
-const DAILY_QUEUE_BASE_SQL: &str = r#"
-WITH base AS (
-  SELECT
-    o.id                          AS opportunity_id,
-    o.title                       AS title,
-    op.party_id                   AS party_id,
-    e.name                        AS recipient_name,
-    coalesce(pp.do_not_contact,0) AS dnc,
-    coalesce(pp.touch_count,0)    AS touches,
-    coalesce(pp.highest_rung,0)   AS highest_rung,
-    t.next_action_at              AS due_at,
-    (SELECT m.shortlist_json
-       FROM match_run m
-      WHERE m.opportunity_id=o.id
-        AND m.recipient_id=op.party_id
-        AND m.opportunity_revision=o.revision
-        AND m.recipient_revision=e.revision
-      ORDER BY m.created_at DESC, m.id DESC
-      LIMIT 1)                    AS shortlist_json,
-    CASE
-      WHEN coalesce(pp.do_not_contact,0)<>0
-        OR coalesce(pp.touch_count,0)>=?1 THEN 'blocked'
-      WHEN t.next_action_at IS NOT NULL THEN 'followup_due'
-      ELSE 'needs_input'
-    END                           AS kind
-  FROM opportunity o
-  JOIN opportunity_party op ON op.opportunity_id=o.id
-  JOIN entity e ON e.id=op.party_id
-  LEFT JOIN party_policy pp ON pp.party_id=e.id
-  LEFT JOIN contact_thread t ON t.id=(
-    SELECT t2.id
-      FROM contact_thread t2
-     WHERE t2.opportunity_id=o.id AND t2.recipient_id=e.id
-     ORDER BY CASE t2.state WHEN 'waiting' THEN 0 WHEN 'conversation' THEN 1 ELSE 2 END,
-              t2.created_at DESC, t2.id DESC
-     LIMIT 1)
-  WHERE o.state='open'
-)"#;
+const DAILY_QUEUE_BASE_SQL: &str = include_str!("queries/daily_queue_base.sql");
 
 /// Full-set totals plus the ready-to-send count, in one statement.
-const DAILY_QUEUE_COUNTS_SUFFIX: &str = r#"
-SELECT
-  coalesce(sum(CASE WHEN kind<>'blocked' THEN 1 ELSE 0 END),0) AS total_actionable,
-  coalesce(sum(CASE WHEN kind='blocked' THEN 1 ELSE 0 END),0)  AS total_blocked,
-  coalesce(sum(CASE WHEN kind IN ('followup_due','ready_to_send') THEN 1 ELSE 0 END),0) AS ready_count
-FROM base
-"#;
+const DAILY_QUEUE_COUNTS_SUFFIX: &str = include_str!("queries/daily_queue_counts.sql");
 
 /// At most `DAILY_QUEUE_CAP` rows per class, in the legacy global ordering
 /// (`opportunity_id`, `party_id`), so the two arrays retain their old order.
-const DAILY_QUEUE_PAGE_SUFFIX: &str = r#", numbered AS (
-  SELECT base.*,
-         row_number() OVER (PARTITION BY kind ORDER BY opportunity_id, party_id) AS rn
-    FROM base
-)
-SELECT opportunity_id,title,party_id,recipient_name,dnc,touches,highest_rung,
-       due_at,shortlist_json,kind
-  FROM numbered
- WHERE rn <= ?2
- ORDER BY opportunity_id, party_id
-"#;
+const DAILY_QUEUE_PAGE_SUFFIX: &str = include_str!("queries/daily_queue_page.sql");
 
 #[allow(clippy::type_complexity)]
 async fn queue(

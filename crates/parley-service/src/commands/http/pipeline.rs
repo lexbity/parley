@@ -1,5 +1,26 @@
 use super::*;
 
+/// TD-10 W1: one table maps a registered command ID to its typed execution.
+/// Each entry lives beside the owning module's descriptor table; reads and
+/// destructive commands are resolved before this table by their own paths.
+type ExecutionResolver = fn(&str) -> Option<Execution>;
+
+const EXECUTION_RESOLVERS: &[ExecutionResolver] = &[
+    |id| (id == opportunity::CREATE_ID).then_some(Execution::Create),
+    |id| PhaseCommand::for_id(id).map(Execution::Phase),
+    |id| PartyCommand::for_id(id).map(Execution::Party),
+    |id| (id == task::TASK_DONE_ID).then_some(Execution::Task),
+    |id| (id == jobs::BRIEF_START_ID).then_some(Execution::Brief),
+    |id| ResourceCommand::for_id(id).map(Execution::Resource),
+    |id| WritingCommand::for_id(id).map(Execution::Writing),
+];
+
+fn resolve_execution(command_id: &str) -> Option<Execution> {
+    EXECUTION_RESOLVERS
+        .iter()
+        .find_map(|resolve| resolve(command_id))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn pipeline(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
@@ -318,21 +339,10 @@ pub(super) async fn pipeline(
         return Ok(reply);
     }
 
-    let execution = if command_id == opportunity::CREATE_ID {
-        Execution::Create
-    } else if let Some(command) = PhaseCommand::for_id(command_id) {
-        Execution::Phase(command)
-    } else if let Some(command) = PartyCommand::for_id(command_id) {
-        Execution::Party(command)
-    } else if command_id == task::TASK_DONE_ID {
-        Execution::Task
-    } else if command_id == jobs::BRIEF_START_ID {
-        Execution::Brief
-    } else if let Some(command) = ResourceCommand::for_id(command_id) {
-        Execution::Resource(command)
-    } else if let Some(command) = WritingCommand::for_id(command_id) {
-        Execution::Writing(command)
-    } else {
+    // TD-10 W1: descriptor-indexed dispatch. The historical if/else chain is
+    // replaced by one resolver table; a command is added here beside the
+    // descriptor table in its owning module, never by growing a branch chain.
+    let Some(execution) = resolve_execution(command_id) else {
         finalize_attempt(
             tx,
             epoch,

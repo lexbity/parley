@@ -60,6 +60,9 @@ jobs:
       - name: Architecture gate (crate dependency graph vs ci/architecture.toml)
         run: python3 ci/architecture.py --check
 
+      - name: TD-10 route inventory (no route outside the committed inventory)
+        run: python3 ci/routes.py --check
+
       - name: Coverage ratchet (no regression; floors rise to 70%)
         run: python3 ci/coverage.py --check --rust
 

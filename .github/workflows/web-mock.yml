@@ -58,6 +58,7 @@ jobs:
 
       - name: Contract and coverage verification
         run: |
+          python3 ci/routes.py --check
           python3 ci/contract.py --through "$PARLEY_THROUGH" --check-generated
           python3 ci/trace.py --through "$PARLEY_THROUGH" --check-manifest
 

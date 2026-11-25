@@ -104,13 +104,15 @@ pub(crate) const PERMISSION_ALLOWLIST: &[&str] = &[
     "material.gate",
 ];
 
+/// Dispatch classification for a registered command. `Read` is dispatched by
+/// `commands::read::ReadCommand` without a writer mutation; `Destructive` is
+/// routed through the approval pipeline with a frozen intent digest; every
+/// other command executes in the shared savepoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Effect {
-    #[allow(dead_code)] // reserved for later slices
     Read,
     Write,
-    #[allow(dead_code)] // reserved for the approval slice
     Destructive,
 }
 

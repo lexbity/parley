@@ -718,7 +718,11 @@ async fn card_usage(ws: &Workspace, id: &str) -> Result<Value, WorkspaceError> {
     // TD-04: the two indexed probes replace a json_tree scan of every
     // match_run row. UNION deduplicates runs that both received and mentioned
     // the party, preserving the old OR-count semantics exactly.
-    let recommendations:i64=sqlx::query_scalar("SELECT count(*) FROM (SELECT id FROM match_run WHERE recipient_id=? UNION SELECT match_run_id FROM match_run_mention WHERE entity_id=?)").bind(id).bind(id).fetch_one(&mut *tx).await?;
+    let recommendations: i64 = sqlx::query_scalar(include_str!("queries/party_usage.sql"))
+        .bind(id)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
     tx.commit().await?;
     let counts = json!({"links":links.first().map_or(0,|v|v.4),"opportunities":opportunities.first().map_or(0,|v|v.2),"materials":materials.first().map_or(0,|v|v.2),"recommendations":recommendations});
     Ok(

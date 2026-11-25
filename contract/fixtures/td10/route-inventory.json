@@ -1,0 +1,1414 @@
+{
+  "routes": [
+    {
+      "dispatch": "exempt",
+      "exempt": "embedded-ui",
+      "method": "GET",
+      "module": "lib.rs",
+      "path": "/",
+      "wave": "\u2014"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "inference/activity.rs",
+      "path": "/api/v1/agent/activity",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "assistant.rs",
+      "path": "/api/v1/agent/candidates/{id}/confirm",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "assistant.rs",
+      "path": "/api/v1/agent/candidates/{id}/dismiss",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "assistant.rs",
+      "path": "/api/v1/agent/chats",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "assistant.rs",
+      "path": "/api/v1/agent/chats",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "assistant.rs",
+      "path": "/api/v1/agent/chats/{id}",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "assistant.rs",
+      "path": "/api/v1/agent/chats/{id}/questions",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "assistant.rs",
+      "path": "/api/v1/agent/chats/{id}/turns",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "assistant.rs",
+      "path": "/api/v1/agent/prompts/{role}",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "PUT",
+      "module": "assistant.rs",
+      "path": "/api/v1/agent/prompts/{role}",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "jobs.rs",
+      "path": "/api/v1/agent/provider",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "PUT",
+      "module": "jobs.rs",
+      "path": "/api/v1/agent/provider",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "jobs.rs",
+      "path": "/api/v1/agent/provider/health",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "assistant.rs",
+      "path": "/api/v1/agent/question-bank",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "PUT",
+      "module": "assistant.rs",
+      "path": "/api/v1/agent/question-bank",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "agent_runtime/http.rs",
+      "path": "/api/v1/agent/runs",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "agent_runtime/http.rs",
+      "path": "/api/v1/agent/runs",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "agent_runtime/http.rs",
+      "path": "/api/v1/agent/runs/{id}",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "agent_runtime/http.rs",
+      "path": "/api/v1/agent/runs/{id}/cancel",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "agent_runtime/http.rs",
+      "path": "/api/v1/agent/runs/{id}/transcript",
+      "wave": "3"
+    },
+    {
+      "dispatch": "registry",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "commands/http/mod.rs",
+      "path": "/api/v1/approvals",
+      "wave": "0"
+    },
+    {
+      "dispatch": "registry",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "commands/http/mod.rs",
+      "path": "/api/v1/approvals/{id}",
+      "wave": "0"
+    },
+    {
+      "dispatch": "registry",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "commands/http/mod.rs",
+      "path": "/api/v1/approvals/{id}/deny",
+      "wave": "0"
+    },
+    {
+      "dispatch": "registry",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "commands/http/mod.rs",
+      "path": "/api/v1/approvals/{id}/grant",
+      "wave": "0"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "maintenance.rs",
+      "path": "/api/v1/backups",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "maintenance.rs",
+      "path": "/api/v1/backups",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "board.rs",
+      "path": "/api/v1/board",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "board.rs",
+      "path": "/api/v1/board/lists",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "board.rs",
+      "path": "/api/v1/board/lists/reorder",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "PATCH",
+      "module": "board.rs",
+      "path": "/api/v1/board/lists/{list_id}",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "board.rs",
+      "path": "/api/v1/board/lists/{list_id}/archive",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "assistant.rs",
+      "path": "/api/v1/brief-items/{id}/decision",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "assistant.rs",
+      "path": "/api/v1/briefs/{scope_kind}/{scope_id}/items",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "assistant.rs",
+      "path": "/api/v1/briefs/{scope_kind}/{scope_id}/items",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "thread.rs",
+      "path": "/api/v1/capacity",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "thread.rs",
+      "path": "/api/v1/capacity",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "lib.rs",
+      "path": "/api/v1/captures",
+      "wave": "1"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "lib.rs",
+      "path": "/api/v1/captures",
+      "wave": "1"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "jobs.rs",
+      "path": "/api/v1/captures/{occurrence_id}/proposals",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "queueing.rs",
+      "path": "/api/v1/claims/{id}/hook",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "relations.rs",
+      "path": "/api/v1/claims/{id}/revisions",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "queueing.rs",
+      "path": "/api/v1/coach/context",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "queueing.rs",
+      "path": "/api/v1/coach/questions",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "queueing.rs",
+      "path": "/api/v1/coach/questions/{id}/answer",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "queueing.rs",
+      "path": "/api/v1/coach/questions/{id}/defer",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "queueing.rs",
+      "path": "/api/v1/coach/questions/{id}/dismiss",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "queueing.rs",
+      "path": "/api/v1/coach/weekly",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "queueing.rs",
+      "path": "/api/v1/coach/weekly",
+      "wave": "3"
+    },
+    {
+      "dispatch": "exempt",
+      "exempt": "sse-stream",
+      "method": "GET",
+      "module": "commands/http/mod.rs",
+      "path": "/api/v1/command-notifications",
+      "wave": "\u2014"
+    },
+    {
+      "dispatch": "registry",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "commands/http/mod.rs",
+      "path": "/api/v1/commands/query",
+      "wave": "0"
+    },
+    {
+      "dispatch": "registry",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "commands/http/mod.rs",
+      "path": "/api/v1/commands/search",
+      "wave": "0"
+    },
+    {
+      "dispatch": "registry",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "commands/http/mod.rs",
+      "path": "/api/v1/commands/{id}",
+      "wave": "0"
+    },
+    {
+      "dispatch": "registry",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "commands/http/mod.rs",
+      "path": "/api/v1/commands/{id}",
+      "wave": "0"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "parties.rs",
+      "path": "/api/v1/directory",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "relations.rs",
+      "path": "/api/v1/edges",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "DELETE",
+      "module": "relations.rs",
+      "path": "/api/v1/edges/{id}",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "PATCH",
+      "module": "relations.rs",
+      "path": "/api/v1/edges/{id}",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "writing.rs",
+      "path": "/api/v1/embedding-model",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "PUT",
+      "module": "writing.rs",
+      "path": "/api/v1/embedding-model",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "lib.rs",
+      "path": "/api/v1/entities",
+      "wave": "1"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "lib.rs",
+      "path": "/api/v1/entities",
+      "wave": "1"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "lib.rs",
+      "path": "/api/v1/entities/{id}",
+      "wave": "1"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "PATCH",
+      "module": "lib.rs",
+      "path": "/api/v1/entities/{id}",
+      "wave": "1"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "resource_board/http.rs",
+      "path": "/api/v1/entities/{id}/attachments",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "parties.rs",
+      "path": "/api/v1/entities/{id}/attachments",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "DELETE",
+      "module": "parties.rs",
+      "path": "/api/v1/entities/{id}/attachments/{reference}",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "parties.rs",
+      "path": "/api/v1/entities/{id}/attachments/{reference}/content",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "thread.rs",
+      "path": "/api/v1/entities/{id}/clear-dnc",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "lib.rs",
+      "path": "/api/v1/entities/{id}/dossier",
+      "wave": "1"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "lib.rs",
+      "path": "/api/v1/entities/{id}/notes",
+      "wave": "1"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "PUT",
+      "module": "lib.rs",
+      "path": "/api/v1/entities/{id}/notes",
+      "wave": "1"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "parties.rs",
+      "path": "/api/v1/entities/{id}/retire",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "parties.rs",
+      "path": "/api/v1/entities/{id}/usage",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "lib.rs",
+      "path": "/api/v1/events",
+      "wave": "1"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "maintenance.rs",
+      "path": "/api/v1/exports",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "assistant.rs",
+      "path": "/api/v1/fluency",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "PUT",
+      "module": "assistant.rs",
+      "path": "/api/v1/fluency/{term}",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "lib.rs",
+      "path": "/api/v1/graph",
+      "wave": "1"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "PUT",
+      "module": "lib.rs",
+      "path": "/api/v1/graph/layout",
+      "wave": "1"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "relations.rs",
+      "path": "/api/v1/graph/related",
+      "wave": "2"
+    },
+    {
+      "dispatch": "exempt",
+      "exempt": "session-bootstrap",
+      "method": "GET",
+      "module": "lib.rs",
+      "path": "/api/v1/health",
+      "wave": "\u2014"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "queueing.rs",
+      "path": "/api/v1/identity-tags",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "maintenance.rs",
+      "path": "/api/v1/imports/commit",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "maintenance.rs",
+      "path": "/api/v1/imports/preview",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "queueing.rs",
+      "path": "/api/v1/insights",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "jobs.rs",
+      "path": "/api/v1/jobs/{id}",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "jobs.rs",
+      "path": "/api/v1/jobs/{id}",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "maintenance.rs",
+      "path": "/api/v1/maintenance/operations/{id}",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "writing.rs",
+      "path": "/api/v1/matching/calibrations",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "writing.rs",
+      "path": "/api/v1/matching/calibrations",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "materials.rs",
+      "path": "/api/v1/materials/{id}",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "materials.rs",
+      "path": "/api/v1/materials/{id}/approve",
+      "wave": "3"
+    },
+    {
+      "dispatch": "exempt",
+      "exempt": "media-bytes",
+      "method": "GET",
+      "module": "release.rs",
+      "path": "/api/v1/materials/{id}/download",
+      "wave": "\u2014"
+    },
+    {
+      "dispatch": "exempt",
+      "exempt": "media-bytes",
+      "method": "HEAD",
+      "module": "release.rs",
+      "path": "/api/v1/materials/{id}/download",
+      "wave": "\u2014"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "materials.rs",
+      "path": "/api/v1/materials/{id}/gate",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "writing.rs",
+      "path": "/api/v1/materials/{id}/lint",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "materials.rs",
+      "path": "/api/v1/materials/{id}/release",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "materials.rs",
+      "path": "/api/v1/materials/{id}/versions",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "materials.rs",
+      "path": "/api/v1/opportunities",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "materials.rs",
+      "path": "/api/v1/opportunities",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "materials.rs",
+      "path": "/api/v1/opportunities/{id}",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "materials.rs",
+      "path": "/api/v1/opportunities/{id}/exchange",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "materials.rs",
+      "path": "/api/v1/opportunities/{id}/exchange",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "materials.rs",
+      "path": "/api/v1/opportunities/{id}/exchange/{recipient_id}/attest",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "materials.rs",
+      "path": "/api/v1/opportunities/{id}/interests",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "materials.rs",
+      "path": "/api/v1/opportunities/{id}/interests",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "writing.rs",
+      "path": "/api/v1/opportunities/{id}/matches",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "writing.rs",
+      "path": "/api/v1/opportunities/{id}/matches",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "materials.rs",
+      "path": "/api/v1/opportunities/{id}/materials",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "materials.rs",
+      "path": "/api/v1/opportunities/{id}/materials",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "writing.rs",
+      "path": "/api/v1/opportunities/{id}/materials/compose",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "writing.rs",
+      "path": "/api/v1/opportunities/{id}/materials/compose/{job_id}/save",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "board.rs",
+      "path": "/api/v1/opportunities/{id}/notes",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "PATCH",
+      "module": "board.rs",
+      "path": "/api/v1/opportunities/{id}/notes",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "board.rs",
+      "path": "/api/v1/opportunities/{id}/notes/tasks/toggle",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "materials.rs",
+      "path": "/api/v1/opportunities/{id}/participants",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "PATCH",
+      "module": "queue_sheet.rs",
+      "path": "/api/v1/opportunities/{id}/phase",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "board.rs",
+      "path": "/api/v1/opportunities/{id}/placement",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "thread.rs",
+      "path": "/api/v1/opportunities/{id}/resolution",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "DELETE",
+      "module": "materials.rs",
+      "path": "/api/v1/opportunities/{id}/sources/{source_id}",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "materials.rs",
+      "path": "/api/v1/opportunities/{id}/sources/{source_id}",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "PUT",
+      "module": "materials.rs",
+      "path": "/api/v1/opportunities/{id}/tags",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "materials.rs",
+      "path": "/api/v1/outputs",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "maintenance.rs",
+      "path": "/api/v1/parties/{id}/erase",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "maintenance.rs",
+      "path": "/api/v1/parties/{id}/erase/preview",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "parties.rs",
+      "path": "/api/v1/party-imports",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "parties.rs",
+      "path": "/api/v1/party-imports/{id}/commit",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "parties.rs",
+      "path": "/api/v1/party-imports/{id}/preview",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "jobs.rs",
+      "path": "/api/v1/proposals/{batch_id}/resolve",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "queueing.rs",
+      "path": "/api/v1/queue",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "materials.rs",
+      "path": "/api/v1/releases/{id}/ack",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "resource_board/http.rs",
+      "path": "/api/v1/resource-board",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "resource_board/http.rs",
+      "path": "/api/v1/resource-board/columns",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "DELETE",
+      "module": "resource_board/http.rs",
+      "path": "/api/v1/resource-board/columns/{id}",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "PATCH",
+      "module": "resource_board/http.rs",
+      "path": "/api/v1/resource-board/columns/{id}",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "resource_board/http.rs",
+      "path": "/api/v1/resource-board/moves",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "resource_board/http.rs",
+      "path": "/api/v1/resource-card-commits",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "resource_board/http.rs",
+      "path": "/api/v1/resource-cards/{id}",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "resource_board/http.rs",
+      "path": "/api/v1/resource-cards/{id}/deliveries",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "resource_board/http.rs",
+      "path": "/api/v1/resource-cards/{id}/deliveries/{send_id}/{material_id}/{version}",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "resource_board/http.rs",
+      "path": "/api/v1/resource-cards/{id}/erase",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "resource_board/http.rs",
+      "path": "/api/v1/resource-cards/{id}/retire",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "materials.rs",
+      "path": "/api/v1/resources/{id}/ready",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "maintenance.rs",
+      "path": "/api/v1/restore/commit",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "maintenance.rs",
+      "path": "/api/v1/restore/preview",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "assistant.rs",
+      "path": "/api/v1/segments",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "assistant.rs",
+      "path": "/api/v1/segments",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "assistant.rs",
+      "path": "/api/v1/segments/{id}/parties",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "thread.rs",
+      "path": "/api/v1/sends",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "thread.rs",
+      "path": "/api/v1/sends/{id}/outcome",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "thread.rs",
+      "path": "/api/v1/sends/{id}/outcome/correction",
+      "wave": "2"
+    },
+    {
+      "dispatch": "exempt",
+      "exempt": "session-bootstrap",
+      "method": "GET",
+      "module": "lib.rs",
+      "path": "/api/v1/session",
+      "wave": "\u2014"
+    },
+    {
+      "dispatch": "exempt",
+      "exempt": "session-bootstrap",
+      "method": "POST",
+      "module": "lib.rs",
+      "path": "/api/v1/session/bootstrap",
+      "wave": "\u2014"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "maintenance.rs",
+      "path": "/api/v1/settings/maintenance",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "PUT",
+      "module": "maintenance.rs",
+      "path": "/api/v1/settings/maintenance",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "writing.rs",
+      "path": "/api/v1/template-families",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "writing.rs",
+      "path": "/api/v1/template-families",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "materials.rs",
+      "path": "/api/v1/templates",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "materials.rs",
+      "path": "/api/v1/templates",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "writing.rs",
+      "path": "/api/v1/templates/build",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "writing.rs",
+      "path": "/api/v1/templates/build-candidates/{job_id}",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "writing.rs",
+      "path": "/api/v1/templates/{family_id}/versions",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "materials.rs",
+      "path": "/api/v1/templates/{id}/activate",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "materials.rs",
+      "path": "/api/v1/templates/{id}/approve",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "thread.rs",
+      "path": "/api/v1/threads",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "thread.rs",
+      "path": "/api/v1/threads/{id}/reopen",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "thread.rs",
+      "path": "/api/v1/threads/{id}/send",
+      "wave": "2"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "blob.rs",
+      "path": "/api/v1/uploads",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "blob.rs",
+      "path": "/api/v1/uploads",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "blob.rs",
+      "path": "/api/v1/uploads/{id}/review",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "GET",
+      "module": "writing.rs",
+      "path": "/api/v1/voice-samples",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "writing.rs",
+      "path": "/api/v1/voice-samples",
+      "wave": "3"
+    },
+    {
+      "dispatch": "legacy-axum",
+      "exempt": "\u2014",
+      "method": "POST",
+      "module": "writing.rs",
+      "path": "/api/v1/voice-samples/{id}/retire",
+      "wave": "3"
+    },
+    {
+      "dispatch": "exempt",
+      "exempt": "embedded-ui",
+      "method": "GET",
+      "module": "lib.rs",
+      "path": "/assets/{*path}",
+      "wave": "\u2014"
+    }
+  ],
+  "schema_version": 1,
+  "slices": [
+    "TD-10"
+  ],
+  "summary": {
+    "exempt": 8,
+    "non_exempt": 167,
+    "registry_today": 8,
+    "total": 175
+  }
+}

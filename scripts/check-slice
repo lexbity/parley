@@ -61,6 +61,10 @@ step python3 ci/architecture.py --check
 step python3 ci/coverage.py --check --rust
 step python3 ci/coverage.py --check --web
 
+# TD-10: every axum route must be declared in the committed inventory. A new
+# route outside the inventory fails here until the inventory is regenerated.
+step python3 ci/routes.py --check
+
 # Slice-gated contract, migration and trace verifiers.
 step python3 ci/contract.py --through "$slice" --check-generated
 step python3 ci/migrations.py --through "$slice"
