@@ -359,7 +359,7 @@ async fn get_embedding_model(
             None => Vec::new(),
         };
         Ok(json!({
-            "model": model,
+            "model": model.unwrap_or_default(),
             "model_digest": digest,
             "profile_revision": settings.revision,
             "calibrated_kinds": calibrated,

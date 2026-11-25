@@ -535,7 +535,7 @@ async fn get_provider(State(state): State<super::AppState>, headers: HeaderMap) 
         )
         .await?;
         Ok(json!({
-            "endpoint":settings.endpoint,"model":settings.model,"num_ctx":settings.num_ctx,
+            "endpoint":settings.endpoint,"model":settings.model.clone().unwrap_or_default(),"num_ctx":settings.num_ctx,
             "num_predict":settings.num_predict,"locale":settings.locale,
             "profile_revision":settings.revision,"pairing":settings.pairing,
             "structured":structured,"embed":embed

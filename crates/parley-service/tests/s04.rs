@@ -356,6 +356,23 @@ async fn s04_schema_repair_budget_is_two_retries_after_the_first_attempt() {
 }
 
 #[tokio::test]
+async fn s04_fresh_workspace_serves_empty_model_text() {
+    // A fresh workspace seeds profile revision 1 with no model tag yet. The
+    // GET must render that absence as empty TEXT, never null: the wire
+    // contract (ProviderSettings.model) requires a string and the client
+    // decoder rejects null, which used to brick Settings on first launch.
+    let (path, _workspace, port, service) = setup().await;
+    let (status, view) = request(port, "GET", "/api/v1/agent/provider", None).await;
+    assert_eq!(status, 200, "{view:?}");
+    assert_eq!(view["model"], "", "the unsaved model tag renders as empty text");
+    assert!(view["profile_revision"].is_i64(), "the seeded revision is present");
+    assert_eq!(view["endpoint"], "http://127.0.0.1:11434");
+    assert_eq!(view["pairing"], json!(null));
+    service.shutdown().await;
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
 async fn s04_provider_health_records_digest_change_event_once() {
     // The provider settings surface is profile-backed (AR-001 AR08). A PUT is
     // transactional and evented; replaying the same canonical configuration
