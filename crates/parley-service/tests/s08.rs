@@ -1,8 +1,11 @@
+#[path = "support/mod.rs"]
+mod support;
+
 use parley_service::{RunningService, Workspace};
 use serde_json::{Value, json};
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -11,8 +14,37 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::TcpStream,
 };
+
+use support::model_server::{ModelServer, Reply, install_qualified_profile};
+
+async fn install_worker_provider(workspace: &Workspace, path: &Path) -> ModelServer {
+    let content = json!({
+        "response": "I found no direct source excerpt about that yet. What should I help you inspect next?",
+        "items": [{
+            "kind": "jargon",
+            "text": "Onboarding is a term used for helping a new user get started.",
+            "detail": {
+                "term": "onboarding",
+                "plain_meaning": "Helping a new user get started.",
+                "use_or_avoid": "owner_decides",
+                "applies_to": "role"
+            },
+            "tier": 2,
+            "quote": null,
+            "check_suggestion": "Check the party's own wording in the supplied professional material."
+        }]
+    })
+    .to_string();
+    let server = ModelServer::start(vec![Reply::Native(json!({
+        "message": {"role":"assistant","content":content},
+        "prompt_eval_count":20, "eval_count":15
+    }))])
+    .await;
+    install_qualified_profile(workspace.pool(), path, server.endpoint()).await;
+    server
+}
 
 type OwnerSession = (String, String, String);
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -99,46 +131,6 @@ async fn setup() -> (PathBuf, Workspace, u16, RunningService) {
         .insert(port, owner);
     let workspace = Workspace::open(&path).await.unwrap();
     (path, workspace, port, service)
-}
-
-async fn briefer_ollama() -> (String, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let task = tokio::spawn(async move {
-        for index in 0..2 {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            let mut buffer = [0u8; 8192];
-            loop {
-                let read = stream.read(&mut buffer).await.unwrap();
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..read]);
-                if let Some(split) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
-                    let headers = String::from_utf8_lossy(&request[..split]);
-                    let length = headers
-                        .lines()
-                        .find_map(|line| {
-                            line.to_ascii_lowercase()
-                                .strip_prefix("content-length:")
-                                .and_then(|value| value.trim().parse::<usize>().ok())
-                        })
-                        .unwrap_or(0);
-                    if request.len() >= split + 4 + length {
-                        break;
-                    }
-                }
-            }
-            let body = if index == 0 {
-                json!({"models":[{"name":"fixture","digest":"sha256:s08"}]}).to_string()
-            } else {
-                json!({"message":{"content":json!({"response":"I found no direct source excerpt about that yet. What should I help you inspect next?","items":[{"kind":"jargon","text":"Onboarding is a term used for helping a new user get started.","detail":{"term":"onboarding","plain_meaning":"Helping a new user get started.","use_or_avoid":"owner_decides","applies_to":"role"},"tier":2,"quote":null,"check_suggestion":"Check the party's own wording in the supplied professional material."}]}).to_string()},"prompt_eval_count":20,"eval_count":15}).to_string()
-            };
-            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
-        }
-    });
-    (format!("http://{address}"), task)
 }
 
 #[tokio::test]
@@ -326,11 +318,7 @@ async fn s08_owner_interviewer_and_party_briefer_histories_stay_separate() {
         .create_entity("s08-dana", "person", "Dana Lee", "")
         .await
         .unwrap();
-    let (endpoint, fake) = briefer_ollama().await;
-    let (status, configured) = request(port,"PUT","/api/v1/agent/provider",Some(json!({"endpoint":endpoint,"model":"fixture","num_ctx":8192,"num_predict":512,"locale":"en"}))).await;
-    assert_eq!(status, 204, "{configured:?}");
-    let (status, health) = request(port, "POST", "/api/v1/agent/provider/health", None).await;
-    assert_eq!(status, 200, "{health:?}");
+    let server = install_worker_provider(&workspace, &path).await;
 
     let (status, owner_chat) = request(
         port,
@@ -403,7 +391,7 @@ async fn s08_owner_interviewer_and_party_briefer_histories_stay_separate() {
         .bind(chat_id).bind(owner_chat["id"].as_str().unwrap()).fetch_one(workspace.pool()).await.unwrap();
     assert_eq!(stored_counts, (2, 0));
 
-    fake.await.unwrap();
+    server.stop().await;
     service.shutdown().await;
     drop(workspace);
     let _ = fs::remove_file(path);
@@ -416,11 +404,7 @@ async fn s08_job_events_carry_no_model_prose() {
         .create_entity("s08-prose-party", "person", "Dana Lee", "")
         .await
         .unwrap();
-    let (endpoint, fake) = briefer_ollama().await;
-    let (status, configured) = request(port,"PUT","/api/v1/agent/provider",Some(json!({"endpoint":endpoint,"model":"fixture","num_ctx":8192,"num_predict":512,"locale":"en"}))).await;
-    assert_eq!(status, 204, "{configured:?}");
-    let (status, health) = request(port, "POST", "/api/v1/agent/provider/health", None).await;
-    assert_eq!(status, 200, "{health:?}");
+    let server = install_worker_provider(&workspace, &path).await;
     let (status, chat) = request(
         port,
         "POST",
@@ -474,7 +458,7 @@ async fn s08_job_events_carry_no_model_prose() {
             );
         }
     }
-    fake.await.unwrap();
+    server.stop().await;
     service.shutdown().await;
     drop(workspace);
     let _ = fs::remove_file(path);
