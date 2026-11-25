@@ -1,5 +1,8 @@
 //! Workspace-owned dispatch. Durable rows are authoritative and notifications
-//! only shorten the time between a commit and the next scan.
+//! only shorten the time between a commit and the next scan. The idle wake
+//! is a 1 s safety sweep (UCR-001 §5.2: "scan once per second for lost wake
+//! signals and expired leases") plus the post-commit `jobs` wake; the
+//! previous 250 ms idle poll is retired (L1).
 
 use crate::{AppState, agent_runtime, jobs};
 use std::{sync::Arc, time::Duration};
@@ -39,7 +42,9 @@ pub(crate) fn start(state: Arc<AppState>) -> JoinHandle<()> {
             } else {
                 tokio::select! {
                     _ = state.jobs.notified() => {}
-                    _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+                    // Safety sweep cadence (1/s) for lost wakes and expired
+                    // leases; the 250 ms idle poll is retired (L1).
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {}
                     _ = stop.changed() => break,
                 }
             }

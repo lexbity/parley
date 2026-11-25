@@ -1,0 +1,12 @@
+{
+  "recipient_id": "recipient-1",
+  "kind": "outreach",
+  "template_version_id": "template-1",
+  "exchange_version": 1,
+  "slot_fills": [
+    { "slot": "their_name:name", "value": "Dana" },
+    { "slot": "gift:item", "value": "a book", "resource_id": "gift-1" },
+    { "slot": "proof:item", "value": "a report", "resource_id": "proof-1" }
+  ],
+  "selected_match_ids": []
+}

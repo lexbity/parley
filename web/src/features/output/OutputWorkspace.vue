@@ -7,6 +7,8 @@ import {
   type ReleasedMaterial, type Resource, type SentenceBinding, type SlotFill,
   type StructuredReadiness, type WritingInterest, type WritingMatch, type WritingTemplate,
 } from '../../api/client';
+import { observeRoleJob } from '../../app/inference/activity';
+import { writeClipboardWithDeadline } from '../../shared/clipboard';
 import ContactThreadPanel from '../queue/ContactThreadPanel.vue';
 import SearchableSelect from '../../shared/SearchableSelect.vue';
 import type { SelectOption } from '../../shared/select-options';
@@ -661,16 +663,33 @@ async function runMatch() {
 }
 
 async function pollJob(id: string, generation: number): Promise<Record<string, unknown> | null> {
-  for (let attempt = 0; attempt < 360; attempt += 1) {
-    const job = await parley.getRoleJob(id);
-    if (generation !== scopeGeneration.value) return null;
-    if (!['queued', 'running'].includes(job.status)) {
-      if (job.status === 'succeeded') return (job.result ?? null) as Record<string, unknown> | null;
-      throw new Error(job.last_error ?? `Agent job ended as ${job.status}.`);
-    }
-    await new Promise((resolve) => globalThis.setTimeout(resolve, 1000));
-  }
-  throw new Error('The job is still running. Keep this view open; it is listed in Queue activity.');
+  return new Promise((resolve, reject) => {
+    const epoch = parley.workspaceEpoch;
+    let stopped = false;
+    const finish = (errorOrNull: Error | null, result?: Record<string, unknown> | null) => {
+      if (stopped) return;
+      stopped = true;
+      stop();
+      if (errorOrNull) reject(errorOrNull);
+      else resolve(result ?? null);
+    };
+    const stop = observeRoleJob(
+      id,
+      () => {
+        if (generation !== scopeGeneration.value || epoch !== parley.workspaceEpoch) {
+          finish(new Error('The view or workspace changed while the job ran.'));
+        }
+      },
+      (job) => {
+        if (job.status === 'succeeded') finish(null, (job.result ?? null) as Record<string, unknown> | null);
+        else finish(new Error(job.last_error ?? `Agent job ended as ${job.status}.`));
+      },
+      (reason) => finish(reason instanceof Error ? reason : new Error(String(reason))),
+    );
+    globalThis.setTimeout(() => {
+      finish(new Error('The job is still running. Keep this view open; it is listed in Queue activity.'));
+    }, 360_000);
+  });
 }
 
 async function buildTemplateCandidate() {
@@ -835,14 +854,7 @@ async function reconcileAck() {
   setNotice('The original release acknowledgement is now recorded.');
 }
 
-/** An unfocused document can leave the clipboard promise pending forever; the
- * deadline hands the flow to the pending-acknowledgement reconciliation. */
-function writeClipboardWithDeadline(text: string): Promise<void> {
-  return Promise.race<void>([
-    globalThis.navigator.clipboard.writeText(text),
-    new Promise((_, reject) => globalThis.setTimeout(() => reject(new Error('The clipboard did not respond; the release acknowledgement stays pending.')), 3000)),
-  ]);
-}
+
 
 function filenamePart(value: string): string {
   const cleaned = value.normalize('NFKC').replace(/[^\p{L}\p{N}._-]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 80);

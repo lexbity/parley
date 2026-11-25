@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -25,7 +25,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::TcpStream,
 };
 
 type OwnerSession = (String, String, String);
@@ -1054,64 +1054,33 @@ async fn u08_owner_rest_retirement_still_works() {
 // --- delegated agent wait/resume ----------------------------------------
 
 struct Provider {
-    port: u16,
-    task: Option<tokio::task::JoinHandle<()>>,
+    inner: support::model_server::ModelServer,
 }
 
 type Responder = Box<dyn FnMut(usize, &str) -> Value + Send>;
 
 impl Provider {
+    /// The pre-packaged transport sent a tool probe chat before real turns;
+    /// the packaged worker never does, so responder indices shift by one.
     async fn with(responder: Responder) -> Self {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let mut responder = responder;
-        let task = tokio::spawn(async move {
-            for index in 0..128 {
-                let Ok((mut stream, _)) = listener.accept().await else {
-                    break;
-                };
-                let mut head_bytes = Vec::new();
-                let mut byte = [0u8; 1];
-                while !head_bytes.ends_with(b"\r\n\r\n") {
-                    if stream.read_exact(&mut byte).await.is_err() {
-                        break;
-                    }
-                    head_bytes.push(byte[0]);
-                }
-                let head = String::from_utf8_lossy(&head_bytes).to_string();
-                let length: usize = head
-                    .lines()
-                    .find_map(|line| {
-                        line.split_once(':')
-                            .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-                            .and_then(|(_, value)| value.trim().parse().ok())
-                    })
-                    .unwrap_or(0);
-                let mut body_bytes = vec![0u8; length];
-                let _ = stream.read_exact(&mut body_bytes).await;
-                let body = String::from_utf8_lossy(&body_bytes).to_string();
-                let payload = responder(index, &body).to_string();
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
-                    payload.len()
-                );
-                let _ = stream.write_all(response.as_bytes()).await;
-            }
-        });
-        Self {
-            port,
-            task: Some(task),
-        }
+        let inner = support::model_server::ModelServer::with_responder(
+            Box::new({
+                let mut responder = responder;
+                move |index, body| responder(index + 1, body)
+            }),
+            None,
+        )
+        .await;
+        Self { inner }
     }
 
+    #[allow(dead_code)]
     fn url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
+        self.inner.url()
     }
 
-    async fn stop(mut self) {
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
+    async fn stop(self) {
+        self.inner.stop().await;
     }
 }
 
@@ -1132,19 +1101,13 @@ fn tool_call(name: &str, args: Value, content: &str) -> Value {
     })
 }
 
-async fn set_provider(port: u16, url: &str, key: &str) {
-    let (status, reply) = request(
-        port,
-        "PUT",
-        "/api/v1/agent/provider",
-        Some(json!({
-            "endpoint": url, "model": "fixture", "num_ctx": 8192,
-            "num_predict": 256, "locale": "en"
-        })),
-        key,
+async fn set_provider(workspace: &Workspace, path: &Path, provider: &Provider) {
+    support::model_server::install_qualified_profile(
+        workspace.pool(),
+        path,
+        provider.inner.endpoint(),
     )
     .await;
-    assert!(status == 200 || status == 204, "{status} {reply:?}");
 }
 
 async fn start_run(
@@ -1234,8 +1197,7 @@ async fn u08_agent_request_wait_and_resume() {
         }
     }))
     .await;
-    let url = provider.url();
-    set_provider(port, &url, "provider-key-u08").await;
+    set_provider(&workspace, &path, &provider).await;
 
     let (status, run) = start_run(
         port,
@@ -1331,13 +1293,8 @@ async fn u08_agent_request_wait_and_resume() {
     cleanup(&path, workspace, service);
 }
 
-#[tokio::test]
-async fn u08_approval_inbox_and_notification_stream() {
-    let (path, workspace, port, service) = setup("notifications").await;
-    let seed = seed_retirement_scenario(&workspace).await;
-    let args = retire_args(&seed.resource, 3, 5);
-
-    // Open the SSE stream with owner headers.
+/// Open the fetch-based SSE notification stream with owner headers.
+async fn open_sse(port: u16) -> TcpStream {
     let (cookie, token, epoch) = SESSIONS
         .get()
         .unwrap()
@@ -1356,6 +1313,41 @@ async fn u08_approval_inbox_and_notification_stream() {
         )
         .await
         .unwrap();
+    stream
+}
+
+/// Read SSE chunks until `predicate` holds over the accumulated text, or the
+/// timeout expires. Returns the accumulated text.
+async fn drain_until(stream: &mut TcpStream, predicate: impl Fn(&str) -> bool) -> String {
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let read = tokio::time::timeout(remaining, stream.read(&mut chunk))
+            .await
+            .expect("SSE stream timed out")
+            .unwrap();
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        let text = String::from_utf8_lossy(&buffer).to_string();
+        if predicate(&text) {
+            return text;
+        }
+    }
+    String::from_utf8_lossy(&buffer).to_string()
+}
+
+#[tokio::test]
+async fn u08_approval_inbox_and_notification_stream() {
+    let (path, workspace, port, service) = setup("notifications").await;
+    let seed = seed_retirement_scenario(&workspace).await;
+    let args = retire_args(&seed.resource, 3, 5);
+
+    // Open the SSE stream with owner headers.
+    let mut stream = open_sse(port).await;
     // The stream opens with an epoch_changed event.
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -1368,15 +1360,73 @@ async fn u08_approval_inbox_and_notification_stream() {
     assert!(text.contains("event: epoch_changed"), "{text}");
 
     // A pending approval emits approvals_changed on the stream.
-    let (status, _, _) = retire_cmd(port, "retire-key-91", args).await;
+    let (status, _, _) = retire_cmd(port, "retire-key-91", args.clone()).await;
     assert_eq!(status, 403);
-    let read = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut chunk))
-        .await
-        .expect("approvals_changed signal timed out")
-        .unwrap();
-    buffer.extend_from_slice(&chunk[..read]);
-    let text = String::from_utf8_lossy(&buffer).to_string();
+
+    // Granting the approval marks the intent granted; the same-key retry then
+    // executes through the adopted writer, which appends the resource.retired
+    // domain fact. The L1 writer fan-out must emit domain_changed carrying the
+    // post-commit event-log high-water mark, alongside the decision's
+    // approvals_changed.
+    let (approval_id, revision, preview_digest) = pending_approval(port).await;
+    let (status, body) = grant(
+        port,
+        &approval_id,
+        revision,
+        &preview_digest,
+        "retire-decision-91",
+    )
+    .await;
+    assert_eq!(status, 200, "{body:?}");
+    let (status, executed, _) = retire_cmd(port, "retire-key-91", args).await;
+    assert_eq!(status, 200, "{executed:?}");
+    assert_eq!(executed["result"]["readiness"], "retired");
+
+    let text = drain_until(&mut stream, |t| {
+        t.contains("event: approvals_changed") && t.contains("event: domain_changed")
+    })
+    .await;
     assert!(text.contains("event: approvals_changed"), "{text}");
+    assert!(text.contains("event: domain_changed"), "{text}");
+    assert!(text.contains("\"cursor\":"), "{text}");
+
+    cleanup(&path, workspace, service);
+}
+
+#[tokio::test]
+async fn u08_domain_and_job_change_hints() {
+    let (path, workspace, port, service) = setup("hints").await;
+    let mut stream = open_sse(port).await;
+
+    // A durable role job inserted for the dispatcher is claimed by the real
+    // worker: claim_attempt commits queued→running and the L1 job_changed
+    // hint must carry that exact durable job id. The job never needs a
+    // provider — the assertion only requires the post-commit hint.
+    let job_id = format!("l1-hint-job-{}", NEXT.fetch_add(1, Ordering::Relaxed));
+    let now = now_str();
+    let changed = sqlx::query(
+        "INSERT INTO durable_job(
+             id,role,status,input_json,input_sha256,scope_kind,scope_id,
+             scope_revision,current_attempt,max_attempts,created_at,updated_at)
+         VALUES(?,?,'queued','{}',?,'owner',?,1,0,3,?,?)",
+    )
+    .bind(&job_id)
+    .bind("interviewer")
+    .bind("a".repeat(64))
+    .bind("l1-hint-scope")
+    .bind(&now)
+    .bind(&now)
+    .execute(workspace.pool())
+    .await
+    .unwrap();
+    assert_eq!(changed.rows_affected(), 1);
+
+    let text = drain_until(&mut stream, |t| {
+        t.contains("event: job_changed") && t.contains(&format!("\"job_id\":\"{job_id}\""))
+    })
+    .await;
+    assert!(text.contains("event: job_changed"), "{text}");
+    assert!(text.contains(&format!("\"job_id\":\"{job_id}\"")), "{text}");
 
     cleanup(&path, workspace, service);
 }

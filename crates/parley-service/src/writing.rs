@@ -1,7 +1,9 @@
 //! S09 authoring commands. Deterministic ranking and lint preparation happen
 //! here; local model roles return proposal data through the durable worker.
 
-use super::{AppState, WorkspaceError, authenticate, command_error, digest, error, now_utc};
+use super::{
+    AppState, WorkspaceError, authenticate, command_error, digest, error, now_utc, now_utc_offset,
+};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -2028,7 +2030,7 @@ async fn lint_material(
         }
     };
     let now = now_utc();
-    let job_input = json!({"material_id":material_id,"version":input.version,"content_sha256":hash,"body":body,"deterministic_findings":findings,"voice_sample_ids":[]});
+    let job_input = json!({"material_id":material_id,"version":input.version,"content_sha256":hash,"body":body,"deterministic_findings":findings,"voice_sample_ids":[],"prompt_version":"linter@1","prompt":super::jobs::bundled_role_prompt("linter").unwrap_or_default()});
     let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
         Ok(value) => value,
         Err(error) => return command_error(error.into()),
@@ -2065,6 +2067,40 @@ async fn lint_material(
             return super::materials::workspace_error(error);
         }
     };
+    let profile_revision: Option<i64> = match sqlx::query_scalar(
+        "SELECT a.profile_revision FROM inference_active_profile a
+         JOIN inference_qualification q ON q.profile_revision=a.profile_revision AND q.mode='structured_role'
+         WHERE NOT EXISTS(SELECT 1 FROM inference_profile_revocation r
+                         WHERE r.profile_revision=a.profile_revision)
+         ORDER BY a.profile_revision DESC LIMIT 1",
+    )
+    .fetch_optional(&mut *tx)
+    .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = tx.rollback().await;
+            return command_error(error.into());
+        }
+    };
+    if let Some(profile_revision) = profile_revision {
+        let dependency_digest = digest(job_input.to_string().as_bytes());
+        if let Err(error) = sqlx::query(
+            "UPDATE durable_job SET profile_revision=?,dependency_digest=?,eligible_at=?,queue_deadline_at=?,total_deadline_at=? WHERE id=?",
+        )
+        .bind(profile_revision)
+        .bind(&dependency_digest)
+        .bind(&now)
+        .bind(now_utc_offset(300))
+        .bind(now_utc_offset(360))
+        .bind(&job_id)
+        .execute(&mut *tx)
+        .await
+        {
+            let _ = tx.rollback().await;
+            return command_error(error.into());
+        }
+    }
     let response_body = json!({"job_id":job_id,"role":"linter","deterministic_findings":findings});
     if let Err(error) = receipt_store(
         &mut tx,

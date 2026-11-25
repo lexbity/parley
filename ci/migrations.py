@@ -43,7 +43,7 @@ SLICE_MIGRATIONS: dict[str, list[str]] = {
     "s04": ["0004_jobs.sql"],
     "s05": ["0005_board.sql"],
     "s06": ["0006_blobs.sql"],
-    "s07": ["0007_threads.sql"],
+    "s07": ["0007_threads.sql", "0035_thread_read_index.sql"],
     "s08": ["0008_assistant.sql"],
     "s09": ["0009_writing.sql"],
     "s10": ["0010_coach.sql"],
@@ -77,6 +77,7 @@ SLICE_MIGRATIONS: dict[str, list[str]] = {
     "ar05": ["0031_delegated_profiles.sql"],
     "ar06": [],
     "ar07": ["0032_qualified_embeddings.sql"],
+    "ar08": ["0034_remove_direct_provider_config.sql"],
     "u08": ["0026_command_approvals.sql"],
     "u09": [],
 }

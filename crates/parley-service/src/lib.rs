@@ -247,7 +247,6 @@ mod maintenance;
 mod parties;
 pub mod relations;
 #[cfg(debug_assertions)]
-pub(crate) mod testing_fixture;
 pub use maintenance::{MaintenanceSettings, MaintenanceSettingsInput};
 #[doc(hidden)]
 pub use maintenance::{create_backup_for_test, prune_backups_for_test};
@@ -2054,6 +2053,34 @@ fn rotate_command_secret(root: &generation::WorkspaceRoot) -> Result<Vec<u8>, Wo
     Ok(bytes)
 }
 
+/// How long to sleep before the next known thread-deadline transition, capped
+/// at `cap`. Returns `cap` when no future waiting-thread deadline exists or
+/// it cannot be parsed, so a bounded safety sweep always runs. This is the
+/// wake target for the deadline reconciler (L1): a fixed tick is replaced by
+/// sleep-until-next-due with a safety cap.
+async fn next_thread_deadline_nap(workspace: &Workspace, now: &str, cap: Duration) -> Duration {
+    let next: Option<String> = sqlx::query_scalar(
+        "SELECT MIN(expires_at) FROM contact_thread
+         WHERE state='waiting' AND expires_at IS NOT NULL AND expires_at > ?",
+    )
+    .bind(now)
+    .fetch_optional(workspace.pool())
+    .await
+    .ok()
+    .flatten();
+    let Some(next) = next else {
+        return cap;
+    };
+    let (Ok(when), Ok(then)) = (
+        chrono::DateTime::parse_from_rfc3339(&next),
+        chrono::DateTime::parse_from_rfc3339(now),
+    ) else {
+        return cap;
+    };
+    let until = (when - then).to_std().unwrap_or_default();
+    until.max(Duration::from_millis(50)).min(cap)
+}
+
 // ---------------------------------------------------------------------------
 // Transport
 // ---------------------------------------------------------------------------
@@ -2074,10 +2101,11 @@ pub(crate) struct AppState {
     pub(crate) registry: Arc<commands::Registry>,
     pub(crate) writer: Arc<application::writer::Writer>,
     /// Post-commit command signals for the fetch-based SSE notification
-    /// stream (UCR-001 U08 / §4.1): approvals_changed, run_changed and
-    /// epoch_changed. Bounded; a slow client drops older signals and must
-    /// poll authoritative state after reconnect.
-    pub(crate) notify: tokio::sync::broadcast::Sender<CommandSignal>,
+    /// stream (UCR-001 U08 / §4.1): approvals_changed, run_changed,
+    /// domain_changed, job_changed and epoch_changed. Bounded; a slow
+    /// client drops older signals and must poll authoritative state after
+    /// reconnect.
+    pub(crate) notify: CommandSignalSender,
     /// Bounded concurrent notification connections (U08 §4.1).
     pub(crate) sse_connections: Arc<tokio::sync::Semaphore>,
 }
@@ -2086,10 +2114,40 @@ pub(crate) struct AppState {
 /// only these signal kinds plus a 15 s heartbeat; clients re-read
 /// authoritative state after each signal. `epoch_changed` is emitted at
 /// stream open and after reconnect so clients rebase their page.
+///
+/// L1 (de-polling design) adds the two domain-scoped hints: `DomainChanged`
+/// carries the event log's high-water mark so a lagged client can catch up
+/// by cursor, and `JobChanged` carries the id of a durable role job whose
+/// state transitioned.
 #[derive(Clone, Debug, PartialEq, Eq)]
+// Signal kinds are tied to the on-the-wire SSE event names
+// (approvals_changed, run_changed, domain_changed, job_changed), so the
+// shared postfix is intentional naming, not a naming smell.
+#[allow(clippy::enum_variant_names)]
 pub(crate) enum CommandSignal {
     ApprovalsChanged,
     RunChanged,
+    /// The domain event log advanced to a new high-water mark (cursor).
+    DomainChanged(i64),
+    /// A durable role job changed state; carries the job id.
+    JobChanged(String),
+}
+
+pub(crate) type CommandSignalSender = tokio::sync::broadcast::Sender<CommandSignal>;
+
+/// Emit a domain-level change hint carrying the event log's current
+/// high-water mark. Best-effort by design: a lagged or absent receiver
+/// drops the signal, and the client re-reads from its own cursor, so the
+/// event log stays the single authority (U08 §4.1). Skips the zero cursor
+/// (no new domain fact) to avoid waking clients on irrelevant commits.
+pub(crate) async fn publish_domain_changed(notify: &CommandSignalSender, pool: &SqlitePool) {
+    if let Ok(cursor) = sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(cursor),0) FROM event")
+        .fetch_one(pool)
+        .await
+        && cursor > 0
+    {
+        let _ = notify.send(CommandSignal::DomainChanged(cursor));
+    }
 }
 
 /// Initialize (or open) a private SQLite workspace and bind only to IPv4
@@ -2136,21 +2194,43 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
             .await
             .map_err(|e| format!("adopted writer connection: {e}"))?
     };
+    let (notify, _notify_rx) = tokio::sync::broadcast::channel(64);
     let (writer, writer_task) =
-        application::writer::start(writer_conn, workspace.generation.clone());
+        application::writer::start(writer_conn, workspace.generation.clone(), notify.clone());
     let writer = Arc::new(writer);
     let reconcile_task = {
+        // L1: reconcile expiring threads when they come due instead of on a
+        // blind fixed tick. The sleep is bounded by a safety cap so a missed
+        // wake or a deadline inserted after the nap is still caught on a
+        // fixed cadence; expiry commits flow through the same publish hook as
+        // adopted writes (domain_changed with the event-log high-water mark).
+        const RECONCILE_WAKE_CAP: Duration = Duration::from_secs(15);
         let workspace = workspace.clone();
+        let notify = notify.clone();
         let mut stop = restart_receiver.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(15));
             loop {
-                tokio::select! {_ = interval.tick()=>{let now=now_utc();let _=workspace.reconcile_deadlines(&now).await;},r=stop.changed()=>{if r.is_ok(){break;}}}
+                let now = now_utc();
+                let report = match workspace.reconcile_deadlines(&now).await {
+                    Ok(report) => report,
+                    Err(_) => crate::thread::ReconcileReport {
+                        scanned: 0,
+                        timed_out: 0,
+                        opportunities_closed: 0,
+                    },
+                };
+                if report.timed_out > 0 || report.opportunities_closed > 0 {
+                    crate::publish_domain_changed(&notify, workspace.pool()).await;
+                }
+                let nap = next_thread_deadline_nap(&workspace, &now, RECONCILE_WAKE_CAP).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(nap) => {}
+                    changed = stop.changed() => { if changed.is_ok() { break; } }
+                }
             }
         })
     };
     let backup_task = maintenance::start_scheduler(workspace.clone(), restart_receiver.clone());
-    let (notify, _notify_rx) = tokio::sync::broadcast::channel(64);
     let sse_connections = Arc::new(tokio::sync::Semaphore::new(8));
     let state = AppState {
         workspace,

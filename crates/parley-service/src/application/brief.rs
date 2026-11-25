@@ -170,12 +170,7 @@ pub(crate) async fn start(
     }
 
     let evidence = collect_brief_evidence(tx, scope_kind, &scope_id).await?;
-    let prompt_version_id: Option<String> =
-        sqlx::query_scalar("SELECT version_id FROM agent_prompt_active WHERE role='briefer'")
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(|_| BriefError::Database)?
-            .flatten();
+    let (prompt_version_id, prompt_text) = resolve_briefer_prompt(tx).await?;
     let input_json = serde_json::json!({
         "scope_kind": scope_kind,
         "scope_id": scope_id,
@@ -183,6 +178,8 @@ pub(crate) async fn start(
         "display_name": display_name,
         "evidence": evidence,
         "prompt_version_id": prompt_version_id,
+        "prompt_version": prompt_version_id,
+        "prompt": prompt_text,
         "purpose": purpose,
     });
     let job_id = enqueue_briefer_job(
@@ -194,7 +191,7 @@ pub(crate) async fn start(
         &scope_id,
         scope_revision,
         &input_json,
-        prompt_version_id.as_deref().unwrap_or("briefer@1"),
+        &prompt_version_id,
         None,
     )
     .await
@@ -338,11 +335,7 @@ pub(crate) async fn start_owner(
             .map(|(id, speaker, text)| serde_json::json!({"id":id,"speaker":speaker,"text":text}))
             .collect();
             let evidence = collect_brief_evidence(tx, &scope_kind, &scope_id).await?;
-            let prompt_version_id = active_prompt_version(tx).await?;
-            let prompt_version_id = match prompt_version_id {
-                Some(version_id) => version_id,
-                None => "briefer@1".to_owned(),
-            };
+            let (prompt_version_id, prompt_text) = resolve_briefer_prompt(tx).await?;
             let input_json = serde_json::json!({
                 "chat_id": chat_id,
                 "scope_kind": scope_kind,
@@ -352,6 +345,8 @@ pub(crate) async fn start_owner(
                 "turns": turns,
                 "evidence": evidence,
                 "prompt_version_id": prompt_version_id,
+                "prompt_version": prompt_version_id,
+                "prompt": prompt_text,
             });
             let job_id = enqueue_briefer_job(
                 tx,
@@ -421,13 +416,29 @@ async fn resolve_scope_revision(
     revision.ok_or(BriefError::NotFound)
 }
 
-async fn active_prompt_version(
+/// Resolve the reviewed active Briefer prompt version, falling back to the
+/// bundled role prompt. The resolved text is frozen into the job input at
+/// admission so the worker sees exactly the prompt the job was admitted with.
+async fn resolve_briefer_prompt(
     tx: &mut Transaction<'_, Sqlite>,
-) -> Result<Option<String>, BriefError> {
-    sqlx::query_scalar("SELECT version_id FROM agent_prompt_active WHERE role='briefer'")
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(|_| BriefError::Database)
+) -> Result<(String, String), BriefError> {
+    let active: Option<(String, String)> = sqlx::query_as(
+        "SELECT a.version_id,p.prompt_text FROM agent_prompt_active a
+         JOIN agent_prompt_version p ON p.version_id=a.version_id
+         WHERE a.role='briefer'",
+    )
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|_| BriefError::Database)?;
+    Ok(match active {
+        Some((version_id, text)) => (version_id, text),
+        None => (
+            "briefer@1".to_owned(),
+            crate::jobs::bundled_role_prompt("briefer")
+                .unwrap_or_default()
+                .to_owned(),
+        ),
+    })
 }
 
 /// Shared Briefer enqueue with admission-time profile and prompt binding. The

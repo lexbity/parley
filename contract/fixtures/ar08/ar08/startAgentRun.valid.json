@@ -1,0 +1,6 @@
+{
+  "task": "Prepare a brief for the selected party.",
+  "targets": [{ "kind": "party", "id": "recipient-1" }],
+  "permissions": ["brief.start", "job.read"],
+  "allow_created_opportunities": false
+}

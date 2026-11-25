@@ -181,7 +181,6 @@ async fn s09_template_family_version_receipts_and_voice_retirement_are_durable()
 #[tokio::test]
 async fn s09_arbitrary_client_scores_are_rejected_as_calibration_evidence() {
     let (path, workspace, port, service) = setup().await;
-    sqlx::query("UPDATE agent_provider SET embed_model='local-test-embed',embed_model_digest='sha256:test-model' WHERE singleton=1").execute(workspace.pool()).await.unwrap();
     let payload = json!({"asset_kind":"gift","fixture_id":"s09-gift-fixture","samples":[{"score":0.9,"relevant":true},{"score":0.8,"relevant":true},{"score":0.2,"relevant":false},{"score":0.1,"relevant":false}]});
     let (status, calibration) = request(
         port,

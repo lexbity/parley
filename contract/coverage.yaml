@@ -2385,3 +2385,60 @@ slices:
       owner_role: owner
       package_target: rust+mock
       evidence_path: evidence/ar07.md
+  ar08:
+    - requirement: FR-8
+      operationId: composeOpportunityMaterial
+      test_id: ar08_composer_and_linter_keep_approved_bytes_and_gate_deterministic
+      fixture_id: ar08
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar08.md
+    - requirement: FR-16
+      operationId: saveComposerProposal
+      test_id: ar08_composer_and_linter_keep_approved_bytes_and_gate_deterministic
+      fixture_id: ar08
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar08.md
+    - requirement: FR-9
+      operationId: lintMaterial
+      test_id: ar08_composer_and_linter_keep_approved_bytes_and_gate_deterministic
+      fixture_id: ar08
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar08.md
+    - requirement: FR-16
+      operationId: composeOpportunityMaterial
+      test_id: ar08_model_cannot_approve_release_or_send
+      fixture_id: ar08
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar08.md
+    - requirement: FR-17
+      operationId: getAgentProvider
+      test_id: ar08_all_roles_use_one_worker_boundary
+      fixture_id: ar08
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar08.md
+    - requirement: FR-6
+      operationId: startAgentRun
+      test_id: ar08_all_roles_use_one_worker_boundary
+      fixture_id: ar08
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar08.md
+    - requirement: FR-7
+      operationId: checkAgentProvider
+      test_id: ar08_all_roles_use_one_worker_boundary
+      fixture_id: ar08
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar08.md
+    - requirement: FR-10
+      operationId: createAgentChat
+      test_id: ar08_all_roles_use_one_worker_boundary
+      fixture_id: ar08
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar08.md

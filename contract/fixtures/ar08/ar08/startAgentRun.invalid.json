@@ -1,0 +1,4 @@
+{
+  "targets": [{ "kind": "party", "id": "recipient-1" }],
+  "permissions": ["party.read"]
+}

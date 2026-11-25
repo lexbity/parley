@@ -1972,7 +1972,26 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       return json(response, 200, run);
     }
     if (/^\/api\/v1\/templates\/build$/.test(url.pathname) && request.method === 'POST') return fail(response, 503, 'MODEL_UNAVAILABLE', 'Template Builder is unavailable; create a manual template version.');
-    if (/^\/api\/v1\/opportunities\/[^/]+\/materials\/compose$/.test(url.pathname) && request.method === 'POST') return fail(response, 503, 'MODEL_UNAVAILABLE', 'Composer is unavailable; save an owner-authored draft.');
+    const composeMatch = /^\/api\/v1\/opportunities\/([^/]+)\/materials\/compose$/.exec(url.pathname);
+    if (composeMatch && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      if (typeof input.recipient_id !== 'string' || typeof input.template_version_id !== 'string' || !Array.isArray(input.slot_fills)) return fail(response, 422, 'COMPOSER_INPUT_INVALID', 'Composer snapshot is incomplete');
+      const jobId = randomHex();
+      roleJobs.set(jobId, {
+        id: jobId, role: 'composer', status: 'succeeded',
+        result: { status: 'draft', owner_review_required: true, released: false, sentences: [], slot_fills: Object.fromEntries((input.slot_fills as Array<{ slot: string; value: string }>).map((fill) => [fill.slot, fill.value])) },
+        last_error: null,
+      });
+      return json(response, 202, { job_id: jobId, role: 'composer', state: 'queued' });
+    }
+    const lintMatch = /^\/api\/v1\/materials\/([^/]+)\/lint$/.exec(url.pathname);
+    if (lintMatch && request.method === 'POST') {
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      if (typeof input.version !== 'number' || typeof input.content_sha256 !== 'string') return fail(response, 422, 'LINT_INPUT_INVALID', 'Lint snapshot is invalid');
+      const jobId = randomHex();
+      roleJobs.set(jobId, { id: jobId, role: 'linter', status: 'succeeded', result: { findings: [] }, last_error: null });
+      return json(response, 202, { job_id: jobId, role: 'linter', state: 'queued', deterministic_findings: [] });
+    }
 
     if (url.pathname === '/api/v1/agent/question-bank' && request.method === 'GET') return json(response, 200, questionBank);
     if (url.pathname === '/api/v1/agent/question-bank' && request.method === 'PUT') {
