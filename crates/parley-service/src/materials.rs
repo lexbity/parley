@@ -299,8 +299,16 @@ async fn create_opportunity(
     if let Err(error) = authenticate(&headers, &state).await {
         return (error.0, error.1).into_response();
     }
+    // TD-10 W2: mutations require an explicit operation key. The server must
+    // not fall back to a content-derived digest (the former `rest-create\0…
+    //` form) because that makes two identical creates share a receipt.
+    let key = match super::idempotency_key(&headers) {
+        Ok(key) => key,
+        Err(error) => return super::error(error.0, error.1, error.2),
+    };
     let epoch = state.workspace.epoch().to_string();
     let generation = state.workspace.generation_token().await;
+    let canonical = materials_canonical("/opportunities", &input);
     let title = input.title.clone();
     let primary_party_id = input.primary_party_id.clone();
     let job = WriterJob {
@@ -331,6 +339,31 @@ async fn create_opportunity(
                     )
                     .await;
                 }
+                // A repeated key replays the original receipt with no second
+                // effect; a different intent on the same key fails closed.
+                match material_receipt_replay(&mut tx, &epoch, &key, &canonical).await {
+                    Ok(Some(replay)) => {
+                        if tx.commit().await.is_err() {
+                            return unavailable_job();
+                        }
+                        return JobResult {
+                            commit: true,
+                            body: replay,
+                            failure: None,
+                        };
+                    }
+                    Ok(None) => {}
+                    Err(_) => {
+                        return rest_create_error(
+                            tx,
+                            deadline,
+                            409,
+                            "KEY_REUSED",
+                            "Operation key was used for a different intent",
+                        )
+                        .await;
+                    }
+                }
                 if sqlx::query("SAVEPOINT ucr_create_operation")
                     .execute(&mut *tx)
                     .await
@@ -339,7 +372,7 @@ async fn create_opportunity(
                     return unavailable_job();
                 }
                 let operation_digest =
-                    digest(format!("rest-create\0{title}\0{primary_party_id}").as_bytes());
+                    digest(format!("rest-create\0{key}\0{title}\0{primary_party_id}").as_bytes());
                 let operation = crate::application::opportunity::create(
                     &mut tx,
                     &crate::application::opportunity::CreateInput {
@@ -364,6 +397,12 @@ async fn create_opportunity(
                             _ => return unavailable_job(),
                         };
                         let body = serde_json::to_value(dto).unwrap_or_default();
+                        if material_receipt_store(&mut tx, &epoch, &key, &canonical, 201, &body)
+                            .await
+                            .is_err()
+                        {
+                            return unavailable_job();
+                        }
                         finish_create_job(tx, deadline, body).await
                     }
                     Err(error) => {
@@ -1192,9 +1231,13 @@ async fn mark_resource_ready(
     if let Err(error) = authenticate(&headers, &state).await {
         return (error.0, error.1).into_response();
     }
+    let key = match super::idempotency_key(&headers) {
+        Ok(key) => key,
+        Err(error) => return super::error(error.0, error.1, error.2),
+    };
     match state
         .workspace
-        .mark_resource_ready(&id, input.body.as_ref())
+        .mark_resource_ready(&id, input.body.as_ref(), &key)
         .await
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -2402,6 +2445,7 @@ impl Workspace {
         &self,
         id: &str,
         body_override: Option<&Value>,
+        key: &str,
     ) -> Result<(), WorkspaceError> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let content_revision: Option<i64> =
@@ -2418,7 +2462,7 @@ impl Workspace {
                 id: id.to_owned(),
                 expected_content_revision: content_revision,
                 body_override: body_override.cloned(),
-                operation_key_digest: crate::digest(format!("rest-ready\0{id}").as_bytes()),
+                operation_key_digest: crate::digest(format!("rest-ready\0{key}\0{id}").as_bytes()),
             },
         )
         .await

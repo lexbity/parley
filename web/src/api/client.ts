@@ -1352,8 +1352,8 @@ export class ParleyClient {
     return decodeProviderHealth(await this.request('/agent/provider/health', { method: 'POST', body: '{}' }));
   }
 
-  async createOpportunity(title: string, primary_party_id: string): Promise<Opportunity> {
-    return decodeOpportunity(await this.request('/opportunities', { method: 'POST', body: JSON.stringify({ title, primary_party_id }) }));
+  async createOpportunity(title: string, primary_party_id: string, key = newOperationKey()): Promise<Opportunity> {
+    return decodeOpportunity(await this.mutate('/opportunities', 'POST', { title, primary_party_id }, { 'Idempotency-Key': key }));
   }
 
   async listOpportunitiesPage(

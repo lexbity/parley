@@ -1,0 +1,13 @@
+{
+  "$schema": "#/components/schemas/CommandRunFailure",
+  "body": {
+    "ok": false,
+    "command_version": 1,
+    "audit_id": "aud_td10_replay_mismatch",
+    "error": {
+      "code": "idempotency_mismatch",
+      "message": "Operation key was reused for a different intent",
+      "details": []
+    }
+  }
+}

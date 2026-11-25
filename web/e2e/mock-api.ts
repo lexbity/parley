@@ -3439,6 +3439,15 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     if (url.pathname === '/api/v1/opportunities' && request.method === 'POST') {
       let input: RecordData;
       try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      // TD-10 W2: explicit operation key and exactly-once replay, matching the
+      // Rust route. No content-derived fallback key exists on either side.
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key) return fail(response, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'Operation key required.');
+      const digest = importDigest([epoch, url.pathname, input]);
+      const oldReceipt = receipts.get(key);
+      if (oldReceipt) return oldReceipt.digest === digest
+        ? json(response, 201, oldReceipt.result)
+        : fail(response, 409, 'KEY_REUSED', 'Operation key refers to a different request.');
       const participant = directory.get(String(input.primary_party_id));
       if (!participant || !['person', 'org'].includes(participant.kind) || typeof input.title !== 'string' || !input.title.trim()) {
         return fail(response, 422, 'OPPORTUNITY_INVALID', 'A title and selected participant are required');
@@ -3449,6 +3458,7 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       const position = [...placements.values()].filter((placement) => placement.list_id === homeList.id).length;
       placements.set(record.id, { list_id: homeList.id, position, placement_revision: 1 });
       notesByOpportunity.set(record.id, { markdown: '', revision: 1 });
+      receipts.set(key, { digest, result: record });
       return json(response, 201, record);
     }
     const placementMatch = /^\/api\/v1\/opportunities\/([^/]+)\/placement$/.exec(url.pathname);

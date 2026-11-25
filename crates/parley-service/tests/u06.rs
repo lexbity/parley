@@ -482,7 +482,7 @@ async fn u06_notes_and_placement_keep_content_proof_intact() {
         "POST",
         &format!("/api/v1/resources/{id}/ready"),
         Some(json!({})),
-        None,
+        Some("u06-ready-explicit-key"),
     )
     .await;
     assert_eq!(status, 204);

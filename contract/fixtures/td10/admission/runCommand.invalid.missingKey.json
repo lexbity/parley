@@ -1,0 +1,10 @@
+{
+  "$schema": "#/components/schemas/CommandErrorEnvelope",
+  "body": {
+    "error": {
+      "code": "malformed_request",
+      "message": "Idempotency-Key is required",
+      "details": []
+    }
+  }
+}
