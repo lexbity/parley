@@ -87,11 +87,79 @@ fn copy_mode(from: &Path, to: &Path) {
     fs::set_permissions(to, permissions).expect("worker member permissions");
 }
 
+/// Garbage-collect bundles left behind by earlier test processes. Each test
+/// binary builds one ~147 MiB bundle and nothing removes it, so repeated
+/// runs accumulate gigabytes in the temp directory. `cargo test` runs test
+/// binaries one at a time, so keeping the newest few bounds the directory to
+/// roughly one GiB while leaving any concurrent run's bundle (whose stamp is
+/// newer) untouched.
+fn sweep_stale_bundles(keep: usize) {
+    let Ok(entries) = fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let mut bundles: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("parley-ar05-bundle-")
+        })
+        .filter_map(|entry| {
+            let modified = entry.metadata().and_then(|meta| meta.modified()).ok()?;
+            Some((modified, entry.path()))
+        })
+        .collect();
+    bundles.sort();
+    for (_, path) in bundles.into_iter().rev().skip(keep) {
+        let _ = fs::remove_dir_all(path);
+    }
+}
+
+/// Reclaim test workspaces abandoned by processes that died before their
+/// `Drop`/`remove_file` cleanup ran. Seeded workspaces use dot-prefixed
+/// stamps (`.parley-<suite>-<pid>-<n>.sqlite`) plus their `.parley` control
+/// directory, so a live user workspace — never dot-prefixed — is
+/// unreachable by this pattern. Test binaries live for minutes; anything
+/// older than an hour is debris.
+fn sweep_stale_workspaces(max_age: std::time::Duration) {
+    let Ok(entries) = fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !(name.starts_with(".parley-")
+            && (name.ends_with(".sqlite")
+                || name.ends_with(".sqlite-wal")
+                || name.ends_with(".sqlite-shm")
+                || name.ends_with(".sqlite.parley")))
+        {
+            continue;
+        }
+        let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) else {
+            continue;
+        };
+        let Ok(age) = now.duration_since(modified) else {
+            continue;
+        };
+        if age > max_age {
+            let _ = if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                fs::remove_dir_all(entry.path())
+            } else {
+                fs::remove_file(entry.path())
+            };
+        }
+    }
+}
+
 /// Build the exact production layout once per test process and publish it via
 /// the debug-only verified-bundle override. The manifest uses the same fields
 /// and digests as `scripts/build-agent`.
 pub fn verified_bundle() -> &'static Path {
     BUNDLE.get_or_init(|| {
+        sweep_stale_bundles(7);
+        sweep_stale_workspaces(std::time::Duration::from_secs(3600));
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
         let stamp = format!(
             "{}-{}",
@@ -146,6 +214,8 @@ pub fn verified_bundle() -> &'static Path {
             ("briefer.schema.json", "crates/parley-service/roles/briefer/schema.json"),
             ("extractor.schema.json", "crates/parley-service/roles/extractor/schema.json"),
             ("matcher.schema.json", "crates/parley-service/roles/matcher/schema.json"),
+            ("composer.schema.json", "crates/parley-service/roles/composer/schema.json"),
+            ("linter.schema.json", "crates/parley-service/roles/linter/schema.json"),
         ] {
             copy_mode(&root.join(source), &dir.join(name));
         }
@@ -634,14 +704,7 @@ fn sse(reply: &Reply) -> String {
             });
         }
         Reply::ToolCalls { calls, text } => {
-            if !text.is_empty() {
-                output.push_str(&chunk(
-                    None,
-                    Some(json!({"role":"assistant","content":text})),
-                    None,
-                ));
-            }
-            let tools = calls
+            let tools: Vec<Value> = calls
                 .iter()
                 .enumerate()
                 .map(|(index, (name, args))| {
@@ -651,8 +714,9 @@ fn sse(reply: &Reply) -> String {
                     })
                 })
                 .collect();
-            output.push_str(&chunk(None, None, Some(tools)));
-            output.push_str(&chunk(Some("tool_calls"), None, None));
+            let mut delta = json!({"role":"assistant","content":text});
+            delta["tool_calls"] = json!(tools);
+            output.push_str(&chunk(Some("tool_calls"), Some(delta), None));
         }
         Reply::Native(value) => {
             let converted = Reply::from_native(value);
@@ -823,17 +887,37 @@ pub struct ResponderProvider {
 
 impl ResponderProvider {
     pub async fn start(bodies: Vec<Value>) -> Self {
-        Self::with_gate(bodies, false).await
+        Self::start_filtered(bodies, true).await
+    }
+
+    /// Serve the scripted bodies verbatim (no probe-text filtering). UCR
+    /// authority fixtures use the whole body list as the conversation, so
+    /// content may legitimately contain the word "probe".
+    pub async fn start_unfiltered(bodies: Vec<Value>) -> Self {
+        Self::start_filtered(bodies, false).await
     }
 
     pub async fn with_gate(bodies: Vec<Value>, gate_chat: bool) -> Self {
+        Self::with_gate_filtered(bodies, gate_chat, true).await
+    }
+
+    pub async fn with_gate_unfiltered(bodies: Vec<Value>, gate_chat: bool) -> Self {
+        Self::with_gate_filtered(bodies, gate_chat, false).await
+    }
+
+    async fn start_filtered(bodies: Vec<Value>, filter_probe: bool) -> Self {
+        Self::with_gate_filtered(bodies, false, filter_probe).await
+    }
+
+    async fn with_gate_filtered(bodies: Vec<Value>, gate_chat: bool, filter_probe: bool) -> Self {
         let scripted: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(
             bodies
                 .into_iter()
                 .filter(|body| {
-                    !body["message"]["content"]
-                        .as_str()
-                        .is_some_and(|text| text.contains("probe"))
+                    !filter_probe
+                        || !body["message"]["content"]
+                            .as_str()
+                            .is_some_and(|text| text.contains("probe"))
                 })
                 .collect(),
         ));

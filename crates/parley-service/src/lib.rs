@@ -247,7 +247,6 @@ mod maintenance;
 mod parties;
 pub mod relations;
 #[cfg(debug_assertions)]
-pub(crate) mod testing_fixture;
 pub use maintenance::{MaintenanceSettings, MaintenanceSettingsInput};
 #[doc(hidden)]
 pub use maintenance::{create_backup_for_test, prune_backups_for_test};

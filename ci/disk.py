@@ -225,8 +225,8 @@ def report() -> None:
         rows.append(("pnpm store", f"{human(scan_tree(store)[0])}  ({store})"))
     except VerificationError:
         rows.append(("pnpm store", "n/a"))
-    scratch = sorted(Path("/tmp").glob(f"{TMP_SCRATCH_PREFIX}*"))
-    rows.append(("/tmp/parley-* scratch dirs", f"{len(scratch)} dir(s) {human(measure(scratch))}"))
+    scratch = sorted(Path("/tmp").glob(f"{TMP_SCRATCH_PREFIX}*")) + sorted(Path("/tmp").glob(f".{TMP_SCRATCH_PREFIX}*"))
+    rows.append(("/tmp/parley-* and .parley-* scratch dirs", f"{len(scratch)} dir(s) {human(measure(scratch))}"))
     print(f"{'vector':<36}{'size':>12}")
     for label, size in rows:
         print(f"{label:<36}{size:>12}")
@@ -252,7 +252,7 @@ def prune(dry_run: bool, playwright_cache: bool, registry: bool) -> None:
     for path in (REPO_ROOT / "web" / name for name in ("test-results", "playwright-report", "blob-report")):
         if path.exists():
             deletions.append((f"regenerable playwright output {path.relative_to(REPO_ROOT)}/", path))
-    for scratch in sorted(Path("/tmp").glob(f"{TMP_SCRATCH_PREFIX}*")):
+    for scratch in sorted(Path("/tmp").glob(f"{TMP_SCRATCH_PREFIX}*")) + sorted(Path("/tmp").glob(f".{TMP_SCRATCH_PREFIX}*")):
         if time.time() - scratch.stat().st_mtime > 3600:
             deletions.append((f"stale scratch {scratch}", scratch))
     deletions.append(("cargo build cache target/ (next build restores it)", REPO_ROOT / "target"))

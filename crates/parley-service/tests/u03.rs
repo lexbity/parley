@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -17,7 +17,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::TcpStream,
 };
 
 type OwnerSession = (String, String, String);
@@ -223,86 +223,41 @@ async fn count(workspace: &Workspace, sql: &str) -> i64 {
         .unwrap()
 }
 
-/// A loopback tool-capable provider whose responses may depend on the chat
-/// body, so a later tool call can use the opportunity ID returned by an
-/// earlier one.
+/// A scripted upstream speaking the real Pi wire through the packaged worker
+/// and its private relay. The first chat connection is the first real turn
+/// (there is no separate tool probe chat in the packaged runtime), so the
+/// responder index is shifted by one relative to the pre-packaged transport.
 struct FakeProvider {
-    port: u16,
-    task: Option<tokio::task::JoinHandle<()>>,
-    release: Option<tokio::sync::oneshot::Sender<()>>,
+    inner: support::model_server::ModelServer,
 }
 
 type Responder = Box<dyn FnMut(usize, &str) -> Value + Send>;
 
 impl FakeProvider {
     async fn with(responder: Responder, gate_chat: bool) -> Self {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
-        let release = if gate_chat { Some(release_tx) } else { None };
-        let mut gate = Some(release_rx);
-        let mut responder = responder;
-        let task = tokio::spawn(async move {
-            for index in 0..64 {
-                let Ok((mut stream, _)) = listener.accept().await else {
-                    break;
-                };
-                let mut head_bytes = Vec::new();
-                let mut byte = [0u8; 1];
-                while !head_bytes.ends_with(b"\r\n\r\n") {
-                    if stream.read_exact(&mut byte).await.is_err() {
-                        break;
-                    }
-                    head_bytes.push(byte[0]);
-                }
-                let head = String::from_utf8_lossy(&head_bytes).to_string();
-                let length: usize = head
-                    .lines()
-                    .find_map(|line| {
-                        line.split_once(':')
-                            .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-                            .and_then(|(_, value)| value.trim().parse().ok())
-                    })
-                    .unwrap_or(0);
-                let mut body_bytes = vec![0u8; length];
-                let _ = stream.read_exact(&mut body_bytes).await;
-                let body = String::from_utf8_lossy(&body_bytes).to_string();
-                if gate_chat
-                    && index >= 1
-                    && let Some(rx) = gate.take()
-                {
-                    let _ = rx.await;
-                }
-                let payload = responder(index, &body).to_string();
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
-                    payload.len()
-                );
-                let _ = stream.write_all(response.as_bytes()).await;
-            }
-        });
-        Self {
-            port,
-            task: Some(task),
-            release,
-        }
+        let pause = gate_chat.then_some(0);
+        let inner = support::model_server::ModelServer::with_responder(
+            Box::new({
+                let mut responder = responder;
+                move |index, body| responder(index + 1, body)
+            }),
+            pause,
+        )
+        .await;
+        Self { inner }
     }
 
+    #[allow(dead_code)]
     fn url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
+        self.inner.url()
     }
 
-    async fn release(mut self) {
-        if let Some(release) = self.release.take() {
-            let _ = release.send(());
-        }
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
+    async fn release(&mut self) {
+        self.inner.release().await;
     }
 
     async fn stop(self) {
-        self.release().await
+        self.inner.stop().await;
     }
 }
 
@@ -348,19 +303,13 @@ fn last_tool_result(body: &str) -> Option<Value> {
         .and_then(|text| serde_json::from_str(text).ok())
 }
 
-async fn set_provider(port: u16, url: &str, key: &str) {
-    let (status, reply) = request(
-        port,
-        "PUT",
-        "/api/v1/agent/provider",
-        Some(json!({
-            "endpoint": url, "model": "fixture", "num_ctx": 8192,
-            "num_predict": 256, "locale": "en"
-        })),
-        key,
+async fn set_provider(workspace: &Workspace, path: &Path, provider: &FakeProvider) {
+    support::model_server::install_qualified_profile(
+        workspace.pool(),
+        path,
+        provider.inner.endpoint(),
     )
     .await;
-    assert!(status == 200 || status == 204, "{status} {reply:?}");
 }
 
 async fn start_run(
@@ -461,7 +410,7 @@ async fn u03_noop_phase_consumes_zero_executed_write_allowance() {
         false,
     )
     .await;
-    set_provider(port, &provider.url(), "provider-u03-noop").await;
+    set_provider(&workspace, &path, &provider).await;
     let (status, run) = start_run(
         port,
         "No-op phase",
@@ -770,7 +719,7 @@ async fn u03_agent_create_binds_self_created_target_and_advances_phase() {
         false,
     )
     .await;
-    set_provider(port, &provider.url(), "provider-u03-1").await;
+    set_provider(&workspace, &path, &provider).await;
     let (status, run) = start_run(
         port,
         "Create and advance an opportunity",
@@ -875,7 +824,8 @@ async fn u03_revocation_fences_phase_tool_and_replay() {
         true,
     )
     .await;
-    set_provider(port, &provider.url(), "provider-u03-2").await;
+    set_provider(&workspace, &path, &provider).await;
+    let mut provider = provider;
     let (status, run) = start_run(
         port,
         "Delayed phase edit",
@@ -972,7 +922,7 @@ async fn u03_nested_roles_and_self_created_grant_are_not_authority() {
         false,
     )
     .await;
-    set_provider(port, &provider.url(), "provider-u03-3").await;
+    set_provider(&workspace, &path, &provider).await;
     // No created-target grant: even the in-scope primary party is concealed.
     let (status, run) = start_run(
         port,
@@ -1028,7 +978,7 @@ async fn u03_nested_roles_and_self_created_grant_are_not_authority() {
         false,
     )
     .await;
-    set_provider(port, &provider.url(), "provider-u03-4").await;
+    set_provider(&workspace, &path, &provider).await;
     let (status, run) = start_run(
         port,
         "Try out-of-scope and malformed creates",
@@ -1104,7 +1054,7 @@ async fn u03_executed_write_allowance_is_debited_once_per_effect() {
         false,
     )
     .await;
-    set_provider(port, &provider.url(), "provider-u03-5").await;
+    set_provider(&workspace, &path, &provider).await;
     let (status, run) = start_run(
         port,
         "Create up to the executed-write allowance",
@@ -1323,7 +1273,7 @@ async fn u03_restart_preserves_created_facts_audit_and_budgets() {
         false,
     )
     .await;
-    set_provider(port, &provider.url(), "provider-u03-6").await;
+    set_provider(&workspace, &path, &provider).await;
     let (status, run) = start_run(
         port,
         "Restart after create",

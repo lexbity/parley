@@ -2,105 +2,61 @@
 //! intake, survives reload/cancellation and never lets a late model result
 //! overwrite a newer owner turn.
 //!
-//! The fake provider speaks the same loopback HTTP the host transport drives,
-//! so the full durable job lifecycle is exercised without a worker bundle;
-//! worker execution itself is qualified by the packaged release lanes.
+//! The scripted upstream speaks the real Pi wire through the packaged worker
+//! and its private relay; the full durable job lifecycle is exercised with
+//! the production execution path.
+
+#[path = "support/mod.rs"]
+mod support;
 
 use parley_service::{RunningService, Workspace};
 use serde_json::{Value, json};
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::TcpStream,
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 struct Provider {
-    port: u16,
-    task: Option<tokio::task::JoinHandle<()>>,
-    release: Option<tokio::sync::oneshot::Sender<()>>,
+    inner: support::model_server::ModelServer,
 }
 
 type Responder = Box<dyn FnMut(usize, &str) -> Value + Send>;
 
 impl Provider {
+    /// The pre-packaged transport sent a catalog chat before real turns; the
+    /// packaged worker never does, so responder indices shift by one and a
+    /// pause index N (N >= 1) becomes N - 1.
     async fn with(responder: Responder, pause_index: Option<usize>) -> Self {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
-        let release = if pause_index.is_some() {
-            Some(release_tx)
-        } else {
-            None
-        };
-        let mut gate = pause_index.map(|index| (index, release_rx));
-        let mut responder = responder;
-        let task = tokio::spawn(async move {
-            for index in 0..64 {
-                let Ok((mut stream, _)) = listener.accept().await else {
-                    break;
-                };
-                let mut head_bytes = Vec::new();
-                let mut byte = [0u8; 1];
-                while !head_bytes.ends_with(b"\r\n\r\n") {
-                    if stream.read_exact(&mut byte).await.is_err() {
-                        break;
-                    }
-                    head_bytes.push(byte[0]);
-                }
-                let head = String::from_utf8_lossy(&head_bytes).to_string();
-                let length: usize = head
-                    .lines()
-                    .find_map(|line| {
-                        line.split_once(':')
-                            .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-                            .and_then(|(_, value)| value.trim().parse().ok())
-                    })
-                    .unwrap_or(0);
-                let mut body_bytes = vec![0u8; length];
-                let _ = stream.read_exact(&mut body_bytes).await;
-                let body = String::from_utf8_lossy(&body_bytes).to_string();
-                if let Some((pause, rx)) = gate.as_mut()
-                    && index == *pause
-                {
-                    let _ = rx.await;
-                    gate = None;
-                }
-                let payload = responder(index, &body).to_string();
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
-                    payload.len()
-                );
-                let _ = stream.write_all(response.as_bytes()).await;
-            }
-        });
-        Self {
-            port,
-            task: Some(task),
-            release,
-        }
+        let pause = pause_index.and_then(|index| index.checked_sub(1));
+        let inner = support::model_server::ModelServer::with_responder(
+            Box::new({
+                let mut responder = responder;
+                move |index, body| responder(index + 1, body)
+            }),
+            pause,
+        )
+        .await;
+        Self { inner }
     }
 
+    #[allow(dead_code)]
     fn url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
+        self.inner.url()
     }
 
     async fn release(&mut self) {
-        if let Some(release) = self.release.take() {
-            let _ = release.send(());
-        }
+        self.inner.release().await;
     }
 
-    async fn stop(mut self) {
-        self.release().await;
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
+    async fn stop(self) {
+        self.inner.stop().await;
     }
 }
 
@@ -186,31 +142,13 @@ async fn request(
     (status, value.get("data").cloned().unwrap_or(value))
 }
 
-async fn set_provider(port: u16, auth: (&String, &String, &String), url: &str) {
-    let (status, reply) = request(
-        port,
-        auth,
-        "PUT",
-        "/api/v1/agent/provider",
-        Some(json!({
-            "endpoint": url, "model": "fixture", "num_ctx": 8192,
-            "num_predict": 256, "locale": "en"
-        })),
-        "ar04-provider",
+async fn set_provider(workspace: &Workspace, path: &Path, provider: &Provider) {
+    support::model_server::install_qualified_profile(
+        workspace.pool(),
+        path,
+        provider.inner.endpoint(),
     )
     .await;
-    assert!(status == 200 || status == 204, "{status} {reply:?}");
-    let (status, reply) = request(
-        port,
-        auth,
-        "POST",
-        "/api/v1/agent/provider/health",
-        None,
-        "ar04-health",
-    )
-    .await;
-    assert_eq!(status, 200, "{reply:?}");
-    assert_eq!(reply["available"], true, "{reply:?}");
 }
 
 async fn wait_job(
@@ -315,7 +253,7 @@ async fn ar04_late_chat_result_cannot_publish_after_new_turn_or_cancel() {
         Some(1),
     )
     .await;
-    set_provider(service.address.port(), auth, &provider.url()).await;
+    set_provider(&workspace, &path, &provider).await;
 
     let (status, chat) = request(
         service.address.port(),
@@ -533,7 +471,7 @@ async fn ar04_coach_answer_reaches_interviewer_candidate_review() {
         None,
     )
     .await;
-    set_provider(service.address.port(), auth, &provider.url()).await;
+    set_provider(&workspace, &path, &provider).await;
 
     let (status, answer) = request(
         service.address.port(),

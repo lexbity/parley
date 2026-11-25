@@ -56,7 +56,6 @@ const PORTABLE_TABLES: &[&str] = &[
     "agent_chat",
     "agent_prompt_active",
     "agent_prompt_version",
-    "agent_provider",
     "agent_turn",
     "approval",
     "blob",
@@ -230,9 +229,6 @@ async fn scrub_archive_database(db: &Path) -> Result<(), sqlx::Error> {
          DELETE FROM interviewer_candidate WHERE state = 'proposed';
          UPDATE interviewer_candidate SET fields_json = '{}', owner_quotes_json = '{}',
            missing_fields_json = '[]' WHERE state = 'dismissed';
-         UPDATE agent_provider
-         SET endpoint='http://127.0.0.1:11434',model='',model_digest=NULL,
-             embed_model='',embed_model_digest=NULL,updated_at='1970-01-01T00:00:00Z';
          DELETE FROM inference_record WHERE id NOT IN (
            SELECT job_id FROM agent_turn WHERE job_id IS NOT NULL
            UNION SELECT job_id FROM interviewer_candidate

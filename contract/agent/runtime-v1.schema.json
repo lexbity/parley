@@ -405,7 +405,9 @@
                     "interviewer",
                     "briefer",
                     "extractor",
-                    "matcher"
+                    "matcher",
+                    "composer",
+                    "linter"
                   ]
                 },
                 "prompt_version": {

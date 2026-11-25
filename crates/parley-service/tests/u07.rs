@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -19,7 +19,7 @@ use std::{
 use support::model_server::{ModelServer, install_qualified_profile_with_embed};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::TcpStream,
 };
 
 type OwnerSession = (String, String, String);
@@ -252,8 +252,6 @@ async fn seed_writing_scenario(workspace: &Workspace) -> SeedIds {
         .bind(&scoring).bind(&now)
         .bind(&scoring).bind(&now)
         .execute(workspace.pool()).await.unwrap();
-    sqlx::query("UPDATE agent_provider SET embed_model='local-test-embed',embed_model_digest='sha256:u07' WHERE singleton=1")
-        .execute(workspace.pool()).await.unwrap();
     SeedIds {
         opportunity: "opportunity-1".into(),
         recipient: "recipient-1".into(),
@@ -273,86 +271,40 @@ struct SeedIds {
 }
 
 struct Provider {
-    port: u16,
-    task: Option<tokio::task::JoinHandle<()>>,
-    release: Option<tokio::sync::oneshot::Sender<()>>,
+    inner: support::model_server::ModelServer,
 }
 
 type Responder = Box<dyn FnMut(usize, &str) -> Value + Send>;
 
 impl Provider {
+    /// The pre-packaged transport counted a catalog probe and a tool probe
+    /// chat before real turns (indices 0 and 1). The packaged worker performs
+    /// its own catalog observation and never sends a probe chat, so responder
+    /// indices shift by two and a pause index N (N >= 2) becomes N - 2.
     async fn with(responder: Responder, pause_index: Option<usize>) -> Self {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
-        let release = if pause_index.is_some() {
-            Some(release_tx)
-        } else {
-            None
-        };
-        let mut gate = pause_index.map(|index| (index, release_rx));
-        let mut responder = responder;
-        let task = tokio::spawn(async move {
-            for index in 0..128 {
-                let Ok((mut stream, _)) = listener.accept().await else {
-                    break;
-                };
-                let mut head_bytes = Vec::new();
-                let mut byte = [0u8; 1];
-                while !head_bytes.ends_with(b"\r\n\r\n") {
-                    if stream.read_exact(&mut byte).await.is_err() {
-                        break;
-                    }
-                    head_bytes.push(byte[0]);
-                }
-                let head = String::from_utf8_lossy(&head_bytes).to_string();
-                let length: usize = head
-                    .lines()
-                    .find_map(|line| {
-                        line.split_once(':')
-                            .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-                            .and_then(|(_, value)| value.trim().parse().ok())
-                    })
-                    .unwrap_or(0);
-                let mut body_bytes = vec![0u8; length];
-                let _ = stream.read_exact(&mut body_bytes).await;
-                let body = String::from_utf8_lossy(&body_bytes).to_string();
-                if let Some((pause, rx)) = gate.as_mut()
-                    && index == *pause
-                {
-                    let _ = rx.await;
-                    gate = None;
-                }
-                let payload = responder(index, &body).to_string();
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
-                    payload.len()
-                );
-                let _ = stream.write_all(response.as_bytes()).await;
-            }
-        });
-        Self {
-            port,
-            task: Some(task),
-            release,
-        }
+        let pause = pause_index.and_then(|index| index.checked_sub(2));
+        let inner = support::model_server::ModelServer::with_responder(
+            Box::new({
+                let mut responder = responder;
+                move |index, body| responder(index + 2, body)
+            }),
+            pause,
+        )
+        .await;
+        Self { inner }
     }
 
+    #[allow(dead_code)]
     fn url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
+        self.inner.url()
     }
 
     async fn release(&mut self) {
-        if let Some(release) = self.release.take() {
-            let _ = release.send(());
-        }
+        self.inner.release().await;
     }
 
-    async fn stop(mut self) {
-        self.release().await;
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
+    async fn stop(self) {
+        self.inner.stop().await;
     }
 }
 
@@ -427,25 +379,27 @@ fn composer_output() -> Value {
     })
 }
 
-async fn set_provider(port: u16, url: &str, key: &str) {
-    let (status, reply) = request(
-        port,
-        "PUT",
-        "/api/v1/agent/provider",
-        Some(json!({
-            "endpoint": url, "model": "fixture", "num_ctx": 8192,
-            "num_predict": 256, "locale": "en"
-        })),
-        key,
+async fn install_profile(workspace: &Workspace, path: &Path, provider: &Provider) {
+    support::model_server::install_qualified_profile(
+        workspace.pool(),
+        path,
+        provider.inner.endpoint(),
     )
     .await;
-    assert!(status == 200 || status == 204, "{status} {reply:?}");
 }
 
-async fn health(port: u16, key: &str) {
-    let (status, reply) = request(port, "POST", "/api/v1/agent/provider/health", None, key).await;
-    assert_eq!(status, 200, "{reply:?}");
-    assert_eq!(reply["available"], true, "{reply:?}");
+async fn install_profile_with_embed(workspace: &Workspace, path: &Path, provider: &Provider) {
+    support::model_server::install_qualified_profile_with_embed(
+        workspace.pool(),
+        path,
+        provider.inner.endpoint(),
+        8192,
+        256,
+        64,
+        Some(&"e".repeat(64)),
+        Some(8),
+    )
+    .await;
 }
 
 async fn start_run(
@@ -541,100 +495,6 @@ fn tool_text(turns: &[Value]) -> String {
 }
 
 /// A writing-run provider: probe, then match.start -> (parked worker) ->
-/// compose -> (parked worker) -> gate -> final answer. Embeddings answer
-/// /api/embed, matcher/composer chats answer from their role prompt.
-fn writing_run_responder(seed: SeedIds) -> Responder {
-    let seed = seed.clone();
-    Box::new(move |_index, body| {
-        let value: Value = serde_json::from_str(body).unwrap_or_default();
-        if value.get("models").is_some() || value.get("messages").is_none() {
-            if value.get("input").is_some() {
-                return embed_response(body);
-            }
-            return tags_response();
-        }
-        let messages = value
-            .get("messages")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let user_text = messages
-            .iter()
-            .find(|message| message["role"].as_str() == Some("user"))
-            .and_then(|message| message["content"].as_str())
-            .unwrap_or_default();
-        if user_text.contains("Tool support probe") {
-            return final_answer("probe-ok");
-        }
-        // Worker chats carry a `format` schema.
-        if value.get("format").is_some() {
-            if user_text.contains("Compose only") {
-                return composer_output();
-            }
-            if user_text.contains("Explain only these ranked matches") {
-                return matcher_explanation(&seed);
-            }
-            return composer_output();
-        }
-        // The run resumed after the match/compose jobs finished.
-        let last_tool = messages
-            .iter()
-            .rev()
-            .find(|message| message["role"].as_str() == Some("tool"))
-            .cloned();
-        if let Some(tool) = last_tool {
-            let parsed: Value =
-                serde_json::from_str(tool["content"].as_str().unwrap_or("{}")).unwrap_or_default();
-            if parsed.get("ok").and_then(Value::as_bool) == Some(false) {
-                return final_answer("Denied.");
-            }
-            let result = parsed.get("result").cloned().unwrap_or_default();
-            if result.get("job_id").is_some()
-                && messages.iter().any(|message| {
-                    message["role"].as_str() == Some("tool")
-                        && message["content"]
-                            .as_str()
-                            .unwrap_or_default()
-                            .contains("compose")
-                })
-            {
-                return final_answer("The material draft is ready for owner review.");
-            }
-            if result.get("job_id").is_some() {
-                return tool_call(
-                    "commands__run",
-                    json!({"id":"material.compose_draft","version":1,"args":json!({
-                        "opportunity_id": seed.opportunity,
-                        "recipient_id": seed.recipient,
-                        "expected_opportunity_revision": 2,
-                        "expected_recipient_revision": 2,
-                        "template_version_id": seed.template,
-                        "exchange_version": 1,
-                        "kind": "outreach",
-                        "slot_fills": [
-                            {"slot": "their_name:name", "value": "Dana"},
-                            {"slot": "gift:item", "value": "a book", "resource_id": seed.gift},
-                            {"slot": "proof:item", "value": "a report", "resource_id": seed.proof}
-                        ],
-                        "selected_match_ids": [seed.gift]
-                    })}),
-                    "compose a draft",
-                );
-            }
-        }
-        tool_call(
-            "commands__run",
-            json!({"id":"match.start","version":1,"args":json!({
-                "opportunity_id": seed.opportunity,
-                "recipient_id": seed.recipient,
-                "expected_opportunity_revision": 2,
-                "expected_recipient_revision": 2
-            })}),
-            "match resources",
-        )
-    })
-}
-
 /// The reviewed E-match fixture shape used by integration tests: the marker
 /// embedding responder separates `[N]` cases orthogonally from the need, so
 /// the RFC-0001 held-out floors pass deterministically.
@@ -671,13 +531,10 @@ async fn u07_scoped_end_to_end_match_compose_review_save_gate_release() {
     let (path, workspace, port, service) = setup("happy").await;
     let seed = seed_writing_scenario(&workspace).await;
 
-    // The matcher runs through the packaged worker in AR07: it needs the
-    // qualified embedding profile and the worker-facing upstream, while the
-    // legacy Composer chat still reads `agent_provider` from the native
-    // responder. Both providers coexist on separate loopback ports.
-    let legacy = Provider::with(writing_run_responder(seed.clone()), None).await;
-    set_provider(port, &legacy.url(), "provider-u07-1").await;
-    health(port, "health-u07-1").await;
+    // The matcher runs through the packaged worker; the single frozen profile
+    // points every worker call (structured role chats and embeddings) at this
+    // upstream, so the responder serves both the matcher explanation and the
+    // Composer structured output.
     let matcher_provider = ModelServer::with_responder(
         Box::new({
             let seed = seed.clone();
@@ -691,7 +548,12 @@ async fn u07_scoped_end_to_end_match_compose_review_save_gate_release() {
                     .filter_map(|message| message["content"].as_str())
                     .collect::<Vec<_>>()
                     .join(" ");
-                if user_text.contains("shortlist") {
+                if user_text.contains("Compose only") {
+                    return composer_output();
+                }
+                if user_text.contains("shortlist")
+                    || user_text.contains("Explain only these ranked matches")
+                {
                     return matcher_explanation(&seed);
                 }
                 json!({"message":{"role":"assistant","content":"Done."},"prompt_eval_count":12,"eval_count":8})
@@ -871,8 +733,7 @@ async fn u07_scoped_end_to_end_match_compose_review_save_gate_release() {
         None,
     )
     .await;
-    set_provider(port, &gate_provider.url(), "provider-u07-1b").await;
-    health(port, "health-u07-1b").await;
+    install_profile(&workspace, &path, &gate_provider).await;
     let (status, gate_run) = start_run(
         port,
         "Check the gate of the saved material.",
@@ -920,7 +781,6 @@ async fn u07_scoped_end_to_end_match_compose_review_save_gate_release() {
     assert_eq!(outputs.as_array().unwrap().len(), 1);
 
     gate_provider.stop().await;
-    legacy.stop().await;
     matcher_provider.stop().await;
     cleanup(&path, workspace, service);
 }
@@ -950,7 +810,7 @@ async fn u07_hidden_resources_cannot_reach_a_scoped_run() {
             if user_text.contains("Tool support probe") {
                 return final_answer("probe-ok");
             }
-            if value.get("format").is_some() {
+            if value.get("response_format").is_some() || value.get("format").is_some() {
                 if user_text.contains("Explain only these ranked matches") {
                     return matcher_explanation(&seed_inner);
                 }
@@ -980,8 +840,7 @@ async fn u07_hidden_resources_cannot_reach_a_scoped_run() {
         None,
     )
     .await;
-    set_provider(port, &provider.url(), "provider-u07-2").await;
-    health(port, "health-u07-2").await;
+    install_profile_with_embed(&workspace, &path, &provider).await;
 
     // The run grants only the hidden resource; the opportunity is foreign.
     let (status, run) = start_run(
@@ -1029,7 +888,7 @@ async fn u07_stale_resource_content_fences_compose_completion() {
                 }
                 return tags_response();
             }
-            if value.get("format").is_some() {
+            if value.get("response_format").is_some() || value.get("format").is_some() {
                 return composer_output();
             }
             let messages = value
@@ -1077,8 +936,7 @@ async fn u07_stale_resource_content_fences_compose_completion() {
         Some(3),
     )
     .await;
-    set_provider(port, &provider.url(), "provider-u07-3").await;
-    health(port, "health-u07-3").await;
+    install_profile(&workspace, &path, &provider).await;
 
     let (status, run) = start_run(
         port,
@@ -1154,7 +1012,7 @@ async fn u07_malformed_provider_output_remains_plain_data() {
                 }
                 return tags_response();
             }
-            if value.get("format").is_some() {
+            if value.get("response_format").is_some() || value.get("format").is_some() {
                 // Malformed composer output: not valid JSON against the schema.
                 return json!({"message":{"role":"assistant","content":"{not json"},"prompt_eval_count":1,"eval_count":1});
             }
@@ -1195,8 +1053,7 @@ async fn u07_malformed_provider_output_remains_plain_data() {
         None,
     )
     .await;
-    set_provider(port, &provider.url(), "provider-u07-4").await;
-    health(port, "health-u07-4").await;
+    install_profile(&workspace, &path, &provider).await;
 
     let (status, run) = start_run(
         port,
@@ -1361,8 +1218,7 @@ async fn u07_gate_conceals_and_binds_version() {
         None,
     )
     .await;
-    set_provider(port, &provider.url(), "provider-u07-5").await;
-    health(port, "health-u07-5").await;
+    install_profile(&workspace, &path, &provider).await;
 
     let (status, run) = start_run(
         port,

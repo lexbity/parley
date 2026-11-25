@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -22,7 +22,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::TcpStream,
 };
 
 type OwnerSession = (String, String, String);
@@ -771,62 +771,29 @@ async fn u04_rest_note_save_and_command_task_toggle_coordinate() {
 type Responder = Box<dyn FnMut(usize, &str) -> Value + Send>;
 
 struct FakeProvider {
-    port: u16,
-    task: Option<tokio::task::JoinHandle<()>>,
+    inner: support::model_server::ModelServer,
 }
 
 impl FakeProvider {
     async fn with(responder: Responder) -> Self {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let mut responder = responder;
-        let task = tokio::spawn(async move {
-            for index in 0..64 {
-                let Ok((mut stream, _)) = listener.accept().await else {
-                    break;
-                };
-                let mut head_bytes = Vec::new();
-                let mut byte = [0u8; 1];
-                while !head_bytes.ends_with(b"\r\n\r\n") {
-                    if stream.read_exact(&mut byte).await.is_err() {
-                        break;
-                    }
-                    head_bytes.push(byte[0]);
-                }
-                let head = String::from_utf8_lossy(&head_bytes).to_string();
-                let length: usize = head
-                    .lines()
-                    .find_map(|line| {
-                        line.split_once(':')
-                            .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-                            .and_then(|(_, value)| value.trim().parse().ok())
-                    })
-                    .unwrap_or(0);
-                let mut body_bytes = vec![0u8; length];
-                let _ = stream.read_exact(&mut body_bytes).await;
-                let body = String::from_utf8_lossy(&body_bytes).to_string();
-                let payload = responder(index, &body).to_string();
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
-                    payload.len()
-                );
-                let _ = stream.write_all(response.as_bytes()).await;
-            }
-        });
-        Self {
-            port,
-            task: Some(task),
-        }
+        let inner = support::model_server::ModelServer::with_responder(
+            Box::new({
+                let mut responder = responder;
+                move |index, body| responder(index + 1, body)
+            }),
+            None,
+        )
+        .await;
+        Self { inner }
     }
 
+    #[allow(dead_code)]
     fn url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
+        self.inner.url()
     }
 
     async fn stop(self) {
-        if let Some(task) = self.task {
-            task.abort();
-        }
+        self.inner.stop().await;
     }
 }
 
@@ -859,19 +826,13 @@ fn last_tool_result(body: &str) -> Option<Value> {
         .and_then(|text| serde_json::from_str(text).ok())
 }
 
-async fn set_provider(port: u16, url: &str, key: &str) {
-    let (status, reply) = request(
-        port,
-        "PUT",
-        "/api/v1/agent/provider",
-        Some(json!({
-            "endpoint": url, "model": "fixture", "num_ctx": 8192,
-            "num_predict": 256, "locale": "en"
-        })),
-        key,
+async fn set_provider(workspace: &Workspace, path: &Path, provider: &FakeProvider) {
+    support::model_server::install_qualified_profile(
+        workspace.pool(),
+        path,
+        provider.inner.endpoint(),
     )
     .await;
-    assert!(status == 200 || status == 204, "{status} {reply:?}");
 }
 
 async fn start_run(
@@ -1009,7 +970,7 @@ async fn u04_agent_delegated_party_edit_and_task_done() {
         final_answer("Done with granted edits.")
     }))
     .await;
-    set_provider(port, &provider.url(), "provider-u04-1").await;
+    set_provider(&workspace, &path, &provider).await;
     let (status, run) = start_run(
         port,
         "Edit the granted party and task",
@@ -1109,7 +1070,7 @@ async fn u04_agent_task_noop_consumes_zero_executed_write() {
         final_answer("No-op done.")
     }))
     .await;
-    set_provider(port, &provider.url(), "provider-u04-2").await;
+    set_provider(&workspace, &path, &provider).await;
     let (status, run) = start_run(
         port,
         "Check an already checked task",

@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -18,7 +18,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::TcpStream,
 };
 
 type OwnerSession = (String, String, String);
@@ -197,88 +197,42 @@ async fn count(workspace: &Workspace, sql: &str) -> i64 {
 /// optional pause before one response index so tests can observe durable
 /// states while a provider call is in flight.
 struct Provider {
-    port: u16,
-    task: Option<tokio::task::JoinHandle<()>>,
-    release: Option<tokio::sync::oneshot::Sender<()>>,
+    inner: support::model_server::ModelServer,
 }
 
 type Responder = Box<dyn FnMut(usize, &str) -> Value + Send>;
 
 impl Provider {
+    /// The pre-packaged transport counted a catalog probe and a tool probe
+    /// chat before real turns (indices 0 and 1). The packaged worker performs
+    /// its own catalog observation and never sends a probe chat, so responder
+    /// indices shift by two and a pause index N (N >= 2) becomes N - 2.
     async fn with(responder: Responder, pause_index: Option<usize>) -> Self {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
-        let release = if pause_index.is_some() {
-            Some(release_tx)
-        } else {
-            None
-        };
-        let mut gate = pause_index.map(|index| (index, release_rx));
-        let mut responder = responder;
-        let task = tokio::spawn(async move {
-            for index in 0..64 {
-                let Ok((mut stream, _)) = listener.accept().await else {
-                    break;
-                };
-                let mut head_bytes = Vec::new();
-                let mut byte = [0u8; 1];
-                while !head_bytes.ends_with(b"\r\n\r\n") {
-                    if stream.read_exact(&mut byte).await.is_err() {
-                        break;
-                    }
-                    head_bytes.push(byte[0]);
-                }
-                let head = String::from_utf8_lossy(&head_bytes).to_string();
-                let length: usize = head
-                    .lines()
-                    .find_map(|line| {
-                        line.split_once(':')
-                            .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-                            .and_then(|(_, value)| value.trim().parse().ok())
-                    })
-                    .unwrap_or(0);
-                let mut body_bytes = vec![0u8; length];
-                let _ = stream.read_exact(&mut body_bytes).await;
-                let body = String::from_utf8_lossy(&body_bytes).to_string();
-                if let Some((pause, rx)) = gate.as_mut()
-                    && index == *pause
-                {
-                    let _ = rx.await;
-                    gate = None;
-                }
-                let payload = responder(index, &body).to_string();
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
-                    payload.len()
-                );
-                let _ = stream.write_all(response.as_bytes()).await;
-            }
-        });
-        Self {
-            port,
-            task: Some(task),
-            release,
-        }
+        let pause = pause_index.and_then(|index| index.checked_sub(2));
+        let inner = support::model_server::ModelServer::with_responder(
+            Box::new({
+                let mut responder = responder;
+                move |index, body| responder(index + 2, body)
+            }),
+            pause,
+        )
+        .await;
+        Self { inner }
     }
 
+    #[allow(dead_code)]
     fn url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
+        self.inner.url()
     }
 
     /// Unblock the paused response without stopping the listener, so the
     /// conversation can continue through later connection indices.
     async fn release(&mut self) {
-        if let Some(release) = self.release.take() {
-            let _ = release.send(());
-        }
+        self.inner.release().await;
     }
 
-    async fn stop(mut self) {
-        self.release().await;
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
+    async fn stop(self) {
+        self.inner.stop().await;
     }
 }
 
@@ -335,26 +289,13 @@ fn briefer_output() -> Value {
     })
 }
 
-async fn set_provider(port: u16, url: &str, key: &str) {
-    let (status, reply) = request(
-        port,
-        "PUT",
-        "/api/v1/agent/provider",
-        Some(json!({
-            "endpoint": url, "model": "fixture", "num_ctx": 8192,
-            "num_predict": 256, "locale": "en"
-        })),
-        key,
+async fn set_provider(workspace: &Workspace, path: &Path, provider: &Provider) {
+    support::model_server::install_qualified_profile(
+        workspace.pool(),
+        path,
+        provider.inner.endpoint(),
     )
     .await;
-    assert!(status == 200 || status == 204, "{status} {reply:?}");
-}
-
-/// Set the model digest so role jobs can claim attempts (tags response).
-async fn health(port: u16, key: &str) {
-    let (status, reply) = request(port, "POST", "/api/v1/agent/provider/health", None, key).await;
-    assert_eq!(status, 200, "{reply:?}");
-    assert_eq!(reply["available"], true, "{reply:?}");
 }
 
 async fn start_run(
@@ -478,8 +419,9 @@ async fn u05_agent_brief_waits_on_job_and_resumes_with_review() {
             if user_text.contains("Tool support probe") {
                 return final_answer("probe-ok");
             }
-            // The worker chat carries a `format` schema and no tools.
-            if value.get("format").is_some() {
+            // The worker structured-role chat carries a response schema and no
+            // tools (relay forwards the Pi `response_format` body).
+            if value.get("response_format").is_some() || value.get("format").is_some() {
                 return briefer_output();
             }
             // A resumed run that already sees a job-status result is done.
@@ -525,8 +467,7 @@ async fn u05_agent_brief_waits_on_job_and_resumes_with_review() {
         Some(3),
     )
     .await;
-    set_provider(port, &provider.url(), "provider-u05-1").await;
-    health(port, "health-u05-1").await;
+    set_provider(&workspace, &path, &provider).await;
 
     let (status, run) = start_run(
         port,
@@ -679,8 +620,7 @@ async fn u05_forbidden_scope_foreign_job_and_concealment() {
         None,
     )
     .await;
-    set_provider(port, &foreign_job_provider.url(), "provider-u05-2a").await;
-    health(port, "health-u05-2a").await;
+    set_provider(&workspace, &path, &foreign_job_provider).await;
     let (status, brief) = request(
         port,
         "POST",
@@ -735,8 +675,7 @@ async fn u05_forbidden_scope_foreign_job_and_concealment() {
         None,
     )
     .await;
-    set_provider(port, &provider.url(), "provider-u05-2b").await;
-    health(port, "health-u05-2b").await;
+    set_provider(&workspace, &path, &provider).await;
     let (status, run) = start_run(
         port,
         "Use only granted targets",
@@ -796,8 +735,7 @@ async fn u05_cancelled_run_fences_job_completion_no_candidate() {
         Some(3),
     )
     .await;
-    set_provider(port, &provider.url(), "provider-u05-3").await;
-    health(port, "health-u05-3").await;
+    set_provider(&workspace, &path, &provider).await;
     let (status, run) = start_run(
         port,
         "Brief under cancellation",
@@ -867,8 +805,7 @@ async fn u05_lost_wake_is_recovered_by_the_durable_queue_poll() {
         None,
     )
     .await;
-    set_provider(port, &provider.url(), "provider-u05-4").await;
-    health(port, "health-u05-4").await;
+    set_provider(&workspace, &path, &provider).await;
 
     // Insert a queued job directly without any wake signal. Only the
     // worker's 500 ms poll can pick it up.
@@ -933,8 +870,7 @@ async fn u05_stale_lease_second_attempt_never_publishes() {
         Some(1),
     )
     .await;
-    set_provider(port, &provider.url(), "provider-u05-5").await;
-    health(port, "health-u05-5").await;
+    set_provider(&workspace, &path, &provider).await;
 
     let (status, brief) = request(
         port,
@@ -1006,8 +942,7 @@ async fn u05_backup_scrubs_scoped_job_artifacts() {
         None,
     )
     .await;
-    set_provider(port, &provider.url(), "provider-u05-6").await;
-    health(port, "health-u05-6").await;
+    set_provider(&workspace, &path, &provider).await;
     let (status, brief) = request(
         port,
         "POST",

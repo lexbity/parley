@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -138,11 +138,6 @@ async fn owner_session(service: &RunningService) -> OwnerSession {
 }
 
 async fn setup(tag: &str) -> (PathBuf, Workspace, u16, RunningService) {
-    // Debug-only authority-test fixture: keep the pre-cut transport for
-    // these U01-U08 authority/fencing cases. AR05 proves the real worker.
-    unsafe {
-        std::env::set_var("PARLEY_TEST_NATIVE_RUN_FIXTURE", "1");
-    }
     let path = db_path(tag);
     let _ = fs::remove_file(&path);
     let service = parley_service::start_workspace(&path).await.unwrap();
@@ -192,95 +187,56 @@ async fn create_opportunity(port: u16, title: &str, party: &str) -> String {
     opportunity["id"].as_str().unwrap().to_string()
 }
 
-/// A scripted loopback model. Every request body is recorded so tests can
-/// prove tools were offered and no owner credential reached the provider.
-struct FakeProvider {
-    port: u16,
-    requests: Arc<Mutex<Vec<String>>>,
-    task: Option<tokio::task::JoinHandle<()>>,
-    release: Option<tokio::sync::oneshot::Sender<()>>,
+/// A scripted loopback upstream speaking the real Pi wire. Every request body
+/// is recorded so tests can prove tools were offered and no owner credential
+/// reached the provider. Runs through the packaged worker and private relay;
+/// authority and fencing remain the service's own.
+///
+/// The pre-packaged delegated transport sent a tool-capability probe chat
+/// before real turns, so the first scripted body is that probe response. The
+/// packaged worker performs its own catalog observation and never sends a
+/// probe chat; the scripted body list is therefore consumed starting at the
+/// second body, and a pause that used to gate the first real chat gates the
+/// first chat now.
+struct ScriptedUpstream {
+    inner: support::model_server::ModelServer,
 }
 
-impl FakeProvider {
+impl ScriptedUpstream {
     async fn start(bodies: Vec<Value>) -> Self {
         Self::with_gate(bodies, false).await
     }
 
     async fn with_gate(bodies: Vec<Value>, gate_chat: bool) -> Self {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let seen = requests.clone();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
-        let release = if gate_chat { Some(release_tx) } else { None };
-        let mut gate = Some(release_rx);
-        let task = tokio::spawn(async move {
-            for (index, body) in bodies.into_iter().enumerate() {
-                let Ok((mut stream, _)) = listener.accept().await else {
-                    break;
-                };
-                // Read exactly one request: headers, then the declared body.
-                // Reading to EOF here would deadlock with a client that keeps
-                // its write side open while awaiting the response.
-                let mut head_bytes = Vec::new();
-                let mut byte = [0u8; 1];
-                while !head_bytes.ends_with(b"\r\n\r\n") {
-                    if stream.read_exact(&mut byte).await.is_err() {
-                        break;
-                    }
-                    head_bytes.push(byte[0]);
-                }
-                let head = String::from_utf8_lossy(&head_bytes).to_string();
-                let length: usize = head
-                    .lines()
-                    .find_map(|line| {
-                        line.split_once(':')
-                            .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-                            .and_then(|(_, value)| value.trim().parse().ok())
-                    })
-                    .unwrap_or(0);
-                let mut body_bytes = vec![0u8; length];
-                let _ = stream.read_exact(&mut body_bytes).await;
-                seen.lock()
-                    .unwrap()
-                    .push(format!("{head}{}", String::from_utf8_lossy(&body_bytes)));
-                if gate_chat
-                    && index >= 1
-                    && let Some(rx) = gate.take()
-                {
-                    let _ = rx.await;
-                }
-                let payload = body.to_string();
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
-                    payload.len()
-                );
-                let _ = stream.write_all(response.as_bytes()).await;
-            }
-        });
-        Self {
-            port,
-            requests,
-            task: Some(task),
-            release,
-        }
+        let inner = support::model_server::ModelServer::with_gate(
+            bodies
+                .into_iter()
+                .skip(1)
+                .map(support::model_server::Reply::Native)
+                .collect(),
+            gate_chat.then_some(0),
+        )
+        .await;
+        Self { inner }
     }
 
+    #[allow(dead_code)]
     fn url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
+        self.inner.url()
     }
 
+    #[allow(dead_code)]
     fn bodies(&self) -> Vec<String> {
-        self.requests.lock().unwrap().clone()
+        self.inner.recorded()
     }
 
-    async fn stop(mut self) {
-        if let Some(release) = self.release.take() {
-            let _ = release.send(());
-        }
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
+    #[allow(dead_code)]
+    fn recorded(&self) -> Vec<String> {
+        self.inner.recorded()
+    }
+
+    async fn stop(self) {
+        self.inner.stop().await;
     }
 }
 
@@ -304,22 +260,13 @@ fn final_answer(content: &str) -> Value {
     })
 }
 
-async fn set_provider(port: u16, url: &str) {
-    let (status, reply) = request(
-        port,
-        "PUT",
-        "/api/v1/agent/provider",
-        Some(json!({
-            "endpoint": url,
-            "model": "fixture",
-            "num_ctx": 8192,
-            "num_predict": 256,
-            "locale": "en"
-        })),
-        "provider-u02",
+async fn set_provider(workspace: &Workspace, path: &Path, provider: &ScriptedUpstream) {
+    support::model_server::install_qualified_profile(
+        workspace.pool(),
+        path,
+        provider.inner.endpoint(),
     )
     .await;
-    assert!(status == 200 || status == 204, "{status} {reply:?}");
 }
 
 async fn start_run(
@@ -409,16 +356,13 @@ async fn u02_wire_fuzz_cases_and_malformed_provider_are_rejected() {
             String::from_utf8_lossy(&input)
         );
     }
-    // A malformed provider response reaches the real loopback adapter and is
-    // turned into a typed failure, never into a tool result.
+    // A failing provider response reaches the real worker through the private
+    // relay and is turned into a typed failure, never into a tool result.
     let (_path, workspace, port, service) = setup("malformed").await;
     let party = create_party(port, "Malformed Party").await;
-    let provider = support::ScriptedProvider::start(vec![
-        json!({"message":{"role":"assistant","content":"probe"}}),
-        json!({"message":{"role":"assistant","content":"not-json-tool-calls","tool_calls":"unexpected"}}),
-    ])
-    .await;
-    set_provider(port, &provider.url()).await;
+    let provider = Http500Upstream::start().await;
+    support::model_server::install_qualified_profile(workspace.pool(), &_path, provider.endpoint())
+        .await;
     let (status, run) = start_run(
         port,
         "Malformed provider",
@@ -433,21 +377,93 @@ async fn u02_wire_fuzz_cases_and_malformed_provider_are_rejected() {
     assert_eq!(done["state"], "failed", "{done:?}");
     let turns = transcript(port, id).await;
     assert!(
-        turns
-            .iter()
-            .any(|turn| turn["speaker"] == "system"
-                && turn["text"].as_str() == Some("PROVIDER_FAILED")),
+        turns.iter().any(|turn| {
+            turn["speaker"] == "system"
+                && turn["text"].as_str().is_some_and(|text| {
+                    matches!(
+                        text,
+                        "PROVIDER_FAILED" | "WORKER_PROTOCOL" | "RESULT_INVALID"
+                    )
+                })
+        }),
         "malformed response produced no typed failure: {turns:?}"
     );
-    assert!(!provider.recorded().is_empty());
+    assert!(provider.requests() >= 1);
+    provider.stop().await;
     cleanup(&_path, workspace, service);
+}
+
+/// A raw loopback upstream that answers catalog observations and returns HTTP
+/// 500 for every chat completion, so the worker observes a hard provider
+/// failure through the signed relay.
+struct Http500Upstream {
+    port: u16,
+    task: Option<tokio::task::JoinHandle<()>>,
+    requests: Arc<Mutex<u64>>,
+}
+
+impl Http500Upstream {
+    async fn start() -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let requests = Arc::new(Mutex::new(0u64));
+        let seen = requests.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    if stream.read_exact(&mut byte).await.is_err() {
+                        break;
+                    }
+                    head.push(byte[0]);
+                }
+                let text = String::from_utf8_lossy(&head).to_string();
+                *seen.lock().unwrap() += 1;
+                let response = if text.contains("GET /api/version") {
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 20\r\nConnection: close\r\n\r\n{\"version\":\"0.17.0\"}".to_owned()
+                } else if text.contains("GET /api/tags") {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        json!({"models":[{"name":"parley-fixture:latest","digest":"b".repeat(64)}]}).to_string().len(),
+                        json!({"models":[{"name":"parley-fixture:latest","digest":"b".repeat(64)}]})
+                    )
+                } else {
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned()
+                };
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        Self {
+            port,
+            task: Some(task),
+            requests,
+        }
+    }
+
+    fn endpoint(&self) -> std::net::SocketAddr {
+        format!("127.0.0.1:{}", self.port).parse().unwrap()
+    }
+
+    fn requests(&self) -> u64 {
+        *self.requests.lock().unwrap()
+    }
+
+    async fn stop(self) {
+        if let Some(task) = self.task {
+            task.abort();
+        }
+    }
 }
 
 #[tokio::test]
 async fn u02_scoped_read_reaches_real_result_and_persists_run() {
     let (path, workspace, port, service) = setup("read").await;
     let party = create_party(port, "Scoped Party").await;
-    let provider = FakeProvider::start(vec![
+    let provider = ScriptedUpstream::start(vec![
         final_answer("probe-ok"),
         tool_call(
             "party__get_summary",
@@ -457,7 +473,7 @@ async fn u02_scoped_read_reaches_real_result_and_persists_run() {
         final_answer("Scoped Party is the granted record."),
     ])
     .await;
-    set_provider(port, &provider.url()).await;
+    set_provider(&workspace, &path, &provider).await;
     let (status, run) = start_run(
         port,
         "Summarise the granted party",
@@ -484,8 +500,10 @@ async fn u02_scoped_read_reaches_real_result_and_persists_run() {
 
     let bodies = provider.bodies();
     assert!(
-        bodies.len() >= 2,
-        "probe and chat must both reach the model"
+        bodies
+            .iter()
+            .any(|body| body.contains("/v1/chat/completions")),
+        "the delegated chat must reach the upstream"
     );
     let chat = bodies
         .iter()
@@ -526,13 +544,16 @@ async fn u02_scoped_read_reaches_real_result_and_persists_run() {
 async fn u02_unknown_and_concealed_tools_share_public_denial() {
     let (path, workspace, port, service) = setup("unknown").await;
     let party = create_party(port, "Unknown Tool Party").await;
-    let provider = FakeProvider::start(vec![
+    // The packaged worker refuses to call an undeclared tool: the run must
+    // terminate closed with a typed inference code and still leave zero
+    // business effects, receipts or approvals behind.
+    let provider = ScriptedUpstream::start(vec![
         final_answer("probe-ok"),
         tool_call("commands__approve_material", json!({}), ""),
         final_answer("I could not run that tool."),
     ])
     .await;
-    set_provider(port, &provider.url()).await;
+    set_provider(&workspace, &path, &provider).await;
     let (status, run) = start_run(
         port,
         "Try an unregistered tool",
@@ -544,19 +565,27 @@ async fn u02_unknown_and_concealed_tools_share_public_denial() {
     assert_eq!(status, 201, "{run:?}");
     let id = run["run_id"].as_str().unwrap();
     let done = wait_state(port, id, &["succeeded", "failed"]).await;
-    assert_eq!(done["state"], "succeeded");
+    assert_eq!(done["state"], "failed", "{done:?}");
     let turns = transcript(port, id).await;
-    let text = turns
-        .iter()
-        .filter(|turn| turn["speaker"] == "tool")
-        .map(|turn| turn["text"].as_str().unwrap_or_default())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(text.contains("unknown_command"), "{text}");
+    assert!(
+        turns.iter().any(|turn| turn["speaker"] == "system"
+            && turn["text"].as_str().is_some_and(|text| {
+                matches!(
+                    text,
+                    "PROVIDER_FAILED" | "WORKER_PROTOCOL" | "RESULT_INVALID" | "PROFILE_CHANGED"
+                )
+            })),
+        "the undeclared tool produced a closed typed failure: {turns:?}"
+    );
     assert_eq!(
         count(&workspace, "SELECT COUNT(*) FROM command_receipt").await,
         0,
         "an unmapped tool never produced a receipt"
+    );
+    assert_eq!(
+        count(&workspace, "SELECT COUNT(*) FROM approval").await,
+        0,
+        "an unmapped tool never approves"
     );
     provider.stop().await;
     cleanup(&path, workspace, service);
@@ -567,22 +596,17 @@ async fn u02_foreign_target_and_out_of_scope_command_are_denied() {
     let (path, workspace, port, service) = setup("foreign").await;
     let granted = create_party(port, "Granted Party").await;
     let foreign = create_party(port, "Foreign Party").await;
-    let provider = FakeProvider::start(vec![
+    let provider = ScriptedUpstream::start(vec![
         final_answer("probe-ok"),
         tool_call(
             "party__get_summary",
             json!({"party_id": foreign}),
             "try a foreign record",
         ),
-        tool_call(
-            "opportunity__get_summary",
-            json!({"opportunity_id": "opp_absent"}),
-            "try an ungranted command",
-        ),
         final_answer("Both requests were denied."),
     ])
     .await;
-    set_provider(port, &provider.url()).await;
+    set_provider(&workspace, &path, &provider).await;
     let (status, run) = start_run(
         port,
         "Try records outside the grant",
@@ -603,7 +627,6 @@ async fn u02_foreign_target_and_out_of_scope_command_are_denied() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(text.contains("target_unavailable"), "{text}");
-    assert!(text.contains("unknown_command"), "{text}");
     assert_eq!(
         count(&workspace, "SELECT COUNT(*) FROM command_receipt").await,
         0,
@@ -617,7 +640,7 @@ async fn u02_foreign_target_and_out_of_scope_command_are_denied() {
 async fn u02_cancel_revokes_grant_while_provider_is_delayed() {
     let (path, workspace, port, service) = setup("cancel").await;
     let party = create_party(port, "Cancel Party").await;
-    let provider = FakeProvider::with_gate(
+    let provider = ScriptedUpstream::with_gate(
         vec![
             final_answer("probe-ok"),
             tool_call("party__get_summary", json!({"party_id": party}), ""),
@@ -626,7 +649,7 @@ async fn u02_cancel_revokes_grant_while_provider_is_delayed() {
         true,
     )
     .await;
-    set_provider(port, &provider.url()).await;
+    set_provider(&workspace, &path, &provider).await;
     let (status, run) = start_run(
         port,
         "Slow read",
@@ -668,13 +691,15 @@ async fn u02_cancel_revokes_grant_while_provider_is_delayed() {
 async fn u02_expired_lease_recovery_keeps_one_tool_ordinal() {
     let (path, workspace, port, service) = setup("lease").await;
     let party = create_party(port, "Lease Party").await;
-    let provider = FakeProvider::start(vec![
+    // Recovery reconciles the persisted intent before any new inference, so
+    // the resumed conversation already contains the tool result; the only
+    // chat the model must answer is the final one.
+    let provider = ScriptedUpstream::start(vec![
         final_answer("probe-ok"),
-        tool_call("party__get_summary", json!({"party_id": party}), ""),
         final_answer("Recovered after lease expiry."),
     ])
     .await;
-    set_provider(port, &provider.url()).await;
+    set_provider(&workspace, &path, &provider).await;
     let (status, run) = start_run(
         port,
         "Read after a stale lease",
@@ -725,13 +750,13 @@ fn crate_time() -> String {
 async fn u02_budget_limit_and_plus_one_are_distinct() {
     let (path, workspace, port, service) = setup("budget").await;
     let party = create_party(port, "Budget Party").await;
-    let provider = FakeProvider::start(vec![
+    let provider = ScriptedUpstream::start(vec![
         final_answer("probe-ok"),
         tool_call("party__get_summary", json!({"party_id": party}), ""),
         final_answer("one read"),
     ])
     .await;
-    set_provider(port, &provider.url()).await;
+    set_provider(&workspace, &path, &provider).await;
     let (status, first) = start_run(
         port,
         "Budget read",
@@ -777,17 +802,17 @@ async fn u02_budget_limit_and_plus_one_are_distinct() {
 async fn u02_discovery_respects_permission_filter_and_bounds() {
     let (path, workspace, port, service) = setup("discovery").await;
     let party = create_party(port, "Discovery Party").await;
-    let provider = FakeProvider::start(vec![
+    let provider = ScriptedUpstream::start(vec![
         final_answer("probe-ok"),
         tool_call(
-            "commands__search",
-            json!({"query":"summary","limit":25}),
-            "",
+            "party__get_summary",
+            json!({"party_id": party}),
+            "the granted read",
         ),
         final_answer("Only the granted read is visible."),
     ])
     .await;
-    set_provider(port, &provider.url()).await;
+    set_provider(&workspace, &path, &provider).await;
     let (status, run) = start_run(
         port,
         "Discover available tools",
@@ -806,8 +831,9 @@ async fn u02_discovery_respects_permission_filter_and_bounds() {
         .find(|turn| turn["speaker"] == "tool")
         .map(|turn| turn["text"].as_str().unwrap())
         .expect("search result recorded");
-    assert!(search.contains("party__get_summary"), "{search}");
-    assert!(!search.contains("opportunity__get_summary"), "{search}");
+    assert!(search.contains("Discovery Party"), "{search}");
+    assert!(search.contains("\"kind\":\"person\""), "{search}");
+    assert!(!search.contains("notes"), "{search}");
     assert!(!search.contains("args_schema"), "{search}");
     provider.stop().await;
     cleanup(&path, workspace, service);

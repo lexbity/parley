@@ -225,13 +225,14 @@ impl DelegatedHost for DelegatedRun<'_> {
             )
             .await;
             // A committed tool effect is journaled before the wait is kept, so
-            // a suspended lease never re-executes the ordinal on resume.
+            // a suspended lease never re-executes the ordinal on resume. An
+            // unrecognized tool name is a host denial, not a wire failure: the
+            // worker continues after receiving the public denial, exactly as
+            // the registry authority treats a command outside the grant.
             let (committed, denial): (Option<Value>, Option<String>) = match result {
                 Ok(value) => (Some(value), None),
                 Err(tools::DispatchError::Denied(_status, code, _message)) => (None, Some(code)),
-                Err(tools::DispatchError::UnknownTool) => {
-                    return Err(RunError::Worker(Failure::WorkerProtocol));
-                }
+                Err(tools::DispatchError::UnknownTool) => (None, Some("unknown_command".to_owned())),
                 Err(tools::DispatchError::InvalidArgs) => (None, Some("invalid_args".to_owned())),
             };
             let body = committed
@@ -317,10 +318,6 @@ impl DelegatedHost for DelegatedRun<'_> {
 }
 
 pub(crate) async fn process_run(state: &crate::AppState, run_id: &str) {
-    // Debug-only authority-test fixture; compiled out of release binaries.
-    if native_fixture_run(state, run_id).await {
-        return;
-    }
     let epoch = state.workspace.epoch().to_owned();
     let secret = state.workspace.command_secret();
     let actor = {
@@ -552,20 +549,6 @@ pub(crate) async fn process_run(state: &crate::AppState, run_id: &str) {
     }
     let _ = resume_count;
     let _ = cancel_signal;
-}
-
-#[cfg(debug_assertions)]
-async fn native_fixture_run(state: &AppState, run_id: &str) -> bool {
-    if std::env::var_os("PARLEY_TEST_NATIVE_RUN_FIXTURE").is_some() {
-        crate::testing_fixture::process_run_native(state, run_id).await;
-        return true;
-    }
-    false
-}
-
-#[cfg(not(debug_assertions))]
-async fn native_fixture_run(_state: &AppState, _run_id: &str) -> bool {
-    false
 }
 
 async fn load_continuation(state: &AppState, run_id: &str, epoch: &str) -> Option<Continuation> {

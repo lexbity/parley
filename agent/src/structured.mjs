@@ -50,6 +50,8 @@ export async function executeStructured(execution, assets, fetch, signal) {
     : role === "briefer" ? "parley_briefer"
     : role === "extractor" ? "parley_extractor"
     : role === "matcher" ? "parley_matcher"
+    : role === "composer" ? "parley_composer"
+    : role === "linter" ? "parley_linter"
     : "parley_coach"
   const schemaBytes = probe ? Buffer.from(JSON.stringify(PROBE_SCHEMA))
     : role === "template_builder" ? assets.builderSchema
@@ -57,6 +59,8 @@ export async function executeStructured(execution, assets, fetch, signal) {
     : role === "briefer" ? assets.brieferSchema
     : role === "extractor" ? assets.extractorSchema
     : role === "matcher" ? assets.matcherSchema
+    : role === "composer" ? assets.composerSchema
+    : role === "linter" ? assets.linterSchema
     : assets.coachSchema
   if (!probe && sha256(schemaBytes) !== execution.schema_digest) reject("WORKER_PROTOCOL")
   const schema = parseJson(schemaBytes)
