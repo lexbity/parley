@@ -1119,14 +1119,6 @@ export class ParleyClient {
     return data as Resource[];
   }
 
-  async listParties(): Promise<GraphEntity[]> {
-    const { data } = decodeEnvelopeList(
-      await this.request('/entities?kind=person&kind=org'),
-      decodeGraphEntity,
-    );
-    return data as GraphEntity[];
-  }
-
   async getEntity(id: string): Promise<GraphEntity> {
     const envelope = object(await this.request(`/entities/${encodeURIComponent(id)}`));
     if (!envelope || !object(envelope.data)) throw new Error('Invalid response: entity read is malformed');
@@ -1336,11 +1328,6 @@ export class ParleyClient {
 
   async createOpportunity(title: string, primary_party_id: string): Promise<Opportunity> {
     return decodeOpportunity(await this.request('/opportunities', { method: 'POST', body: JSON.stringify({ title, primary_party_id }) }));
-  }
-
-  /** Unbounded list form is removed at the AR10 cut; use listOpportunitiesPage. */
-  async listOpportunities(): Promise<OpportunitySummary[]> {
-    return decodeArray(await this.request('/opportunities'), 'opportunities', decodeOpportunitySummary);
   }
 
   async listOpportunitiesPage(

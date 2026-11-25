@@ -196,7 +196,6 @@ function returnToResults() {
   if (previousFilters.value) { query.value = previousFilters.value.query; kind.value = previousFilters.value.kind; }
   previousFilters.value = null;
 }
-const sheetRows = computed(() => directoryRows.value);
 const pendingSwitch = ref<(() => void) | null>(null);
 const quarantined = ref(false);
 const dirty = computed(() => cardOpen.value && (notes.value && notesDraft.value !== notes.value.markdown || nameDraft.value !== nameBase.value));
@@ -280,7 +279,7 @@ try {
   commandRegistry = null;
 }
 let disposePartyActions: (() => void) | undefined;
-watch([selectedRecordId, dossier, sheetRows], () => {
+watch([selectedRecordId, dossier, directoryRows], () => {
   disposePartyActions?.();
   disposePartyActions = undefined;
   if (!commandRegistry) return;
@@ -400,7 +399,7 @@ function inspectEdge(edge: GraphSnapshot['edges'][number]) {
 }
 
 function startFocusEdit(id: string) {
-  const party = sheetRows.value.find((item) => item.id === id);
+  const party = directoryRows.value.find((item) => item.id === id);
   if (!party) return;
   requestSwitch(() => {
     focusEdit.value = id;
@@ -411,7 +410,7 @@ function startFocusEdit(id: string) {
 
 async function saveFocus(id: string) {
   if (busy.value || focusEdit.value !== id) return;
-  const party = sheetRows.value.find((item) => item.id === id);
+  const party = directoryRows.value.find((item) => item.id === id);
   if (!party || !party.etag) { error.value = 'The party row is not editable in this session.'; return; }
   busy.value = true; error.value = ''; status.value = '';
   try {
@@ -822,7 +821,7 @@ onBeforeUnmount(() => {
       aria-label="Party sheet"
     >
       <PartySheet
-        :parties="sheetRows"
+        :parties="directoryRows"
         :server-paged="true"
         :loading="directoryLoading"
         :root-known="!!rootName"

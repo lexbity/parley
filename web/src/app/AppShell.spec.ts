@@ -22,9 +22,7 @@ function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [],
   vi.spyOn(parley, 'getEvents').mockResolvedValue({ items: [], next_cursor: '0', observed_cursor: '0' });
   vi.spyOn(parley, 'queryDirectory').mockResolvedValue({ rows: parties, nextCursor: null, fence: '0' });
   vi.spyOn(parley, 'listResources').mockResolvedValue([]);
-  vi.spyOn(parley, 'listParties').mockResolvedValue(parties);
   vi.spyOn(parley, 'listSources').mockResolvedValue(sources);
-  vi.spyOn(parley, 'listOpportunities').mockResolvedValue([]);
   vi.spyOn(parley, 'listOpportunitiesPage').mockResolvedValue({ items: [], nextCursor: null });
   vi.spyOn(parley, 'getOpportunity').mockRejectedValue(new Error('no opportunity'));
   vi.spyOn(parley, 'getEntity').mockRejectedValue(new Error('no entity'));
@@ -173,7 +171,6 @@ describe('AppShell', () => {
       ],
     };
     stubWorkspace([party], [source]);
-    vi.spyOn(parley, 'listOpportunities').mockResolvedValue([opportunity]);
     vi.spyOn(parley, 'listOpportunitiesPage').mockResolvedValue({ items: [opportunity], nextCursor: null });
     const openReview = vi.spyOn(parley, 'getCaptureProposals').mockResolvedValue(job);
     const resolve = vi.spyOn(parley, 'resolveProposals').mockResolvedValue({ status: 'partially_applied' });
@@ -385,7 +382,6 @@ describe('AppShell', () => {
       phases: [], cursor: null, next_cursor: null,
     });
     vi.spyOn(parley, 'listOutputs').mockResolvedValue([queued]);
-    vi.spyOn(parley, 'listOpportunities').mockResolvedValue([{ id: 'o1', title: 'Onboarding exchange', state: 'open', revision: 1, participants: [{ id: 'p1', kind: 'person', name: 'Dana Lee' }], tags: [], next_task: null, next_deadline: null, missing_material: true }]);
     vi.spyOn(parley, 'listOpportunitiesPage').mockResolvedValue({ items: [{ id: 'o1', title: 'Onboarding exchange', state: 'open', revision: 1, participants: [{ id: 'p1', kind: 'person', name: 'Dana Lee' }], tags: [], next_task: null, next_deadline: null, missing_material: true }], nextCursor: null });
     vi.spyOn(parley, 'getOpportunity').mockResolvedValue({ id: 'o1', title: 'Onboarding exchange', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: [] });
     vi.spyOn(parley, 'getEntity').mockResolvedValue({ id: 'p1', kind: 'person', name: 'Dana Lee', focus: '', revision: 1 });
@@ -416,7 +412,6 @@ describe('AppShell', () => {
   it('reports opportunity creation errors and copies a released approved version', async () => {
     const approved: Material = { id: 'm1', opportunity_id: 'o1', recipient_id: 'p1', recipient_name: 'Dana Lee', kind: 'outreach', version: 1, body: 'Hi Dana.', content_sha256: 'c42a55643d4c6762196d5271afcb9f8ed6beb3a828f1b201a321cfcb6b89aad2', status: 'approved', gate: null, attachment: null };
     stubWorkspace([{ id: 'p1', kind: 'person', name: 'Dana Lee', revision: 1 }]);
-    vi.spyOn(parley, 'listOpportunities').mockResolvedValue([{ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participants: [{ id: 'p1', kind: 'person', name: 'Dana Lee' }], tags: [], next_task: null, next_deadline: null, missing_material: false }]);
     vi.spyOn(parley, 'listOpportunitiesPage').mockResolvedValue({ items: [{ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participants: [{ id: 'p1', kind: 'person', name: 'Dana Lee' }], tags: [], next_task: null, next_deadline: null, missing_material: false }], nextCursor: null });
     vi.spyOn(parley, 'getOpportunity').mockResolvedValue({ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: [] });
     vi.spyOn(parley, 'getEntity').mockResolvedValue({ id: 'p1', kind: 'person', name: 'Dana Lee', focus: '', revision: 1 });
@@ -455,7 +450,6 @@ describe('AppShell', () => {
     const approved: Material = { id: 'm2', opportunity_id: 'o1', recipient_id: 'p1', recipient_name: 'Dana Lee', kind: 'outreach', version: 2, body: 'Hi Dana.', content_sha256: 'c42a55643d4c6762196d5271afcb9f8ed6beb3a828f1b201a321cfcb6b89aad2', status: 'approved', gate: null, attachment: null };
     const draft: Material = { ...approved, id: 'm3', version: 1, status: 'draft', gate: null, attachment: null };
     stubWorkspace([{ id: 'p1', kind: 'person', name: 'Dana Lee', revision: 1 }]);
-    vi.spyOn(parley, 'listOpportunities').mockResolvedValue([{ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participants: [{ id: 'p1', kind: 'person', name: 'Dana Lee' }], tags: [], next_task: null, next_deadline: null, missing_material: false }]);
     vi.spyOn(parley, 'listOpportunitiesPage').mockResolvedValue({ items: [{ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participants: [{ id: 'p1', kind: 'person', name: 'Dana Lee' }], tags: [], next_task: null, next_deadline: null, missing_material: false }], nextCursor: null });
     vi.spyOn(parley, 'getOpportunity').mockResolvedValue({ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: [] });
     vi.spyOn(parley, 'getEntity').mockResolvedValue({ id: 'p1', kind: 'person', name: 'Dana Lee', focus: '', revision: 1 });
@@ -530,17 +524,15 @@ describe('AppShell', () => {
 
   it('reports a failed workspace connection instead of fetching directory data', async () => {
     const connect = vi.spyOn(parley, 'connect').mockRejectedValue(new Error('session refused'));
-    const listParties = vi.spyOn(parley, 'listParties');
+    const queryDirectory = vi.spyOn(parley, 'queryDirectory').mockResolvedValue({ rows: [], nextCursor: null, fence: '0' });
     vi.spyOn(parley, 'listResources').mockResolvedValue([]);
-    vi.spyOn(parley, 'listParties').mockResolvedValue([]);
     vi.spyOn(parley, 'listSources').mockResolvedValue([]);
-    vi.spyOn(parley, 'listOpportunities').mockResolvedValue([]);
     vi.spyOn(parley, 'listOutputs').mockResolvedValue([]);
     const wrapper = mount(AppShell);
     await flushPromises();
     expect(connect).toHaveBeenCalled();
     expect(wrapper.text()).toContain('session refused');
-    expect(listParties).not.toHaveBeenCalled();
+    expect(queryDirectory).not.toHaveBeenCalled();
     wrapper.unmount();
   });
 

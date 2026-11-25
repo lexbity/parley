@@ -109,7 +109,6 @@ async function searchTargets(q: string) {
   const pinned = Object.values(selectedMeta.value).filter(option => selectedTargets.value.includes(option.key));
   targets.value = [...new Map([...pinned, ...found].map(option => [option.key, option])).values()].slice(0, 50);
 }
-const targetOptions = computed(() => targets.value);
 let targetTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
 watch(targetQuery, value => {
   if (targetTimer) globalThis.clearTimeout(targetTimer);
@@ -501,7 +500,7 @@ onBeforeUnmount(() => {
       <p v-else-if="domainEmpty">
         No parties or opportunities are available to delegate.
       </p>
-      <p v-else-if="!targetOptions.length">
+      <p v-else-if="!targets.length">
         No targets match this filter.
       </p>
       <ul
@@ -509,7 +508,7 @@ onBeforeUnmount(() => {
         class="target-list"
       >
         <li
-          v-for="option in targetOptions"
+          v-for="option in targets"
           :key="option.key"
         >
           <label><input

@@ -32,17 +32,17 @@ describe('ParleyClient S03 opportunity and release commands', () => {
   it('rejects malformed opportunity, material, and release responses', async () => {
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(sessionResponse())
-      .mockResolvedValueOnce(response([{}]))
-      .mockResolvedValueOnce(response([{
+      .mockResolvedValueOnce(response({ items: [{}], next_cursor: null }))
+      .mockResolvedValueOnce(response({ items: [{
         id: 'op', title: 'x', state: 'open', revision: 1, participants: [7],
         tags: [], next_task: null, next_deadline: null, missing_material: true,
-      }]))
+      }], next_cursor: null }))
       .mockResolvedValueOnce(response([{}]))
       .mockResolvedValueOnce(response({}));
     const client = new ParleyClient();
     await client.connect();
-    await expect(client.listOpportunities()).rejects.toThrow('opportunity summary is malformed');
-    await expect(client.listOpportunities()).rejects.toThrow('opportunity participant is malformed');
+    await expect(client.listOpportunitiesPage()).rejects.toThrow('opportunity summary is malformed');
+    await expect(client.listOpportunitiesPage()).rejects.toThrow('opportunity participant is malformed');
     await expect(client.listOutputs()).rejects.toThrow('material is malformed');
     await expect(client.releaseMaterial('bad')).rejects.toThrow('release is malformed');
   });
@@ -59,19 +59,19 @@ describe('ParleyClient S03 opportunity and release commands', () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(sessionResponse())
       .mockResolvedValueOnce(response(opportunity, 201))
-      .mockResolvedValueOnce(response([summary]))
+      .mockResolvedValueOnce(response({ items: [summary], next_cursor: null }))
       .mockResolvedValueOnce(response([material]))
       .mockResolvedValueOnce(response(released))
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
     const client = new ParleyClient();
     await client.connect();
     expect(await client.createOpportunity('Onboarding', 'party 1')).toEqual(opportunity);
-    expect(await client.listOpportunities()).toEqual([summary]);
+    expect(await client.listOpportunitiesPage()).toEqual({ items: [summary], nextCursor: null });
     expect(await client.listOutputs()).toEqual([material]);
     expect(await client.releaseMaterial('mat-1')).toEqual(released);
     await client.acknowledgeRelease('release-1', true);
     expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual([
-      '/api/v1/opportunities', '/api/v1/opportunities', '/api/v1/outputs',
+      '/api/v1/opportunities', '/api/v1/opportunities?limit=50', '/api/v1/outputs',
       '/api/v1/materials/mat-1/release', '/api/v1/releases/release-1/ack',
     ]);
     for (const [, init] of fetchMock.mock.calls.slice(1)) {
@@ -419,18 +419,18 @@ describe('ParleyClient', () => {
     }
   });
 
-  it('lists directory parties and saved sources from the scoped reads', async () => {
+  it('reads a single directory entity by id and saved sources from the scoped reads', async () => {
     const client = new ParleyClient();
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(sessionResponse())
-      .mockResolvedValueOnce(response({ data: [party], cursor: '2' }))
+      .mockResolvedValueOnce(response({ data: party }))
       .mockResolvedValueOnce(response([source]));
 
     await client.connect();
-    expect(await client.listParties()).toEqual([party]);
+    expect(await client.getEntity(party.id)).toEqual(party);
     expect(await client.listSources()).toEqual([source]);
     expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual([
-      '/api/v1/entities?kind=person&kind=org',
+      `/api/v1/entities/${encodeURIComponent(party.id)}`,
       '/api/v1/captures',
     ]);
   });
@@ -517,9 +517,9 @@ describe('ParleyClient', () => {
     const partyClient = new ParleyClient();
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(sessionResponse())
-      .mockResolvedValueOnce(response({ data: [{ ...party, revision: 0 }], cursor: '0' }));
+      .mockResolvedValueOnce(response({ data: { ...party, revision: 0 } }));
     await partyClient.connect();
-    await expect(partyClient.listParties()).rejects.toThrow(/directory entity is malformed/);
+    await expect(partyClient.getEntity(party.id)).rejects.toThrow(/directory entity is malformed/);
 
     const sourceClient = new ParleyClient();
     vi.spyOn(globalThis, 'fetch')
