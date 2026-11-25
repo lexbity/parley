@@ -97,6 +97,11 @@ The app starts without a model installed.
 Manual entry and review remain available.
 Agent-backed features need a local provider.
 
+The top navigation includes an **Activity** tab: the owner-wide list of jobs
+and delegated runs with real progress, diagnosis, cancellation and review
+links. It stays usable with no model configured — inference failures appear as
+typed closed codes while every manual surface stays available.
+
 ## Frontend-only setup
 
 Run `scripts/dev-install web` for frontend work with fixture data.

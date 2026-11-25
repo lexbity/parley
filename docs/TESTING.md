@@ -54,7 +54,7 @@ See [GETTING_STARTED](GETTING_STARTED.md#verification) for the full local sequen
 
 ## Layout and naming
 
-- Rust integration tests use the Slice ID: `s01.rs`, `s12_queue_sheet.rs`, `p01.rs`, `r01.rs`.
+- Rust integration tests use the Slice ID: `s01.rs`, `s12_queue_sheet.rs`, `p01.rs`, `r01.rs`, `ar09.rs`.
 - Frontend component tests sit beside the module as `<name>.spec.ts`.
 - Browser specs use the Slice ID in `web/e2e/`, for example `s01.spec.ts`.
 - Fixtures live under `contract/fixtures/<slice>/<area>/`.

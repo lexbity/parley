@@ -1,4 +1,4 @@
-import { ApiError, parley, type CoachJob, type CoachSnapshot, type RoleJob, type StructuredReadiness } from '../../api/client';
+import { ApiError, parley, type ActivityItem, type ActivityPage, type CoachJob, type CoachSnapshot, type RoleJob, type StructuredReadiness } from '../../api/client';
 
 interface WeeklyCoachRead {
   snapshot: CoachSnapshot;
@@ -306,3 +306,117 @@ class InferenceActivity {
 }
 
 export const inferenceActivity = new InferenceActivity();
+
+// --- AR-001 AR09: session-owned activity reconciler --------------------------
+//
+// One shared reconciler serves every Activity surface (the AgentActivity view
+// and the DelegatedRuns list). A subscription polls the visible first page:
+// 2 s while any listed item is active, 8 s once all items are terminal, and
+// never while the tab is hidden or the workspace epoch changed. Focus and
+// relevant domain-event commits (command committed, entity changed, workspace
+// changed) refresh immediately. This is the single reconciler for the owner
+// work list; views never keep their own timers.
+
+export type ActivityRead = (signal: AbortSignal) => Promise<ActivityPage>;
+export type ActivityActive = (item: ActivityItem) => boolean;
+
+interface ActivityObserver {
+  read: ActivityRead;
+  update(page: ActivityPage): void;
+  failed(reason: unknown): void;
+  active: ActivityActive;
+  onEpochChange?(): void;
+}
+
+export function activityItemIsActive(item: ActivityItem): boolean {
+  return item.status === 'queued' || item.status === 'running'
+    || item.status === 'waiting_owner' || item.status === 'waiting_job';
+}
+
+class ActivityReconciler {
+  private readonly observers = new Map<symbol, ActivityObserver & {
+    timer?: ReturnType<typeof globalThis.setTimeout>;
+    request?: AbortController;
+    stopped?: boolean;
+  }>();
+  private attached = false;
+
+  attach(observer: ActivityObserver): () => void {
+    const key = Symbol('activity-observer');
+    this.observers.set(key, { ...observer });
+    if (!this.attached) {
+      this.attached = true;
+      globalThis.addEventListener('focus', this.refresh);
+      globalThis.document.addEventListener('visibilitychange', this.visibilityChanged);
+      globalThis.addEventListener('parley:command-committed', this.refresh);
+      globalThis.addEventListener('parley:entity-changed', this.refresh);
+      globalThis.addEventListener('parley:workspace-changed', this.refresh);
+    }
+    void this.run(key);
+    return () => {
+      const observer = this.observers.get(key);
+      if (observer) {
+        globalThis.clearTimeout(observer.timer);
+        observer.request?.abort();
+        observer.stopped = true;
+      }
+      this.observers.delete(key);
+      if (this.observers.size === 0 && this.attached) {
+        this.attached = false;
+        globalThis.removeEventListener('focus', this.refresh);
+        globalThis.document.removeEventListener('visibilitychange', this.visibilityChanged);
+        globalThis.removeEventListener('parley:command-committed', this.refresh);
+        globalThis.removeEventListener('parley:entity-changed', this.refresh);
+        globalThis.removeEventListener('parley:workspace-changed', this.refresh);
+      }
+    };
+  }
+
+  readonly refresh = (): void => {
+    for (const key of [...this.observers.keys()]) {
+      const observer = this.observers.get(key);
+      if (!observer || observer.stopped) continue;
+      globalThis.clearTimeout(observer.timer);
+      void this.run(key);
+    }
+  };
+
+  private readonly visibilityChanged = (): void => {
+    if (globalThis.document.visibilityState === 'visible') this.refresh();
+  };
+
+  private async run(key: symbol): Promise<void> {
+    const observer = this.observers.get(key);
+    if (!observer || observer.stopped || globalThis.document.visibilityState === 'hidden') return;
+    const epoch = parley.workspaceEpoch;
+    const controller = new AbortController();
+    observer.request = controller;
+    try {
+      const page = await observer.read(controller.signal);
+      if (observer.stopped || controller.signal.aborted) return;
+      if (epoch !== parley.workspaceEpoch || (page.epoch && page.epoch !== parley.workspaceEpoch)) {
+        observer.onEpochChange?.();
+        return;
+      }
+      observer.update(page);
+      const active = page.items.some(observer.active);
+      observer.timer = globalThis.setTimeout(() => { void this.run(key); }, active ? 2_000 : 8_000);
+    } catch (reason) {
+      if (observer.stopped || controller.signal.aborted) return;
+      if (epoch !== parley.workspaceEpoch) {
+        observer.onEpochChange?.();
+        return;
+      }
+      observer.failed(reason);
+      observer.timer = globalThis.setTimeout(() => { void this.run(key); }, 8_000);
+    } finally {
+      if (observer.request === controller) observer.request = undefined;
+    }
+  }
+}
+
+export const activityReconciler = new ActivityReconciler();
+
+export function observeActivity(observer: ActivityObserver): () => void {
+  return activityReconciler.attach(observer);
+}

@@ -1,0 +1,15 @@
+{
+  "request": {
+    "kind": "run",
+    "status": "invalid",
+    "limit": 20
+  },
+  "error": {
+    "ok": false,
+    "error": {
+      "code": "ACTIVITY_STATUS_INVALID",
+      "message": "Unknown status filter for the selected kind",
+      "details": []
+    }
+  }
+}

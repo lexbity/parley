@@ -104,6 +104,20 @@ export type AgentChat = {
 export type AgentChatSummary = { id: string; role: AgentChat['role']; scope_kind: AgentChat['scope_kind']; scope_id: string | null; asset_kind: AgentChat['asset_kind']; revision: number; last_turn: string | null; updated_at: string; active_job_id: string | null };
 export type BriefItem = { id: string; scope_kind: 'party' | 'segment'; scope_id: string; kind: string; text: string; detail: Record<string, unknown>; tier: 1 | 2 | 3; quote: string | null; check_suggestion: string | null; speaker_kind: string; status: string; revision: number; supersedes_id: string | null };
 export type RoleJob = { id: string; role: string; status: string; result: Record<string, unknown> | null; last_error: string | null; scope_kind?: string; scope_id?: string; review_ref: { kind: 'interviewer_candidate' | 'brief_scope'; id: string } | null };
+export type ActivityItem = {
+  kind: 'job' | 'run';
+  id: string;
+  role: string;
+  status: string;
+  state_revision: number;
+  attempt_count: number | null;
+  progress: { current: number; total: number } | null;
+  scope: Record<string, unknown> | null;
+  error_code: string | null;
+  review_ref: Record<string, unknown> | null;
+  updated_at: string;
+};
+export type ActivityPage = { items: ActivityItem[]; next_cursor: string | null; epoch: string };
 export type VocabularyFluency = { term: string; status: 'unknown' | 'learning' | 'fluent'; revision: number };
 export type WritingTemplate = { id: string; family_id: string; name: string; version: number; status: string; body: string; sentence_rules: string[]; stage_class: string; channel: string; parent_version_id: string | null };
 export type WritingInterestClaim = { claim_id: string; revision: number; wording: string; tier: number; speaker_kind: string };
@@ -1685,6 +1699,39 @@ export class ParleyClient {
       reviewRef = { kind: review.kind, id: requiredString(review.id, 'job.review_ref.id') };
     }
     return { id: requiredString(result.id, 'job.id'), role: requiredString(result.role, 'job.role'), status: result.status, result: object(result.result), last_error: typeof result.last_error === 'string' ? result.last_error : null, scope_kind: typeof result.scope_kind === 'string' ? result.scope_kind : undefined, scope_id: typeof result.scope_id === 'string' ? result.scope_id : undefined, review_ref: reviewRef };
+  }
+
+  async getActivity(options: { kind?: 'job' | 'run'; status?: string; scope?: string; limit?: number; cursor?: string; signal?: AbortSignal } = {}): Promise<ActivityPage> {
+    const params = new URLSearchParams();
+    if (options.kind) params.set('kind', options.kind);
+    if (options.status) params.set('status', options.status);
+    if (options.scope) params.set('scope', options.scope);
+    if (options.limit !== undefined) params.set('limit', String(options.limit));
+    if (options.cursor) params.set('cursor', options.cursor);
+    const query = params.toString();
+    const result = object(await this.request(`/agent/activity${query ? `?${query}` : ''}`, { signal: options.signal }));
+    if (!result || !Array.isArray(result.items)) throw new Error('Invalid response: activity page is malformed');
+    const items = result.items.map((raw) => {
+      const item = object(raw);
+      if (!item || !['job', 'run'].includes(String(item.kind)) || typeof item.id !== 'string' || typeof item.role !== 'string' || typeof item.status !== 'string' || !Number.isSafeInteger(item.state_revision) || typeof item.updated_at !== 'string') throw new Error('Invalid response: activity item is malformed');
+      const progress = object(item.progress);
+      const scope = object(item.scope);
+      const reviewRef = object(item.review_ref);
+      return {
+        kind: item.kind as ActivityItem['kind'],
+        id: item.id,
+        role: item.role,
+        status: item.status,
+        state_revision: Number(item.state_revision),
+        attempt_count: Number.isSafeInteger(item.attempt_count) ? Number(item.attempt_count) : null,
+        progress: progress !== null && Number.isSafeInteger(progress.current) && Number.isSafeInteger(progress.total) ? { current: Number(progress.current), total: Number(progress.total) } : null,
+        scope,
+        error_code: typeof item.error_code === 'string' ? item.error_code : null,
+        review_ref: reviewRef,
+        updated_at: item.updated_at,
+      };
+    });
+    return { items, next_cursor: typeof result.next_cursor === 'string' ? result.next_cursor : null, epoch: requiredString(result.epoch, 'activity.epoch') };
   }
 
   async getBriefItems(scopeKind: 'party' | 'segment', scopeId: string): Promise<BriefItem[]> {

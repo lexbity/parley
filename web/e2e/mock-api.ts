@@ -191,6 +191,7 @@ export function createMockApi({ pauseExtractor = false, coachOnline = false, emb
   // replay keys and pending leases are transient and are scrubbed on restore.
   const agentRuns = new Map<string, AgentRunRecord>();
   const agentTurns = new Map<string, AgentTurnRecord[]>();
+  const activityTimes = new Map<string, string>();
   const agentStartKeys = new Map<string, { digest: string; run_id: string; body: RecordData }>();
   const agentCancelKeys = new Map<string, { digest: string; body: RecordData }>();
   const agentTimers = new Map<string, ReturnType<typeof setTimeout>[]>();
@@ -954,10 +955,19 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     const writing = run.permissions.includes('match.start') || run.permissions.includes('material.compose');
     const gate = run.permissions.includes('material.gate');
     const hang = run.task.includes('hang');
+    const fail = run.task.includes('fail');
     scheduleAgent(runId, () => {
       if (run.state !== 'queued' || run.epoch !== epoch) return;
       setAgentState(run, 'running', 'tool_dispatch');
       if (hang) return; // A hung provider keeps the run claimed and running.
+      if (fail) {
+        // A provider failure: the run reaches a terminal typed diagnosis.
+        scheduleAgent(runId, () => {
+          if (run.state !== 'running') return;
+          setAgentState(run, 'failed', 'PROVIDER_FAILED');
+        }, 300);
+        return;
+      }
       scheduleAgent(runId, () => {
         if (run.state !== 'running') return;
         if (!brief && !writing && !gate) {
@@ -1699,6 +1709,65 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       return json(response, 200, agentStatusDto(run));
     }
 
+    if (url.pathname === '/api/v1/agent/activity' && request.method === 'GET') {
+      const kind = url.searchParams.get('kind') ?? '';
+      const status = url.searchParams.get('status') ?? '';
+      const scope = url.searchParams.get('scope') ?? '';
+      if (kind && !['job', 'run'].includes(kind)) return fail(response, 400, 'ACTIVITY_KIND_INVALID', 'kind must be job, run, or omitted');
+      if (status && !['queued', 'running', 'waiting_owner', 'waiting_job', 'succeeded', 'invalid', 'failed', 'cancelled', 'expired'].includes(status)) {
+        return fail(response, 400, 'ACTIVITY_STATUS_INVALID', 'Unknown status filter');
+      }
+      if (scope && !['owner', 'party', 'segment', 'opportunity', 'material', 'delegated'].includes(scope)) {
+        return fail(response, 400, 'ACTIVITY_SCOPE_INVALID', 'Unknown scope filter');
+      }
+      const limitRaw = url.searchParams.get('limit');
+      const limit = limitRaw === null ? 20 : Number(limitRaw);
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) return fail(response, 400, 'invalid_args', 'Limit must be between 1 and 50');
+      let offset = 0;
+      const rawCursor = url.searchParams.get('cursor') ?? '';
+      if (rawCursor) {
+        const match = /^a:(\d+)$/.exec(rawCursor);
+        if (!match) return fail(response, 400, 'ACTIVITY_CURSOR_INVALID', 'The activity cursor is invalid');
+        offset = Number(match[1]);
+      }
+      const items: Array<{ kind: string; id: string; updated_at: string; [key: string]: unknown }> = [];
+      const pushJob = (jobId: string, job: RecordData) => {
+        if (job.epoch && job.epoch !== epoch) return;
+        if (kind && kind !== 'job') return;
+        if (status && job.status !== status) return;
+        const activityKey = `job:${jobId}`;
+        if (!activityTimes.has(activityKey)) activityTimes.set(activityKey, now());
+        items.push({
+          kind: 'job', id: jobId, role: String(job.role ?? 'extractor'), status: String(job.status),
+          state_revision: Number(job.state_revision ?? 1), attempt_count: Number(job.current_attempt ?? 0),
+          progress: null, scope: null, error_code: job.last_error_code ?? null, review_ref: null,
+          updated_at: activityTimes.get(activityKey)!,
+        });
+      };
+      for (const [jobId, job] of roleJobs) pushJob(jobId, job);
+      for (const [jobId, job] of coachJobs) pushJob(jobId, job);
+      for (const [runId, run] of agentRuns) {
+        if (run.epoch !== epoch) continue;
+        if (kind && kind !== 'run') continue;
+        if (status && run.state !== status) continue;
+        const activityKey = `run:${runId}`;
+        if (!activityTimes.has(activityKey)) activityTimes.set(activityKey, now());
+        items.push({
+          kind: 'run', id: runId, role: 'delegated', status: run.state,
+          state_revision: run.revision, attempt_count: null,
+          progress: { current: run.turn_count, total: 16 },
+          scope: { kind: 'delegated', id: null }, error_code: run.wake_condition,
+          review_ref: run.review ? { kind: 'delegated_review', ...run.review } : null,
+          updated_at: activityTimes.get(activityKey)!,
+        });
+      }
+      items.sort((left, right) => String(right.updated_at).localeCompare(String(left.updated_at))
+        || right.kind.localeCompare(left.kind) || right.id.localeCompare(left.id));
+      const page = items.slice(offset, offset + limit);
+      const next = offset + limit < items.length ? `a:${offset + limit}` : null;
+      return json(response, 200, { items: page, next_cursor: next, epoch });
+    }
+
     const importRoute = /^\/api\/v1\/party-imports(?:\/([^/]+)\/(preview|commit))?$/.exec(url.pathname);
     if (importRoute && request.method === 'POST') {
       const stageId = importRoute[1];
@@ -2130,6 +2199,20 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     if (url.pathname === '/api/v1/jobs' && request.method === 'GET') return json(response, 200, []);
     const roleJobMatch = /^\/api\/v1\/jobs\/([^/]+)$/.exec(url.pathname);
     if (roleJobMatch && request.method === 'GET' && roleJobs.has(roleJobMatch[1]!)) return json(response, 200, roleJobs.get(roleJobMatch[1]!)!);
+    if (roleJobMatch && request.method === 'POST') {
+      const key = request.headers['idempotency-key'];
+      if (typeof key !== 'string' || !key.trim()) return fail(response, 400, 'INVALID_KEY', 'An Idempotency-Key is required');
+      const id = decodeURIComponent(roleJobMatch[1]!);
+      const job = roleJobs.get(id) ?? coachJobs.get(id);
+      if (!job) return fail(response, 404, 'JOB_NOT_FOUND', 'Job does not exist');
+      if (!['queued', 'running'].includes(String(job.status))) return fail(response, 409, 'JOB_TERMINAL', 'Terminal jobs cannot be cancelled');
+      job.status = 'cancelled';
+      job.last_error_code = 'CANCELLED';
+      job.state_revision = Number(job.state_revision ?? 1) + 1;
+      const activityKey = `job:${id}`;
+      if (!activityTimes.has(activityKey)) activityTimes.set(activityKey, now());
+      return json(response, 204, {});
+    }
     const briefMatch = /^\/api\/v1\/briefs\/(party|segment)\/([^/]+)\/items$/.exec(url.pathname);
     if (briefMatch && request.method === 'GET') return json(response, 200, briefItems.get(`${briefMatch[1]}:${briefMatch[2]}`) ?? []);
     if (briefMatch && request.method === 'POST') {

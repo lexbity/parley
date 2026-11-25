@@ -2449,3 +2449,60 @@ slices:
       owner_role: owner
       package_target: rust+mock
       evidence_path: evidence/ar08.md
+  ar09:
+    - requirement: FR-11
+      operationId: listAgentActivity
+      test_id: ar09_activity_pagination_epochs_and_review_references
+      fixture_id: ar09
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar09.md
+    - requirement: FR-11
+      operationId: listAgentActivity
+      test_id: ar09_owner_reopens_and_cancels_after_navigation
+      fixture_id: ar09
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar09.md
+    - requirement: FR-15
+      operationId: listAgentActivity
+      test_id: ar09_activity_cancel_and_diagnostics_are_bounded
+      fixture_id: ar09
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar09.md
+    - requirement: FR-11
+      operationId: listAgentActivity
+      test_id: ar09_recovery_displays_diagnosis_and_preserves_draft
+      fixture_id: ar09
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar09.md
+    - requirement: NFR-4
+      operationId: listAgentActivity
+      test_id: ar09_reference_load_keeps_manual_work_responsive
+      fixture_id: ar09
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar09.md
+    - requirement: NFR-6
+      operationId: listAgentActivity
+      test_id: ar09_activity_cancel_and_diagnostics_are_bounded
+      fixture_id: ar09
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar09.md
+    - requirement: NFR-9
+      operationId: listAgentActivity
+      test_id: ar09_owner_reopens_and_cancels_after_navigation
+      fixture_id: ar09
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar09.md
+    - requirement: NFR-9
+      operationId: listAgentActivity
+      test_id: ar09_recovery_displays_diagnosis_and_preserves_draft
+      fixture_id: ar09
+      owner_role: owner
+      package_target: rust+mock
+      evidence_path: evidence/ar09.md

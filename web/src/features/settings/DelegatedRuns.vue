@@ -4,7 +4,9 @@
  * U02 owner consent surface. The shell owns the session transport: this view
  * only reads authoritative DTOs through the shared clients and never keeps a
  * run in browser storage. Every start and cancellation carries its own
- * operation key, and a generation/epoch change stops polling immediately.
+ * operation key, and a generation/epoch change stops observation immediately.
+ * The run list is the shared AR-001 AR09 activity reconciler (kind=run);
+ * this view has no timer of its own.
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
@@ -12,6 +14,7 @@ const props = defineProps<{
   navigate?: (path: string) => void;
 }>();
 import { newOperationKey, parley } from '../../api/client';
+import { observeActivity } from '../../app/inference/activity';
 import {
   RUN_PERMISSIONS, RUN_STATES,
   CommandApiError,
@@ -22,7 +25,6 @@ import {
 const MAX_TASK_BYTES = 8192;
 const MAX_TURNS = 16;
 const TRANSCRIPT_PAGE_SIZE = 2;
-const POLL_MS = 1000;
 const ACTIVE_STATES: RunState[] = ['queued', 'running', 'waiting_owner', 'waiting_job'];
 const permissionHelp: Record<RunPermission, string> = {
   'party.read': 'read the granted party summary only',
@@ -81,14 +83,7 @@ const busy = ref(false);
 const stale = ref(false);
 const staleReason = ref('');
 const observedEpoch = ref('');
-let pollTimer: ReturnType<typeof globalThis.setInterval> | undefined;
-let pollInFlight = false;
-let stopNotify: (() => void) | undefined;
-let disposed = false;
-
-function isVisible(): boolean {
-  return globalThis.document?.visibilityState !== 'hidden';
-}
+let stopObserving: (() => void) | undefined;
 
 type TargetOption = { key: string; label: string; kind: RunTargetKind; id: string };
 
@@ -132,43 +127,12 @@ function sessionInvalid(reason: unknown): boolean {
   return reason instanceof CommandApiError && (reason.status === 401 || reason.status === 403);
 }
 
-function stopPolling() {
-  if (pollTimer) globalThis.clearInterval(pollTimer);
-  pollTimer = undefined;
-}
-
-/** Run the fallback timer only while there is live work and the tab is visible. */
-function startPolling() {
-  stopPolling();
-  if (stale.value || !isVisible()) return;
-  if (!runs.value.some(row => ACTIVE_STATES.includes(row.state))) return;
-  pollTimer = globalThis.setInterval(() => { void poll(); }, POLL_MS);
-}
-
-function onVisibility() {
-  if (!isVisible()) { stopPolling(); return; }
-  void poll();
-  startPolling();
-}
-
-async function startNotifications() {
-  try {
-    const stop = await commands.notify({
-      onSignal: (signal) => { if (signal === 'run_changed') void poll(); },
-    });
-    if (disposed) stop();
-    else stopNotify = stop;
-  } catch {
-    // The authoritative poll above remains the fallback when SSE is unavailable.
-  }
-}
-
 function markStale(reason: string) {
   if (stale.value) return;
   stale.value = true;
   staleReason.value = reason;
   status.value = '';
-  stopPolling();
+  stopObserving?.();
 }
 
 function checkEpoch(): boolean {
@@ -192,6 +156,43 @@ function handleRunError(reason: unknown) {
   else runsError.value = message(reason, 'Could not read delegated runs.');
 }
 
+/** Shared AR09 activity reconciler: kind=run, newest 20, no view timer. */
+function restartObservation() {
+  stopObserving?.();
+  const epoch = parley.workspaceEpoch;
+  stopObserving = observeActivity({
+    read: (signal) => parley.getActivity({ kind: 'run', limit: 20, signal }),
+    active: (item) => ACTIVE_STATES.includes(item.status as RunState),
+    update(page) {
+      runsLoading.value = false;
+      const items: RunListItem[] = page.items.map(item => ({
+        run_id: item.id,
+        state: item.status as RunState,
+        revision: item.state_revision,
+        deadline_at: '',
+      }));
+      applyRuns(items);
+      // Data-driven detail refresh: only runs whose status is not yet known or
+      // that are still active are re-read; terminal runs were read once.
+      const fresh = items
+        .filter(row => !runStatuses.value[row.run_id] || ACTIVE_STATES.includes(row.state))
+        .map(row => row.run_id);
+      if (fresh.length) void refreshStatuses(fresh);
+      if (selectedRunId.value && fresh.includes(selectedRunId.value)) {
+        void loadTranscriptPage(pageIndex.value);
+      }
+    },
+    failed(reason) {
+      runsLoading.value = false;
+      handleRunError(reason);
+    },
+    onEpochChange() {
+      markStale('The workspace epoch changed. Delegated runs are stale until this view is reopened with the current session.');
+    },
+  });
+  void epoch;
+}
+
 async function load() {
   loadingTargets.value = true;
   runsLoading.value = true;
@@ -206,19 +207,10 @@ async function load() {
     markStale(message(reason, 'The workspace session is unavailable.'));
     return;
   }
-  const [targetResult, runResult] = await Promise.allSettled([
-    searchTargets(targetQuery.value), commands.listRuns({ limit: 20 }),
-  ]);
-  if (targetResult.status === 'rejected') targetError.value = message(targetResult.reason, 'Could not load targets.');
-  if (runResult.status === 'fulfilled') {
-    applyRuns(runResult.value.items);
-    // One authoritative read when the view opens; later polls only refresh
-    // nonterminal runs. Parallel so a large recent-run list does not serialize.
-    await refreshStatuses(runResult.value.items.map(row => row.run_id));
-  } else handleRunError(runResult.reason);
+  const targetResult = await Promise.allSettled([searchTargets(targetQuery.value)]);
+  if (targetResult[0]?.status === 'rejected') targetError.value = message(targetResult[0].reason, 'Could not load targets.');
   loadingTargets.value = false;
-  runsLoading.value = false;
-  if (stale.value) stopPolling();
+  restartObservation();
 }
 
 async function refreshStatus(runId: string) {
@@ -257,28 +249,6 @@ async function loadTranscriptPage(index: number) {
     else transcriptError.value = message(reason, 'Could not read this transcript.');
   } finally {
     transcriptLoading.value = false;
-  }
-}
-
-async function poll() {
-  if (stale.value || pollInFlight || !checkEpoch() || !isVisible()) return;
-  pollInFlight = true;
-  try {
-    const list = await commands.listRuns({ limit: 20 });
-    applyRuns(list.items);
-    // Terminal runs cannot change again; their status was read on load (or
-    // when opened), so only nonterminal runs and the open transcript are read.
-    const ids = runs.value
-      .filter(row => ACTIVE_STATES.includes(row.state) || row.run_id === selectedRunId.value)
-      .map(row => row.run_id);
-    await refreshStatuses(ids);
-    if (selectedRunId.value) await loadTranscriptPage(pageIndex.value);
-    checkEpoch();
-  } catch (reason) {
-    handleRunError(reason);
-  } finally {
-    pollInFlight = false;
-    startPolling();
   }
 }
 
@@ -321,6 +291,7 @@ async function start() {
       permissions: [...permissions.value],
       allow_created_opportunities: permissions.value.includes('opportunity.create') && allowCreated.value,
     }, key);
+    runStatuses.value = { ...runStatuses.value, [started.run_id]: { run_id: started.run_id, state: started.state, revision: started.revision, deadline_at: started.deadline_at, turn_count: 1, transcript_bytes: 0, wake_condition: 'queued', profile_revision: null, transcript_major: 1, wait_intent: null, review: null } };
     applyRuns([{ run_id: started.run_id, state: started.state, revision: started.revision, deadline_at: started.deadline_at }, ...runs.value.filter((row) => row.run_id !== started.run_id)]);
     status.value = `Run ${started.run_id} started with ${permissions.value.length} granted action(s).`;
     task.value = '';
@@ -331,13 +302,16 @@ async function start() {
     else actionError.value = message(reason, 'The run could not be started.');
   } finally {
     busy.value = false;
-    startPolling();
+    hintReconciler();
   }
 }
 
+function hintReconciler() {
+  globalThis.dispatchEvent(new globalThis.CustomEvent('parley:command-committed', { detail: {} }));
+}
+
 function openReview(row: RunListItem) {
-  const status = runStatuses.value[row.run_id];
-  const review = status?.review;
+  const review = runStatuses.value[row.run_id]?.review;
   if (!review || !props.navigate) return;
   // A writing review (match/compose) is scoped to its opportunity: open the
   // Output workspace on that opportunity's record so the owner continues at
@@ -367,6 +341,7 @@ async function cancel(row: RunListItem) {
     } else {
       status.value = `Run ${row.run_id} was already finished.`;
     }
+    hintReconciler();
   } catch (reason) {
     if (sessionInvalid(reason)) markStale('The owner session expired. Reopen delegated runs with the current session.');
     else actionError.value = message(reason, 'The run could not be cancelled.');
@@ -375,11 +350,7 @@ async function cancel(row: RunListItem) {
 
 async function refresh() {
   if (stale.value || !checkEpoch()) return;
-  try {
-    applyRuns((await commands.listRuns({ limit: 20 })).items);
-  } catch (reason) {
-    handleRunError(reason);
-  }
+  hintReconciler();
 }
 
 async function reload() {
@@ -389,7 +360,6 @@ async function reload() {
   try {
     await parley.refreshSession();
     await load();
-    startPolling();
   } catch (reason) {
     markStale(message(reason, 'The current session could not be reopened.'));
   }
@@ -409,23 +379,21 @@ function progress(runId: string): number {
   return Math.max(0, Math.min(MAX_TURNS, count));
 }
 
+function runDeadline(row: RunListItem): string {
+  return runStatuses.value[row.run_id]?.deadline_at ?? row.deadline_at;
+}
+
 onMounted(() => {
   globalThis.addEventListener('parley:workspace-changed', onWorkspaceChanged);
   globalThis.addEventListener('parley:workspace-quarantined', onWorkspaceChanged);
-  globalThis.document?.addEventListener('visibilitychange', onVisibility);
-  globalThis.addEventListener('focus', onVisibility);
-  void load().then(startPolling);
-  void startNotifications();
+  void load();
 });
+
 onBeforeUnmount(() => {
-  disposed = true;
   if (targetTimer) globalThis.clearTimeout(targetTimer);
   globalThis.removeEventListener('parley:workspace-changed', onWorkspaceChanged);
   globalThis.removeEventListener('parley:workspace-quarantined', onWorkspaceChanged);
-  globalThis.document?.removeEventListener('visibilitychange', onVisibility);
-  globalThis.removeEventListener('focus', onVisibility);
-  stopNotify?.();
-  stopPolling();
+  stopObserving?.();
 });
 </script>
 
@@ -608,7 +576,7 @@ onBeforeUnmount(() => {
             :data-state="row.state"
             class="run-row"
           >
-            <p>Run {{ row.run_id }} · <strong>{{ stateLabel[row.state] }}</strong> · deadline {{ row.deadline_at }}</p>
+            <p>Run {{ row.run_id }} · <strong>{{ stateLabel[row.state] }}</strong> · deadline {{ runDeadline(row) || '—' }}</p>
             <progress
               v-if="ACTIVE_STATES.includes(row.state)"
               :value="progress(row.run_id)"

@@ -2257,6 +2257,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         "queue",
         "output",
         "settings",
+        "activity",
     ] {
         let root = format!("/{tab}");
         shell = shell
@@ -2292,6 +2293,7 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
         .merge(parties::routes())
         .merge(thread::routes())
         .merge(jobs::routes())
+        .merge(inference::activity::routes())
         .merge(assistant::routes())
         .merge(writing::routes())
         .merge(queueing::routes())

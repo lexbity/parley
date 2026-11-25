@@ -1,0 +1,27 @@
+{
+  "request": {
+    "kind": "job",
+    "status": "succeeded",
+    "scope": "party",
+    "limit": 20
+  },
+  "page": {
+    "items": [
+      {
+        "kind": "job",
+        "id": "job-0001",
+        "role": "coach",
+        "status": "succeeded",
+        "state_revision": 2,
+        "attempt_count": 1,
+        "progress": null,
+        "scope": { "kind": "party", "id": "party-1" },
+        "error_code": null,
+        "review_ref": { "kind": "coach_report", "id": "coach-report-1" },
+        "updated_at": "2026-11-24T10:00:00.000Z"
+      }
+    ],
+    "next_cursor": null,
+    "epoch": "ffeeddccbbaa99887766554433221100"
+  }
+}

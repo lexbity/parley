@@ -22,6 +22,7 @@ import MaintenanceSettings from '../features/settings/MaintenanceSettings.vue';
 import CapacitySettings from '../features/settings/CapacitySettings.vue';
 import Packs from '../features/settings/Packs.vue';
 import OutputWorkspace from '../features/output/OutputWorkspace.vue';
+import AgentActivity from './AgentActivity.vue';
 
 /**
  * Tabs whose owner journey is qualified stay discoverable (RFC-0003 S01);
@@ -892,6 +893,11 @@ watch(route, () => {
           @navigate="navigate"
         />
       </div>
+      <AgentActivity
+        v-if="openedTabs.has('Activity')"
+        v-show="active === 'Activity'"
+        :navigate="navigate"
+      />
       <div
         v-if="openedTabs.has('Output')"
         v-show="active === 'Output'"

@@ -137,9 +137,12 @@ Rotation is set at 5 MiB with three files.
 | Deadline backlog reported as recovering | Due threads are being reconciled | Wait for reconciliation to finish. Do not mark expired threads actionable. |
 | Attachment unavailable | Missing or corrupt blob disables release | Inspect blob metadata and restore from a verified backup. |
 | Agent features unavailable | No local model provider | Use manual paths. |
+| Activity shows a typed error code | A failing worker/provider/model/queue | Use the Activity row's code for the failure class; manual work stays available. |
+| Activity cursor rejected | Forged, expired or repaged cursor, or workspace epoch changed | Refetch the first page; reopen with the current session. |
 
 ## Related docs
 
 - [GETTING_STARTED](GETTING_STARTED.md#troubleshooting) — setup failures.
 - [API](API.md#party-import-and-maintenance) — maintenance routes.
 - [ARCHITECTURE](ARCHITECTURE.md#adr-5--immutable-bytes-and-retained-history) — why history is retained.
+- [ARCHITECTURE](ARCHITECTURE.md#adr-6--one-session-owned-activity-reconciler-ar-001-ar09) — the Activity surface.
