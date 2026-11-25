@@ -102,12 +102,13 @@ describe('ParleyClient S03 opportunity and release commands', () => {
     const badSend = { ...thread, sends: [{ id: 'send-1', touch_no: 1, primary_material_id: 'mat-1', primary_version_no: 1, recipient_id: 'party 1', content_sha256: 'x', sent_at: '2026-11-21T08:00:00Z', response_deadline: '2026-11-28T08:00:00Z', deadline_zone: 'UTC', capacity_charged: false, outcome: null }] };
     const badState = { ...thread, state: 'weird', sends: [] };
     const badTouch = { ...thread, current_touch: -1, sends: [] };
+    const page = (items: unknown[]) => response({ items, next_cursor: null });
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(sessionResponse())
-      .mockResolvedValueOnce(response([thread]))
-      .mockResolvedValueOnce(response([badSend]))
-      .mockResolvedValueOnce(response([badState]))
-      .mockResolvedValueOnce(response([badTouch]))
+      .mockResolvedValueOnce(page([thread]))
+      .mockResolvedValueOnce(page([badSend]))
+      .mockResolvedValueOnce(page([badState]))
+      .mockResolvedValueOnce(page([badTouch]))
       .mockResolvedValueOnce(response({ party_id: 'party 1', state: 'open', do_not_contact: 'no', highest_rung: 0, touch_count: 0, revision: 2 }))
       .mockResolvedValueOnce(response({ state: 'open', do_not_contact: false, highest_rung: 0, touch_count: 0, revision: 2 }));
     const client = new ParleyClient(); await client.connect();
@@ -118,7 +119,7 @@ describe('ParleyClient S03 opportunity and release commands', () => {
     await expect(client.clearPartyDnc('party 1', { reason: 'A recorded clearance reason for the test.' })).rejects.toThrow('party policy receipt is malformed');
     await expect(client.clearPartyDnc('party 2', { reason: 'A recorded clearance reason for the test.' })).rejects.toThrow('policy.party_id must be text');
     expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual([
-      '/api/v1/threads', '/api/v1/threads', '/api/v1/threads', '/api/v1/threads', '/api/v1/entities/party%201/clear-dnc', '/api/v1/entities/party%202/clear-dnc',
+      '/api/v1/threads?limit=200', '/api/v1/threads?limit=200', '/api/v1/threads?limit=200', '/api/v1/threads?limit=200', '/api/v1/entities/party%201/clear-dnc', '/api/v1/entities/party%202/clear-dnc',
     ]);
   });
 
@@ -216,7 +217,7 @@ describe('ParleyClient S07 contact lifecycle commands', () => {
     const policy = { party_id: 'party 1', state: 'open', do_not_contact: false, highest_rung: 0, touch_count: 1, revision: 2 };
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(sessionResponse())
-      .mockResolvedValueOnce(response([thread]))
+      .mockResolvedValueOnce(response({ items: [thread], next_cursor: null }))
       .mockResolvedValueOnce(response(sent, 201))
       .mockResolvedValueOnce(response(outcome))
       .mockResolvedValueOnce(response(thread))
@@ -234,7 +235,7 @@ describe('ParleyClient S07 contact lifecycle commands', () => {
     expect(await client.updateCapacity({ period: 'quarter', unit: 'project slots', total: 8 })).toEqual(capacity);
     expect(await client.clearPartyDnc('party 1', { reason: 'Recipient asked for a fresh start with a concrete proposal.' }, 'dnc-key')).toEqual(policy);
     expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual([
-      '/api/v1/threads?opportunity_id=opp-1&recipient_id=party+1', '/api/v1/threads/thread-1/send',
+      '/api/v1/threads?opportunity_id=opp-1&recipient_id=party+1&limit=200', '/api/v1/threads/thread-1/send',
       '/api/v1/sends/send-1/outcome', '/api/v1/threads/thread-1/reopen', '/api/v1/opportunities/opp-1/resolution',
       '/api/v1/capacity', '/api/v1/capacity', '/api/v1/entities/party%201/clear-dnc',
     ]);

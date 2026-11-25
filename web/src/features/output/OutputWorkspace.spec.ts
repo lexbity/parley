@@ -94,6 +94,21 @@ async function openTool(wrapper: ReturnType<typeof mount>, group: string, comman
 }
 
 describe('OutputWorkspace', () => {
+  it('polls only the bound opportunity and recipient thread, never the whole list', async () => {
+    vi.spyOn(globalThis.document, 'visibilityState', 'get').mockReturnValue('visible');
+    stubAuthoring();
+    const listThreads = vi.mocked(parley.listThreads);
+    const saved = material({ status: 'approved' });
+    const wrapper = mountWorkspace({ outputs: [saved], recordId: saved.id });
+    await settle();
+
+    expect(listThreads).toHaveBeenCalled();
+    for (const call of listThreads.mock.calls) {
+      expect(call[0]).toEqual({ opportunity_id: 'opp-1', recipient_id: 'person-1' });
+    }
+    wrapper.unmount();
+  });
+
   it('binds interests and an explicit fairness attestation to the selected recipient', async () => {
     stubAuthoring();
     let savedInterests: Array<Record<string, unknown>> = [];

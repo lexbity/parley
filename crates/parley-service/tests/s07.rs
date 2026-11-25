@@ -1068,6 +1068,119 @@ async fn s07_thread_list_exposes_send_ids_and_outcome_history() {
 }
 
 #[tokio::test]
+async fn s07_thread_list_bounded_pages_keep_batched_send_and_outcome_history() {
+    let (path, _workspace, port, service) = setup().await;
+    let template = activate_template(port, "Hello", "Hello.").await;
+
+    // Two independent (opportunity, recipient) pairs produce two threads, each
+    // with one send and one outcome. The batched loader must attach each
+    // outcome to the correct send across the page, not just within one thread.
+    let mut threads = Vec::new();
+    for (index, name) in ["Dana Lee", "Ravi Shah"].into_iter().enumerate() {
+        let recipient = create_party(port, name).await;
+        let opportunity =
+            create_opportunity(port, &format!("Onboarding {index}"), &recipient).await;
+        let exchange = prepare_exchange(port, &opportunity, &recipient).await;
+        let material = create_minimal_material(
+            port,
+            &opportunity,
+            &recipient,
+            &template,
+            exchange,
+            serde_json::from_str(K_OVERRIDES).unwrap(),
+        )
+        .await;
+        let thread_id = format!("t-page-{index}");
+        let (status, sent) = mark_sent(
+            port,
+            &thread_id,
+            &opportunity,
+            &recipient,
+            &material,
+            json!([]),
+            None,
+        )
+        .await;
+        assert_eq!(status, 201, "{sent}");
+        let (status, outcome) =
+            record_outcome(port, sent["id"].as_str().unwrap(), "reply_positive", None).await;
+        assert_eq!(status, 200, "{outcome}");
+        threads.push((thread_id, opportunity, recipient));
+    }
+
+    // Unbounded array form still answers both threads.
+    let (status, all) = request(port, "GET", "/api/v1/threads", None).await;
+    assert_eq!(status, 200, "{all}");
+    assert_eq!(all.as_array().unwrap().len(), 2);
+
+    // Bounded form pages one row at a time; cursor carries the filter scope.
+    let (status, first) = request(port, "GET", "/api/v1/threads?limit=1", None).await;
+    assert_eq!(status, 200, "{first}");
+    assert_eq!(first["items"].as_array().unwrap().len(), 1);
+    let cursor = first["next_cursor"].as_str().unwrap().to_owned();
+    let (status, second) = request(
+        port,
+        "GET",
+        &format!("/api/v1/threads?limit=1&cursor={cursor}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{second}");
+    assert_eq!(second["items"].as_array().unwrap().len(), 1);
+    assert!(second["next_cursor"].is_null());
+
+    let mut seen = std::collections::BTreeSet::new();
+    for page in [&first, &second] {
+        let item = &page["items"][0];
+        assert!(seen.insert(item["id"].as_str().unwrap().to_owned()));
+        let sends = item["sends"].as_array().unwrap();
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0]["outcome"]["class"], "reply_positive");
+        assert_eq!(
+            sends[0]["outcome"]["send_id"],
+            sends[0]["id"].as_str().unwrap()
+        );
+    }
+    assert_eq!(seen.len(), 2);
+
+    // A cursor minted for a different filter scope is rejected, not reapplied.
+    let (status, foreign) = request(
+        port,
+        "GET",
+        &format!(
+            "/api/v1/threads?opportunity_id={}&recipient_id={}&limit=1&cursor={cursor}",
+            threads[0].1, threads[0].2
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(status, 422, "{foreign}");
+
+    // Scoped read returns exactly the matching pair.
+    let (status, scoped) = request(
+        port,
+        "GET",
+        &format!(
+            "/api/v1/threads?opportunity_id={}&recipient_id={}&limit=10",
+            threads[0].1, threads[0].2
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{scoped}");
+    let scoped_items = scoped["items"].as_array().unwrap();
+    assert_eq!(scoped_items.len(), 1);
+    assert_eq!(scoped_items[0]["id"], threads[0].0);
+
+    // Invalid page size is rejected before any query runs.
+    let (status, invalid) = request(port, "GET", "/api/v1/threads?limit=0", None).await;
+    assert_eq!(status, 422, "{invalid}");
+
+    service.shutdown().await;
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
 async fn s07_dnc_clearance_requires_reason_and_reopens_eligibility() {
     let (path, workspace, port, service) = setup().await;
     let recipient = create_party(port, "Dana Lee").await;

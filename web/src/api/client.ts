@@ -1776,11 +1776,17 @@ export class ParleyClient {
     await this.request(`/releases/${encodeURIComponent(id)}/ack`, { method: 'POST', body: JSON.stringify({ succeeded }) });
   }
 
-  async listThreads(filter: { opportunity_id?: string; recipient_id?: string } = {}): Promise<ContactThread[]> {
+  async listThreads(filter: { opportunity_id?: string; recipient_id?: string; cursor?: string } = {}): Promise<ContactThread[]> {
     const query = new URLSearchParams(Object.entries(filter).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
-    const value = await this.request(`/threads${query.size ? `?${query.toString()}` : ''}`);
-    if (!Array.isArray(value)) throw new Error('Invalid response: contact threads must be a list');
-    return value.map((raw) => {
+    // Bounded read: the server returns a ThreadPage envelope when limit is
+    // present. Callers consume the page's items; cursor pages the remainder.
+    query.set('limit', '200');
+    const payload = object(await this.request(`/threads?${query.toString()}`));
+    if (!payload || !Array.isArray(payload.items)
+      || (payload.next_cursor !== null && typeof payload.next_cursor !== 'string')) {
+      throw new Error('Invalid response: thread page is malformed');
+    }
+    return payload.items.map((raw) => {
       const thread = object(raw);
       if (!thread || !['waiting', 'conversing', 'timed_out', 'closed_declined', 'resolved', 'dormant'].includes(String(thread.state))
         || !Number.isSafeInteger(thread.current_touch) || Number(thread.current_touch) < 0) throw new Error('Invalid response: contact thread is malformed');

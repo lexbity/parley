@@ -2958,6 +2958,10 @@ export interface components {
             sends?: components["schemas"]["ThreadSend"][];
         };
         ThreadList: components["schemas"]["ThreadRecord"][];
+        ThreadPage: {
+            items: components["schemas"]["ThreadRecord"][];
+            next_cursor: ((string | null) | null) | null;
+        };
         MaterialVersionRef: {
             material_id: string;
             version: number;
@@ -6581,6 +6585,10 @@ export interface operations {
             query?: {
                 opportunity_id?: string;
                 recipient_id?: string;
+                /** @description Bounded read. When present the response is a ThreadPage envelope. */
+                limit?: number;
+                /** @description Opaque keyset token from ThreadPage.next_cursor; only valid with limit. */
+                cursor?: string;
             };
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
@@ -6591,13 +6599,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Contact threads with state and current touch. */
+            /** @description Contact threads with state and current touch. Unbounded array form is removed at the AR10 cut; bounded reads use the page envelope. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ThreadList"];
+                    "application/json": components["schemas"]["ThreadList"] | components["schemas"]["ThreadPage"];
                 };
             };
         };

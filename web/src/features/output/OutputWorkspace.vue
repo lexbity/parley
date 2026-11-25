@@ -322,6 +322,8 @@ async function selectScope(nextOpportunity: string, nextRecipient?: string) {
   scopeGeneration.value += 1;
   resetMessages();
   void refreshScopeFacts();
+  // Refresh the scoped thread immediately; the 2 s poll is only a backstop.
+  void pollThreads();
 }
 
 watch(recipientId, () => {
@@ -340,6 +342,8 @@ function loadMaterial(material: Material) {
   mobilePane.value = 'editor';
   leftTab.value = 'drafts';
   resetMessages();
+  // Binding a material changes which thread the panel needs; refresh it now.
+  void pollThreads();
 }
 
 async function saveDraft() {
@@ -880,10 +884,28 @@ watch(() => props.location, (location) => {
 let threadTimer: ReturnType<typeof globalThis.setInterval> | undefined;
 let threadReadInFlight = false;
 const threads = ref<ContactThread[]>([]);
+/** The thread panel only renders for the bound material, so poll its exact
+ *  opportunity/recipient pair instead of every thread in the workspace. A
+ *  plain function (not a computed watched by Vue) keeps the draft's lazy
+ *  per-scope initialisation out of the watcher flush. */
+function threadScopeKey(): string {
+  const material = boundMaterial.value;
+  return material ? `${material.opportunity_id}\u0000${material.recipient_id}` : '';
+}
 async function pollThreads() {
+  const material = boundMaterial.value;
+  if (!material) { if (threads.value.length) threads.value = []; return; }
   if (!props.active || threadReadInFlight || globalThis.document.visibilityState !== 'visible') return;
+  const scopeKey = threadScopeKey();
   threadReadInFlight = true;
-  try { threads.value = await parley.listThreads(); }
+  try {
+    const next = await parley.listThreads({
+      opportunity_id: material.opportunity_id,
+      recipient_id: material.recipient_id,
+    });
+    // A scope change during the request must not let a stale page win.
+    if (threadScopeKey() === scopeKey) threads.value = next;
+  }
   catch { /* Keep the latest server-confirmed thread state during transport recovery. */ }
   finally { threadReadInFlight = false; }
 }

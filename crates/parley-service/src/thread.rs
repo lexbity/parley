@@ -31,7 +31,7 @@ use parley_domain::lifecycle::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::{Sqlite, Transaction};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 
 pub(super) fn routes() -> Router<AppState> {
@@ -259,6 +259,28 @@ pub struct ThreadRecord {
     pub sends: Vec<ThreadSend>,
 }
 
+/// Positional projection of `contact_thread` used by the bounded/unbounded
+/// list; kept as a tuple so sqlx decodes without an extra serde layer.
+type ThreadListRow = (
+    String,
+    String,
+    String,
+    String,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+);
+
+/// Keyset page returned for a bounded `GET /threads`. The unbounded array form
+/// stays for the named removal cut, mirroring `/opportunities`.
+#[derive(Debug, Serialize)]
+pub struct ThreadPage {
+    pub items: Vec<ThreadRecord>,
+    pub next_cursor: Option<String>,
+}
+
 /// One recorded touch with its (optional) outcome. Same fields as `SendRecord`
 /// with a nested outcome; the wire contract is `ThreadSend`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -342,10 +364,50 @@ pub struct ReconcileReport {
     pub opportunities_closed: i64,
 }
 
+/// Opaque keyset cursor for `ORDER BY updated_at DESC,id`. The filter pair is
+/// carried in the token so a cursor minted for another scope is rejected
+/// instead of being silently reapplied. Hex keeps it safe in a raw query
+/// string without percent-encoding.
+fn encode_thread_cursor(
+    opportunity_id: Option<&str>,
+    recipient_id: Option<&str>,
+    updated_at: &str,
+    id: &str,
+) -> String {
+    hex::encode(
+        json!([opportunity_id, recipient_id, updated_at, id])
+            .to_string()
+            .as_bytes(),
+    )
+}
+
+fn parse_thread_cursor(
+    raw: &str,
+    opportunity_id: Option<&str>,
+    recipient_id: Option<&str>,
+) -> Result<Option<(String, String)>, WorkspaceError> {
+    let (cursor_opportunity, cursor_recipient, updated_at, id) = hex::decode(raw)
+        .ok()
+        .and_then(|bytes| {
+            serde_json::from_slice::<(Option<String>, Option<String>, String, String)>(&bytes).ok()
+        })
+        .ok_or_else(|| WorkspaceError::Invalid("invalid thread cursor".into()))?;
+    if cursor_opportunity.as_deref() != opportunity_id
+        || cursor_recipient.as_deref() != recipient_id
+    {
+        return Err(WorkspaceError::Invalid(
+            "cursor does not belong to this query".into(),
+        ));
+    }
+    Ok(Some((updated_at, id)))
+}
+
 #[derive(Debug, Deserialize)]
 struct ThreadQuery {
     opportunity_id: Option<String>,
     recipient_id: Option<String>,
+    limit: Option<i64>,
+    cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -667,16 +729,29 @@ async fn recoup_party_decline(
 }
 
 impl Workspace {
-    /// Send history for one thread, newest last, with outcomes attached.
-    async fn load_thread_sends(&self, thread_id: &str) -> Result<Vec<ThreadSend>, WorkspaceError> {
-        let rows = sqlx::query_as::<_, (String, i64, String, i64, String, String, String, String, String, bool)>(
-            "SELECT id,touch_no,primary_material_id,primary_version_no,recipient_id,content_sha256,sent_at,response_deadline,deadline_zone,capacity_charged FROM send WHERE thread_id=? ORDER BY touch_no,id",
+    /// Sends and outcomes for a set of threads in two round trips, not one per
+    /// send. `json_each` carries the whole id set in a single bound parameter,
+    /// so SQLite's variable limit never caps the page. Sends stay ordered by
+    /// (thread_id,touch_no,id); outcomes are attached by send id.
+    async fn load_sends_and_outcomes(
+        &self,
+        thread_ids: &[String],
+    ) -> Result<HashMap<String, Vec<ThreadSend>>, WorkspaceError> {
+        let mut by_thread: HashMap<String, Vec<ThreadSend>> = HashMap::new();
+        if thread_ids.is_empty() {
+            return Ok(by_thread);
+        }
+        let rows = sqlx::query_as::<_, (
+            String, String, i64, String, i64, String, String, String, String, String, bool,
+        )>(
+            "SELECT thread_id,id,touch_no,primary_material_id,primary_version_no,recipient_id,content_sha256,sent_at,response_deadline,deadline_zone,capacity_charged FROM send WHERE thread_id IN (SELECT value FROM json_each(?)) ORDER BY thread_id,touch_no,id",
         )
-        .bind(thread_id)
-        .fetch_all(&self.pool)
+        .bind(serde_json::to_string(thread_ids).unwrap_or_default())
+        .fetch_all(self.pool())
         .await?;
-        let mut sends = Vec::with_capacity(rows.len());
+        let mut send_ids: Vec<String> = Vec::with_capacity(rows.len());
         for (
+            thread_id,
             id,
             touch_no,
             primary_material_id,
@@ -689,22 +764,8 @@ impl Workspace {
             capacity_charged,
         ) in rows
         {
-            let outcome: Option<OutcomeRecord> = sqlx::query_as::<_, (String, String, String, Option<i64>, Option<String>, String, Option<String>)>(
-                "SELECT id,send_id,class,rung_accepted,received_at,recorded_at,note FROM outcome WHERE send_id=?",
-            )
-            .bind(&id)
-            .fetch_optional(&self.pool)
-            .await?
-            .map(|(id, send_id, class, rung_accepted, received_at, recorded_at, note)| OutcomeRecord {
-                id,
-                send_id,
-                class,
-                rung_accepted,
-                received_at,
-                recorded_at,
-                note,
-            });
-            sends.push(ThreadSend {
+            send_ids.push(id.clone());
+            by_thread.entry(thread_id).or_default().push(ThreadSend {
                 id,
                 touch_no,
                 primary_material_id,
@@ -718,10 +779,48 @@ impl Workspace {
                 // column on send; history entries leave it unset.
                 next_action_at: None,
                 capacity_charged,
-                outcome,
+                outcome: None,
             });
         }
-        Ok(sends)
+        if send_ids.is_empty() {
+            return Ok(by_thread);
+        }
+        let outcome_rows = sqlx::query_as::<_, (String, String, String, Option<i64>, Option<String>, String, Option<String>)>(
+            "SELECT id,send_id,class,rung_accepted,received_at,recorded_at,note FROM outcome WHERE send_id IN (SELECT value FROM json_each(?))",
+        )
+        .bind(serde_json::to_string(&send_ids).unwrap_or_default())
+        .fetch_all(self.pool())
+        .await?;
+        let mut outcomes: HashMap<String, OutcomeRecord> =
+            HashMap::with_capacity(outcome_rows.len());
+        for (id, send_id, class, rung_accepted, received_at, recorded_at, note) in outcome_rows {
+            outcomes.insert(
+                send_id.clone(),
+                OutcomeRecord {
+                    id,
+                    send_id,
+                    class,
+                    rung_accepted,
+                    received_at,
+                    recorded_at,
+                    note,
+                },
+            );
+        }
+        for sends in by_thread.values_mut() {
+            for send in sends {
+                send.outcome = outcomes.remove(&send.id);
+            }
+        }
+        Ok(by_thread)
+    }
+
+    /// Send history for one thread, newest last, with outcomes attached.
+    async fn load_thread_sends(&self, thread_id: &str) -> Result<Vec<ThreadSend>, WorkspaceError> {
+        let mut grouped = self
+            .load_sends_and_outcomes(&[thread_id.to_owned()])
+            .await?;
+        Ok(grouped.remove(thread_id).unwrap_or_default())
     }
 
     pub async fn list_threads(
@@ -729,60 +828,104 @@ impl Workspace {
         opportunity_id: Option<&str>,
         recipient_id: Option<&str>,
     ) -> Result<Vec<ThreadRecord>, WorkspaceError> {
-        let mut builder = sqlx::QueryBuilder::new(
+        self.list_threads_inner(opportunity_id, recipient_id, None, None)
+            .await
+            .map(|(items, _)| items)
+    }
+
+    pub async fn list_threads_page(
+        &self,
+        opportunity_id: Option<&str>,
+        recipient_id: Option<&str>,
+        limit: Option<i64>,
+        cursor: Option<&str>,
+    ) -> Result<ThreadPage, WorkspaceError> {
+        let (items, next_cursor) = self
+            .list_threads_inner(opportunity_id, recipient_id, limit, cursor)
+            .await?;
+        Ok(ThreadPage { items, next_cursor })
+    }
+
+    async fn list_threads_inner(
+        &self,
+        opportunity_id: Option<&str>,
+        recipient_id: Option<&str>,
+        limit: Option<i64>,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<ThreadRecord>, Option<String>), WorkspaceError> {
+        if limit.is_some_and(|value| !(1..=200).contains(&value)) {
+            return Err(WorkspaceError::Invalid("invalid thread page size".into()));
+        }
+        let after = match cursor {
+            Some(raw) => parse_thread_cursor(raw, opportunity_id, recipient_id)?,
+            None => None,
+        };
+        let mut q = sqlx::QueryBuilder::new(
             "SELECT id,opportunity_id,recipient_id,state,current_touch,expires_at,next_action_at,sent_at,updated_at FROM contact_thread WHERE 1=1",
         );
         if let Some(opportunity_id) = opportunity_id {
-            builder.push(" AND opportunity_id = ");
-            builder.push_bind(opportunity_id);
+            q.push(" AND opportunity_id = ").push_bind(opportunity_id);
         }
         if let Some(recipient_id) = recipient_id {
-            builder.push(" AND recipient_id = ");
-            builder.push_bind(recipient_id);
+            q.push(" AND recipient_id = ").push_bind(recipient_id);
         }
-        builder.push(" ORDER BY updated_at DESC,id");
-        let rows = builder
-            .build_query_as::<(
-                String,
-                String,
-                String,
-                String,
-                i64,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                String,
-            )>()
-            .fetch_all(self.pool())
-            .await?;
-        let mut threads = Vec::with_capacity(rows.len());
-        for (
-            id,
-            opportunity_id,
-            recipient_id,
-            state,
-            current_touch,
-            expires_at,
-            next_action_at,
-            sent_at,
-            updated_at,
-        ) in rows
-        {
-            let sends = self.load_thread_sends(&id).await?;
-            threads.push(ThreadRecord {
-                id,
-                opportunity_id,
-                recipient_id,
-                state,
-                current_touch,
-                expires_at,
-                next_action_at,
-                sent_at,
-                updated_at,
-                sends,
-            });
+        if let Some((updated_at, id)) = after {
+            // Keyset for ORDER BY updated_at DESC,id. updated_at is NOT NULL.
+            q.push(" AND (updated_at < ")
+                .push_bind(updated_at.clone())
+                .push(" OR (updated_at = ")
+                .push_bind(updated_at)
+                .push(" AND id > ")
+                .push_bind(id)
+                .push("))");
         }
-        Ok(threads)
+        q.push(" ORDER BY updated_at DESC,id");
+        if let Some(limit) = limit {
+            q.push(" LIMIT ").push_bind(limit + 1);
+        }
+        let mut rows: Vec<ThreadListRow> = q.build_query_as().fetch_all(self.pool()).await?;
+        let next_cursor = if let Some(limit) = limit {
+            let more = rows.len() > limit as usize;
+            rows.truncate(limit as usize);
+            if more {
+                rows.last()
+                    .map(|row| encode_thread_cursor(opportunity_id, recipient_id, &row.8, &row.0))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let ids: Vec<String> = rows.iter().map(|row| row.0.clone()).collect();
+        let sends = self.load_sends_and_outcomes(&ids).await?;
+        let threads = rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    opportunity_id,
+                    recipient_id,
+                    state,
+                    current_touch,
+                    expires_at,
+                    next_action_at,
+                    sent_at,
+                    updated_at,
+                )| ThreadRecord {
+                    id: id.clone(),
+                    opportunity_id,
+                    recipient_id,
+                    state,
+                    current_touch,
+                    expires_at,
+                    next_action_at,
+                    sent_at,
+                    updated_at,
+                    sends: sends.get(&id).cloned().unwrap_or_default(),
+                },
+            )
+            .collect();
+        Ok((threads, next_cursor))
     }
 
     /// Reconcile due threads. A thread whose exclusive expiry has passed is
@@ -1588,16 +1731,34 @@ async fn list_threads(
     if let Err(error) = authenticate(&headers, &state).await {
         return (error.0, error.1).into_response();
     }
-    match state
-        .workspace
-        .list_threads(
-            query.opportunity_id.as_deref(),
-            query.recipient_id.as_deref(),
-        )
-        .await
-    {
-        Ok(value) => (StatusCode::OK, Json(value)).into_response(),
-        Err(error) => workspace_error(error),
+    // Bounded reads answer with the standard page envelope. The unbounded
+    // array form stays only for the named removal cut, as on /opportunities.
+    if query.limit.is_some() {
+        match state
+            .workspace
+            .list_threads_page(
+                query.opportunity_id.as_deref(),
+                query.recipient_id.as_deref(),
+                query.limit,
+                query.cursor.as_deref(),
+            )
+            .await
+        {
+            Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+            Err(error) => workspace_error(error),
+        }
+    } else {
+        match state
+            .workspace
+            .list_threads(
+                query.opportunity_id.as_deref(),
+                query.recipient_id.as_deref(),
+            )
+            .await
+        {
+            Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+            Err(error) => workspace_error(error),
+        }
     }
 }
 

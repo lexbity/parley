@@ -1981,15 +1981,19 @@ paths:
         required: false
         schema:
           type: string
+      - {in: query, name: limit, required: false, description: 'Bounded read. When present the response is a ThreadPage envelope.', schema: {type: integer, minimum: 1, maximum: 200}}
+      - {in: query, name: cursor, required: false, description: 'Opaque keyset token from ThreadPage.next_cursor; only valid with limit.', schema: {type: string, maxLength: 512}}
       - $ref: '#/components/parameters/MutationToken'
       - $ref: '#/components/parameters/Epoch'
       responses:
         '200':
-          description: Contact threads with state and current touch.
+          description: 'Contact threads with state and current touch. Unbounded array form is removed at the AR10 cut; bounded reads use the page envelope.'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ThreadList'
+                oneOf:
+                - $ref: '#/components/schemas/ThreadList'
+                - $ref: '#/components/schemas/ThreadPage'
   /threads/{id}/send:
     post:
       operationId: sendOnThread
@@ -5248,6 +5252,21 @@ components:
       type: array
       items:
         $ref: '#/components/schemas/ThreadRecord'
+    ThreadPage:
+      type: object
+      required:
+      - items
+      - next_cursor
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ThreadRecord'
+        next_cursor:
+          type: [string, 'null']
+          nullable: true
+          maxLength: 512
+      additionalProperties: false
     MaterialVersionRef:
       type: object
       required:
