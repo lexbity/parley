@@ -6088,11 +6088,13 @@ components:
       additionalProperties: false
     QueueSnapshot:
       type: object
-      required: [event_cursor, actionable, blocked, suggested_send_count]
+      required: [event_cursor, actionable, blocked, total_actionable, total_blocked, suggested_send_count]
       properties:
         event_cursor: {type: string}
-        actionable: {type: array, items: {$ref: '#/components/schemas/QueueItem'}}
-        blocked: {type: array, items: {$ref: '#/components/schemas/QueueItem'}}
+        actionable: {type: array, maxItems: 200, items: {$ref: '#/components/schemas/QueueItem'}}
+        blocked: {type: array, maxItems: 200, items: {$ref: '#/components/schemas/QueueItem'}}
+        total_actionable: {type: integer, minimum: 0}
+        total_blocked: {type: integer, minimum: 0}
         suggested_send_count: {type: integer, minimum: 0}
       additionalProperties: false
     PackStage:

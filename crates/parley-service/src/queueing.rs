@@ -29,6 +29,75 @@ pub(super) fn routes() -> Router<AppState> {
         .route("/api/v1/claims/{id}/hook", post(save_hook))
 }
 
+/// Daily-queue cap per class. Both arrays are projections; the authoritative
+/// counts travel in the same response so the bound is never silent.
+const DAILY_QUEUE_CAP: i64 = 200;
+
+/// Shared base projection for the daily queue. The blocked/actionable
+/// classification is computed here (not in Rust) so the count and the bounded
+/// page cannot disagree. `?1` is the owner's `max_touches` fence.
+const DAILY_QUEUE_BASE_SQL: &str = r#"
+WITH base AS (
+  SELECT
+    o.id                          AS opportunity_id,
+    o.title                       AS title,
+    op.party_id                   AS party_id,
+    e.name                        AS recipient_name,
+    coalesce(pp.do_not_contact,0) AS dnc,
+    coalesce(pp.touch_count,0)    AS touches,
+    coalesce(pp.highest_rung,0)   AS highest_rung,
+    t.next_action_at              AS due_at,
+    (SELECT m.shortlist_json
+       FROM match_run m
+      WHERE m.opportunity_id=o.id
+        AND m.recipient_id=op.party_id
+        AND m.opportunity_revision=o.revision
+        AND m.recipient_revision=e.revision
+      ORDER BY m.created_at DESC, m.id DESC
+      LIMIT 1)                    AS shortlist_json,
+    CASE
+      WHEN coalesce(pp.do_not_contact,0)<>0
+        OR coalesce(pp.touch_count,0)>=?1 THEN 'blocked'
+      WHEN t.next_action_at IS NOT NULL THEN 'followup_due'
+      ELSE 'needs_input'
+    END                           AS kind
+  FROM opportunity o
+  JOIN opportunity_party op ON op.opportunity_id=o.id
+  JOIN entity e ON e.id=op.party_id
+  LEFT JOIN party_policy pp ON pp.party_id=e.id
+  LEFT JOIN contact_thread t ON t.id=(
+    SELECT t2.id
+      FROM contact_thread t2
+     WHERE t2.opportunity_id=o.id AND t2.recipient_id=e.id
+     ORDER BY CASE t2.state WHEN 'waiting' THEN 0 WHEN 'conversation' THEN 1 ELSE 2 END,
+              t2.created_at DESC, t2.id DESC
+     LIMIT 1)
+  WHERE o.state='open'
+)"#;
+
+/// Full-set totals plus the ready-to-send count, in one statement.
+const DAILY_QUEUE_COUNTS_SUFFIX: &str = r#"
+SELECT
+  coalesce(sum(CASE WHEN kind<>'blocked' THEN 1 ELSE 0 END),0) AS total_actionable,
+  coalesce(sum(CASE WHEN kind='blocked' THEN 1 ELSE 0 END),0)  AS total_blocked,
+  coalesce(sum(CASE WHEN kind IN ('followup_due','ready_to_send') THEN 1 ELSE 0 END),0) AS ready_count
+FROM base
+"#;
+
+/// At most `DAILY_QUEUE_CAP` rows per class, in the legacy global ordering
+/// (`opportunity_id`, `party_id`), so the two arrays retain their old order.
+const DAILY_QUEUE_PAGE_SUFFIX: &str = r#", numbered AS (
+  SELECT base.*,
+         row_number() OVER (PARTITION BY kind ORDER BY opportunity_id, party_id) AS rn
+    FROM base
+)
+SELECT opportunity_id,title,party_id,recipient_name,dnc,touches,highest_rung,
+       due_at,shortlist_json,kind
+  FROM numbered
+ WHERE rn <= ?2
+ ORDER BY opportunity_id, party_id
+"#;
+
 #[allow(clippy::type_complexity)]
 async fn queue(
     State(state): State<AppState>,
@@ -43,6 +112,10 @@ async fn queue(
     if matches!(query.view.as_deref(), Some("sheet") | Some("list")) {
         return super::queue_sheet::sheet_query(&state, &headers, query).await;
     }
+    // Bounded daily projection (TD-001 / TD-03). The legacy wire shape is
+    // preserved; the two arrays are now capped projections and the full
+    // counts travel beside them so the cap is never silent. The sheet route
+    // (view=sheet|list) remains the discoverable full set.
     let mut tx = match state.workspace.pool().begin().await {
         Ok(v) => v,
         Err(e) => {
@@ -60,7 +133,6 @@ async fn queue(
             return super::command_error(e.into());
         }
     };
-    let rows:Vec<(String,String,String,String,String,i64,i64,i64,Option<String>,Option<String>)>=match sqlx::query_as("SELECT o.id,o.title,o.state,op.party_id,e.name,coalesce(pp.do_not_contact,0),coalesce(pp.touch_count,0),coalesce(pp.highest_rung,0),t.next_action_at,(SELECT m.shortlist_json FROM match_run m WHERE m.opportunity_id=o.id AND m.recipient_id=op.party_id AND m.opportunity_revision=o.revision AND m.recipient_revision=e.revision ORDER BY m.created_at DESC,m.id DESC LIMIT 1) FROM opportunity o JOIN opportunity_party op ON op.opportunity_id=o.id JOIN entity e ON e.id=op.party_id LEFT JOIN party_policy pp ON pp.party_id=e.id LEFT JOIN contact_thread t ON t.id=(SELECT t2.id FROM contact_thread t2 WHERE t2.opportunity_id=o.id AND t2.recipient_id=e.id ORDER BY CASE t2.state WHEN 'waiting' THEN 0 WHEN 'conversation' THEN 1 ELSE 2 END,t2.created_at DESC,t2.id DESC LIMIT 1) WHERE o.state='open' ORDER BY o.id,op.party_id").fetch_all(&mut *tx).await{Ok(v)=>v,Err(e)=>return super::command_error(e.into())};
     let policy: String =
         match sqlx::query_scalar("SELECT settings_json FROM owner_profile WHERE id=1")
             .fetch_one(&mut *tx)
@@ -86,9 +158,31 @@ async fn queue(
         .and_then(|v| v.as_i64())
         .unwrap_or(90);
     let cutoff = (chrono::Utc::now() - chrono::Duration::days(hook_days)).to_rfc3339();
-    let fresh_hooks:std::collections::HashSet<String>=match sqlx::query_scalar("SELECT DISTINCT c.subject_id FROM claim c JOIN accepted_hook h ON h.claim_id=c.id AND h.claim_revision=c.current_revision WHERE h.published_at>=? AND h.publicness='professional_public'").bind(cutoff).fetch_all(&mut *tx).await{Ok(v)=>v.into_iter().collect(),Err(e)=>return super::command_error(e.into())};
-    let shared_identity:std::collections::HashSet<String>=match sqlx::query_scalar("SELECT DISTINCT p.entity_id FROM party_identity_tag p JOIN owner_identity_tag o ON o.tag=p.tag JOIN claim_revision r ON r.claim_id=p.claim_id AND r.revision=p.claim_revision WHERE r.tier IN (1,3) AND r.approved_wording IS NOT NULL AND r.knowledge_kind<>'hypothesis'").fetch_all(&mut *tx).await{Ok(v)=>v.into_iter().collect(),Err(e)=>return super::command_error(e.into())};
-    let mut items = Vec::new();
+    let fresh_hooks: std::collections::HashSet<String> = match sqlx::query_scalar(
+        "SELECT DISTINCT c.subject_id FROM claim c \
+         JOIN accepted_hook h ON h.claim_id=c.id AND h.claim_revision=c.current_revision \
+         WHERE h.published_at>=? AND h.publicness='professional_public'",
+    )
+    .bind(cutoff)
+    .fetch_all(&mut *tx)
+    .await
+    {
+        Ok(v) => v.into_iter().collect(),
+        Err(e) => return super::command_error(e.into()),
+    };
+    let shared_identity: std::collections::HashSet<String> = match sqlx::query_scalar(
+        "SELECT DISTINCT p.entity_id FROM party_identity_tag p \
+         JOIN owner_identity_tag o ON o.tag=p.tag \
+         JOIN claim_revision r ON r.claim_id=p.claim_id AND r.revision=p.claim_revision \
+         WHERE r.tier IN (1,3) AND r.approved_wording IS NOT NULL \
+         AND r.knowledge_kind<>'hypothesis'",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    {
+        Ok(v) => v.into_iter().collect(),
+        Err(e) => return super::command_error(e.into()),
+    };
     let capacity_period = policy
         .pointer("/pack_policy/scarcity/period")
         .and_then(|v| v.as_str())
@@ -98,7 +192,8 @@ async fn queue(
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let capacity_remaining: f64 = match sqlx::query_scalar(
-        "SELECT CAST(coalesce(max(total-committed),0) AS REAL) FROM capacity_ledger WHERE period=? AND unit=?",
+        "SELECT CAST(coalesce(max(total-committed),0) AS REAL) \
+         FROM capacity_ledger WHERE period=? AND unit=?",
     )
     .bind(capacity_period)
     .bind(capacity_unit)
@@ -111,7 +206,52 @@ async fn queue(
             return super::command_error(e.into());
         }
     };
-    for (oid, title, _state, pid, name, dnc, touches, highest_rung, due, shortlist) in rows {
+
+    // The classification that used to run in Rust lives in the base CTE so
+    // both the COUNT and the bounded page read the identical predicate. `?1`
+    // is the owner's `max_touches` fence, bound once for both statements.
+    type DailyRow = (
+        String,
+        String,
+        String,
+        String,
+        i64,
+        i64,
+        i64,
+        Option<String>,
+        Option<String>,
+        String,
+    );
+    // QueryBuilder keeps every value bound and the SQL auditable (the whole
+    // statement is assembled from module-owned literals; no caller text is
+    // ever interpolated).
+    let mut counts = sqlx::QueryBuilder::<sqlx::Sqlite>::new(DAILY_QUEUE_BASE_SQL);
+    counts.push(DAILY_QUEUE_COUNTS_SUFFIX);
+    let (total_actionable, total_blocked, ready_count): (i64, i64, i64) = match counts
+        .build_query_as()
+        .bind(max_touches)
+        .fetch_one(&mut *tx)
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => return super::command_error(e.into()),
+    };
+    let mut page = sqlx::QueryBuilder::<sqlx::Sqlite>::new(DAILY_QUEUE_BASE_SQL);
+    page.push(DAILY_QUEUE_PAGE_SUFFIX);
+    let rows = match page
+        .build_query_as::<DailyRow>()
+        .bind(max_touches)
+        .bind(DAILY_QUEUE_CAP)
+        .fetch_all(&mut *tx)
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => return super::command_error(e.into()),
+    };
+
+    let mut actionable = Vec::new();
+    let mut blocked = Vec::new();
+    for (oid, title, pid, name, dnc, touches, highest_rung, due, shortlist, kind) in rows {
         let mut reasons = Vec::new();
         if dnc != 0 {
             reasons.push("party do not contact".to_owned())
@@ -119,13 +259,6 @@ async fn queue(
         if touches >= max_touches {
             reasons.push("maximum touches reached".to_owned())
         }
-        let kind = if !reasons.is_empty() {
-            "blocked"
-        } else if due.is_some() {
-            "followup_due"
-        } else {
-            "needs_input"
-        };
         let shortlist: serde_json::Value = shortlist
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok())
@@ -156,25 +289,23 @@ async fn queue(
             + u8::from(shared_identity.contains(&pid))
             + u8::from(rung_ready)
             + u8::from(capacity_ready);
-        items.push(json!({"id":format!("{oid}:{pid}"),"opportunity_id":oid,"party_id":pid,"title":title,"recipient_name":name,"kind":kind,"due_at":due,"blocked_reasons":reasons,"ammo_score":ammo}));
+        let item = json!({"id":format!("{oid}:{pid}"),"opportunity_id":oid,"party_id":pid,"title":title,"recipient_name":name,"kind":kind,"due_at":due,"blocked_reasons":reasons,"ammo_score":ammo});
+        if kind == "blocked" {
+            blocked.push(item);
+        } else {
+            actionable.push(item);
+        }
     }
     let _ = tx.commit().await;
-    let suggested_send_count = items
-        .iter()
-        .filter(|i| i["kind"] == "ready_to_send" || i["kind"] == "followup_due")
-        .count()
-        .min(cap);
-    let actionable = items
-        .iter()
-        .filter(|i| i["kind"] != "blocked")
-        .cloned()
-        .collect::<Vec<_>>();
-    let blocked = items
-        .iter()
-        .filter(|i| i["kind"] == "blocked")
-        .cloned()
-        .collect::<Vec<_>>();
-    let response = json!({"event_cursor":cursor.to_string(),"actionable":actionable,"blocked":blocked,"suggested_send_count":suggested_send_count});
+    let suggested_send_count = usize::try_from(ready_count).unwrap_or(usize::MAX).min(cap);
+    let response = json!({
+        "event_cursor": cursor.to_string(),
+        "actionable": actionable,
+        "blocked": blocked,
+        "total_actionable": total_actionable,
+        "total_blocked": total_blocked,
+        "suggested_send_count": suggested_send_count,
+    });
     let mut r = Json(response).into_response();
     super::private_headers(&mut r, state.workspace.epoch());
     r

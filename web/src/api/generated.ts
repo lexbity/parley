@@ -3432,6 +3432,8 @@ export interface components {
             event_cursor: string;
             actionable: components["schemas"]["QueueItem"][];
             blocked: components["schemas"]["QueueItem"][];
+            total_actionable: number;
+            total_blocked: number;
             suggested_send_count: number;
         };
         PackStage: {
