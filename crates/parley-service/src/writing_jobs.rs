@@ -54,9 +54,14 @@ struct LinterFinding {
     suggested_rewrite: String,
 }
 
-pub(super) async fn process_role(workspace: &Workspace, job_id: &str, role: &str) {
+pub(super) async fn process_role(
+    workspace: &Workspace,
+    job_id: &str,
+    role: &str,
+    notify: Option<&crate::CommandSignalSender>,
+) {
     let started = tokio::time::Instant::now();
-    let attempt = match super::jobs::claim_attempt(workspace, job_id).await {
+    let attempt = match super::jobs::claim_attempt(workspace, job_id, notify).await {
         Ok(Some(attempt)) => attempt,
         _ => return,
     };

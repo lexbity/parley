@@ -15,7 +15,12 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-pub(crate) async fn run(workspace: &Workspace, id: &str, role: &str) {
+pub(crate) async fn run(
+    workspace: &Workspace,
+    id: &str,
+    role: &str,
+    notify: Option<&crate::CommandSignalSender>,
+) {
     if !matches!(role, "interviewer" | "briefer") {
         jobs::finish_job_error(
             workspace,
@@ -27,7 +32,7 @@ pub(crate) async fn run(workspace: &Workspace, id: &str, role: &str) {
         .await;
         return;
     }
-    let attempt = match jobs::claim_attempt(workspace, id).await {
+    let attempt = match jobs::claim_attempt(workspace, id, notify).await {
         Ok(Some(attempt)) => attempt,
         _ => return,
     };

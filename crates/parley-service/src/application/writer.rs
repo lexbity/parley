@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 use sqlx::{Sqlite, Transaction};
 use tokio::sync::{RwLock, mpsc, oneshot};
 
+use crate::{CommandSignal, CommandSignalSender};
+
 /// Reservation queue depth (NFR-3: pending writer admissions).
 pub(crate) const RESERVATION_DEPTH: usize = 64;
 /// Admission wait cap (NFR-3: 2s).
@@ -72,6 +74,10 @@ pub(crate) enum WriteOutcome {
 #[derive(Clone)]
 pub(crate) struct Writer {
     tx: mpsc::Sender<WriterJob>,
+    /// Post-commit domain-change fan-out (L1). Every adopted write that
+    /// commits publishes `DomainChanged` with the event-log high-water mark
+    /// here — the single server-side point where adopted writes notify.
+    notify: CommandSignalSender,
 }
 
 impl Writer {
@@ -93,12 +99,14 @@ impl Writer {
 pub(crate) fn start(
     mut connection: sqlx::sqlite::SqliteConnection,
     generation: Arc<RwLock<u64>>,
+    notify: CommandSignalSender,
 ) -> (Writer, tokio::task::JoinHandle<()>) {
     let (tx, mut rx) = mpsc::channel::<WriterJob>(RESERVATION_DEPTH);
-    let writer = Writer { tx };
+    let writer = Writer { tx, notify };
+    let task_notify = writer.notify.clone();
     let task = tokio::spawn(async move {
         while let Some(job) = rx.recv().await {
-            let (reply, outcome) = run_job(&mut connection, job, &generation).await;
+            let (reply, outcome) = run_job(&mut connection, job, &generation, &task_notify).await;
             let _ = reply.send(outcome);
         }
     });
@@ -109,6 +117,7 @@ async fn run_job(
     connection: &mut sqlx::sqlite::SqliteConnection,
     job: WriterJob,
     generation: &Arc<RwLock<u64>>,
+    notify: &CommandSignalSender,
 ) -> (oneshot::Sender<WriteOutcome>, WriteOutcome) {
     if Instant::now() >= job.deadline {
         return (job.reply, WriteOutcome::Rejected(Failure::Timeout));
@@ -140,6 +149,18 @@ async fn run_job(
             ..
         } => WriteOutcome::Rejected(Failure::Unavailable),
     };
+    if matches!(outcome, WriteOutcome::Committed(_))
+        && let Ok(cursor) =
+            sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(cursor),0) FROM event")
+                .fetch_one(connection)
+                .await
+        && cursor > 0
+    {
+        // One fan-out point for adopted writes, after the commit is durable:
+        // zero per-client DB work. A lagged or absent receiver drops the
+        // signal and catches up by cursor, which is the stream's contract.
+        let _ = notify.send(CommandSignal::DomainChanged(cursor));
+    }
     (job.reply, outcome)
 }
 

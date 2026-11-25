@@ -3378,8 +3378,9 @@ async fn deny_approval(
 
 /// Same-origin fetch-based SSE notification stream (U08 §4.1). Owner auth
 /// headers are required; the stream emits `approvals_changed`,
-/// `run_changed` and `epoch_changed` signals plus a 15 s heartbeat, and
-/// closes on service shutdown. Connections are bounded.
+/// `run_changed`, `domain_changed`, `job_changed` and `epoch_changed`
+/// signals plus a 15 s heartbeat, and closes on service shutdown.
+/// Connections are bounded.
 async fn notifications(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let (_principal, _registry, _writer) = match auth_owner(&headers, &state).await {
         Ok(value) => value,
@@ -3400,6 +3401,8 @@ async fn notifications(State(state): State<AppState>, headers: HeaderMap) -> Res
     enum SsePayload {
         Approvals,
         Run,
+        Domain(i64),
+        Job(String),
         Epoch,
         Heartbeat,
     }
@@ -3421,6 +3424,12 @@ async fn notifications(State(state): State<AppState>, headers: HeaderMap) -> Res
                         Ok(CommandSignal::RunChanged) => {
                             if tx.send(SsePayload::Run).await.is_err() { break; }
                         }
+                        Ok(CommandSignal::DomainChanged(cursor)) => {
+                            if tx.send(SsePayload::Domain(cursor)).await.is_err() { break; }
+                        }
+                        Ok(CommandSignal::JobChanged(job_id)) => {
+                            if tx.send(SsePayload::Job(job_id)).await.is_err() { break; }
+                        }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
@@ -3436,6 +3445,12 @@ async fn notifications(State(state): State<AppState>, headers: HeaderMap) -> Res
         let event = match payload {
             SsePayload::Approvals => Event::default().event("approvals_changed").data("{}"),
             SsePayload::Run => Event::default().event("run_changed").data("{}"),
+            SsePayload::Domain(cursor) => Event::default()
+                .event("domain_changed")
+                .data(json!({"cursor": cursor}).to_string()),
+            SsePayload::Job(job_id) => Event::default()
+                .event("job_changed")
+                .data(json!({"job_id": job_id}).to_string()),
             SsePayload::Epoch => Event::default().event("epoch_changed").data(epoch.clone()),
             SsePayload::Heartbeat => Event::default().comment("heartbeat"),
         };

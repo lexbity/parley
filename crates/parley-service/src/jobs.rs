@@ -330,6 +330,18 @@ pub(crate) async fn recover_interrupted(workspace: &Workspace) {
 }
 
 pub(crate) async fn process(state: &super::AppState, job_id: &str) {
+    process_inner(state, job_id).await;
+    // Post-commit hint: the durable job row has reached a new state
+    // (running→terminal, retry, or an immediate pre-flight failure). The
+    // role runtimes commit before returning, so this send happens after the
+    // transition is durable. Activity surfaces re-read GET /jobs/{id} on
+    // this signal instead of polling (L1).
+    let _ = state
+        .notify
+        .send(crate::CommandSignal::JobChanged(job_id.to_owned()));
+}
+
+async fn process_inner(state: &super::AppState, job_id: &str) {
     let workspace = &state.workspace;
     let role: Option<String> = sqlx::query_scalar("SELECT role FROM durable_job WHERE id=?")
         .bind(job_id)
@@ -355,9 +367,9 @@ pub(crate) async fn process(state: &super::AppState, job_id: &str) {
     }
     if let Some(role) = role.as_deref() {
         if matches!(role, "composer" | "linter") {
-            super::writing_jobs::process_role(workspace, job_id, role).await;
+            super::writing_jobs::process_role(workspace, job_id, role, Some(&state.notify)).await;
         } else if matches!(role, "interviewer" | "briefer") {
-            super::inference::roles::run(workspace, job_id, role).await;
+            super::inference::roles::run(workspace, job_id, role, Some(&state.notify)).await;
         } else if matches!(role, "template_builder") {
             super::inference::template_builder::run(state, job_id).await;
         } else {
@@ -387,6 +399,7 @@ pub(crate) struct Attempt {
 pub(crate) async fn claim_attempt(
     workspace: &Workspace,
     id: &str,
+    notify: Option<&crate::CommandSignalSender>,
 ) -> Result<Option<Attempt>, WorkspaceError> {
     let mut tx = workspace.pool().begin_with("BEGIN IMMEDIATE").await?;
     let row: Option<(i64,i64,String,String,String)> = sqlx::query_as("SELECT current_attempt,max_attempts,input_json,input_sha256,role FROM durable_job WHERE id=? AND status='queued'")
@@ -398,6 +411,9 @@ pub(crate) async fn claim_attempt(
     if current >= max {
         sqlx::query("UPDATE durable_job SET status='invalid',last_error_code='RETRY_LIMIT',last_error='Extractor retry limit reached',completed_at=?,updated_at=? WHERE id=? AND status='queued'").bind(now_utc()).bind(now_utc()).bind(id).execute(&mut *tx).await?;
         tx.commit().await?;
+        if let Some(notify) = notify {
+            let _ = notify.send(crate::CommandSignal::JobChanged(id.to_owned()));
+        }
         return Ok(None);
     }
     let number = current + 1;
@@ -451,6 +467,11 @@ pub(crate) async fn claim_attempt(
     sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'job',?,?, 'job.attempt_started',?)")
       .bind(new_id(id)).bind(&now).bind(id).bind(number).bind(json!({"attempt":number}).to_string()).execute(&mut *tx).await?;
     tx.commit().await?;
+    if let Some(notify) = notify {
+        // The queued→running transition is durable now; tell subscribers the
+        // exact job id so they can re-read it without a full sweep (L1).
+        let _ = notify.send(crate::CommandSignal::JobChanged(id.to_owned()));
+    }
     Ok(Some(Attempt {
         number,
         role,

@@ -2538,10 +2538,12 @@ paths:
       summary: Owner-only fetch-based SSE stream for command signals.
       description: >
         Same-origin fetch-based SSE with owner headers. Emits only
-        approvals_changed, run_changed and epoch_changed signals plus a
-        15 s heartbeat; clients re-read authoritative state after each
-        signal and after reconnect. HTTP polling is the fallback when the
-        stream is unavailable.
+        approvals_changed, run_changed, domain_changed, job_changed and
+        epoch_changed signals plus a 15 s heartbeat; clients re-read
+        authoritative state after each signal and after reconnect. The
+        domain_changed hint carries the event-log high-water mark
+        ({"cursor": N}); job_changed carries the changed durable job id.
+        HTTP polling is the fallback when the stream is unavailable.
       security: [{sessionCookie: []}]
       parameters:
       - $ref: '#/components/parameters/MutationToken'
