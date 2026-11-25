@@ -147,3 +147,31 @@ test("delegated Pi Agent Core journals a turn before executing its tool", async 
   assert.deepEqual(controls.sent[1].body.args, { id: "brief.start" })
   assert.ok(paths.filter((path) => path === "/v1/chat/completions").length >= 2)
 })
+
+test("resumed tool results keep their committed content and call id", async (t) => {
+  const { relay, bodies, signal } = await provider(t, [{ text: "The brief is ready." }])
+  const result = await executeDelegated({
+    mode: "delegated",
+    profile,
+    deadline_ms: 4000,
+    task: "Prepare a brief",
+    transcript: [
+      { role: "system", content: "Scoped assistant." },
+      { role: "user", content: "Prepare a brief" },
+      { role: "assistant", content: "start a brief", tool_calls: [
+        { call_ref: "sdk-1", name: "commands__run", args: { id: "brief.start" } },
+      ] },
+      { role: "tool", content: '{"result":{"job_id":"job-1"}}', tool_call_id: "sdk-1" },
+    ],
+    tools,
+    continuation: { turn_no: 1, results: [{ ordinal: 1, result: { result: { job_id: "job-1" } } }] },
+  }, { tokenizer }, relay.fetch, signal, control([]))
+  t.diagnostic(JSON.stringify(bodies[0]?.messages))
+  assert.equal(result.suspended, false)
+  const firstChat = bodies[0]?.messages ?? []
+  const toolResult = firstChat.find((message) => message.role === "tool")
+  assert.ok(toolResult, "the resumed chat must carry the committed tool result")
+  assert.equal(toolResult.tool_call_id, "sdk-1")
+  assert.match(JSON.stringify(toolResult.content), /job-1/)
+  assert.doesNotMatch(JSON.stringify(firstChat), /No result provided/)
+})

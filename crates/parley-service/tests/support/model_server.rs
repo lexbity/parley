@@ -436,20 +436,25 @@ impl Reply {
             .as_str()
             .unwrap_or_default()
             .to_owned();
-        if let Some(calls) = value["message"]["tool_calls"].as_array()
-            && let Some(call) = calls.first()
-        {
-            let name = call["function"]["name"]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned();
-            let args = call["function"]["arguments"]
-                .as_str()
-                .and_then(|text| serde_json::from_str(text).ok())
-                .unwrap_or_else(|| json!({}));
-            Reply::ToolCall { name, args, text }
-        } else {
+        // TD-001: keep every scripted tool call. Dropping all but the first
+        // silently halved the executed-write allowance in delegated suites.
+        let calls: Vec<(String, Value)> = value["message"]["tool_calls"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|call| {
+                let name = call["function"]["name"].as_str()?.to_owned();
+                let args = call["function"]["arguments"]
+                    .as_str()
+                    .and_then(|text| serde_json::from_str(text).ok())
+                    .unwrap_or_else(|| json!({}));
+                Some((name, args))
+            })
+            .collect();
+        if calls.is_empty() {
             Reply::Final(text)
+        } else {
+            Reply::ToolCalls { calls, text }
         }
     }
 }
