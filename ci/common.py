@@ -25,7 +25,9 @@ SLICE_ORDER = (
     + [f"r{n:02d}" for n in range(1, 5)]
     + [f"u{n:02d}" for n in range(1, 8)]
     + [f"ar{n:02d}" for n in range(1, 10)]
-    + [f"u{n:02d}" for n in range(8, 10)]
+    # u09 is skipped by owner decision (superseded by AR-001; its CLI and
+    # command-audit surfaces were never adopted). u08 stays.
+    + [f"u{n:02d}" for n in range(8, 9)]
 )
 
 

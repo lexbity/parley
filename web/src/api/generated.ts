@@ -1360,7 +1360,7 @@ export interface paths {
         };
         /**
          * Owner-only fetch-based SSE stream for command signals.
-         * @description Same-origin fetch-based SSE with owner headers. Emits only approvals_changed, run_changed and epoch_changed signals plus a 15 s heartbeat; clients re-read authoritative state after each signal and after reconnect. HTTP polling is the fallback when the stream is unavailable.
+         * @description Same-origin fetch-based SSE with owner headers. Emits only approvals_changed, run_changed, domain_changed, job_changed and epoch_changed signals plus a 15 s heartbeat; clients re-read authoritative state after each signal and after reconnect. The domain_changed hint carries the event-log high-water mark ({"cursor": N}); job_changed carries the changed durable job id. HTTP polling is the fallback when the stream is unavailable.
          */
         get: operations["commandNotifications"];
         put?: never;
@@ -1893,6 +1893,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["buildTemplates"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/templates/build-candidates/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listTemplateBuildCandidates"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2725,6 +2741,30 @@ export interface components {
                 [key: string]: unknown;
             };
             status: string;
+        };
+        TemplateBuildCandidateListing: {
+            job_id: string;
+            /** @enum {string} */
+            role: "template_builder";
+            status: string;
+            items: {
+                id: string;
+                variant_no: number;
+                name: string;
+                body: string;
+                sentences: {
+                    text: string;
+                    rules: ("R1" | "R2" | "R3" | "R4" | "R5" | "R6" | "R7")[];
+                }[];
+                fallbacks: Record<string, never>;
+                notes: string;
+                preview: Record<string, never>;
+                revision: number;
+                /** @enum {string} */
+                status: "owner_review_required" | "saved" | "expired";
+                saved_version_id?: string | null;
+                family_head_id?: string | null;
+            }[];
         };
         OwnerJob: components["schemas"]["ExtractorJob"] | components["schemas"]["CoachJob"] | components["schemas"]["OtherRoleJob"];
         CoachJob: {
@@ -8471,6 +8511,33 @@ export interface operations {
                 };
                 content?: never;
             };
+        };
+    };
+    listTemplateBuildCandidates: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Validated build candidates for one Template Builder job. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TemplateBuildCandidateListing"];
+                };
+            };
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
         };
     };
     createTemplateVersion: {

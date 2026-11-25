@@ -1,0 +1,26 @@
+{
+  "$schema": "#/components/schemas/TemplateBuildCandidateListing",
+  "body": {
+    "job_id": "job_1",
+    "role": "template_builder",
+    "status": "succeeded",
+    "items": [
+      {
+        "id": "cand_1",
+        "variant_no": 1,
+        "name": "Introduction draft",
+        "body": "{{their_name:name}}, I can offer {{gift:guide}}. Would a short review be useful {{ask:next_step}}?",
+        "sentences": [
+          {"text": "I can offer a short guide.", "rules": ["R1"]}
+        ],
+        "fallbacks": {"proof": "omit_sentence"},
+        "notes": "First variant of the review set.",
+        "preview": {},
+        "revision": 1,
+        "status": "owner_review_required",
+        "saved_version_id": null,
+        "family_head_id": null
+      }
+    ]
+  }
+}

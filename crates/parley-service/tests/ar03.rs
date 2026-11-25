@@ -92,6 +92,7 @@ async fn seed_job(
     job_id: &str,
     context_projection: Value,
     input_extra: Value,
+    epoch: &str,
 ) {
     let input = json!({
         "dependency_json": [],
@@ -105,11 +106,12 @@ async fn seed_job(
         }
     }
     let input = Value::Object(merged).to_string();
-    sqlx::query("INSERT INTO durable_job(id,role,status,input_json,input_sha256,scope_kind,scope_id,scope_revision,max_attempts,epoch,created_at,updated_at,completed_at) VALUES(?,?,'succeeded',?,?,'owner','build',1,3,'epoch-ar03','2026-11-20T00:00:00Z','2026-11-20T00:00:00Z','2026-11-20T00:00:00Z')")
+    sqlx::query("INSERT INTO durable_job(id,role,status,input_json,input_sha256,scope_kind,scope_id,scope_revision,max_attempts,epoch,created_at,updated_at,completed_at) VALUES(?,?,'succeeded',?,?,'owner','build',1,3,?,'2026-11-20T00:00:00Z','2026-11-20T00:00:00Z','2026-11-20T00:00:00Z')")
         .bind(job_id)
         .bind("template_builder")
         .bind(&input)
         .bind(hex_digest(&input))
+        .bind(epoch)
         .execute(workspace.pool())
         .await
         .unwrap();
@@ -131,12 +133,13 @@ async fn seed_candidate(
     body: &str,
     sentences: Value,
     requested_rules: Value,
+    variant_no: i64,
 ) {
     let empty_digest = hex_digest("[]");
     sqlx::query("INSERT INTO template_build_candidate(id,job_id,variant_no,name,body,sentences_json,fallbacks_json,notes,requested_rules_json,optional_rules_json,dependency_json,dependency_digest,preview_json,status,revision,saved_version_id,family_head_id,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
         .bind(candidate_id)
         .bind(job_id)
-        .bind(1_i64)
+        .bind(variant_no)
         .bind("Draft")
         .bind(body)
         .bind(sentences.to_string())
@@ -164,7 +167,7 @@ async fn ar03_candidate_save_is_one_version_and_fences_changes() {
     let (path, workspace, service, cookie, token, epoch) = setup().await;
     let auth = (&cookie, &token, &epoch);
     let (family_id, head) = seed_family(&workspace).await;
-    seed_job(&workspace, "job-ar03-save", Value::Null, json!({})).await;
+    seed_job(&workspace, "job-ar03-save", Value::Null, json!({}), "epoch-ar03").await;
     let body = "I can share {{gift:guide}}. Would a look help {{ask:question}}?";
     let sentences = json!([{"rules":["R1"]},{"rules":["R2"]}]);
     seed_candidate(
@@ -175,6 +178,7 @@ async fn ar03_candidate_save_is_one_version_and_fences_changes() {
         body,
         sentences.clone(),
         json!(["R1", "R2"]),
+        1,
     )
     .await;
 
@@ -290,6 +294,7 @@ async fn ar03_candidate_save_rejects_party_specific_text() {
         "job-ar03-canary",
         context.clone(),
         json!({"scope":context["scope"]}),
+        "epoch-ar03",
     )
     .await;
     let body = "Hi Casey Canary, see {{gift:guide}}.";
@@ -302,6 +307,7 @@ async fn ar03_candidate_save_rejects_party_specific_text() {
         body,
         sentences,
         json!(["R1"]),
+        1,
     )
     .await;
 
@@ -356,6 +362,97 @@ async fn ar03_contextual_build_admission_fails_closed_without_profile() {
     .await;
     assert_eq!(status, 503, "{response:?}");
     assert_eq!(response["error"]["code"], "CAPABILITY_UNQUALIFIED");
+
+    service.shutdown().await;
+    drop(workspace);
+    let _ = fs::remove_file(path);
+}
+
+/// GET /templates/build-candidates/{job_id} is the durable re-read surface for
+/// a completed builder job: the owner reloads candidates after navigation even
+/// when the job result has left the activity window. The listing is fenced to
+/// the current epoch and the builder role; anything else is the same 404 as a
+/// missing job (UCR-001 Q4 equal hiding).
+#[tokio::test]
+async fn ar03_candidates_listing_reports_job_and_variant_states() {
+    let (path, workspace, service, cookie, token, epoch) = setup().await;
+    let auth = (&cookie, &token, &epoch);
+    // An empty epoch lets the admission trigger bind the live workspace epoch
+    // and create the inference_record lineage exactly as a real admission
+    // would; the listing is fenced to that epoch.
+    seed_job(&workspace, "job-ar03-list", json!({}), json!({}), "").await;
+    let (_family, head) = seed_family(&workspace).await;
+    seed_candidate(
+        &workspace,
+        "cand-ar03-a",
+        "job-ar03-list",
+        &head,
+        "Hello {{their_name}}",
+        json!([{"text":"Hello","rules":["R1"]}]),
+        json!(["R1"]),
+        1,
+    )
+    .await;
+    seed_candidate(
+        &workspace,
+        "cand-ar03-b",
+        "job-ar03-list",
+        &head,
+        "Second skeleton body",
+        json!([{"text":"Second skeleton body","rules":["R2"]}]),
+        json!(["R1"]),
+        2,
+    )
+    .await;
+    sqlx::query("UPDATE template_build_candidate SET variant_no=2, revision=revision+1 WHERE id='cand-ar03-b'")
+        .execute(workspace.pool())
+        .await
+        .unwrap();
+    // One saved candidate exercises the saved branch of the review union; the
+    // saved version is a real immutable draft in the same family.
+    sqlx::query("INSERT INTO template_version(id,family_id,version_no,body,fallbacks_json,status,content_sha256,created_at,rules_json,display_name,stage_class,channel,parent_version_id) VALUES('ver-ar03-1','fam-ar03',2,'Saved candidate body','{}','draft','hash2','2026-11-20T00:00:00Z','[]','Candidate draft','prepared','email','ver-head')")
+        .execute(workspace.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE template_build_candidate SET status='saved', saved_version_id='ver-ar03-1', revision=revision+1 WHERE id='cand-ar03-a'")
+        .execute(workspace.pool())
+        .await
+        .unwrap();
+
+    let (status, listing) = request(
+        service.address.port(),
+        auth,
+        "GET",
+        "/api/v1/templates/build-candidates/job-ar03-list",
+        None,
+        "ar03-list-1",
+    )
+    .await;
+    assert_eq!(status, 200, "{listing:?}");
+    assert_eq!(listing["job_id"], "job-ar03-list");
+    assert_eq!(listing["role"], "template_builder");
+    assert_eq!(listing["status"], "succeeded");
+    let items = listing["items"].as_array().expect("candidate items");
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["variant_no"], 1);
+    assert_eq!(items[0]["status"], "saved");
+    assert_eq!(items[0]["saved_version_id"], "ver-ar03-1");
+    assert_eq!(items[1]["variant_no"], 2);
+    assert_eq!(items[1]["status"], "owner_review_required");
+    assert!(items[1]["saved_version_id"].is_null());
+
+    // An unknown job and the equal-hiding guarantee: same body shape.
+    let (status, missing) = request(
+        service.address.port(),
+        auth,
+        "GET",
+        "/api/v1/templates/build-candidates/job-ar03-none",
+        None,
+        "ar03-list-2",
+    )
+    .await;
+    assert_eq!(status, 404, "{missing:?}");
+    assert_eq!(missing["error"]["code"], "JOB_NOT_FOUND");
 
     service.shutdown().await;
     drop(workspace);

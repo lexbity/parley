@@ -1125,14 +1125,14 @@ slices:
       test_id: r02_board_summaries_report_typed_gaps_and_eligibility
       fixture_id: board
       owner_role: owner
-      package_target: rust+mock
+      package_target: rust
       evidence_path: evidence/r02.md
     - requirement: R02-DELIVERY-DETAIL
       operationId: getResourceCardDeliveries
       test_id: r02_drafting_dependencies_do_not_establish_delivery
       fixture_id: board
       owner_role: owner
-      package_target: rust+mock
+      package_target: rust
       evidence_path: evidence/r02.md
     - requirement: R02-RECHECK
       operationId: commitResourceCard
@@ -1183,7 +1183,7 @@ slices:
       test_id: r04_link_existing_party_preserves_its_record
       fixture_id: board
       owner_role: owner
-      package_target: rust+mock
+      package_target: rust
       evidence_path: evidence/r04.md
     - requirement: R04-STALE-ORDER
       operationId: moveResourceCard
@@ -1197,7 +1197,7 @@ slices:
       test_id: r02_drafting_dependencies_do_not_establish_delivery
       fixture_id: board
       owner_role: owner
-      package_target: rust+mock
+      package_target: rust
       evidence_path: evidence/r04.md
   s12:
     - requirement: UCR-FR-1
@@ -2174,6 +2174,13 @@ slices:
     - requirement: FR-12
       operationId: buildTemplates
       test_id: ar03_contextual_build_admission_fails_closed_without_profile
+      fixture_id: ar03
+      owner_role: owner
+      package_target: rust
+      evidence_path: evidence/ar03.md
+    - requirement: FR-5
+      operationId: listTemplateBuildCandidates
+      test_id: ar03_candidates_listing_reports_job_and_variant_states
       fixture_id: ar03
       owner_role: owner
       package_target: rust

@@ -4,7 +4,7 @@
 # rust projects, then requires fresh machine-readable reports with positive
 # executed counts via ci/trace.py.
 #
-# Usage: scripts/prove SLICE_ID    (lowercase s01..s12, p01..p04, r01..r04, u01..u09)
+# Usage: scripts/prove SLICE_ID    (lowercase s01..s12, p01..p04, r01..r04, u01..u08; u09 skipped by owner decision — superseded by AR-001)
 set -euo pipefail
 
 if [ "$#" -ne 1 ]; then

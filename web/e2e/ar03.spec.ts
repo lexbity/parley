@@ -34,3 +34,43 @@ test('ar03_manual_template_draft_survives_model_unavailability', async ({ page }
   const active = versions.find((template) => template.id === created.id);
   expect(active?.status).toBe('active');
 });
+
+test.describe('ar03 model build', () => {
+  test.use({ embedOnline: true });
+
+  test('ar03_model_build_lists_reviewable_candidates', async ({ page }) => {
+  test.info().annotations.push({ type: 'NOTE', description: 'mock: the scripted builder returns two owner-review candidates and the durable listing re-reads them.' });
+  await page.goto('/');
+  const session = await (await page.request.get('/api/v1/session')).json();
+  const auth = { 'X-Parley-Token': String(session.mutation_token), 'X-Parley-Epoch': String(session.epoch) };
+
+  // With the local model online, the contextual build queues a builder job.
+  const build = await page.request.post('/api/v1/templates/build', {
+    headers: { ...auth, 'Idempotency-Key': randomUUID() },
+    data: { stage_class: 'prepared', rungs: [1], rules: ['R1'], channel: 'email', max_chars: 1200, voice_sample_ids: [] },
+  });
+  expect(build.status()).toBe(202);
+  const { job_id, role } = await build.json();
+  expect(role).toBe('template_builder');
+
+  // The role job converges with the validated variant union as its result.
+  const job = await (await page.request.get(`/api/v1/jobs/${job_id}`, { headers: auth })).json();
+  expect(job.status).toBe('succeeded');
+  expect(job.result.variants).toHaveLength(2);
+
+  // The durable listing re-reads the same candidates after the job result.
+  const listing = await (await page.request.get(`/api/v1/templates/build-candidates/${job_id}`, { headers: auth })).json();
+  expect(listing.role).toBe('template_builder');
+  expect(listing.items).toHaveLength(2);
+  for (const [index, item] of listing.items.entries()) {
+    expect(item.variant_no).toBe(index + 1);
+    expect(item.status).toBe('owner_review_required');
+    expect(item.saved_version_id).toBeNull();
+  }
+
+  // Unknown jobs are the same 404 the real service returns.
+  const missing = await page.request.get('/api/v1/templates/build-candidates/does-not-exist', { headers: auth });
+  expect(missing.status()).toBe(404);
+  expect((await missing.json()).error.code).toBe('JOB_NOT_FOUND');
+});
+});

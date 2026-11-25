@@ -3115,6 +3115,20 @@ paths:
                 max_chars: {type: integer, minimum: 1}
                 voice_sample_ids: {type: array, items: {type: string}}
       responses: {'202': {description: Validated Template Builder job queued}}
+  /templates/build-candidates/{job_id}:
+    get:
+      operationId: listTemplateBuildCandidates
+      security: [{sessionCookie: []}]
+      parameters: [{in: path, name: job_id, required: true, schema: {type: string}}, {$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}]
+      responses:
+        '200':
+          description: Validated build candidates for one Template Builder job.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TemplateBuildCandidateListing'
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
   /templates/{family_id}/versions:
     post:
       operationId: createTemplateVersion
@@ -4658,6 +4672,41 @@ components:
           additionalProperties: true
         status: {type: string}
       additionalProperties: false
+    TemplateBuildCandidateListing:
+      type: object
+      additionalProperties: false
+      required: [job_id, role, status, items]
+      properties:
+        job_id: {type: string}
+        role: {type: string, enum: [template_builder]}
+        status: {type: string}
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, variant_no, name, body, sentences, fallbacks, notes, preview, revision, status]
+            properties:
+              id: {type: string}
+              variant_no: {type: integer, minimum: 1, maximum: 3}
+              name: {type: string}
+              body: {type: string}
+              sentences:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [text, rules]
+                  properties:
+                    text: {type: string}
+                    rules: {type: array, items: {type: string, enum: [R1, R2, R3, R4, R5, R6, R7]}}
+              fallbacks: {type: object}
+              notes: {type: string}
+              preview: {type: object}
+              revision: {type: integer, minimum: 1}
+              status: {type: string, enum: [owner_review_required, saved, expired]}
+              saved_version_id: {type: [string, 'null']}
+              family_head_id: {type: [string, 'null']}
     OwnerJob:
       oneOf:
       - $ref: '#/components/schemas/ExtractorJob'

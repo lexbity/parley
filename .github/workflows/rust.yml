@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PARLEY_THROUGH: s11
+  PARLEY_THROUGH: ar08
 
 jobs:
   rust:

@@ -129,6 +129,7 @@ export function createMockApi({ pauseExtractor = false, coachOnline = false, emb
   const captures: SavedSource[] = [];
   const extractorJobs = new Map<string, RecordData>();
   const roleJobs = new Map<string, RecordData>();
+  const templateCandidates = new Map<string, RecordData>();
   const matchRuns = new Map<string, RecordData>();
   const agentChats = new Map<string, RecordData>();
   const briefItems = new Map<string, RecordData[]>();
@@ -216,7 +217,7 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
   }
 
   function workspaceCollections(): Record<string, unknown> {
-    return { directory, notesByEntity, partyImportOrigins, entityAttachments, sourceTextByOccurrence, graphEdges, graphPositions, sourceGroups, captures, extractorJobs, roleJobs, agentChats, briefItems, segments, segmentMembers, fluency, writingInterests, writingExchanges, templateFamilies, writingTemplates, voiceSamples, opportunities, outputs, uploads, materialRecords, releaseRecords, threads, sends, outcomes, resolutions, capacityLedger, coachQuestions, validatedPacks, boardLists, placements, notesByOpportunity, opportunityPhases, agentRuns, agentTurns, events };
+    return { directory, notesByEntity, partyImportOrigins, entityAttachments, sourceTextByOccurrence, graphEdges, graphPositions, sourceGroups, captures, extractorJobs, roleJobs, templateCandidates, agentChats, briefItems, segments, segmentMembers, fluency, writingInterests, writingExchanges, templateFamilies, writingTemplates, voiceSamples, opportunities, outputs, uploads, materialRecords, releaseRecords, threads, sends, outcomes, resolutions, capacityLedger, coachQuestions, validatedPacks, boardLists, placements, notesByOpportunity, opportunityPhases, agentRuns, agentTurns, events };
   }
 
   function clearAgentTimers(runId?: string) {
@@ -1971,7 +1972,46 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       if (!run) return fail(response, 404, 'MATCH_NOT_FOUND', 'No completed match exists for this opportunity and recipient.');
       return json(response, 200, run);
     }
-    if (/^\/api\/v1\/templates\/build$/.test(url.pathname) && request.method === 'POST') return fail(response, 503, 'MODEL_UNAVAILABLE', 'Template Builder is unavailable; create a manual template version.');
+    if (/^\/api\/v1\/templates\/build$/.test(url.pathname) && request.method === 'POST') {
+      if (!embedOnline) return fail(response, 503, 'MODEL_UNAVAILABLE', 'Template Builder is unavailable; create a manual template version.');
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      if (typeof input.stage_class !== 'string' || !Array.isArray(input.rungs) || !Array.isArray(input.rules) || input.rules.length < 1 || typeof input.channel !== 'string') return fail(response, 422, 'TEMPLATE_BUILD_INPUT_INVALID', 'Template Builder request is incomplete');
+      const jobId = randomHex();
+      const variants = [1, 2].map((n) => ({
+        name: `Variant ${n}`,
+        body: n === 1 ? 'Hello {{their_name:name}}, I can offer {{gift:guide}}. Would a short review help {{ask:next_step}}?' : 'A second skeleton leading with {{hook:hook}}.',
+        sentences: [{ text: n === 1 ? 'I can offer a short guide.' : 'A second skeleton.', rules: ['R1'] }],
+        fallbacks: { proof: 'omit_sentence' },
+        notes: `Owner-review candidate ${n}.`,
+      }));
+      roleJobs.set(jobId, { id: jobId, role: 'template_builder', status: 'succeeded', result: { variants }, last_error: null, review_ref: null });
+      templateCandidates.set(jobId, {
+        job_id: jobId,
+        role: 'template_builder',
+        status: 'succeeded',
+        items: variants.map((variant, index) => ({
+          id: randomHex(),
+          variant_no: index + 1,
+          name: variant.name,
+          body: variant.body,
+          sentences: variant.sentences,
+          fallbacks: variant.fallbacks,
+          notes: variant.notes,
+          preview: {},
+          revision: 1,
+          status: 'owner_review_required',
+          saved_version_id: null,
+          family_head_id: null,
+        })),
+      });
+      return json(response, 202, { job_id: jobId, role: 'template_builder', state: 'queued' });
+    }
+    const buildCandidatesMatch = /^\/api\/v1\/templates\/build-candidates\/([^/]+)$/.exec(url.pathname);
+    if (buildCandidatesMatch && request.method === 'GET') {
+      const listing = templateCandidates.get(buildCandidatesMatch[1]!);
+      if (!listing) return fail(response, 404, 'JOB_NOT_FOUND', 'Job does not exist');
+      return json(response, 200, listing);
+    }
     const composeMatch = /^\/api\/v1\/opportunities\/([^/]+)\/materials\/compose$/.exec(url.pathname);
     if (composeMatch && request.method === 'POST') {
       let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
@@ -3669,8 +3709,8 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
 
     const jobMatch = /^\/api\/v1\/jobs\/([^/]+)$/.exec(url.pathname);
     if (jobMatch && request.method === 'GET') {
-      const job = extractorJobs.get(jobMatch[1]!) ?? coachJobs.get(jobMatch[1]!);
-      return job ? json(response, 200, job) : fail(response, 404, 'JOB_NOT_FOUND', 'Job does not exist');
+      const job = extractorJobs.get(jobMatch[1]!) ?? roleJobs.get(jobMatch[1]!) ?? coachJobs.get(jobMatch[1]!);
+      return job ? json(response, 200, { review_ref: null, ...job }) : fail(response, 404, 'JOB_NOT_FOUND', 'Job does not exist');
     }
     if (jobMatch && request.method === 'POST') {
       const id = jobMatch[1]!;
