@@ -137,7 +137,11 @@ export async function executeDelegated(execution, assets, fetch, signal, control
   const tokenizer = qualifiedTokenizer(assets.tokenizer, profile.tokenizer_digest)
   const tools = closedTools(execution.tools)
   const { messages, pending } = canonicalMessages(transcript, continuation)
-  const initialObserved = await observe(fetch, profile)
+  const initialObserved = await observe(fetch, {
+    providerVersion: profile.provider_version,
+    tag: profile.model_tag,
+    digest: profile.model_digest,
+  })
 
   const model = {
     id: profile.model_tag,
@@ -330,7 +334,11 @@ export async function executeDelegated(execution, assets, fetch, signal, control
     .map((item) => item.text)
     .join("")
   if (Buffer.byteLength(finalText) > MAX_TEXT) reject("RESULT_INVALID")
-  const finalObserved = await observe(fetch, profile)
+  const finalObserved = await observe(fetch, {
+    providerVersion: profile.provider_version,
+    tag: profile.model_tag,
+    digest: profile.model_digest,
+  })
   if (finalObserved.model_digest !== initialObserved.model_digest ||
       finalObserved.provider_version !== initialObserved.provider_version) {
     reject("PROFILE_CHANGED")

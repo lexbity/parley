@@ -1,0 +1,16 @@
+{
+  "model": "local:embed",
+  "model_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "profile_revision": 2,
+  "calibrated_kinds": [
+    "gift",
+    "proof",
+    "artifact"
+  ],
+  "readiness": {
+    "status": "ready",
+    "diagnostic": null,
+    "checked_at": "2026-11-24T00:00:00.000Z",
+    "probe_id": "p_1"
+  }
+}

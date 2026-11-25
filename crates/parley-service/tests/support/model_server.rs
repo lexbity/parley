@@ -32,7 +32,12 @@ use tokio::{
 };
 
 pub const MODEL_TAG: &str = "parley-fixture:latest";
+pub const EMBED_MODEL_TAG: &str = "parley-fixture-embed:latest";
 pub const PROVIDER_VERSION: &str = "0.17.0";
+
+pub fn embed_model_digest() -> String {
+    "e".repeat(64)
+}
 
 static BUNDLE: OnceLock<PathBuf> = OnceLock::new();
 
@@ -140,6 +145,7 @@ pub fn verified_bundle() -> &'static Path {
             ("interviewer.schema.json", "crates/parley-service/roles/interviewer/schema.json"),
             ("briefer.schema.json", "crates/parley-service/roles/briefer/schema.json"),
             ("extractor.schema.json", "crates/parley-service/roles/extractor/schema.json"),
+            ("matcher.schema.json", "crates/parley-service/roles/matcher/schema.json"),
         ] {
             copy_mode(&root.join(source), &dir.join(name));
         }
@@ -213,6 +219,33 @@ pub async fn install_qualified_profile_with(
     output_tokens: i64,
     template_tokens: i64,
 ) -> i64 {
+    install_qualified_profile_with_embed(
+        pool,
+        workspace_path,
+        endpoint,
+        context_tokens,
+        output_tokens,
+        template_tokens,
+        None,
+        None,
+    )
+    .await
+}
+
+/// Same as [`install_qualified_profile_with`] but also installs a qualified
+/// embedding identity (tag/digest/dimensions) so the matcher and calibrate
+/// paths can run.
+#[allow(clippy::too_many_arguments)]
+pub async fn install_qualified_profile_with_embed(
+    pool: &SqlitePool,
+    workspace_path: &Path,
+    endpoint: SocketAddr,
+    context_tokens: i64,
+    output_tokens: i64,
+    template_tokens: i64,
+    embed_digest: Option<&str>,
+    embed_dimensions: Option<u32>,
+) -> i64 {
     verified_bundle();
     let artifact = tokenizer_artifact().to_string();
     let tokenizer_digest = digest(artifact.as_bytes());
@@ -232,11 +265,13 @@ pub async fn install_qualified_profile_with(
             .unwrap();
     let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     let runner = std::env::var("PARLEY_TEST_MANIFEST_SHA256").unwrap();
+    let embed_model = embed_digest.map(|_| EMBED_MODEL_TAG);
+    let embed_digest_sql = embed_digest;
     sqlx::query(
         "INSERT INTO inference_profile(revision,runner_kind,runner_build_digest,protocol_major,
            provider_version,endpoint,chat_model,chat_model_digest,tokenizer_digest,recipe_json,
-           context_tokens,output_tokens,locale,created_at)
-         VALUES(?,'pi',?,1,?,?,?,?,?,?,?,?,'en',?)",
+           context_tokens,output_tokens,locale,created_at,embed_model,embed_model_digest)
+         VALUES(?,'pi',?,1,?,?,?,?,?,?,?,?,'en',?,?,?)",
     )
     .bind(revision)
     .bind(&runner)
@@ -249,6 +284,8 @@ pub async fn install_qualified_profile_with(
     .bind(context_tokens)
     .bind(output_tokens)
     .bind(&now)
+    .bind(embed_model)
+    .bind(embed_digest_sql)
     .execute(pool)
     .await
     .unwrap();
@@ -263,6 +300,20 @@ pub async fn install_qualified_profile_with(
         .bind(mode)
         .bind(format!("{number:064x}"))
         .bind(&now)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+    if let Some(embed_digest) = embed_digest {
+        let dims = embed_dimensions.unwrap_or(8);
+        // Profiles are immutable; the embedding identity is carried by the
+        // embed qualification rows instead of a profile UPDATE.
+        sqlx::query(
+            "UPDATE inference_qualification SET model_digest=?,details_json=? WHERE profile_revision=? AND mode='embed'",
+        )
+        .bind(embed_digest)
+        .bind(json!({"dimensions": dims}).to_string())
+        .bind(revision)
         .execute(pool)
         .await
         .unwrap();
@@ -340,6 +391,7 @@ struct Inner {
     native_index: AtomicUsize,
     responder: Option<Mutex<Box<dyn FnMut(usize, &str) -> Value + Send>>>,
     responder_index: AtomicUsize,
+    embed_responder: Option<Mutex<Box<dyn FnMut(&str) -> Vec<f32> + Send>>>,
     hold_native: bool,
     native_release: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     native_gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
@@ -347,6 +399,19 @@ struct Inner {
     gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
     gate_at: Option<usize>,
     seen: Arc<Mutex<Vec<String>>>,
+}
+
+/// Default scripted embedding responder: texts containing the `[N]` marker
+/// embed orthogonally to everything else. The need text and `[P]` cases share
+/// one direction, so calibrated separation is exact and deterministic.
+pub fn marker_embed_responder() -> Box<dyn FnMut(&str) -> Vec<f32> + Send> {
+    Box::new(|text: &str| {
+        if text.contains("[N]") {
+            vec![0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        } else {
+            vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        }
+    })
 }
 
 pub struct ModelServer {
@@ -398,7 +463,7 @@ impl ModelServer {
         pause_index: Option<usize>,
         hold_native: bool,
     ) -> Self {
-        Self::build_with_responder(replies, native, pause_index, hold_native, None).await
+        Self::build_with_responder(replies, native, pause_index, hold_native, None, None).await
     }
 
     /// Drive scripted native-style responders through the real Pi wire.
@@ -406,8 +471,32 @@ impl ModelServer {
         responder: Box<dyn FnMut(usize, &str) -> Value + Send>,
         pause_index: Option<usize>,
     ) -> Self {
-        Self::build_with_responder(Vec::new(), Vec::new(), pause_index, false, Some(responder))
-            .await
+        Self::build_with_responder(
+            Vec::new(),
+            Vec::new(),
+            pause_index,
+            false,
+            Some(responder),
+            None,
+        )
+        .await
+    }
+
+    /// Drive scripted replies plus a custom embedding responder.
+    pub async fn with_embed_responder(
+        replies: Vec<Reply>,
+        pause_index: Option<usize>,
+        embed_responder: Box<dyn FnMut(&str) -> Vec<f32> + Send>,
+    ) -> Self {
+        Self::build_with_responder(
+            replies,
+            Vec::new(),
+            pause_index,
+            false,
+            None,
+            Some(embed_responder),
+        )
+        .await
     }
 
     async fn build_with_responder(
@@ -416,6 +505,7 @@ impl ModelServer {
         pause_index: Option<usize>,
         hold_native: bool,
         responder: Option<Box<dyn FnMut(usize, &str) -> Value + Send>>,
+        embed_responder: Option<Box<dyn FnMut(&str) -> Vec<f32> + Send>>,
     ) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -433,6 +523,7 @@ impl ModelServer {
             native_index: AtomicUsize::new(0),
             responder: responder.map(Mutex::new),
             responder_index: AtomicUsize::new(0),
+            embed_responder: embed_responder.map(Mutex::new),
             hold_native,
             native_release: Mutex::new(native_release),
             native_gate: Mutex::new(native_gate),
@@ -599,7 +690,11 @@ async fn serve_one(stream: &mut TcpStream, state: Arc<Inner>) -> Option<()> {
     } else if path.contains("GET /api/tags") {
         (
             Some("application/json"),
-            json!({"models":[{"name":MODEL_TAG,"digest":model_digest()}]}).to_string(),
+            json!({"models":[
+                {"name":MODEL_TAG,"digest":model_digest()},
+                {"name":EMBED_MODEL_TAG,"digest":embed_model_digest()}
+            ]})
+            .to_string(),
         )
     } else if path.contains("POST /api/chat") {
         let index = state.native_index.fetch_add(1, Ordering::Relaxed);
@@ -619,6 +714,24 @@ async fn serve_one(stream: &mut TcpStream, state: Arc<Inner>) -> Option<()> {
             .cloned()
             .unwrap_or_else(|| json!({"message":{"role":"assistant","content":"{\"response\":null,\"items\":[]}"},"prompt_eval_count":12,"eval_count":8}));
         (Some("application/json"), payload.to_string())
+    } else if path.contains("POST /v1/embeddings") {
+        let parsed: Value = serde_json::from_str(&body).unwrap_or(json!({}));
+        let inputs = parsed["input"].as_array().cloned().unwrap_or_default();
+        let mut data = Vec::with_capacity(inputs.len());
+        {
+            let mut responder_guard = state.embed_responder.as_ref().map(|m| m.lock().unwrap());
+            for text in inputs.iter().filter_map(Value::as_str) {
+                let vector = match &mut responder_guard {
+                    Some(guard) => guard(text),
+                    None => marker_embed_responder()(text),
+                };
+                data.push(json!({"embedding": vector}));
+            }
+        }
+        (
+            Some("application/json"),
+            json!({"data": data, "model": MODEL_TAG}).to_string(),
+        )
     } else if path.contains("POST /v1/chat/completions") {
         let index = state.index.fetch_add(1, Ordering::Relaxed);
         let gate = if state.gate_at == Some(index) {

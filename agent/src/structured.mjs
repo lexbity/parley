@@ -19,14 +19,16 @@ function reject(code) {
   throw new WorkerFailure(code)
 }
 
-export async function observe(fetch, profile) {
+export async function observe(fetch, { providerVersion, tag, digest }) {
   const version = await (await fetch(RELAY_ORIGIN + "/api/version")).json()
-  if (version?.version !== profile.provider_version) reject("PROFILE_CHANGED")
+  if (version?.version !== providerVersion) reject("PROFILE_CHANGED")
   const catalog = await (await fetch(RELAY_ORIGIN + "/api/tags")).json()
   if (!Array.isArray(catalog?.models)) reject("MODEL_UNAVAILABLE")
-  const matches = catalog.models.filter((item) => item?.name === profile.model_tag)
+  const matches = catalog.models.filter((item) => item?.name === tag)
   if (matches.length !== 1) reject("MODEL_UNAVAILABLE")
-  if (matches[0].digest !== profile.model_digest) reject("PROFILE_CHANGED")
+  // A probe has no recorded digest yet; it observes the catalog identity. Any
+  // real execution must match the pinned digest exactly.
+  if (digest && matches[0].digest !== digest) reject("PROFILE_CHANGED")
   return { provider_version: version.version, model_digest: matches[0].digest, model_tag: matches[0].name }
 }
 
@@ -47,12 +49,14 @@ export async function executeStructured(execution, assets, fetch, signal) {
     : role === "interviewer" ? "parley_interviewer"
     : role === "briefer" ? "parley_briefer"
     : role === "extractor" ? "parley_extractor"
+    : role === "matcher" ? "parley_matcher"
     : "parley_coach"
   const schemaBytes = probe ? Buffer.from(JSON.stringify(PROBE_SCHEMA))
     : role === "template_builder" ? assets.builderSchema
     : role === "interviewer" ? assets.interviewerSchema
     : role === "briefer" ? assets.brieferSchema
     : role === "extractor" ? assets.extractorSchema
+    : role === "matcher" ? assets.matcherSchema
     : assets.coachSchema
   if (!probe && sha256(schemaBytes) !== execution.schema_digest) reject("WORKER_PROTOCOL")
   const schema = parseJson(schemaBytes)
@@ -63,7 +67,11 @@ export async function executeStructured(execution, assets, fetch, signal) {
       Buffer.byteLength(input) > MAX_ROLE_INPUT) reject("CONTEXT_BUDGET")
 
   const tokenizer = qualifiedTokenizer(assets.tokenizer, profile.tokenizer_digest)
-  await observe(fetch, profile)
+  await observe(fetch, {
+    providerVersion: profile.provider_version,
+    tag: profile.model_tag,
+    digest: profile.model_digest,
+  })
   const model = {
     id: profile.model_tag,
     name: profile.model_tag,
@@ -136,6 +144,10 @@ export async function executeStructured(execution, assets, fetch, signal) {
       !Number.isInteger(usage.output_tokens) || usage.output_tokens < 1 || usage.output_tokens > profile.max_output_tokens) {
     reject("RESULT_INVALID")
   }
-  const observed = await observe(fetch, profile)
+  const observed = await observe(fetch, {
+    providerVersion: profile.provider_version,
+    tag: profile.model_tag,
+    digest: profile.model_digest,
+  })
   return probe ? { mode, observed, usage } : { mode, observed, usage, candidate }
 }

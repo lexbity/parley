@@ -33,6 +33,9 @@ enum Prepared {
     Eval {
         report: serde_json::Value,
     },
+    Calibrate {
+        report: serde_json::Value,
+    },
     /// Another process owns the workspace; hand back its bootstrap URL.
     RelaunchActive {
         url: String,
@@ -45,7 +48,7 @@ enum Prepared {
     },
 }
 
-const HELP: &str = "Parley local workspace\n\nUSAGE:\n  parley [--workspace PATH] [--headless]\n  parley eval --role extractor\n\nThe default workspace is $XDG_DATA_HOME/parley/workspace.sqlite. Headless mode prints the one-time local bootstrap URL. Evaluations emit one machine-readable JSON document to stdout.";
+const HELP: &str = "Parley local workspace\n\nUSAGE:\n  parley [--workspace PATH] [--headless]\n  parley eval --role extractor\n  parley calibrate-matching --workspace PATH\n\nThe default workspace is $XDG_DATA_HOME/parley/workspace.sqlite. Headless mode prints the one-time local bootstrap URL. Evaluations emit one machine-readable JSON document to stdout. Calibration runs the reviewed E-match fixture against the active qualified embedding model and commits trusted thresholds only when the RFC-0001 held-out floors pass.";
 
 fn workspace_path(args: &[String]) -> Result<PathBuf, String> {
     if let Some(index) = args.iter().position(|arg| arg == "--workspace") {
@@ -219,6 +222,28 @@ async fn prepare(args: &[String]) -> Result<Prepared, CliFailure> {
                 message: format!("parley eval: {error}"),
             });
     }
+    if args.first().is_some_and(|arg| arg == "calibrate-matching") {
+        if args.len() != 3 || args.get(1).is_none_or(|arg| arg != "--workspace") {
+            return Err(usage_failure(
+                "parley calibrate-matching: expected `--workspace PATH`".into(),
+            ));
+        }
+        let workspace = workspace_path(args).map_err(usage_failure)?;
+        let lock = acquire_workspace_lock(&workspace).map_err(usage_failure)?;
+        let Some(_lock) = lock else {
+            return Err(usage_failure(
+                "calibrate-matching requires an exclusive workspace lock; the workspace is active"
+                    .into(),
+            ));
+        };
+        return calibrate_matching(&workspace)
+            .await
+            .map(|report| Prepared::Calibrate { report })
+            .map_err(|error| CliFailure {
+                code: 1,
+                message: format!("parley calibrate-matching: {error}"),
+            });
+    }
     let headless = args.iter().any(|arg| arg == "--headless");
     let workspace = workspace_path(args).map_err(usage_failure)?;
     match acquire_workspace_lock(&workspace).map_err(usage_failure)? {
@@ -303,6 +328,10 @@ async fn main() {
                 println!("{report}");
                 0
             }
+            Ok(Prepared::Calibrate { report }) => {
+                println!("{report}");
+                0
+            }
             Ok(Prepared::RelaunchActive { url, headless }) => {
                 if headless {
                     println!("Bootstrap URL: {url}");
@@ -329,6 +358,15 @@ async fn main() {
         eprintln!("parley: this launcher currently requires a unix host");
         std::process::exit(2);
     }
+}
+
+async fn calibrate_matching(workspace: &Path) -> Result<serde_json::Value, String> {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!("../eval/match-v1.json"))
+        .map_err(|error| format!("bundled E-match fixture is invalid: {error}"))?;
+    let opened = parley_service::Workspace::open(workspace)
+        .await
+        .map_err(|error| error.to_string())?;
+    parley_service::calibrate_matching(&opened, fixture).await
 }
 
 fn evaluate_extractor() -> Result<serde_json::Value, String> {

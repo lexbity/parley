@@ -1993,6 +1993,14 @@ async fn pipeline(
                     vec![],
                 ),
                 OperationError::Writing(WritingRunError::Match(
+                    crate::application::match_start::MatchStartError::ScopeTooLarge,
+                )) => (
+                    422,
+                    "context_budget",
+                    "Matching is bounded to 4,096 eligible resources; narrow the scope".to_string(),
+                    vec![],
+                ),
+                OperationError::Writing(WritingRunError::Match(
                     crate::application::match_start::MatchStartError::Database,
                 ))
                 | OperationError::Writing(WritingRunError::Compose(

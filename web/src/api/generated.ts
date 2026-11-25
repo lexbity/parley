@@ -2678,6 +2678,7 @@ export interface components {
             profile_revision: number;
             pairing: components["schemas"]["ProviderPairing"] | null;
             structured: components["schemas"]["StructuredReadiness"];
+            embed: components["schemas"]["StructuredReadiness"];
         };
         ProviderUpdate: components["schemas"]["ProviderSettings"] & {
             expected_profile_revision: number;
@@ -2697,12 +2698,24 @@ export interface components {
             checked_at: string | null;
             probe_id: string | null;
         };
+        ProbeMode: {
+            /** @enum {unknown} */
+            mode?: "structured_role" | "embed";
+        };
+        EmbeddingModelStatus: {
+            model: string;
+            model_digest: string | null;
+            profile_revision: number;
+            calibrated_kinds: string[];
+            readiness: components["schemas"]["StructuredReadiness"];
+        };
         ProviderHealth: {
             available: boolean;
             model: string;
             models: string[];
             message: string;
             structured?: components["schemas"]["StructuredReadiness"];
+            embed?: components["schemas"]["StructuredReadiness"];
         };
         ProviderProbeReceipt: components["schemas"]["ProviderHealth"] & Record<string, never>;
         ExtractorProposal: {
@@ -4927,7 +4940,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ProbeMode"];
+            };
+        };
         responses: {
             /** @description Local model connectivity and installed tags. */
             200: {
@@ -4938,7 +4955,7 @@ export interface operations {
                     "application/json": components["schemas"]["ProviderHealth"];
                 };
             };
-            /** @description Durable structured-output probe queued for the saved profile. */
+            /** @description Durable capability probe queued for the saved profile. */
             202: {
                 headers: {
                     [name: string]: unknown;
@@ -6004,12 +6021,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Current local embedding model and digest-bound calibrations */
+            /** @description Current local embedding model, readiness and digest-bound calibrations. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["EmbeddingModelStatus"];
+                };
             };
         };
     };
@@ -6028,11 +6047,12 @@ export interface operations {
             content: {
                 "application/json": {
                     model: string;
+                    expected_profile_revision?: number;
                 };
             };
         };
         responses: {
-            /** @description Local model selected; calibration invalidation is explicit */
+            /** @description Local model selected; verification and calibration invalidation are explicit */
             200: {
                 headers: {
                     [name: string]: unknown;

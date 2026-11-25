@@ -1,0 +1,9 @@
+{
+  "scope": {
+    "kind": "opportunity",
+    "id": "o_1",
+    "revision": 1,
+    "recipient_id": "p_1",
+    "recipient_revision": 1
+  }
+}

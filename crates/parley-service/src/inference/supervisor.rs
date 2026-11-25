@@ -304,6 +304,8 @@ impl Supervisor {
                 "template_builder.schema.json",
                 "interviewer.schema.json",
                 "briefer.schema.json",
+                "extractor.schema.json",
+                "matcher.schema.json",
                 "runtime-v1.schema.json",
                 "licenses/node.txt",
                 "licenses/index.json",
@@ -362,11 +364,19 @@ impl Supervisor {
             return Err(RunError::Worker(Failure::ProfileChanged));
         }
         let host_namespaces = read_host_namespaces().map_err(|_| RunError::Isolation)?;
-        let relay = Relay::bind(
-            endpoint,
-            request.profile().model_tag.clone(),
-            request.profile().max_output_tokens,
-        )
+        let relay = if matches!(request, Execute::Embed { .. }) {
+            Relay::bind_embed(
+                endpoint,
+                request.profile().embed_tag.clone().unwrap_or_default(),
+                request.profile().max_output_tokens,
+            )
+        } else {
+            Relay::bind(
+                endpoint,
+                request.profile().model_tag.clone(),
+                request.profile().max_output_tokens,
+            )
+        }
         .map_err(|_| RunError::Provider)?;
         let mut command = self.command(relay.directory(), tokenizer)?;
         let mut child = command.spawn().map_err(|_| RunError::Isolation)?;
@@ -387,7 +397,12 @@ impl Supervisor {
             };
             if body.build != self.manifest.worker_build
                 || body.schema_digest != self.manifest.schema_digest
-                || body.capabilities != vec![Capability::StructuredRole, Capability::Delegated]
+                || body.capabilities
+                    != vec![
+                        Capability::StructuredRole,
+                        Capability::Delegated,
+                        Capability::Embed,
+                    ]
             {
                 return Err(RunError::ProtocolMismatch);
             }
@@ -535,7 +550,12 @@ impl Supervisor {
             };
             if body.build != self.manifest.worker_build
                 || body.schema_digest != self.manifest.schema_digest
-                || body.capabilities != vec![Capability::StructuredRole, Capability::Delegated]
+                || body.capabilities
+                    != vec![
+                        Capability::StructuredRole,
+                        Capability::Delegated,
+                        Capability::Embed,
+                    ]
             {
                 return Err(RunError::ProtocolMismatch);
             }
@@ -888,16 +908,78 @@ fn namespace_separation(host: &Namespaces, child: &Namespaces) -> bool {
 fn validate_completion(request: &Execute, result: &Completion) -> Result<(), RunError> {
     let (observed, usage) = result.observation();
     let profile = request.profile();
+    // The expected model identity depends on the executed mode: embedding work
+    // binds to the profile's separate embedding model, and an embed probe only
+    // observes the catalog tag (its digest is recorded by the probe itself).
+    let (expected_tag, expected_digest) = match request {
+        Execute::Embed { .. } => (
+            profile.embed_tag.as_deref(),
+            profile.embed_digest.as_deref(),
+        ),
+        Execute::Probe {
+            capability: Capability::Embed,
+            ..
+        } => (profile.embed_tag.as_deref(), None),
+        _ => (
+            Some(profile.model_tag.as_str()),
+            Some(profile.model_digest.as_str()),
+        ),
+    };
     if observed.provider_version != profile.provider_version
-        || observed.model_digest != profile.model_digest
-        || observed.model_tag != profile.model_tag
+        || expected_tag != Some(observed.model_tag.as_str())
+        || expected_digest.is_some_and(|digest| digest != observed.model_digest)
     {
         return Err(RunError::Worker(Failure::ProfileChanged));
     }
-    if usage.input_tokens == 0
-        || usage.input_tokens > profile.context_tokens
-        || usage.output_tokens == 0
-        || usage.output_tokens > profile.max_output_tokens
+    let embed_usage = matches!(
+        request,
+        Execute::Embed { .. }
+            | Execute::Probe {
+                capability: Capability::Embed,
+                ..
+            }
+    );
+    if usage.input_tokens == 0 || usage.input_tokens > profile.context_tokens {
+        return Err(RunError::Worker(Failure::ResultInvalid));
+    }
+    if embed_usage {
+        if usage.output_tokens != 0 {
+            return Err(RunError::Worker(Failure::ResultInvalid));
+        }
+    } else if usage.output_tokens == 0 || usage.output_tokens > profile.max_output_tokens {
+        return Err(RunError::Worker(Failure::ResultInvalid));
+    }
+    if let (
+        Execute::Embed {
+            inputs, dimensions, ..
+        },
+        Completion::Embed { vectors, .. },
+    ) = (request, result)
+    {
+        if vectors.len() != inputs.len()
+            || vectors
+                .iter()
+                .any(|vector| vector.len() != *dimensions as usize)
+            || vectors.iter().flatten().any(|value| !value.is_finite())
+        {
+            return Err(RunError::Worker(Failure::ResultInvalid));
+        }
+        if serde_json::to_vec(vectors)
+            .map_err(|_| RunError::Worker(Failure::ResultInvalid))?
+            .len()
+            > protocol::MAX_FRAME - 64 * 1024
+        {
+            return Err(RunError::Worker(Failure::ResultInvalid));
+        }
+    }
+    if let (
+        Execute::Probe {
+            capability: Capability::Embed,
+            ..
+        },
+        Completion::Probe { dimensions, .. },
+    ) = (request, result)
+        && !dimensions.is_some_and(|dimensions| (1..=4096).contains(&dimensions))
     {
         return Err(RunError::Worker(Failure::ResultInvalid));
     }
@@ -916,6 +998,7 @@ fn validate_completion(request: &Execute, result: &Completion) -> Result<(), Run
             protocol::Role::Interviewer => crate::inference::interviewer_schema(),
             protocol::Role::Briefer => crate::inference::briefer_schema(),
             protocol::Role::Extractor => crate::inference::extractor_schema(),
+            protocol::Role::Matcher => crate::inference::matcher_schema(),
         };
         if digest(schema) != *schema_digest {
             return Err(RunError::ProtocolMismatch);
@@ -946,6 +1029,9 @@ mod tests {
             context_tokens: 8192,
             template_tokens: 128,
             max_output_tokens: 512,
+            embed_tag: None,
+            embed_digest: None,
+            embed_dimensions: None,
         }
     }
 
@@ -1045,7 +1131,9 @@ mod tests {
                 system,
                 input,
             },
-            Execute::Delegated { .. } | Execute::Probe { .. } => unreachable!(),
+            Execute::Delegated { .. } | Execute::Probe { .. } | Execute::Embed { .. } => {
+                unreachable!()
+            }
         };
         assert!(matches!(
             validate_completion(&bad_digest, &result),
@@ -1053,7 +1141,8 @@ mod tests {
         ));
         assert!(!request.matches(&Completion::Probe {
             observed: observed(),
-            usage: usage()
+            usage: usage(),
+            dimensions: None,
         }));
     }
 

@@ -760,6 +760,11 @@ paths:
       parameters:
       - $ref: '#/components/parameters/MutationToken'
       - $ref: '#/components/parameters/Epoch'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProbeMode'
       responses:
         '200':
           description: Local model connectivity and installed tags.
@@ -768,7 +773,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProviderHealth'
         '202':
-          description: Durable structured-output probe queued for the saved profile.
+          description: Durable capability probe queued for the saved profile.
           content:
             application/json:
               schema:
@@ -1548,15 +1553,18 @@ paths:
     get:
       operationId: getEmbeddingModel
       security: [{sessionCookie: []}]
-      responses: {'200': {description: Current local embedding model and digest-bound calibrations}}
+      responses:
+        '200':
+          description: Current local embedding model, readiness and digest-bound calibrations.
+          content: {application/json: {schema: {$ref: '#/components/schemas/EmbeddingModelStatus'}}}
     put:
       operationId: updateEmbeddingModel
       security: [{sessionCookie: []}]
       parameters: [{$ref: '#/components/parameters/MutationToken'}, {$ref: '#/components/parameters/Epoch'}, {$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
         required: true
-        content: {application/json: {schema: {type: object, additionalProperties: false, required: [model], properties: {model: {type: string, minLength: 1}}}}}
-      responses: {'200': {description: Local model selected; calibration invalidation is explicit}}
+        content: {application/json: {schema: {type: object, additionalProperties: false, required: [model], properties: {model: {type: string, minLength: 1}, expected_profile_revision: {type: integer, minimum: 0}}}}}
+      responses: {'200': {description: Local model selected; verification and calibration invalidation are explicit}}
   /matching/calibrations:
     get:
       operationId: listMatchingCalibrations
@@ -4561,7 +4569,7 @@ components:
       allOf:
       - $ref: '#/components/schemas/ProviderSettings'
       - type: object
-        required: [profile_revision, pairing, structured]
+        required: [profile_revision, pairing, structured, embed]
         properties:
           profile_revision: {type: integer, minimum: 0}
           pairing:
@@ -4569,6 +4577,7 @@ components:
             - $ref: '#/components/schemas/ProviderPairing'
             - type: 'null'
           structured: {$ref: '#/components/schemas/StructuredReadiness'}
+          embed: {$ref: '#/components/schemas/StructuredReadiness'}
       unevaluatedProperties: false
     ProviderUpdate:
       allOf:
@@ -4597,6 +4606,23 @@ components:
         checked_at: {type: [string, 'null'], format: date-time}
         probe_id: {type: [string, 'null']}
       additionalProperties: false
+    ProbeMode:
+      type: object
+      additionalProperties: false
+      properties:
+        mode: {enum: [structured_role, embed]}
+    EmbeddingModelStatus:
+      type: object
+      required: [model, model_digest, profile_revision, calibrated_kinds, readiness]
+      properties:
+        model: {type: string}
+        model_digest: {type: [string, 'null']}
+        profile_revision: {type: integer, minimum: 0}
+        calibrated_kinds:
+          type: array
+          items: {type: string}
+        readiness: {$ref: '#/components/schemas/StructuredReadiness'}
+      additionalProperties: false
     ProviderHealth:
       type: object
       required: [available, model, models, message]
@@ -4608,6 +4634,7 @@ components:
           items: {type: string}
         message: {type: string}
         structured: {$ref: '#/components/schemas/StructuredReadiness'}
+        embed: {$ref: '#/components/schemas/StructuredReadiness'}
       additionalProperties: false
     ProviderProbeReceipt:
       allOf:

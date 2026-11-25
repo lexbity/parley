@@ -259,6 +259,16 @@ mod resource_board;
 mod thread;
 mod writing;
 mod writing_jobs;
+
+/// Run the offline, reviewed E-match calibration for the active qualified
+/// embedding profile (AR-001 AR07). Returns the committed calibration report
+/// or a typed failure. Only this path may write trusted calibration rows.
+pub async fn calibrate_matching(
+    workspace: &Workspace,
+    fixture: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    crate::inference::calibrate::run(workspace, fixture).await
+}
 mod web_assets {
     include!(concat!(env!("OUT_DIR"), "/web_assets.rs"));
 }

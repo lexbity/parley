@@ -5,6 +5,9 @@ export const MAX_FRAME = 512 * 1024
 export const MAX_ROLE_INPUT = 256 * 1024
 export const MAX_ROLE_OUTPUT = 128 * 1024
 export const MAX_PROMPT_SCHEMA = 96 * 1024
+export const MAX_EMBED_INPUT = 64 * 1024
+export const MAX_EMBED_DIMS = 4096
+export const MAX_EMBED_VECTORS = 16
 
 export function sha256(value) {
   return createHash("sha256").update(value).digest("hex")

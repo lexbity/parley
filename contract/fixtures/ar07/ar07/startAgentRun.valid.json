@@ -1,0 +1,21 @@
+{
+  "task": "Run matching for the granted scope",
+  "targets": [
+    {
+      "kind": "opportunity",
+      "id": "o_1"
+    },
+    {
+      "kind": "party",
+      "id": "p_1"
+    },
+    {
+      "kind": "resource",
+      "id": "r_1"
+    }
+  ],
+  "permissions": [
+    "match.start"
+  ],
+  "allow_created_opportunities": false
+}

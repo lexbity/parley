@@ -1,0 +1,259 @@
+{
+  "dataset_id": "match-v1",
+  "need": "Help a new executive onboard and understand the organization's operating rhythm.",
+  "split": "holdout",
+  "cases": [
+    {
+      "id": "gift-p00",
+      "kind": "gift",
+      "text": "A concise decision-making map of the leadership team and their weekly cadence.",
+      "relevant": true,
+      "holdout": false
+    },
+    {
+      "id": "gift-p01",
+      "kind": "gift",
+      "text": "A one-page org chart with the operating rhythm and meeting norms.",
+      "relevant": true,
+      "holdout": false
+    },
+    {
+      "id": "gift-p02",
+      "kind": "gift",
+      "text": "A walkthrough deck of the quarterly planning cycle and key stakeholders.",
+      "relevant": true,
+      "holdout": false
+    },
+    {
+      "id": "gift-p03",
+      "kind": "gift",
+      "text": "An arrival guide listing first-month milestones and who to meet.",
+      "relevant": true,
+      "holdout": false
+    },
+    {
+      "id": "gift-p04",
+      "kind": "gift",
+      "text": "A list of the company's recurring rituals and how decisions are made.",
+      "relevant": true,
+      "holdout": false
+    },
+    {
+      "id": "gift-p05",
+      "kind": "gift",
+      "text": "A summary of the new executive's first 90 days checklist.",
+      "relevant": true,
+      "holdout": false
+    },
+    {
+      "id": "gift-n00",
+      "kind": "gift",
+      "text": "A generic brochure about the tourism board of a distant region.",
+      "relevant": false,
+      "holdout": false
+    },
+    {
+      "id": "gift-n01",
+      "kind": "gift",
+      "text": "A recipe collection for regional desserts.",
+      "relevant": false,
+      "holdout": false
+    },
+    {
+      "id": "gift-n02",
+      "kind": "gift",
+      "text": "A car maintenance schedule for a delivery fleet.",
+      "relevant": false,
+      "holdout": false
+    },
+    {
+      "id": "gift-n03",
+      "kind": "gift",
+      "text": "A museum annual report from a city far away.",
+      "relevant": false,
+      "holdout": false
+    },
+    {
+      "id": "gift-n04",
+      "kind": "gift",
+      "text": "A football club season ticket policy.",
+      "relevant": false,
+      "holdout": false
+    },
+    {
+      "id": "gift-n05",
+      "kind": "gift",
+      "text": "A knitting pattern archive with seasonal yarn reviews.",
+      "relevant": false,
+      "holdout": false
+    },
+    {
+      "id": "proof-p00",
+      "kind": "proof",
+      "text": "A published note confirming the new process reduced onboarding time by 30%.",
+      "relevant": true,
+      "holdout": false
+    },
+    {
+      "id": "proof-p01",
+      "kind": "proof",
+      "text": "A signed statement from the VP that the rhythm is now weekly.",
+      "relevant": true,
+      "holdout": false
+    },
+    {
+      "id": "proof-p02",
+      "kind": "proof",
+      "text": "A data snapshot showing first-month completion rate across prior hires.",
+      "relevant": true,
+      "holdout": false
+    },
+    {
+      "id": "proof-p03",
+      "kind": "proof",
+      "text": "An email from the CFO verifying the quarterly planning calendar.",
+      "relevant": true,
+      "holdout": false
+    },
+    {
+      "id": "proof-p04",
+      "kind": "proof",
+      "text": "A meeting artifact signed by the team lead listing the milestones.",
+      "relevant": true,
+      "holdout": false
+    },
+    {
+      "id": "proof-p05",
+      "kind": "proof",
+      "text": "A verified announcement that the executive onboarding program exists.",
+      "relevant": true,
+      "holdout": false
+    },
+    {
+      "id": "proof-n00",
+      "kind": "proof",
+      "text": "An unverified rumour about a closure in another industry.",
+      "relevant": false,
+      "holdout": false
+    },
+    {
+      "id": "proof-n01",
+      "kind": "proof",
+      "text": "A photo of a beach holiday with no names or dates.",
+      "relevant": false,
+      "holdout": false
+    },
+    {
+      "id": "proof-n02",
+      "kind": "proof",
+      "text": "A blog post that guesses the product roadmap without sources.",
+      "relevant": false,
+      "holdout": false
+    },
+    {
+      "id": "proof-n03",
+      "kind": "proof",
+      "text": "A meme about Monday meetings generally.",
+      "relevant": false,
+      "holdout": false
+    },
+    {
+      "id": "proof-n04",
+      "kind": "proof",
+      "text": "A comment that 'things used to be different' with no evidence.",
+      "relevant": false,
+      "holdout": false
+    },
+    {
+      "id": "proof-n05",
+      "kind": "proof",
+      "text": "A horoscope text with a vague forecast.",
+      "relevant": false,
+      "holdout": false
+    },
+    {
+      "id": "artifact-p00",
+      "kind": "artifact",
+      "text": "A physical copy of the leadership operating manual with tabs.",
+      "relevant": true,
+      "holdout": false
+    },
+    {
+      "id": "artifact-p01",
+      "kind": "artifact",
+      "text": "The annual planning workbook used by previous executives.",
+      "relevant": true,
+      "holdout": false
+    },
+    {
+      "id": "artifact-p02",
+      "kind": "artifact",
+      "text": "A printed calendar of this year's leadership forums.",
+      "relevant": true,
+      "holdout": false
+    },
+    {
+      "id": "artifact-p03",
+      "kind": "artifact",
+      "text": "A binder of the onboarding program materials from last cohort.",
+      "relevant": true,
+      "holdout": false
+    },
+    {
+      "id": "artifact-p04",
+      "kind": "artifact",
+      "text": "A slide deck from the last strategy offsite.",
+      "relevant": true,
+      "holdout": false
+    },
+    {
+      "id": "artifact-p05",
+      "kind": "artifact",
+      "text": "A laminated one-pager of the decision rights matrix.",
+      "relevant": true,
+      "holdout": false
+    },
+    {
+      "id": "artifact-n00",
+      "kind": "artifact",
+      "text": "A snow globe from a gift shop.",
+      "relevant": false,
+      "holdout": false
+    },
+    {
+      "id": "artifact-n01",
+      "kind": "artifact",
+      "text": "An old phone charger found in a drawer.",
+      "relevant": false,
+      "holdout": false
+    },
+    {
+      "id": "artifact-n02",
+      "kind": "artifact",
+      "text": "A ticket stub from a concert two years ago.",
+      "relevant": false,
+      "holdout": false
+    },
+    {
+      "id": "artifact-n03",
+      "kind": "artifact",
+      "text": "A coffee mug with a logo of an airline.",
+      "relevant": false,
+      "holdout": false
+    },
+    {
+      "id": "artifact-n04",
+      "kind": "artifact",
+      "text": "A postcard from a resort.",
+      "relevant": false,
+      "holdout": false
+    },
+    {
+      "id": "artifact-n05",
+      "kind": "artifact",
+      "text": "A set of crayons from a child's desk.",
+      "relevant": false,
+      "holdout": false
+    }
+  ]
+}

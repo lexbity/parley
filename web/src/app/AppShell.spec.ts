@@ -12,6 +12,7 @@ const configuredProvider: ProviderConfig = {
   endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024,
   locale: 'en', profile_revision: 3, pairing: null,
   structured: { status: 'unqualified', diagnostic: null, checked_at: null, probe_id: null },
+  embed: { status: 'unqualified', diagnostic: null, checked_at: null, probe_id: null },
 };
 
 function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [], board: BoardSnapshot = {
@@ -30,7 +31,7 @@ function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [],
   vi.spyOn(parley, 'listWritingTemplates').mockResolvedValue([]);
   vi.spyOn(parley, 'listTemplateFamilies').mockResolvedValue([]);
   vi.spyOn(parley, 'listVoiceSamples').mockResolvedValue([]);
-  vi.spyOn(parley, 'getEmbeddingModel').mockResolvedValue({ model: '', model_digest: null, calibrated_kinds: [] });
+  vi.spyOn(parley, 'getEmbeddingModel').mockResolvedValue({ model: '', model_digest: null, profile_revision: 3, calibrated_kinds: [], readiness: { status: 'unqualified', diagnostic: null, checked_at: null, probe_id: null } });
   vi.spyOn(parley, 'getWritingInterests').mockResolvedValue([]);
   vi.spyOn(parley, 'getWritingExchange').mockResolvedValue({ current: null, versions: [] });
   vi.spyOn(parley, 'getWritingMatch').mockRejectedValue(new Error('no completed match'));

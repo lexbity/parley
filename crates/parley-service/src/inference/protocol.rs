@@ -33,6 +33,15 @@ pub struct Profile {
     pub context_tokens: u32,
     pub template_tokens: u32,
     pub max_output_tokens: u32,
+    /// Embedding identity for the `embed` mode. Present only when the profile
+    /// has a separately qualified embedding model; chat executions leave them
+    /// unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed_tag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed_dimensions: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -43,6 +52,7 @@ pub enum Role {
     Interviewer,
     Briefer,
     Extractor,
+    Matcher,
 }
 
 /// One server correlation id bound to a named, frozen tool descriptor. The
@@ -94,6 +104,9 @@ pub enum Execute {
     Probe {
         profile: Profile,
         deadline_ms: u32,
+        /// The capability being probed. A structured probe exercises chat
+        /// output; an embed probe exercises the embedding transport.
+        capability: Capability,
     },
     StructuredRole {
         profile: Profile,
@@ -115,6 +128,15 @@ pub enum Execute {
         tools: Vec<AuthorizedTool>,
         continuation: Option<Continuation>,
     },
+    /// One bounded embedding batch through the same Unix relay. The worker
+    /// verifies response order, exact declared dimensions and finite values;
+    /// the host partitions batches so one frame never exceeds the cap.
+    Embed {
+        profile: Profile,
+        deadline_ms: u32,
+        inputs: Vec<String>,
+        dimensions: u32,
+    },
 }
 
 impl Execute {
@@ -122,7 +144,8 @@ impl Execute {
         match self {
             Self::Probe { profile, .. }
             | Self::StructuredRole { profile, .. }
-            | Self::Delegated { profile, .. } => profile,
+            | Self::Delegated { profile, .. }
+            | Self::Embed { profile, .. } => profile,
         }
     }
 
@@ -130,7 +153,8 @@ impl Execute {
         match self {
             Self::Probe { deadline_ms, .. }
             | Self::StructuredRole { deadline_ms, .. }
-            | Self::Delegated { deadline_ms, .. } => *deadline_ms,
+            | Self::Delegated { deadline_ms, .. }
+            | Self::Embed { deadline_ms, .. } => *deadline_ms,
         }
     }
 
@@ -143,6 +167,7 @@ impl Execute {
                     Completion::StructuredRole { .. }
                 )
                 | (Self::Delegated { .. }, Completion::Delegated { .. })
+                | (Self::Embed { .. }, Completion::Embed { .. })
         )
     }
 }
@@ -168,6 +193,9 @@ pub enum Completion {
     Probe {
         observed: ObservedModel,
         usage: Usage,
+        /// Present for an embed capability probe; the observed vector width.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dimensions: Option<u32>,
     },
     StructuredRole {
         observed: ObservedModel,
@@ -179,16 +207,26 @@ pub enum Completion {
         usage: Usage,
         text: String,
     },
+    Embed {
+        observed: ObservedModel,
+        usage: Usage,
+        vectors: Vec<Vec<f32>>,
+    },
 }
 
 impl Completion {
     pub fn observation(&self) -> (&ObservedModel, &Usage) {
         match self {
-            Self::Probe { observed, usage }
+            Self::Probe {
+                observed, usage, ..
+            }
             | Self::StructuredRole {
                 observed, usage, ..
             }
             | Self::Delegated {
+                observed, usage, ..
+            }
+            | Self::Embed {
                 observed, usage, ..
             } => (observed, usage),
         }
@@ -232,6 +270,7 @@ pub struct Hello {
 pub enum Capability {
     StructuredRole,
     Delegated,
+    Embed,
 }
 
 #[derive(Debug, Deserialize)]
@@ -520,7 +559,7 @@ mod tests {
             "body": {
                 "build": "a".repeat(64),
                 "schema_digest": "b".repeat(64),
-                "capabilities": ["structured_role", "delegated"],
+                "capabilities": ["structured_role", "delegated", "embed"],
                 "namespaces": {
                     "user": "user:[1]", "net": "net:[2]", "pid": "pid:[3]",
                     "ipc": "ipc:[4]", "uts": "uts:[5]"
@@ -628,7 +667,11 @@ mod tests {
                 v: 1,
                 seq: 1,
                 body: Ack {
-                    capabilities: vec![Capability::StructuredRole, Capability::Delegated],
+                    capabilities: vec![
+                        Capability::StructuredRole,
+                        Capability::Delegated,
+                        Capability::Embed,
+                    ],
                     max_frame_bytes: MAX_FRAME,
                 },
             },

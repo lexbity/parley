@@ -76,8 +76,21 @@ const providerStatus: Readonly<Record<StructuredReadiness['status'], string>> = 
   failed: 'Structured-output check failed. Review the local installation and pairing.',
   ready: 'Structured output is ready for Coach.',
 };
+const embedReadiness = ref<StructuredReadiness | null>(null);
+const embeddingModel = ref('');
+const embeddingProfileRevision = ref<number | null>(null);
+const embedChecking = computed(() => embedReadiness.value?.status === 'queued' || embedReadiness.value?.status === 'running');
+const embedStatus: Readonly<Record<StructuredReadiness['status'], string>> = {
+  unqualified: 'Matching requires a verified embedding model.',
+  queued: 'Embedding model check queued.',
+  running: 'Checking the embedding model.',
+  probe_succeeded: 'Embedding check passed. Calibrate matching thresholds before ranking.',
+  failed: 'Embedding model check failed. Review the local installation.',
+  ready: 'Embedding model is verified. Calibrate thresholds to rank matches.',
+};
 let providerRequest: InstanceType<typeof globalThis.AbortController> | undefined;
 let stopProviderProbe: (() => void) | undefined;
+let stopEmbedProbe: (() => void) | undefined;
 const workspaceRefreshRequired = ref(false);
 const settingsSections = [
   { id: 'settings-provider', label: 'Local provider' },
@@ -388,16 +401,82 @@ async function loadProvider() {
   try {
     const profile = await parley.getProvider(request.signal);
     if (request.signal.aborted || epoch !== parley.workspaceEpoch || active.value !== 'Settings') return;
-    const { profile_revision, structured, pairing: selectedPairing, ...fields } = profile;
+    const { profile_revision, structured, embed, pairing: selectedPairing, ...fields } = profile;
     provider.value = fields;
     pairing.value = selectedPairing ?? { provider_version: '', model_digest: '', tokenizer_digest: '', template_tokens: 0 };
     configurePairing.value = selectedPairing !== null;
     profileRevision.value = profile_revision;
     providerHealth.value = '';
     observeProvider({ profile_revision, structured });
+    observeEmbedProbe(profile_revision, embed);
+    void loadEmbeddingModel();
   } catch (reason) {
     if (!request.signal.aborted) error.value = reason instanceof Error ? reason.message : 'Could not load provider settings.';
   }
+}
+
+async function loadEmbeddingModel() {
+  try {
+    const model = await parley.getEmbeddingModel();
+    embeddingModel.value = model.model;
+    embeddingProfileRevision.value = model.profile_revision;
+  } catch (reason) {
+    if (!(reason instanceof ApiError && reason.status === 404)) {
+      error.value = reason instanceof Error ? reason.message : 'Could not load the embedding model.';
+    }
+  }
+}
+
+async function setEmbeddingModel() {
+  const model = embeddingModel.value.trim();
+  if (!model || busy.value) return;
+  busy.value = true; error.value = '';
+  try {
+    await parley.setEmbeddingModel(model, embeddingProfileRevision.value);
+    await loadProvider();
+    await loadEmbeddingModel();
+    status.value = 'Embedding model saved. Verify it before calibrating matching.';
+  } catch (reason) {
+    error.value = reason instanceof ApiError && reason.status === 412
+      ? 'The saved profile changed in another session. Reload the saved profile to review it.'
+      : reason instanceof Error ? reason.message : 'Could not save the embedding model.';
+  } finally { busy.value = false; }
+}
+
+function observeEmbedProbe(revision: number, readiness: StructuredReadiness) {
+  stopEmbedProbe?.();
+  embedReadiness.value = readiness;
+  if (!embedChecking.value) return;
+  stopEmbedProbe = inferenceActivity.watchEmbedProbe(
+    revision,
+    next => {
+      embedReadiness.value = next;
+      providerHealth.value = '';
+    },
+    () => {
+      embedReadiness.value = null;
+      error.value = 'The saved profile changed in another session. Reload the saved profile to review it.';
+    },
+    () => { providerHealth.value = 'The embedding probe status is temporarily unavailable.'; },
+  );
+}
+
+async function checkEmbedProvider() {
+  if (embeddingProfileRevision.value === null || busy.value || embedChecking.value) return;
+  busy.value = true; error.value = ''; providerHealth.value = '';
+  const revision = embeddingProfileRevision.value;
+  const epoch = parley.workspaceEpoch;
+  try {
+    const result = await parley.checkEmbedProvider();
+    if (active.value !== 'Settings' || revision !== embeddingProfileRevision.value || epoch !== parley.workspaceEpoch) return;
+    if (result.embed) {
+      observeEmbedProbe(revision, result.embed);
+    } else {
+      providerHealth.value = result.message;
+      if (!result.available) error.value = result.message;
+    }
+  } catch (reason) { error.value = reason instanceof Error ? reason.message : 'Could not check the embedding model.'; }
+  finally { busy.value = false; }
 }
 
 async function saveProvider() {
@@ -732,6 +811,44 @@ watch(route, () => {
                 role="status"
               >
                 {{ providerHealth }}
+              </p>
+            </form>
+            <form
+              class="embedding-panel"
+              @submit.prevent="setEmbeddingModel"
+            >
+              <h3>Embedding model</h3>
+              <p>Matching embeds needs and resources with a separately verified embedding model.</p>
+              <label>Embedding model tag<input
+                v-model="embeddingModel"
+                required
+                autocomplete="off"
+                placeholder="e.g. local:embed"
+              ></label>
+              <div class="provider-actions">
+                <button
+                  class="primary"
+                  type="submit"
+                  :disabled="busy || !embeddingModel.trim()"
+                >
+                  Save embedding model
+                </button>
+                <button
+                  type="button"
+                  :disabled="busy || embeddingProfileRevision === null || embedChecking"
+                  @click="checkEmbedProvider"
+                >
+                  Verify embedding model
+                </button>
+              </div>
+              <p
+                v-if="embedReadiness"
+                class="provider-health"
+                role="status"
+              >
+                {{ embedStatus[embedReadiness.status] }}
+                <span v-if="embedReadiness.diagnostic"> {{ embedReadiness.diagnostic }}</span>
+                <span v-if="embedReadiness.checked_at"> Checked {{ embedReadiness.checked_at }}.</span>
               </p>
             </form>
           </section>

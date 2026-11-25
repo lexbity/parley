@@ -178,17 +178,22 @@ pub(crate) async fn plan_context(
             "SELECT id,opportunity_revision,recipient_revision,embed_model_digest,calibration_json,shortlist_json FROM match_run
              WHERE opportunity_id=? AND recipient_id=? ORDER BY created_at DESC,id DESC LIMIT 1",
         ).bind(opportunity_id).bind(recipient_id).fetch_optional(&mut *conn).await?;
-        let model: Option<String> =
-            sqlx::query_scalar("SELECT embed_model_digest FROM agent_provider WHERE singleton=1")
-                .fetch_optional(&mut *conn)
-                .await?;
-        let calibration: Vec<CurrentCalibration> = sqlx::query_as(
-            "SELECT c.asset_kind,c.threshold,c.fixture_digest,c.calibration_revision,c.scoring_config_digest
-             FROM matching_calibration c WHERE c.trusted=1 AND c.model_digest=?
-             AND c.calibration_revision=(SELECT max(c2.calibration_revision) FROM matching_calibration c2
-               WHERE c2.trusted=1 AND c2.model_digest=c.model_digest AND c2.asset_kind=c.asset_kind)
-             ORDER BY c.asset_kind",
-        ).bind(model.as_deref()).fetch_all(&mut *conn).await?;
+        let profile_revision: Option<i64> = sqlx::query_scalar(
+            "SELECT profile_revision FROM inference_active_profile WHERE singleton=1",
+        )
+        .fetch_optional(&mut *conn)
+        .await?
+        .flatten();
+        let model = current_embed_identity(&mut *conn).await?;
+        let (weights, half_life) = crate::writing::scoring_config(&mut *conn).await?;
+        let calibration = current_calibrations(
+            &mut *conn,
+            profile_revision.unwrap_or_default(),
+            model.as_ref(),
+            &weights,
+            half_life,
+        )
+        .await?;
         match latest {
             None => {
                 coverage.missing = 1;
@@ -228,7 +233,11 @@ pub(crate) async fn plan_context(
                         calibration_json: Some(calibration_json),
                         shortlist_json: Some(shortlist_json),
                     };
-                    if let Some(gaps) = assessment_result(&row, model.as_deref(), &calibration) {
+                    if let Some(gaps) = assessment_result(
+                        &row,
+                        model.as_ref().map(|identity| identity.0.as_str()),
+                        &calibration,
+                    ) {
                         coverage.current = 1;
                         coverage.no_match = i64::from(!gaps.is_empty());
                         for kind in gaps {
@@ -425,9 +434,73 @@ struct Calibration {
     threshold: f64,
     fixture_digest: String,
     model_digest: String,
+    #[serde(default)]
+    recipe_digest: String,
 }
 
-pub(crate) type CurrentCalibration = (String, f64, String, i64, String);
+/// Kind, threshold, fixture digest, calibration revision, scoring-config
+/// digest and recipe digest of a trusted current calibration row.
+pub(crate) type CurrentCalibration = (String, f64, String, i64, String, String);
+
+/// Resolve the current qualified embedding identity from the profile store:
+/// the observed digest and vector width of the active embed qualification.
+pub(crate) async fn current_embed_identity(
+    conn: &mut SqliteConnection,
+) -> Result<Option<(String, u32)>, sqlx::Error> {
+    let row: Option<(Option<String>, Option<i64>)> = sqlx::query_as(
+        "SELECT q.model_digest,json_extract(q.details_json,'$.dimensions')
+         FROM inference_active_profile a
+         JOIN inference_qualification q ON q.profile_revision=a.profile_revision
+           AND q.mode='embed' AND q.status='ready' AND q.checked_at >= ?
+         WHERE a.singleton=1
+           AND NOT EXISTS(SELECT 1 FROM inference_profile_revocation r
+                          WHERE r.profile_revision=a.profile_revision)
+         ORDER BY q.checked_at DESC LIMIT 1",
+    )
+    .bind(crate::now_utc_offset(-300))
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(row.and_then(|(digest, dimensions)| {
+        let dimensions = u32::try_from(dimensions?).ok()?;
+        ((1..=4096).contains(&dimensions)).then_some((digest?, dimensions))
+    }))
+}
+
+/// Resolve the current trusted calibration set for the active embed recipe.
+pub(crate) async fn current_calibrations(
+    conn: &mut SqliteConnection,
+    profile_revision: i64,
+    embed_identity: Option<&(String, u32)>,
+    weights: &Value,
+    half_life: f64,
+) -> Result<Vec<CurrentCalibration>, WorkspaceError> {
+    if let Some((digest, dimensions)) = embed_identity {
+        let scoring = crate::writing::scoring_config_digest(weights, half_life).map_err(|_| {
+            WorkspaceError::Invalid("Scoring configuration failed to serialize".into())
+        })?;
+        let recipe = crate::inference::profile::recipe_digest(
+            profile_revision,
+            digest,
+            *dimensions,
+            &scoring,
+        );
+        let rows = sqlx::query_as(
+            "SELECT c.asset_kind,c.threshold,c.fixture_digest,c.calibration_revision,
+                    c.scoring_config_digest,c.recipe_digest
+             FROM matching_calibration c WHERE c.trusted=1 AND c.recipe_digest=?
+             AND c.calibration_revision=(SELECT max(c2.calibration_revision) FROM matching_calibration c2
+               WHERE c2.trusted=1 AND c2.recipe_digest=c.recipe_digest
+                 AND c2.asset_kind=c.asset_kind)
+             ORDER BY c.asset_kind",
+        )
+        .bind(&recipe)
+        .fetch_all(&mut *conn)
+        .await?;
+        Ok(rows)
+    } else {
+        Ok(Vec::new())
+    }
+}
 
 pub(crate) fn assessment_result(
     row: &Assessment,
@@ -445,13 +518,17 @@ pub(crate) fn assessment_result(
         serde_json::from_str(row.calibration_json.as_deref()?).ok()?;
     if stored.len() != 3
         || current.len() != 3
-        || current.iter().any(|(kind, threshold, fixture, _, _)| {
-            stored.get(kind).is_none_or(|item| {
-                item.threshold != *threshold
-                    || item.fixture_digest != *fixture
-                    || Some(item.model_digest.as_str()) != model
+        || current
+            .iter()
+            .any(|(kind, threshold, fixture, _, _, recipe)| {
+                stored.get(kind).is_none_or(|item| {
+                    item.threshold != *threshold
+                        || item.fixture_digest != *fixture
+                        || Some(item.model_digest.as_str()) != model
+                        || item.recipe_digest.is_empty()
+                        || item.recipe_digest != *recipe
+                })
             })
-        })
     {
         return None;
     }
@@ -474,10 +551,13 @@ pub(crate) async fn plan(conn: &mut SqliteConnection, week: &Week) -> Result<Pla
         sqlx::query_as("SELECT timezone,pack_id,pack_version FROM owner_profile WHERE id=1")
             .fetch_one(&mut *conn)
             .await?;
-    let model: Option<String> =
-        sqlx::query_scalar("SELECT embed_model_digest FROM agent_provider WHERE singleton=1")
-            .fetch_one(&mut *conn)
-            .await?;
+    let profile_revision: Option<i64> = sqlx::query_scalar(
+        "SELECT profile_revision FROM inference_active_profile WHERE singleton=1",
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .flatten();
+    let model = current_embed_identity(&mut *conn).await?;
     let through = if week.current {
         crate::now_utc()
     } else {
@@ -506,15 +586,14 @@ pub(crate) async fn plan(conn: &mut SqliteConnection, week: &Week) -> Result<Pla
     if rows.len() > MAX_ASSESSMENTS {
         return Err(WorkspaceError::Invalid("CONTEXT_BUDGET".into()));
     }
-    let calibration: Vec<CurrentCalibration> = sqlx::query_as(
-        "SELECT c.asset_kind,c.threshold,c.fixture_digest,c.calibration_revision,c.scoring_config_digest
-         FROM matching_calibration c WHERE c.trusted=1 AND c.model_digest=?
-         AND c.calibration_revision=(SELECT max(c2.calibration_revision) FROM matching_calibration c2
-           WHERE c2.trusted=1 AND c2.model_digest=c.model_digest AND c2.asset_kind=c.asset_kind)
-         ORDER BY c.asset_kind",
+    let (weights, half_life) = crate::writing::scoring_config(&mut *conn).await?;
+    let calibration = current_calibrations(
+        &mut *conn,
+        profile_revision.unwrap_or_default(),
+        model.as_ref(),
+        &weights,
+        half_life,
     )
-    .bind(model.as_deref())
-    .fetch_all(&mut *conn)
     .await?;
     let mut seeds = Vec::new();
     let mut counts = BTreeMap::<(String, Reason), i64>::new();
@@ -522,7 +601,11 @@ pub(crate) async fn plan(conn: &mut SqliteConnection, week: &Week) -> Result<Pla
     let mut coverage = Coverage::default();
     for row in &rows {
         let first = unique.insert((&row.opportunity_id, &row.recipient_id));
-        if let Some(gaps) = assessment_result(row, model.as_deref(), &calibration) {
+        if let Some(gaps) = assessment_result(
+            row,
+            model.as_ref().map(|identity| identity.0.as_str()),
+            &calibration,
+        ) {
             coverage.current += i64::from(first);
             coverage.no_match += i64::from(first && !gaps.is_empty());
             for kind in gaps {
@@ -608,8 +691,11 @@ pub(crate) async fn plan(conn: &mut SqliteConnection, week: &Week) -> Result<Pla
             .then_with(|| a.reason.cmp(&b.reason))
             .then_with(|| a.key.cmp(&b.key))
     });
+    let model_wire = model
+        .as_ref()
+        .map(|(digest, dimensions)| json!({"digest":digest,"dimensions":dimensions}));
     let dependencies = fingerprint(&json!({
-        "owner":owner, "model":model,"calibration":calibration,"assessments":rows,
+        "owner":owner, "model":model_wire,"calibration":calibration,"assessments":rows,
         "terms":terms, "flagged":flagged, "capacity":capacity,
         "identities":identities, "first_touches":first_touches
     }))?;

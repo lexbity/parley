@@ -16,6 +16,7 @@ use std::{
     },
     time::Duration,
 };
+use support::model_server::{ModelServer, install_qualified_profile_with_embed};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -634,6 +635,35 @@ fn writing_run_responder(seed: SeedIds) -> Responder {
     })
 }
 
+/// The reviewed E-match fixture shape used by integration tests: the marker
+/// embedding responder separates `[N]` cases orthogonally from the need, so
+/// the RFC-0001 held-out floors pass deterministically.
+fn u07_match_fixture() -> Value {
+    let kinds = ["gift", "proof", "artifact"];
+    let mut cases = Vec::new();
+    for kind in kinds {
+        for index in 0..18 {
+            let relevant = index % 2 == 0;
+            cases.push(json!({
+                "id": format!("{kind}-{index}"),
+                "kind": kind,
+                "text": format!(
+                    "{} case {kind}-{index} for a new executive onboarding.",
+                    if relevant { "[P]" } else { "[N]" }
+                ),
+                "relevant": relevant,
+                "holdout": index >= 12,
+            }));
+        }
+    }
+    json!({
+        "dataset_id": "match-v1-u07",
+        "need": "Help a new executive onboard.",
+        "split": "holdout",
+        "cases": cases,
+    })
+}
+
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -641,9 +671,65 @@ async fn u07_scoped_end_to_end_match_compose_review_save_gate_release() {
     let (path, workspace, port, service) = setup("happy").await;
     let seed = seed_writing_scenario(&workspace).await;
 
-    let provider = Provider::with(writing_run_responder(seed.clone()), None).await;
-    set_provider(port, &provider.url(), "provider-u07-1").await;
+    // The matcher runs through the packaged worker in AR07: it needs the
+    // qualified embedding profile and the worker-facing upstream, while the
+    // legacy Composer chat still reads `agent_provider` from the native
+    // responder. Both providers coexist on separate loopback ports.
+    let legacy = Provider::with(writing_run_responder(seed.clone()), None).await;
+    set_provider(port, &legacy.url(), "provider-u07-1").await;
     health(port, "health-u07-1").await;
+    let matcher_provider = ModelServer::with_responder(
+        Box::new({
+            let seed = seed.clone();
+            move |index: usize, body: &str| {
+                let _ = index;
+                let parsed: Value = serde_json::from_str(body).unwrap_or_default();
+                let user_text = parsed["messages"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|message| message["content"].as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if user_text.contains("shortlist") {
+                    return matcher_explanation(&seed);
+                }
+                json!({"message":{"role":"assistant","content":"Done."},"prompt_eval_count":12,"eval_count":8})
+            }
+        }),
+        None,
+    )
+    .await;
+    let embed_modeligest = "e".repeat(64);
+    install_qualified_profile_with_embed(
+        workspace.pool(),
+        &path,
+        matcher_provider.endpoint(),
+        8192,
+        256,
+        64,
+        Some(&embed_modeligest),
+        Some(8),
+    )
+    .await;
+    // Pin the scoring config to pure cosine so the scripted separator yields
+    // exact 1.0/0.0 scores and the committed thresholds admit every positive
+    // candidate deterministically.
+    let settings_json: String =
+        sqlx::query_scalar("SELECT settings_json FROM owner_profile WHERE id=1")
+            .fetch_one(workspace.pool())
+            .await
+            .unwrap();
+    let mut settings: Value = serde_json::from_str(&settings_json).unwrap();
+    settings["matcher"]["weights"] = json!({"cosine":1,"tags":0,"recency":0,"track":0});
+    sqlx::query("UPDATE owner_profile SET settings_json=? WHERE id=1")
+        .bind(settings.to_string())
+        .execute(workspace.pool())
+        .await
+        .unwrap();
+    parley_service::calibrate_matching(&workspace, u07_match_fixture())
+        .await
+        .expect("calibration must succeed on the scripted separator");
 
     let (status, run) = start_run(
         port,
@@ -834,7 +920,8 @@ async fn u07_scoped_end_to_end_match_compose_review_save_gate_release() {
     assert_eq!(outputs.as_array().unwrap().len(), 1);
 
     gate_provider.stop().await;
-    provider.stop().await;
+    legacy.stop().await;
+    matcher_provider.stop().await;
     cleanup(&path, workspace, service);
 }
 

@@ -41,6 +41,14 @@ pub(crate) fn interviewer_schema() -> &'static str {
 pub(crate) fn briefer_schema() -> &'static str {
     BRIEFER_SCHEMA
 }
+
+pub(crate) fn matcher_prompt() -> &'static str {
+    MATCHER_PROMPT
+}
+
+pub(crate) fn matcher_schema() -> &'static str {
+    MATCHER_SCHEMA
+}
 const MAX_BODY: usize = 2_200_000;
 const MAX_RETRIES: i64 = 3;
 
@@ -341,8 +349,12 @@ pub(crate) async fn process(state: &super::AppState, job_id: &str) {
         super::inference::extractor::run(state, job_id).await;
         return;
     }
+    if role.as_deref() == Some("matcher") {
+        super::inference::matcher::run(state, job_id).await;
+        return;
+    }
     if let Some(role) = role.as_deref() {
-        if matches!(role, "matcher" | "composer" | "linter") {
+        if matches!(role, "composer" | "linter") {
             super::writing_jobs::process_role(workspace, job_id, role).await;
         } else if matches!(role, "interviewer" | "briefer") {
             super::inference::roles::run(workspace, job_id, role).await;
@@ -715,12 +727,25 @@ async fn get_provider(State(state): State<super::AppState>, headers: HeaderMap) 
             .await
             .map_err(|_| WorkspaceError::Invalid("Local inference profile is unavailable".into()))?
             .ok_or(WorkspaceError::NotFound)?;
-        let structured =
-            probe::status(&mut conn, settings.revision, state.workspace.epoch()).await?;
+        let structured = probe::status(
+            &mut conn,
+            settings.revision,
+            state.workspace.epoch(),
+            "structured_role",
+        )
+        .await?;
+        let embed = probe::status(
+            &mut conn,
+            settings.revision,
+            state.workspace.epoch(),
+            "embed",
+        )
+        .await?;
         Ok(json!({
             "endpoint":config.endpoint,"model":config.model,"num_ctx":config.num_ctx,
             "num_predict":config.num_predict,"locale":config.locale,
-            "profile_revision":settings.revision,"pairing":settings.pairing,"structured":structured
+            "profile_revision":settings.revision,"pairing":settings.pairing,
+            "structured":structured,"embed":embed
         }))
     }
     .await;
@@ -904,11 +929,40 @@ async fn update_provider(
         Err(error) => super::command_error(error.into()),
     }
 }
-async fn provider_health(State(state): State<super::AppState>, headers: HeaderMap) -> Response {
+async fn provider_health(
+    State(state): State<super::AppState>,
+    headers: HeaderMap,
+    payload: String,
+) -> Response {
     if let Err(response) = super::authenticate(&headers, &state).await {
         return response.into_response();
     }
     use super::inference::{probe, profile};
+    let parsed = if payload.trim().is_empty() {
+        None
+    } else {
+        serde_json::from_str::<Value>(&payload).ok()
+    };
+    let mode = match parsed
+        .as_ref()
+        .and_then(|value| value.get("mode"))
+        .and_then(Value::as_str)
+    {
+        Some("embed") => "embed",
+        None | Some("structured_role") => "structured_role",
+        _ => {
+            return super::error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "PROBE_MODE_INVALID",
+                "Supported probe modes are structured_role and embed",
+            );
+        }
+    };
+    let label = if mode == "embed" {
+        "Embedding"
+    } else {
+        "Structured"
+    };
     let paired = async {
         let mut tx = state
             .workspace
@@ -926,7 +980,14 @@ async fn provider_health(State(state): State<super::AppState>, headers: HeaderMa
         let Some(settings) = settings.filter(|settings| settings.pairing.is_some()) else {
             return Ok(None);
         };
-        if !probe::enqueue(&mut tx, settings.revision, state.workspace.epoch())
+        if mode == "embed" && settings.embed_model.is_none() {
+            return Err(super::error(
+                StatusCode::PRECONDITION_FAILED,
+                "PROFILE_CHANGED",
+                "Choose an embedding model before checking embedding readiness",
+            ));
+        }
+        if !probe::enqueue(&mut tx, settings.revision, state.workspace.epoch(), mode)
             .await
             .map_err(|error| super::command_error(error.into()))?
         {
@@ -936,7 +997,7 @@ async fn provider_health(State(state): State<super::AppState>, headers: HeaderMa
                 "A local model check is already queued",
             ));
         }
-        let structured = probe::status(&mut tx, settings.revision, state.workspace.epoch())
+        let readiness = probe::status(&mut tx, settings.revision, state.workspace.epoch(), mode)
             .await
             .map_err(|error| super::command_error(error.into()))?;
         tx.commit()
@@ -947,7 +1008,9 @@ async fn provider_health(State(state): State<super::AppState>, headers: HeaderMa
             StatusCode::ACCEPTED,
             Json(json!({
                 "available":false,"model":settings.model.unwrap_or_default(),"models":[],
-                "message":"Structured model check queued","structured":structured
+                "message":format!("{label} model check queued"),
+                "structured":if mode=="structured_role" {serde_json::to_value(&readiness).ok()} else {None},
+                "embed":if mode=="embed" {serde_json::to_value(&readiness).ok()} else {None},
             })),
         )
             .into_response();

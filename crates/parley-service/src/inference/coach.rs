@@ -56,6 +56,11 @@ pub(super) struct ProfileRow {
     recipe_json: String,
     context_tokens: i64,
     output_tokens: i64,
+    embed_model: Option<String>,
+    // The stored preference digest is an observation, not the qualified
+    // identity; the live embed qualification owns the authoritative digest.
+    #[allow(dead_code)]
+    embed_model_digest: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -97,6 +102,9 @@ pub(super) fn profile_fields(
         context_tokens: u32::try_from(row.context_tokens).ok()?,
         max_output_tokens: u32::try_from(row.output_tokens).ok()?,
         template_tokens: recipe.template_tokens,
+        embed_tag: row.embed_model.filter(|model| !model.is_empty()),
+        embed_digest: None,
+        embed_dimensions: None,
     };
     if ![&profile.tokenizer_digest, &profile.model_digest]
         .into_iter()
@@ -107,10 +115,40 @@ pub(super) fn profile_fields(
                     .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
         })
         || profile.model_tag.to_ascii_lowercase().contains("cloud")
+        || profile
+            .embed_tag
+            .as_ref()
+            .is_some_and(|tag| tag.to_ascii_lowercase().contains("cloud"))
     {
         return None;
     }
     Some((address, profile, row.runner_build_digest?))
+}
+
+/// Resolve the observed identity of the separately qualified embedding model:
+/// its catalog digest and vector width as recorded by the successful embed
+/// probe. Returns `None` when the profile has no ready embed qualification.
+pub(super) async fn embed_identity(
+    conn: &mut sqlx::SqliteConnection,
+    revision: i64,
+) -> Result<Option<(String, u32)>, sqlx::Error> {
+    let row: Option<(Option<String>, Option<i64>)> = sqlx::query_as(
+        "SELECT q.model_digest, json_extract(q.details_json,'$.dimensions')
+         FROM inference_qualification q
+         WHERE q.profile_revision=? AND q.mode='embed' AND q.status='ready'
+           AND q.checked_at >= ?
+           AND NOT EXISTS(SELECT 1 FROM inference_profile_revocation r
+                          WHERE r.profile_revision=q.profile_revision)
+         ORDER BY q.checked_at DESC LIMIT 1",
+    )
+    .bind(revision)
+    .bind(now_utc_offset(-300))
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(row.and_then(|(digest, dimensions)| {
+        let dimensions = u32::try_from(dimensions?).ok()?;
+        ((1..=4096).contains(&dimensions)).then_some((digest?, dimensions))
+    }))
 }
 
 async fn claim(state: &AppState, id: &str) -> Result<Claim, WorkspaceError> {
@@ -135,7 +173,8 @@ async fn claim(state: &AppState, id: &str) -> Result<Claim, WorkspaceError> {
     let input = serde_json::from_str::<Input>(&frozen.input_json).ok();
     let row: Option<ProfileRow> = sqlx::query_as(
         "SELECT p.endpoint,p.runner_build_digest,p.provider_version,p.chat_model,p.chat_model_digest,
-                p.tokenizer_digest,p.recipe_json,p.context_tokens,p.output_tokens
+                p.tokenizer_digest,p.recipe_json,p.context_tokens,p.output_tokens,
+                p.embed_model,p.embed_model_digest
          FROM inference_profile p WHERE revision=?
            AND NOT EXISTS(SELECT 1 FROM inference_profile_revocation r WHERE r.profile_revision=p.revision)
            AND EXISTS(SELECT 1 FROM inference_qualification q WHERE q.profile_revision=p.revision
@@ -269,8 +308,14 @@ pub(crate) fn installed_supervisor() -> Result<Supervisor, &'static str> {
 }
 
 pub(crate) fn tokenizer_path(state: &AppState, profile: &Profile) -> Result<PathBuf, &'static str> {
-    Ok(state
-        .workspace
+    tokenizer_path_for(&state.workspace, profile)
+}
+
+pub(crate) fn tokenizer_path_for(
+    workspace: &crate::Workspace,
+    profile: &Profile,
+) -> Result<PathBuf, &'static str> {
+    Ok(workspace
         .control_path()
         .join("tokenizers")
         .join(format!("{}.json", profile.tokenizer_digest)))
@@ -338,6 +383,7 @@ async fn execute(
         } => Ok((candidate, usage)),
         Completion::Probe { .. } => Err("WORKER_PROTOCOL"),
         Completion::Delegated { .. } => Err("WORKER_PROTOCOL"),
+        Completion::Embed { .. } => Err("WORKER_PROTOCOL"),
     }
 }
 
@@ -462,6 +508,8 @@ mod tests {
             recipe_json: r#"{"template_tokens":128}"#.into(),
             context_tokens: 8192,
             output_tokens: 512,
+            embed_model: Some("local:embed".into()),
+            embed_model_digest: Some("d".repeat(64)),
         }
     }
 

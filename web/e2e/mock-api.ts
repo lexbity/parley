@@ -102,7 +102,7 @@ export interface MockApi {
   issueBootstrap(): string;
 }
 
-export function createMockApi({ pauseExtractor = false, coachOnline = false } = {}): MockApi {
+export function createMockApi({ pauseExtractor = false, coachOnline = false, embedOnline = false, matchingCalibrated = false } = {}): MockApi {
   let epoch = 'ffeeddccbbaa99887766554433221100';
   const bootstraps = new Map<string, number>();
   const sessions = new Map<string, string>();
@@ -129,6 +129,7 @@ export function createMockApi({ pauseExtractor = false, coachOnline = false } = 
   const captures: SavedSource[] = [];
   const extractorJobs = new Map<string, RecordData>();
   const roleJobs = new Map<string, RecordData>();
+  const matchRuns = new Map<string, RecordData>();
   const agentChats = new Map<string, RecordData>();
   const briefItems = new Map<string, RecordData[]>();
   const segments = new Map<string, RecordData>();
@@ -176,8 +177,14 @@ export function createMockApi({ pauseExtractor = false, coachOnline = false } = 
     endpoint: 'http://127.0.0.1:11434', model: '', num_ctx: 8192, num_predict: 1024, locale: 'en',
     profile_revision: 1, pairing: null,
     structured: { status: 'unqualified', diagnostic: null, checked_at: null, probe_id: null },
+    embed: { status: 'unqualified', diagnostic: null, checked_at: null, probe_id: null },
   });
   let provider = defaultProvider();
+  const embeddingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  function clearEmbeddingTimers() {
+    for (const timer of embeddingTimers.values()) clearTimeout(timer);
+    embeddingTimers.clear();
+  }
   const receipts = new Map<string, { digest: string; result: RecordData; status?: number }>();
   // U02 authoritative run and turn rows survive snapshots; worker timers,
   // replay keys and pending leases are transient and are scrubbed on restore.
@@ -246,6 +253,7 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     }
     clearAgentTimers();
     clearCoachTimers();
+    clearEmbeddingTimers();
     coachJobs.clear();
     coachQuestions.clear();
     coachReports.clear();
@@ -254,6 +262,7 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     const owner = snapshot.owner as RecordData;
     provider = deepClone(owner.provider as typeof provider);
     provider.structured = defaultProvider().structured;
+    provider.embed = defaultProvider().embed;
     Object.assign(questionBank, deepClone(owner.questionBank as typeof questionBank));
     prompts.clear(); for (const [key, value] of owner.prompts as Map<string, RecordData>) prompts.set(key, deepClone(value));
     embeddingModel = String(owner.embeddingModel);
@@ -1846,7 +1855,7 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
           if (value instanceof Map) value.clear(); else if (Array.isArray(value)) value.splice(0, value.length);
         }
         directory.clear(); opportunities.clear(); sends.clear(); threads.clear(); outcomes.clear(); resolutions.clear(); adminBackups.splice(0, adminBackups.length);
-        clearCoachTimers(); coachJobs.clear(); coachReports.clear();
+        clearCoachTimers(); clearEmbeddingTimers(); coachJobs.clear(); coachReports.clear();
         partySuppression.clear(); receipts.clear(); adminPreviews.clear(); adminJobs.clear();
         provider = defaultProvider();
         Object.assign(questionBank, { version_id: 'question-bank-v1', content: { version: 1, questions: { proof: [{ id: 'result', text: 'What changed, and how did you measure the result?' }], gift: [{ id: 'offer', text: 'What useful thing could you offer?' }], artifact: [{ id: 'artifact', text: 'What have you made?' }] } } });
@@ -1918,13 +1927,13 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     }
     const templateTransition = /^\/api\/v1\/templates\/([^/]+)\/(approve|activate)$/.exec(url.pathname);
     if (templateTransition && request.method === 'POST') { const template = writingTemplates.find((item) => item.id === templateTransition[1]); if (!template) return fail(response, 404, 'TEMPLATE_NOT_FOUND', 'Template does not exist'); template.status = templateTransition[2] === 'approve' ? 'approved' : 'active'; response.writeHead(204); response.end(); return; }
-    if (url.pathname === '/api/v1/embedding-model' && request.method === 'GET') return json(response, 200, { model: embeddingModel, model_digest: null, calibrated_kinds: [] });
-    if (url.pathname === '/api/v1/embedding-model' && request.method === 'PUT') { let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); } embeddingModel = String(input.model); return json(response, 200, { model: embeddingModel, model_digest: null, calibration_required: true }); }
+    if (url.pathname === '/api/v1/embedding-model' && request.method === 'GET') return json(response, 200, { model: embeddingModel, model_digest: embedOnline ? 'e'.repeat(64) : null, profile_revision: provider.profile_revision, calibrated_kinds: embedOnline && matchingCalibrated ? ['gift', 'proof', 'artifact'] : [], readiness: provider.embed });
+    if (url.pathname === '/api/v1/embedding-model' && request.method === 'PUT') { let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); } if (input.expected_profile_revision !== undefined && Number(input.expected_profile_revision) !== provider.profile_revision) return fail(response, 412, 'PROFILE_CHANGED', 'Provider settings changed. Reload them before saving'); embeddingModel = String(input.model); provider.profile_revision += 1; provider.embed = { status: 'unqualified', diagnostic: null, checked_at: null, probe_id: null }; return json(response, 200, { model: embeddingModel, model_digest: null, profile_revision: provider.profile_revision, calibrated_kinds: [], readiness: provider.embed }); }
     if (url.pathname === '/api/v1/voice-samples' && request.method === 'GET') return json(response, 200, { items: voiceSamples });
     if (url.pathname === '/api/v1/voice-samples' && request.method === 'POST') { let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); } const sample = { id: randomHex(), ...input, revision: 1, status: 'active' }; voiceSamples.push(sample); return json(response, 201, sample); }
     const voiceRetire = /^\/api\/v1\/voice-samples\/([^/]+)\/retire$/.exec(url.pathname);
     if (voiceRetire && request.method === 'POST') { const sample = voiceSamples.find((item) => item.id === voiceRetire[1]); if (!sample) return fail(response, 404, 'VOICE_SAMPLE_NOT_FOUND', 'Voice sample does not exist'); sample.status = 'retired'; return json(response, 200, { id: sample.id, status: 'retired', revision: 2 }); }
-    if (url.pathname === '/api/v1/matching/calibrations' && request.method === 'GET') return json(response, 200, { model: embeddingModel, model_digest: null, scoring_config_digest: null, calibrations: [] });
+    if (url.pathname === '/api/v1/matching/calibrations' && request.method === 'GET') return json(response, 200, { model: embeddingModel, model_digest: embedOnline ? 'e'.repeat(64) : null, recipe_digest: embedOnline ? 'r'.repeat(64) : null, scoring_config_digest: null, calibrations: [] });
     const writingInterestsMatch = /^\/api\/v1\/opportunities\/([^/]+)\/interests$/.exec(url.pathname);
     if (writingInterestsMatch && request.method === 'GET') return json(response, 200, { opportunity_id: writingInterestsMatch[1], recipient_id: url.searchParams.get('recipient_id'), items: (writingInterests.get(`${writingInterestsMatch[1]}:${url.searchParams.get('recipient_id')}`) ?? []).map((item) => ({ ...item, claim: null })) });
     if (writingInterestsMatch && request.method === 'POST') { let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); } const key = `${writingInterestsMatch[1]}:${String(input.recipient_id)}`; const item = { id: randomHex(), revision: 1, status: 'active', ...input, check_suggestion: input.check_suggestion ?? null, claim_id: null, claim_revision: null }; writingInterests.set(key, [...(writingInterests.get(key) ?? []), item]); return json(response, 201, item); }
@@ -1933,8 +1942,35 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
     if (writingExchangeMatch && url.pathname.endsWith('/attest') && request.method === 'POST') { const recipient = writingExchangeMatch[2]!; const versions = writingExchanges.get(`${writingExchangeMatch[1]}:${recipient}`) ?? []; const current = versions.at(-1); if (!current) return fail(response, 404, 'EXCHANGE_MISSING', 'Exchange does not exist'); current.fairness_attested = true; return json(response, 200, { version: current.version, fairness_attested: true }); }
     if (writingExchangeMatch && request.method === 'POST') { let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); } const key = `${writingExchangeMatch[1]}:${String(input.recipient_id)}`; const versions = writingExchanges.get(key) ?? []; const version = { version: versions.length + 1, they_get: input.they_get, i_get: input.i_get, fairness_attested: false, interest_ids: input.interest_ids, interests: [], attestation_digest: null, attested_at: null }; versions.push(version); writingExchanges.set(key, versions); return json(response, 201, version); }
     const writingMatch = /^\/api\/v1\/opportunities\/([^/]+)\/matches$/.exec(url.pathname);
-    if (writingMatch && request.method === 'POST') return fail(response, 503, 'EMBED_MODEL_UNAVAILABLE', 'No local embedding provider is available. Manual resource selection remains available.');
-    if (writingMatch && request.method === 'GET') return fail(response, 404, 'MATCH_NOT_FOUND', 'No completed match exists for this opportunity and recipient.');
+    if (writingMatch && request.method === 'POST') {
+      if (!embedOnline) return fail(response, 503, 'EMBED_MODEL_UNAVAILABLE', 'No local embedding provider is available. Manual resource selection remains available.');
+      if (!matchingCalibrated) return fail(response, 422, 'CALIBRATION_REQUIRED', 'The embedding model is not calibrated for every resource kind.');
+      let input: RecordData; try { input = await readBody(request); } catch { return fail(response, 400, 'INVALID_JSON', 'Request body is invalid'); }
+      const key = `${writingMatch[1]}:${String(input.recipient_id)}`;
+      let job = roleJobs.get(key);
+      if (!job) {
+        job = { id: randomHex(), role: 'matcher', status: 'queued', current_attempt: 1, max_attempts: 2, progress_current: 0, progress_total: 1, injection_suspected: false, last_error_code: null, last_error: null };
+        roleJobs.set(key, job);
+      }
+      const timer = setTimeout(() => {
+        job!.status = 'succeeded';
+        roleJobs.set(key, job!);
+        const calibration = { proof: { threshold: 0.6, fixture_digest: 'f'.repeat(64), model_digest: 'e'.repeat(64), recipe_digest: 'r'.repeat(64) }, gift: { threshold: 0.6, fixture_digest: 'f'.repeat(64), model_digest: 'e'.repeat(64), recipe_digest: 'r'.repeat(64) }, artifact: { threshold: 0.6, fixture_digest: 'f'.repeat(64), model_digest: 'e'.repeat(64), recipe_digest: 'r'.repeat(64) } };
+        const shortlist = { results: [
+          { kind: 'gift', threshold: 0.6, no_match: true, candidates: [] },
+          { kind: 'proof', threshold: 0.6, no_match: true, candidates: [] },
+          { kind: 'artifact', threshold: 0.6, no_match: true, candidates: [] },
+        ] };
+        matchRuns.set(key, { id: randomHex(), opportunity_id: writingMatch![1], recipient_id: String(input.recipient_id), embed_model_digest: 'e'.repeat(64), recipe_digest: 'r'.repeat(64), calibration_json: JSON.stringify(calibration), shortlist_json: JSON.stringify(shortlist), why_job_id: job!.id });
+      }, 150);
+      void timer;
+      return json(response, 202, { job_id: job.id, role: 'matcher' });
+    }
+    if (writingMatch && request.method === 'GET') {
+      const run = matchRuns.get(`${writingMatch[1]}:${url.searchParams.get('recipient_id')}`);
+      if (!run) return fail(response, 404, 'MATCH_NOT_FOUND', 'No completed match exists for this opportunity and recipient.');
+      return json(response, 200, run);
+    }
     if (/^\/api\/v1\/templates\/build$/.test(url.pathname) && request.method === 'POST') return fail(response, 503, 'MODEL_UNAVAILABLE', 'Template Builder is unavailable; create a manual template version.');
     if (/^\/api\/v1\/opportunities\/[^/]+\/materials\/compose$/.test(url.pathname) && request.method === 'POST') return fail(response, 503, 'MODEL_UNAVAILABLE', 'Composer is unavailable; save an owner-authored draft.');
 
@@ -2516,7 +2552,41 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       if (prior) return prior.digest === digest ? json(response, prior.status ?? 200, prior.result) : fail(response, 409, 'IDEMPOTENCY_MISMATCH', 'Use a fresh key for a different request.');
       const selector = scope.kind === 'party' ? { kind: 'party', id: scope.id, revision: scope.revision }
         : { kind: 'opportunity', id: scope.id, revision: scope.revision, recipient_id: scope.recipient_id, recipient_revision: scope.recipient_revision };
-      const result = { status: 'current', scope: selector, coverage: { current: 0, missing: 1, stale: 0, no_match: 0 }, questions: [] };
+      const coverage = { current: 0, missing: 0, stale: 0, no_match: 0 };
+      let status = 'current';
+      const questions: RecordData[] = [];
+      if (scope.kind === 'opportunity') {
+        const run = matchRuns.get(`${scope.id}:${scope.recipient_id}`);
+        const currentDigest = embedOnline ? 'e'.repeat(64) : null;
+        if (!run) {
+          coverage.missing = 1;
+          status = 'current';
+        } else if (!currentDigest || run.embed_model_digest !== currentDigest) {
+          coverage.stale = 1;
+          status = 'stale';
+          const staleKey = createHash('sha256').update(JSON.stringify([selector, 'assessment_check'])).digest('hex');
+          const staleQuestion: RecordData = {
+            id: randomHex(), question_key: staleKey, revision: 1, kind: 'assessment_check',
+            target: { opportunity_id: scope.id, recipient_id: scope.recipient_id }, selector,
+            text: 'Refresh this matching assessment with the current embedding profile.', priority: 0, impact: 2,
+            status: 'open', action: 'research', deferred_until: null,
+            dependency_digest: createHash('sha256').update(JSON.stringify(input)).digest('hex'), suggested_resource_ref: null,
+          };
+          questions.push(staleQuestion);
+        } else {
+          coverage.current = 1;
+          try {
+            const shortlist = JSON.parse(String(run.shortlist_json)) as { results: Array<{ no_match: boolean }> };
+            if (Array.isArray(shortlist.results) && shortlist.results.length === 3
+              && shortlist.results.every((result) => result.no_match === true)) {
+              coverage.no_match = 1;
+            }
+          } catch { /* malformed mock shortlist stays current */ }
+        }
+      } else {
+        coverage.missing = 1;
+      }
+      const result = { status, scope: selector, coverage, questions };
       if (!coachOnline) return fail(response, 503, 'CAPABILITY_UNQUALIFIED', 'A qualified local model is required.');
       const questionKey = createHash('sha256').update(JSON.stringify([selector, 'context_review'])).digest('hex');
       const existing = [...coachQuestions.values()].find(question => question.question_key === questionKey && ['open', 'answer_pending', 'deferred'].includes(String(question.status)));
@@ -3654,11 +3724,34 @@ const entityTag = (entity: { id: string; revision: number }) => `"p1.${epoch}.en
       }
       provider = {
         endpoint: input.endpoint, model: input.model, num_ctx: input.num_ctx, num_predict: input.num_predict, locale: input.locale,
-        profile_revision: provider.profile_revision + 1, pairing, structured: defaultProvider().structured,
+        profile_revision: provider.profile_revision + 1, pairing, structured: defaultProvider().structured, embed: defaultProvider().embed,
       };
       return json(response, 204, null);
     }
     if (url.pathname === '/api/v1/agent/provider/health' && request.method === 'POST') {
+      let mode = 'structured_role';
+      try {
+        const body = await readBody(request);
+        if (typeof body?.mode === 'string') mode = String(body.mode);
+      } catch { /* empty body defaults to the structured probe */ }
+      if (mode === 'embed') {
+        if (!embeddingModel) {
+          return json(response, 200, { available: false, model: '', models: [], message: 'Choose an embedding model before checking embedding readiness.' });
+        }
+        if (provider.embed.status !== 'queued' && provider.embed.status !== 'running') {
+          const profile = provider;
+          const admittedEpoch = epoch;
+          profile.embed = { status: 'queued', diagnostic: null, checked_at: null, probe_id: randomHex() };
+          const timer = setTimeout(() => {
+            if (epoch !== admittedEpoch || provider !== profile) return;
+            const status = embedOnline ? 'ready' : 'failed';
+            const diagnostic = embedOnline ? null : 'MODEL_UNAVAILABLE';
+            profile.embed = { ...profile.embed, status, diagnostic, checked_at: now() };
+          }, 150);
+          timer.unref();
+        }
+        return json(response, 202, { available: false, model: embeddingModel, models: [], message: 'Embedding model check in progress.', embed: provider.embed });
+      }
       if (!provider.pairing) {
         return json(response, 200, { available: false, model: provider.model, models: [], message: 'Local provider is unavailable in the mock workspace.' });
       }
