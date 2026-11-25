@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use sqlx::{Sqlite, Transaction};
 
 use crate::commands::ActorTarget;
-use crate::{new_id, now_utc};
+use crate::{new_id, now_utc, now_utc_offset};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SlotFill {
@@ -269,6 +269,8 @@ pub(crate) async fn start(
         "slot_fills": input.slot_fills,
         "selected_match_ids": input.selected_match_ids,
         "resource_revisions": resource_revisions,
+        "prompt_version": "composer@1",
+        "prompt": crate::jobs::bundled_role_prompt("composer").unwrap_or_default(),
     });
     let job_id = crate::jobs::enqueue_role_in_tx(
         tx,
@@ -290,6 +292,32 @@ pub(crate) async fn start(
         crate::WorkspaceError::Invalid(_) => ComposeStartError::RecipientInvalid,
         _ => ComposeStartError::Database,
     })?;
+    let profile_revision: Option<i64> = sqlx::query_scalar(
+        "SELECT a.profile_revision FROM inference_active_profile a
+         JOIN inference_qualification q ON q.profile_revision=a.profile_revision AND q.mode='structured_role'
+         WHERE NOT EXISTS(SELECT 1 FROM inference_profile_revocation r
+                         WHERE r.profile_revision=a.profile_revision)
+         ORDER BY a.profile_revision DESC LIMIT 1",
+    )
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|_| ComposeStartError::Database)?;
+    if let Some(profile_revision) = profile_revision {
+        let dependency_digest = crate::digest(input_json.to_string().as_bytes());
+        let now = now_utc();
+        sqlx::query(
+            "UPDATE durable_job SET profile_revision=?,dependency_digest=?,eligible_at=?,queue_deadline_at=?,total_deadline_at=? WHERE id=?",
+        )
+        .bind(profile_revision)
+        .bind(&dependency_digest)
+        .bind(&now)
+        .bind(now_utc_offset(300))
+        .bind(now_utc_offset(360))
+        .bind(&job_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|_| ComposeStartError::Database)?;
+    }
 
     let cursor: i64 = sqlx::query_scalar(
         "INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'opportunity',?,1,'material.compose_generation_queued',?) RETURNING cursor",

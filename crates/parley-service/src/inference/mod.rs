@@ -34,3 +34,11 @@ pub(crate) fn extractor_schema() -> &'static [u8] {
 pub(crate) fn matcher_schema() -> &'static [u8] {
     crate::jobs::matcher_schema().as_bytes()
 }
+
+pub(crate) fn composer_schema() -> &'static [u8] {
+    crate::jobs::composer_schema().as_bytes()
+}
+
+pub(crate) fn linter_schema() -> &'static [u8] {
+    crate::jobs::linter_schema().as_bytes()
+}

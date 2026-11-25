@@ -24,6 +24,8 @@ INTERVIEWER_PATH = ROOT / "crates/parley-service/roles/interviewer/schema.json"
 BRIEFER_PATH = ROOT / "crates/parley-service/roles/briefer/schema.json"
 EXTRACTOR_PATH = ROOT / "crates/parley-service/roles/extractor/schema.json"
 MATCHER_PATH = ROOT / "crates/parley-service/roles/matcher/schema.json"
+COMPOSER_PATH = ROOT / "crates/parley-service/roles/composer/schema.json"
+LINTER_PATH = ROOT / "crates/parley-service/roles/linter/schema.json"
 KERNEL_CONTROLS = ["user", "net", "pid", "ipc", "uts", "disable_userns", "die_with_parent"]
 
 
@@ -106,6 +108,8 @@ def worker_files(bundle, staging):
     shutil.copyfile(BRIEFER_PATH, bundle / "briefer.schema.json")
     shutil.copyfile(EXTRACTOR_PATH, bundle / "extractor.schema.json")
     shutil.copyfile(MATCHER_PATH, bundle / "matcher.schema.json")
+    shutil.copyfile(COMPOSER_PATH, bundle / "composer.schema.json")
+    shutil.copyfile(LINTER_PATH, bundle / "linter.schema.json")
     build_digest = digest(bundle / "worker.mjs")
     (bundle / "worker-build").write_text(build_digest + "\n", encoding="ascii")
     return build_digest

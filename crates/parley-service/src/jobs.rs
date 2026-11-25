@@ -11,11 +11,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
-use std::net::IpAddr;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-};
 
 const INTERVIEWER_PROMPT: &str = include_str!("../roles/interviewer/prompt.md");
 const INTERVIEWER_SCHEMA: &str = include_str!("../roles/interviewer/schema.json");
@@ -49,18 +44,24 @@ pub(crate) fn matcher_prompt() -> &'static str {
 pub(crate) fn matcher_schema() -> &'static str {
     MATCHER_SCHEMA
 }
+
+pub(crate) fn composer_schema() -> &'static str {
+    COMPOSER_SCHEMA
+}
+
+pub(crate) fn linter_schema() -> &'static str {
+    LINTER_SCHEMA
+}
+
+/// The bundled prompt/schema pair for an assistant role. Used by admission to
+/// resolve the explicit fallback prompt when no reviewed owner prompt version
+/// is recorded (AR-001 AR04/AR08).
+pub(crate) fn bundled_role_prompt(role: &str) -> Option<&'static str> {
+    role_defaults(role).map(|(prompt, _)| prompt)
+}
+
 const MAX_BODY: usize = 2_200_000;
 const MAX_RETRIES: i64 = 3;
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProviderConfig {
-    pub endpoint: String,
-    pub model: String,
-    pub num_ctx: u32,
-    pub num_predict: u32,
-    pub locale: String,
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobRecord {
@@ -103,19 +104,6 @@ type JobReadRow = (
     i64,
     i64,
 );
-
-#[derive(Deserialize)]
-pub(crate) struct OllamaChatResponse {
-    pub(crate) message: OllamaMessage,
-    #[serde(default)]
-    pub(crate) prompt_eval_count: Option<u32>,
-    #[serde(default)]
-    pub(crate) eval_count: Option<u32>,
-}
-#[derive(Deserialize)]
-pub(crate) struct OllamaMessage {
-    pub(crate) content: String,
-}
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -354,10 +342,8 @@ pub(crate) async fn process(state: &super::AppState, job_id: &str) {
         return;
     }
     if let Some(role) = role.as_deref() {
-        if matches!(role, "composer" | "linter") {
-            super::writing_jobs::process_role(workspace, job_id, role).await;
-        } else if matches!(role, "interviewer" | "briefer") {
-            super::inference::roles::run(workspace, job_id, role).await;
+        if matches!(role, "interviewer" | "briefer" | "composer" | "linter") {
+            super::inference::roles::run(state, job_id).await;
         } else if matches!(role, "template_builder") {
             super::inference::template_builder::run(state, job_id).await;
         } else {
@@ -371,97 +357,6 @@ pub(crate) async fn process(state: &super::AppState, job_id: &str) {
             .await;
         }
     }
-}
-
-pub(crate) struct Attempt {
-    pub(crate) number: i64,
-    pub(crate) role: String,
-    pub(crate) provider_config: ProviderConfig,
-    pub(crate) model_digest: Option<String>,
-    pub(crate) input_sha256: String,
-    pub(crate) input_json: String,
-    pub(crate) prompt_id: String,
-    pub(crate) prompt: String,
-    pub(crate) schema: String,
-}
-pub(crate) async fn claim_attempt(
-    workspace: &Workspace,
-    id: &str,
-) -> Result<Option<Attempt>, WorkspaceError> {
-    let mut tx = workspace.pool().begin_with("BEGIN IMMEDIATE").await?;
-    let row: Option<(i64,i64,String,String,String)> = sqlx::query_as("SELECT current_attempt,max_attempts,input_json,input_sha256,role FROM durable_job WHERE id=? AND status='queued'")
-        .bind(id).fetch_optional(&mut *tx).await?;
-    let Some((current, max, input, hash, role)) = row else {
-        tx.rollback().await?;
-        return Ok(None);
-    };
-    if current >= max {
-        sqlx::query("UPDATE durable_job SET status='invalid',last_error_code='RETRY_LIMIT',last_error='Extractor retry limit reached',completed_at=?,updated_at=? WHERE id=? AND status='queued'").bind(now_utc()).bind(now_utc()).bind(id).execute(&mut *tx).await?;
-        tx.commit().await?;
-        return Ok(None);
-    }
-    let number = current + 1;
-    let now = now_utc();
-    let changed=sqlx::query("UPDATE durable_job SET status='running',current_attempt=?,updated_at=? WHERE id=? AND status='queued' AND current_attempt=?").bind(number).bind(&now).bind(id).bind(current).execute(&mut *tx).await?.rows_affected();
-    if changed != 1 {
-        tx.rollback().await?;
-        return Ok(None);
-    }
-    let config: (String, Option<String>, String, i64, i64, String) =
-        sqlx::query_as("SELECT model,model_digest,endpoint,num_ctx,num_predict,locale FROM agent_provider WHERE singleton=1")
-            .fetch_one(&mut *tx)
-            .await?;
-    let provider_config = ProviderConfig {
-        endpoint: config.2,
-        model: config.0.clone(),
-        num_ctx: config.3 as u32,
-        num_predict: config.4 as u32,
-        locale: config.5,
-    };
-    let provider_snapshot = serde_json::to_string(&provider_config)
-        .map_err(|error| WorkspaceError::Invalid(error.to_string()))?;
-    let (default_prompt, schema) = role_defaults(&role)
-        .ok_or_else(|| WorkspaceError::Invalid("agent role has no bundled schema".into()))?;
-    let prompt_version_id = serde_json::from_str::<Value>(&input)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("prompt_version_id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        });
-    let prompt_version: Option<(String, String, i64)> = if let Some(version_id) = prompt_version_id
-    {
-        sqlx::query_as("SELECT prompt_text,prompt_sha256,version_no FROM agent_prompt_version WHERE version_id=? AND role=?")
-            .bind(version_id).bind(&role).fetch_optional(&mut *tx).await?
-    } else {
-        None
-    };
-    let (prompt, prompt_id, prompt_digest) = match prompt_version {
-        Some((text, hash, version)) => (text, format!("{role}@{version}"), hash),
-        None => (
-            default_prompt.to_owned(),
-            format!("{role}@1"),
-            digest(default_prompt.as_bytes()),
-        ),
-    };
-    let prompt_hash = digest(format!("{prompt_digest}\0{schema}").as_bytes());
-    sqlx::query("INSERT INTO job_attempt(job_id,attempt_no,status,model,model_digest,provider_snapshot_json,prompt_id,prompt_sha256,input_sha256,input_json,started_at) VALUES(?,?,'running',?,?,?,?,?,?,?,?)")
-      .bind(id).bind(number).bind(config.0).bind(config.1.clone()).bind(provider_snapshot).bind(prompt_id.clone()).bind(prompt_hash).bind(hash.clone()).bind(input.clone()).bind(&now).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'job',?,?, 'job.attempt_started',?)")
-      .bind(new_id(id)).bind(&now).bind(id).bind(number).bind(json!({"attempt":number}).to_string()).execute(&mut *tx).await?;
-    tx.commit().await?;
-    Ok(Some(Attempt {
-        number,
-        role,
-        provider_config,
-        model_digest: config.1,
-        input_sha256: hash,
-        input_json: input,
-        prompt_id,
-        prompt,
-        schema: schema.to_owned(),
-    }))
 }
 
 fn role_defaults(role: &str) -> Option<(&'static str, &'static str)> {
@@ -602,126 +497,12 @@ pub(crate) async fn finish_attempt_error(
     let _ = tx.commit().await;
 }
 
-pub(crate) async fn provider_config(
-    workspace: &Workspace,
-) -> Result<ProviderConfig, WorkspaceError> {
-    let row: (String, String, i64, i64, String) = sqlx::query_as(
-        "SELECT endpoint,model,num_ctx,num_predict,locale FROM agent_provider WHERE singleton=1",
-    )
-    .fetch_one(workspace.pool())
-    .await?;
-    Ok(ProviderConfig {
-        endpoint: row.0,
-        model: row.1,
-        num_ctx: row.2 as u32,
-        num_predict: row.3 as u32,
-        locale: row.4,
-    })
-}
-
-pub(crate) fn validate_endpoint(endpoint: &str) -> Result<(String, u16), String> {
-    let Some(rest) = endpoint.strip_prefix("http://") else {
-        return Err("Provider endpoint must use local HTTP".into());
-    };
-    let authority = rest.split('/').next().unwrap_or_default();
-    if authority.is_empty() || rest[authority.len()..].chars().any(|c| !c.is_whitespace()) {
-        return Err("Provider endpoint must not contain a path, query, or fragment".into());
-    }
-    let (host, port) = authority
-        .rsplit_once(':')
-        .ok_or("Provider endpoint must include a port")?;
-    let port: u16 = port.parse().map_err(|_| "Provider port is invalid")?;
-    let loopback = host.eq_ignore_ascii_case("localhost")
-        || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback());
-    if !loopback || port == 0 {
-        return Err("Provider endpoint must resolve to loopback".into());
-    }
-    Ok((host.to_owned(), port))
-}
-
-pub(crate) async fn ollama_chat(
-    config: &ProviderConfig,
-    content: &str,
-    prompt: &str,
-    schema: &str,
-    temperature: f32,
-) -> Result<OllamaChatResponse, String> {
-    let (host, port) = validate_endpoint(&config.endpoint)?;
-    // UTF-8 byte length is a conservative upper bound for token count. Include
-    // fixed prompt/schema/framing costs so hostile text cannot silently
-    // exceed the configured context before the model receives it.
-    let prompt_upper_bound = content
-        .len()
-        .saturating_add(prompt.len())
-        .saturating_add(schema.len())
-        .saturating_add(1024);
-    if prompt_upper_bound.saturating_add(config.num_predict as usize) > config.num_ctx as usize {
-        return Err("Prompt exceeds the configured context budget".into());
-    }
-    let body=json!({"model":config.model,"stream":false,"format":serde_json::from_str::<Value>(schema).map_err(|e|e.to_string())?,"messages":[{"role":"system","content":prompt},{"role":"user","content":content}],"options":{"temperature":temperature,"seed":42,"num_ctx":config.num_ctx,"num_predict":config.num_predict}}).to_string();
-    let mut stream = TcpStream::connect((host.as_str(), port))
-        .await
-        .map_err(|e| format!("local provider unavailable: {e}"))?;
-    stream.write_all(format!("POST /api/chat HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",body.len()).as_bytes()).await.map_err(|e|e.to_string())?;
-    let mut bytes = Vec::new();
-    stream
-        .take((MAX_BODY + 8192) as u64)
-        .read_to_end(&mut bytes)
-        .await
-        .map_err(|e| e.to_string())?;
-    let response = String::from_utf8(bytes).map_err(|e| e.to_string())?;
-    let (head, payload) = response
-        .split_once("\r\n\r\n")
-        .ok_or("Provider returned an invalid HTTP response")?;
-    if !head.starts_with("HTTP/1.1 200") && !head.starts_with("HTTP/1.0 200") {
-        return Err(format!(
-            "provider returned HTTP status {}",
-            head.lines().next().unwrap_or("unknown")
-        ));
-    }
-    let payload = if head
-        .to_ascii_lowercase()
-        .contains("transfer-encoding: chunked")
-    {
-        decode_chunks(payload)?
-    } else {
-        payload.to_owned()
-    };
-    serde_json::from_str(&payload).map_err(|e| format!("provider response was invalid JSON: {e}"))
-}
-pub(crate) fn decode_chunks(mut rest: &str) -> Result<String, String> {
-    let mut bytes = Vec::new();
-    loop {
-        let (size, tail) = rest.split_once("\r\n").ok_or("invalid chunk framing")?;
-        let size = usize::from_str_radix(size.trim(), 16).map_err(|e| e.to_string())?;
-        rest = tail;
-        if size == 0 {
-            break;
-        }
-        if size > MAX_BODY || bytes.len() + size > MAX_BODY {
-            return Err("provider response exceeds limit".into());
-        }
-        bytes.extend_from_slice(&rest.as_bytes()[..size]);
-        rest = &rest[size + 2..]
-    }
-    String::from_utf8(bytes).map_err(|e| e.to_string())
-}
-fn redact_provider_error(error: &str) -> String {
-    let mut s = error.replace('\n', " ");
-    if let Some(index) = s.find("http://") {
-        s.truncate(index);
-        s.push_str("provider connection failed")
-    }
-    s.chars().take(240).collect()
-}
-
 async fn get_provider(State(state): State<super::AppState>, headers: HeaderMap) -> Response {
     if let Err(response) = super::authenticate(&headers, &state).await {
         return response.into_response();
     }
     use super::inference::{probe, profile};
     let result = async {
-        let config = provider_config(&state.workspace).await?;
         let mut conn = state.workspace.pool().acquire().await?;
         let settings = profile::get_settings(&mut conn)
             .await
@@ -742,8 +523,8 @@ async fn get_provider(State(state): State<super::AppState>, headers: HeaderMap) 
         )
         .await?;
         Ok(json!({
-            "endpoint":config.endpoint,"model":config.model,"num_ctx":config.num_ctx,
-            "num_predict":config.num_predict,"locale":config.locale,
+            "endpoint":settings.endpoint,"model":settings.model,"num_ctx":settings.num_ctx,
+            "num_predict":settings.num_predict,"locale":settings.locale,
             "profile_revision":settings.revision,"pairing":settings.pairing,
             "structured":structured,"embed":embed
         }))
@@ -766,11 +547,11 @@ async fn update_provider(
     if let Err(response) = super::authenticate(&headers, &state).await {
         return response.into_response();
     }
-    if let Err(message) = validate_endpoint(&input.endpoint) {
+    if super::inference::profile::loopback_authority(&input.endpoint).is_err() {
         return super::error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "PROVIDER_ENDPOINT_INVALID",
-            message,
+            "Provider endpoint must be a canonical numeric loopback HTTP authority",
         );
     }
     if input.model.trim().is_empty()
@@ -894,11 +675,6 @@ async fn update_provider(
         }
     }
     let now = now_utc();
-    if let Err(error) = sqlx::query("UPDATE agent_provider SET endpoint=?,model=?,model_digest=NULL,num_ctx=?,num_predict=?,locale=?,updated_at=? WHERE singleton=1")
-        .bind(input.endpoint).bind(input.model).bind(input.num_ctx as i64).bind(input.num_predict as i64).bind(input.locale).bind(&now)
-        .execute(&mut *tx).await {
-        let _ = tx.rollback().await; return super::command_error(error.into());
-    }
     let revision: Result<i64, sqlx::Error> = sqlx::query_scalar(
         "UPDATE workspace_meta SET revision=revision+1 WHERE singleton=1 RETURNING revision",
     )
@@ -911,7 +687,7 @@ async fn update_provider(
             return super::command_error(error.into());
         }
     };
-    let event_cursor: Result<i64, sqlx::Error> = sqlx::query_scalar("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'agent_provider','extractor',?,'agent.provider_updated','{}') RETURNING cursor")
+    let event_cursor: Result<i64, sqlx::Error> = sqlx::query_scalar("INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'inference_profile','extractor',?,'agent.provider_updated','{}') RETURNING cursor")
         .bind(new_id(&canonical)).bind(&now).bind(revision).fetch_one(&mut *tx).await;
     let event_cursor = match event_cursor {
         Ok(value) => value,
@@ -1022,118 +798,34 @@ async fn provider_health(
         Ok(Some(response)) | Err(response) => return response,
         Ok(None) => {}
     }
-    let config = match provider_config(&state.workspace).await {
-        Ok(value) => value,
-        Err(error) => return super::command_error(error),
+    let mut conn = match state.workspace.pool().acquire().await {
+        Ok(conn) => conn,
+        Err(error) => return super::command_error(error.into()),
     };
-    match ollama_tags(&config).await{
-        Ok((models, selected_digest)) => {
-            let available = models.iter().any(|name| name == &config.model);
-            if available {
-                // The digest refresh that gates dispatch must be transactional
-                // and evented, and must run only when the digest actually
-                // changed (a probe must not spam the immutable log).
-                let now = now_utc();
-                let mut tx = match state.workspace.pool().begin_with("BEGIN IMMEDIATE").await {
-                    Ok(tx) => tx,
-                    Err(error) => return super::command_error(error.into()),
-                };
-                let current: Option<String> =
-                    sqlx::query_scalar("SELECT model_digest FROM agent_provider WHERE singleton=1")
-                        .fetch_optional(&mut *tx)
-                        .await
-                        .unwrap_or(None);
-                if current.as_deref() != selected_digest.as_deref() {
-                    if let Err(error) = sqlx::query("UPDATE agent_provider SET model_digest=?,updated_at=? WHERE singleton=1")
-                        .bind(&selected_digest)
-                        .bind(&now)
-                        .execute(&mut *tx)
-                        .await
-                    {
-                        let _ = tx.rollback().await;
-                        return super::command_error(error.into());
-                    }
-                    let revision: i64 = match sqlx::query_scalar(
-                        "UPDATE workspace_meta SET revision=revision+1 WHERE singleton=1 RETURNING revision",
-                    )
-                    .fetch_one(&mut *tx)
-                    .await
-                    {
-                        Ok(value) => value,
-                        Err(error) => {
-                            let _ = tx.rollback().await;
-                            return super::command_error(error.into());
-                        }
-                    };
-                    if let Err(error) = sqlx::query_scalar::<_, i64>(
-                        "INSERT INTO event(event_id,occurred_at,entity_type,entity_id,revision,event_type,payload_json) VALUES(?,?, 'agent_provider','extractor',?,'agent.provider_updated',?) RETURNING cursor",
-                    )
-                    .bind(new_id("provider-health"))
-                    .bind(&now)
-                    .bind(revision)
-                    .bind(json!({"model_digest":selected_digest}).to_string())
-                    .fetch_one(&mut *tx)
-                    .await
-                    {
-                        let _ = tx.rollback().await;
-                        return super::command_error(error.into());
-                    }
-                }
-                if let Err(error) = tx.commit().await {
-                    return super::command_error(error.into());
-                }
-            }
-            Json(json!({"available":available,"model":config.model,"models":models,"message":if available{"Local model is available"}else{"Selected model is not installed"}})).into_response()
+    let settings = match profile::get_settings(&mut conn).await {
+        Ok(Some(settings)) => settings,
+        Ok(None) => {
+            return Json(json!({
+                "available":false,"model":"","models":[],
+                "message":"Local inference is not configured",
+            }))
+            .into_response();
         }
-        Err(error) => Json(json!({"available":false,"model":config.model,"models":[],"message":redact_provider_error(&error)})).into_response()
-    }
-}
-#[derive(Deserialize)]
-struct TagsResponse {
-    models: Vec<TagModel>,
-}
-#[derive(Deserialize)]
-struct TagModel {
-    name: String,
-    digest: String,
-}
-async fn ollama_tags(config: &ProviderConfig) -> Result<(Vec<String>, Option<String>), String> {
-    let (host, port) = validate_endpoint(&config.endpoint)?;
-    let mut stream = TcpStream::connect((host.as_str(), port))
-        .await
-        .map_err(|e| format!("local provider unavailable: {e}"))?;
-    stream
-        .write_all(
-            format!("GET /api/tags HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n")
-                .as_bytes(),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut bytes = Vec::new();
-    stream
-        .take(1_000_000)
-        .read_to_end(&mut bytes)
-        .await
-        .map_err(|e| e.to_string())?;
-    let body = String::from_utf8(bytes).map_err(|e| e.to_string())?;
-    let (head, body) = body
-        .split_once("\r\n\r\n")
-        .ok_or("provider response was malformed")?;
-    if !head.contains(" 200 ") {
-        return Err("provider health endpoint returned an error".into());
-    }
-    let data: TagsResponse = serde_json::from_str(body).map_err(|e| e.to_string())?;
-    let selected = data
-        .models
-        .iter()
-        .find(|model| {
-            model.name == config.model || model.name.starts_with(&format!("{}:", config.model))
-        })
-        .map(|model| model.digest.clone());
-    Ok((
-        data.models.into_iter().map(|model| model.name).collect(),
-        selected,
-    ))
+        Err(_) => {
+            return super::error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "PERSISTENCE_FAILED",
+                "Provider settings are unavailable",
+            );
+        }
+    };
+    let model = settings.model.clone().unwrap_or_default();
+    Json(json!({
+        "available":false,"model":model,"models":[],
+        "message":"No paired local model is ready; use Settings to configure and qualify a local model",
+        "diagnostic":settings.diagnostic,
+    }))
+    .into_response()
 }
 
 async fn get_job(

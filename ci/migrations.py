@@ -77,6 +77,7 @@ SLICE_MIGRATIONS: dict[str, list[str]] = {
     "ar05": ["0031_delegated_profiles.sql"],
     "ar06": [],
     "ar07": ["0032_qualified_embeddings.sql"],
+    "ar08": ["0034_remove_direct_provider_config.sql"],
     "u08": ["0026_command_approvals.sql"],
     "u09": [],
 }

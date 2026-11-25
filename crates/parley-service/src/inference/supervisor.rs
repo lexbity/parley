@@ -306,6 +306,8 @@ impl Supervisor {
                 "briefer.schema.json",
                 "extractor.schema.json",
                 "matcher.schema.json",
+                "composer.schema.json",
+                "linter.schema.json",
                 "runtime-v1.schema.json",
                 "licenses/node.txt",
                 "licenses/index.json",
@@ -999,6 +1001,8 @@ fn validate_completion(request: &Execute, result: &Completion) -> Result<(), Run
             protocol::Role::Briefer => crate::inference::briefer_schema(),
             protocol::Role::Extractor => crate::inference::extractor_schema(),
             protocol::Role::Matcher => crate::inference::matcher_schema(),
+            protocol::Role::Composer => crate::inference::composer_schema(),
+            protocol::Role::Linter => crate::inference::linter_schema(),
         };
         if digest(schema) != *schema_digest {
             return Err(RunError::ProtocolMismatch);

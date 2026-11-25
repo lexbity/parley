@@ -208,7 +208,7 @@ pub(crate) async fn start_owner_turn(
     .fetch_optional(&mut **tx)
     .await
     .map_err(|_| InterviewError::Database)?;
-    let (prompt_version_id, _prompt) = match active_prompt {
+    let (prompt_version_id, prompt_text) = match active_prompt {
         Some((version_id, text)) => (version_id, text),
         None => (
             "interviewer@1".to_owned(),
@@ -230,6 +230,8 @@ pub(crate) async fn start_owner_turn(
         "question_bank_version_id": bank_id,
         "question_bank": serde_json::from_str::<Value>(&bank_content).unwrap_or(Value::Null),
         "prompt_version_id": prompt_version_id,
+        "prompt_version": prompt_version_id,
+        "prompt": prompt_text,
     });
     if let Some(question_id) = &input.coach_question_id {
         input_json["coach_question_id"] = json!(question_id);

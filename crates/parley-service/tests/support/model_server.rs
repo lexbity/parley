@@ -146,6 +146,8 @@ pub fn verified_bundle() -> &'static Path {
             ("briefer.schema.json", "crates/parley-service/roles/briefer/schema.json"),
             ("extractor.schema.json", "crates/parley-service/roles/extractor/schema.json"),
             ("matcher.schema.json", "crates/parley-service/roles/matcher/schema.json"),
+            ("composer.schema.json", "crates/parley-service/roles/composer/schema.json"),
+            ("linter.schema.json", "crates/parley-service/roles/linter/schema.json"),
         ] {
             copy_mode(&root.join(source), &dir.join(name));
         }
@@ -634,14 +636,7 @@ fn sse(reply: &Reply) -> String {
             });
         }
         Reply::ToolCalls { calls, text } => {
-            if !text.is_empty() {
-                output.push_str(&chunk(
-                    None,
-                    Some(json!({"role":"assistant","content":text})),
-                    None,
-                ));
-            }
-            let tools = calls
+            let tools: Vec<Value> = calls
                 .iter()
                 .enumerate()
                 .map(|(index, (name, args))| {
@@ -651,8 +646,9 @@ fn sse(reply: &Reply) -> String {
                     })
                 })
                 .collect();
-            output.push_str(&chunk(None, None, Some(tools)));
-            output.push_str(&chunk(Some("tool_calls"), None, None));
+            let mut delta = json!({"role":"assistant","content":text});
+            delta["tool_calls"] = json!(tools);
+            output.push_str(&chunk(Some("tool_calls"), Some(delta), None));
         }
         Reply::Native(value) => {
             let converted = Reply::from_native(value);
@@ -823,17 +819,37 @@ pub struct ResponderProvider {
 
 impl ResponderProvider {
     pub async fn start(bodies: Vec<Value>) -> Self {
-        Self::with_gate(bodies, false).await
+        Self::start_filtered(bodies, true).await
+    }
+
+    /// Serve the scripted bodies verbatim (no probe-text filtering). UCR
+    /// authority fixtures use the whole body list as the conversation, so
+    /// content may legitimately contain the word "probe".
+    pub async fn start_unfiltered(bodies: Vec<Value>) -> Self {
+        Self::start_filtered(bodies, false).await
     }
 
     pub async fn with_gate(bodies: Vec<Value>, gate_chat: bool) -> Self {
+        Self::with_gate_filtered(bodies, gate_chat, true).await
+    }
+
+    pub async fn with_gate_unfiltered(bodies: Vec<Value>, gate_chat: bool) -> Self {
+        Self::with_gate_filtered(bodies, gate_chat, false).await
+    }
+
+    async fn start_filtered(bodies: Vec<Value>, filter_probe: bool) -> Self {
+        Self::with_gate_filtered(bodies, false, filter_probe).await
+    }
+
+    async fn with_gate_filtered(bodies: Vec<Value>, gate_chat: bool, filter_probe: bool) -> Self {
         let scripted: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(
             bodies
                 .into_iter()
                 .filter(|body| {
-                    !body["message"]["content"]
-                        .as_str()
-                        .is_some_and(|text| text.contains("probe"))
+                    !filter_probe
+                        || !body["message"]["content"]
+                            .as_str()
+                            .is_some_and(|text| text.contains("probe"))
                 })
                 .collect(),
         ));

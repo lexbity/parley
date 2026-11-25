@@ -53,6 +53,8 @@ pub enum Role {
     Briefer,
     Extractor,
     Matcher,
+    Composer,
+    Linter,
 }
 
 /// One server correlation id bound to a named, frozen tool descriptor. The

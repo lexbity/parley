@@ -790,10 +790,8 @@ async fn u06_commands_create_draft_mark_ready_and_replay() {
 #[tokio::test]
 async fn u06_agent_read_grant_scopes_resource_summary() {
     let (path, workspace, port, service) = setup("agent").await;
-    let _ = workspace;
 
-    let provider = support::ScriptedProvider::start(vec![
-        json!({"models":[{"name":"fixture","digest":"sha256:u06"}]}),
+    let provider = support::model_server::ResponderProvider::start_unfiltered(vec![
         json!({
             "message": {
                 "role": "assistant",
@@ -805,25 +803,8 @@ async fn u06_agent_read_grant_scopes_resource_summary() {
         json!({"message": {"role": "assistant", "content": "done", "tool_calls": []}, "prompt_eval_count": 12, "eval_count": 8}),
     ])
     .await;
-    let (status, reply) = request(
-        port,
-        "PUT",
-        "/api/v1/agent/provider",
-        Some(json!({"endpoint": provider.url(), "model": "fixture", "num_ctx": 8192, "num_predict": 256, "locale": "en"})),
-        Some("u06-provider-1"),
-    )
-    .await;
-    assert!(status == 200 || status == 204, "{status} {reply:?}");
-    let (status, reply) = request(
-        port,
-        "POST",
-        "/api/v1/agent/provider/health",
-        None,
-        Some("u06-provider-2"),
-    )
-    .await;
-    assert_eq!(status, 200, "{reply:?}");
-    assert_eq!(reply["available"], true);
+    support::model_server::install_qualified_profile(workspace.pool(), &path, provider.endpoint())
+        .await;
 
     let (status, run) = request(
         port,

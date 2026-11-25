@@ -294,10 +294,17 @@ pub(crate) async fn snapshot(
                 "RESOURCE_SHORTLIST_REQUIRED".into(),
             ));
         };
-        let model: Option<String> =
-            sqlx::query_scalar("SELECT embed_model_digest FROM agent_provider WHERE singleton=1")
-                .fetch_optional(&mut *conn)
-                .await?;
+        let model: Option<String> = sqlx::query_scalar(
+            "SELECT q.model_digest FROM inference_qualification q
+             JOIN inference_active_profile a ON a.singleton=1 AND a.profile_revision=q.profile_revision
+             WHERE q.mode='embed' AND q.status='ready' AND q.checked_at >= ?
+               AND NOT EXISTS(SELECT 1 FROM inference_profile_revocation r
+                              WHERE r.profile_revision=q.profile_revision)
+             ORDER BY q.checked_at DESC LIMIT 1",
+        )
+        .bind(crate::now_utc_offset(-300))
+        .fetch_optional(&mut *conn)
+        .await?;
         let calibration: Vec<super::coach::CurrentCalibration> = sqlx::query_as(
             "SELECT c.asset_kind,c.threshold,c.fixture_digest,c.calibration_revision,c.scoring_config_digest
              FROM matching_calibration c WHERE c.trusted=1 AND c.model_digest=?
