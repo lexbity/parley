@@ -8,11 +8,10 @@
 //! `POST /jobs/{id}` and run surfaces.
 
 use axum::{
-    Json, Router,
+    Json,
     extract::{Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::get,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -55,13 +54,9 @@ const SCOPE_KINDS: [&str; 6] = [
     "delegated",
 ];
 
-pub(crate) fn routes() -> Router<AppState> {
-    Router::new().route("/api/v1/agent/activity", get(list))
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ActivityQuery {
+pub(crate) struct ActivityQuery {
     kind: Option<String>,
     status: Option<String>,
     scope: Option<String>,
@@ -70,7 +65,7 @@ struct ActivityQuery {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct ActivityItem {
+pub(crate) struct ActivityItem {
     kind: &'static str,
     id: String,
     role: String,
@@ -85,13 +80,13 @@ struct ActivityItem {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct Progress {
+pub(crate) struct Progress {
     current: i64,
     total: i64,
 }
 
 #[derive(Clone, Debug)]
-struct Cursor {
+pub(crate) struct Cursor {
     exp: u64,
     limit: usize,
     t: String,
@@ -224,7 +219,7 @@ fn decode_cursor(epoch: &str, secret: &[u8], token: &str, limit: usize) -> Resul
     })
 }
 
-struct JobRow {
+pub(crate) struct JobRow {
     id: String,
     role: String,
     status: String,
@@ -238,7 +233,7 @@ struct JobRow {
     updated_at: String,
 }
 
-struct RunRow {
+pub(crate) struct RunRow {
     id: String,
     state: String,
     state_revision: i64,
@@ -582,8 +577,7 @@ fn etag(epoch: &str, items: &[ActivityItem], next: Option<&str>) -> String {
     hasher.update(next.unwrap_or("").as_bytes());
     format!("\"parley-activity-{}\"", hex::encode(hasher.finalize()))
 }
-
-async fn list(
+pub(crate) async fn list(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<ActivityQuery>,

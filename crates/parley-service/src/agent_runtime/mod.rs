@@ -7,7 +7,7 @@
 //! credential, approval identity or ambient tool registry.
 
 pub(crate) mod grants;
-mod http;
+pub(crate) mod http;
 pub(crate) mod tools;
 pub(crate) mod turn;
 
@@ -39,10 +39,6 @@ use crate::{
 };
 
 pub(crate) const LEASE_SECONDS: i64 = turn::LEASE_SECONDS;
-
-pub(super) fn routes() -> axum::Router<crate::AppState> {
-    http::routes()
-}
 
 pub(crate) async fn recover(workspace: &crate::Workspace) {
     sqlx::query(

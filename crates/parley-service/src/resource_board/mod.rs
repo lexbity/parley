@@ -13,11 +13,10 @@ use super::{
     new_id, now_utc,
 };
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use parley_domain::notes;
 use serde::{Deserialize, Serialize};
@@ -115,7 +114,7 @@ type BoundAttachmentRow = (String, String, String, String, i64, String, String, 
 
 mod card;
 mod column;
-mod http;
+pub(crate) mod http;
 mod placement;
 mod relation;
 mod support;
@@ -343,7 +342,7 @@ pub struct ResourceBoardSnapshot {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct BoardQuery {
+pub(crate) struct BoardQuery {
     #[serde(default)]
     limit: Option<i64>,
     #[serde(default)]
@@ -532,9 +531,4 @@ struct PlacementApply {
     view: Option<PlacementView>,
     source_column_revision: Option<i64>,
     destination_column_revision: Option<i64>,
-}
-
-/// Router assembled from the HTTP submodule.
-pub(super) fn routes() -> axum::Router<AppState> {
-    http::routes()
 }

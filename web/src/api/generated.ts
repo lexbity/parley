@@ -1008,7 +1008,8 @@ export interface paths {
         post?: never;
         delete?: never;
         options?: never;
-        head?: never;
+        /** Link previews must not consume the one-use download grant (RFC-0004 IQ2). */
+        head: operations["downloadMaterialHead"];
         patch?: never;
         trace?: never;
     };
@@ -6690,6 +6691,26 @@ export interface operations {
             };
             409: components["responses"]["Error"];
             422: components["responses"]["Error"];
+        };
+    };
+    downloadMaterialHead: {
+        parameters: {
+            query: {
+                release_id: string;
+            };
+            header: {
+                "X-Parley-Token": components["parameters"]["MutationToken"];
+                "X-Parley-Epoch": components["parameters"]["Epoch"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description HEAD is answered with 405 before any handler runs; no grant bytes are consumed. */
+            405: components["responses"]["Error"];
         };
     };
     listThreads: {

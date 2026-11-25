@@ -11,11 +11,10 @@
 
 use super::{Workspace, WorkspaceError, new_id, now_utc};
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path as AxumPath, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::post,
 };
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -31,17 +30,6 @@ pub const MAX_BLOB_SIZE: u64 = 64 * 1024 * 1024;
 /// Bounded concurrency for verified release spools.
 pub const MAX_CONCURRENT_SPOOLS: usize = 2;
 
-pub(super) fn routes() -> Router<super::AppState> {
-    Router::new()
-        .route(
-            "/api/v1/uploads",
-            post(upload)
-                .get(list_uploads)
-                .layer(axum::extract::DefaultBodyLimit::max(MAX_BLOB_SIZE as usize)),
-        )
-        .route("/api/v1/uploads/{id}/review", post(review_upload))
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UploadRecord {
     pub id: String,
@@ -56,7 +44,7 @@ pub struct UploadRecord {
 }
 
 #[derive(Debug, Deserialize)]
-struct ReviewInput {
+pub(crate) struct ReviewInput {
     share_permission: bool,
 }
 
@@ -71,11 +59,11 @@ pub struct ReleaseSpool {
     inner: Arc<StdMutex<SpoolInner>>,
 }
 
-struct SpoolInner {
+pub(crate) struct SpoolInner {
     entries: std::collections::HashMap<String, SpoolEntry>,
 }
 
-struct SpoolEntry {
+pub(crate) struct SpoolEntry {
     path: PathBuf,
     sha256: String,
     file: Option<tokio::fs::File>,
@@ -565,8 +553,7 @@ fn sync_directory(path: &Path) -> Result<(), WorkspaceError> {
     dir.sync_all()
         .map_err(|e| WorkspaceError::Invalid(format!("fsync blob directory: {e}")))
 }
-
-async fn upload(
+pub(crate) async fn upload(
     State(state): State<super::AppState>,
     headers: HeaderMap,
     body: axum::body::Body,
@@ -601,8 +588,10 @@ async fn upload(
         Err(error) => crate::materials::workspace_error(error),
     }
 }
-
-async fn list_uploads(State(state): State<super::AppState>, headers: HeaderMap) -> Response {
+pub(crate) async fn list_uploads(
+    State(state): State<super::AppState>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(error) = super::authenticate(&headers, &state).await {
         return (error.0, error.1).into_response();
     }
@@ -611,8 +600,7 @@ async fn list_uploads(State(state): State<super::AppState>, headers: HeaderMap) 
         Err(error) => crate::materials::workspace_error(error),
     }
 }
-
-async fn review_upload(
+pub(crate) async fn review_upload(
     State(state): State<super::AppState>,
     AxumPath(upload_id): AxumPath<String>,
     headers: HeaderMap,

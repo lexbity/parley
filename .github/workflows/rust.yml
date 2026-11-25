@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PARLEY_THROUGH: ar08
+  PARLEY_THROUGH: ar09
 
 jobs:
   rust:
@@ -61,7 +61,9 @@ jobs:
         run: python3 ci/architecture.py --check
 
       - name: TD-10 route inventory (no route outside the committed inventory)
-        run: python3 ci/routes.py --check
+        run: |
+          python3 ci/routes.py --check
+          python3 ci/routes.py --self-test-negative
 
       - name: Coverage ratchet (no regression; floors rise to 70%)
         run: python3 ci/coverage.py --check --rust

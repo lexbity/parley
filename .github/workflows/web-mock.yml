@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PARLEY_THROUGH: ar08
+  PARLEY_THROUGH: ar09
 
 jobs:
   web:

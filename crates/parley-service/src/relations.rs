@@ -4,11 +4,10 @@ use super::{
     error, idempotency_key, new_id, now_utc, private_headers,
 };
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{patch, post},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -45,7 +44,7 @@ pub enum Direction {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Link {
+pub(crate) struct Link {
     from_id: String,
     to_id: String,
     verb: String,
@@ -55,26 +54,26 @@ struct Link {
     expected_to_revision: i64,
 }
 #[derive(Serialize, Deserialize)]
-struct Correction {
+pub(crate) struct Correction {
     expected_revision: i64,
     #[serde(flatten)]
     link: Link,
 }
 #[derive(Deserialize)]
 #[serde(untagged)]
-enum EdgeCorrection {
+pub(crate) enum EdgeCorrection {
     Owner(super::resource_board::UpdateEdgeInput),
     Sourced(Correction),
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Removal {
+pub(crate) struct Removal {
     expected_revision: i64,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ClaimRevision {
+pub(crate) struct ClaimRevision {
     expected_revision: i64,
     occurrence_id: String,
     wording: String,
@@ -83,20 +82,12 @@ struct ClaimRevision {
 }
 
 #[derive(Serialize)]
-enum Command {
+pub(crate) enum Command {
     ReviseClaim(String, ClaimRevision),
     Related(RelatedCard),
     Link(Link),
     Correct(String, Correction),
     Remove(String, Removal),
-}
-
-pub(super) fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/graph/related", post(related))
-        .route("/api/v1/claims/{id}/revisions", post(revise_claim))
-        .route("/api/v1/edges", post(link))
-        .route("/api/v1/edges/{id}", patch(correct).delete(remove))
 }
 
 fn invalid(message: &str) -> WorkspaceError {
@@ -415,13 +406,17 @@ async fn execute(state: AppState, h: HeaderMap, cmd: Command, status: StatusCode
         Err(e) => command_error(e),
     }
 }
-async fn related(State(s): State<AppState>, h: HeaderMap, Json(i): Json<RelatedCard>) -> Response {
+pub(crate) async fn related(
+    State(s): State<AppState>,
+    h: HeaderMap,
+    Json(i): Json<RelatedCard>,
+) -> Response {
     execute(s, h, Command::Related(i), StatusCode::CREATED).await
 }
-async fn link(State(s): State<AppState>, h: HeaderMap, Json(i): Json<Link>) -> Response {
+pub(crate) async fn link(State(s): State<AppState>, h: HeaderMap, Json(i): Json<Link>) -> Response {
     execute(s, h, Command::Link(i), StatusCode::CREATED).await
 }
-async fn correct(
+pub(crate) async fn correct(
     State(s): State<AppState>,
     Path(id): Path<String>,
     h: HeaderMap,
@@ -450,7 +445,7 @@ async fn correct(
         }
     }
 }
-async fn remove(
+pub(crate) async fn remove(
     State(s): State<AppState>,
     Path(id): Path<String>,
     h: HeaderMap,
@@ -469,8 +464,7 @@ impl Workspace {
         serde_json::from_value(value).map_err(|e| WorkspaceError::Invalid(e.to_string()))
     }
 }
-
-async fn revise_claim(
+pub(crate) async fn revise_claim(
     State(s): State<AppState>,
     Path(id): Path<String>,
     h: HeaderMap,

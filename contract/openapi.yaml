@@ -1968,6 +1968,28 @@ paths:
           $ref: '#/components/responses/Error'
         '422':
           $ref: '#/components/responses/Error'
+    head:
+      operationId: downloadMaterialHead
+      summary: Link previews must not consume the one-use download grant (RFC-0004 IQ2).
+      security:
+      - sessionCookie: []
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - in: query
+        name: release_id
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/MutationToken'
+      - $ref: '#/components/parameters/Epoch'
+      responses:
+        '405':
+          description: HEAD is answered with 405 before any handler runs; no grant bytes are consumed.
+          $ref: '#/components/responses/Error'
   /threads:
     get:
       operationId: listThreads

@@ -1,33 +1,12 @@
 use super::{AppState, authenticate, digest, now_utc};
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-
-pub(super) fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/queue", get(queue))
-        .route("/api/v1/insights", get(insights))
-        .route("/api/v1/coach/questions", get(questions))
-        .route("/api/v1/coach/context", post(generate_context_coach))
-        .route("/api/v1/coach/questions/{id}/answer", post(answer_question))
-        .route(
-            "/api/v1/coach/questions/{id}/dismiss",
-            post(dismiss_question),
-        )
-        .route("/api/v1/coach/questions/{id}/defer", post(defer_question))
-        .route(
-            "/api/v1/coach/weekly",
-            get(get_coach_report).post(generate_coach_report),
-        )
-        .route("/api/v1/identity-tags", post(save_identity_tag))
-        .route("/api/v1/claims/{id}/hook", post(save_hook))
-}
 
 /// Daily-queue cap per class. Both arrays are projections; the authoritative
 /// counts travel in the same response so the bound is never silent.
@@ -46,7 +25,7 @@ const DAILY_QUEUE_COUNTS_SUFFIX: &str = include_str!("queries/daily_queue_counts
 const DAILY_QUEUE_PAGE_SUFFIX: &str = include_str!("queries/daily_queue_page.sql");
 
 #[allow(clippy::type_complexity)]
-async fn queue(
+pub(crate) async fn queue(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<super::queue_sheet::SheetQuery>,
@@ -245,8 +224,7 @@ async fn queue(
     super::private_headers(&mut r, state.workspace.epoch());
     r
 }
-
-async fn insights(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub(crate) async fn insights(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(r) = authenticate(&headers, &state).await {
         return r.into_response();
     }
@@ -351,7 +329,7 @@ async fn insights(State(state): State<AppState>, headers: HeaderMap) -> Response
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CoachQuestionFilter {
+pub(crate) struct CoachQuestionFilter {
     scope_kind: Option<String>,
     scope_id: Option<String>,
     scope_period: Option<String>,
@@ -373,8 +351,7 @@ type CoachQuestionRow = (
     Option<String>,
     Option<String>,
 );
-
-async fn questions(
+pub(crate) async fn questions(
     State(state): State<AppState>,
     Query(filter): Query<CoachQuestionFilter>,
     headers: HeaderMap,
@@ -450,7 +427,7 @@ async fn coach_questions_for_scope(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CoachDisposition {
+pub(crate) struct CoachDisposition {
     answer: serde_json::Value,
     interviewer_chat_id: Option<String>,
     expected_revision: i64,
@@ -500,7 +477,7 @@ fn matches_schema(value: &serde_json::Value, schema: &serde_json::Value) -> bool
     }
     true
 }
-async fn answer_question(
+pub(crate) async fn answer_question(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -750,8 +727,7 @@ fn interview_answer_error(error: crate::application::interview::InterviewError) 
         ),
     }
 }
-
-async fn dismiss_question(
+pub(crate) async fn dismiss_question(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -862,20 +838,19 @@ async fn dismiss_question(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CoachQuestionRevision {
+pub(crate) struct CoachQuestionRevision {
     expected_revision: i64,
     question_key: String,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CoachQuestionDefer {
+pub(crate) struct CoachQuestionDefer {
     expected_revision: i64,
     question_key: String,
     defer_days: Option<u8>,
 }
-
-async fn defer_question(
+pub(crate) async fn defer_question(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -1009,12 +984,14 @@ async fn defer_question(
 
 #[derive(Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-struct CoachPeriod {
+pub(crate) struct CoachPeriod {
     #[serde(skip_serializing_if = "Option::is_none")]
     period: Option<String>,
 }
-
-async fn get_coach_report(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub(crate) async fn get_coach_report(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(r) = authenticate(&headers, &state).await {
         return r.into_response();
     }
@@ -1123,8 +1100,7 @@ fn coach_response(status: StatusCode, value: Value, epoch: &str) -> Response {
     super::private_headers(&mut response, epoch);
     response
 }
-
-async fn generate_coach_report(
+pub(crate) async fn generate_coach_report(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<CoachPeriod>,
@@ -1258,12 +1234,11 @@ async fn generate_coach_report(
 
 #[derive(Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-struct ContextCoachRequest {
+pub(crate) struct ContextCoachRequest {
     #[serde(flatten)]
     context: super::application::inference_context::ContextRequest,
 }
-
-async fn generate_context_coach(
+pub(crate) async fn generate_context_coach(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<ContextCoachRequest>,
@@ -1584,7 +1559,7 @@ async fn generate_context_coach(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct TagInput {
+pub(crate) struct TagInput {
     scope: String,
     expected_revision: i64,
     entity_id: Option<String>,
@@ -1592,7 +1567,7 @@ struct TagInput {
     claim_id: Option<String>,
     claim_revision: Option<i64>,
 }
-async fn save_identity_tag(
+pub(crate) async fn save_identity_tag(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<TagInput>,
@@ -1768,12 +1743,12 @@ async fn save_identity_tag(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct HookInput {
+pub(crate) struct HookInput {
     expected_revision: i64,
     published_at: String,
     publicness: String,
 }
-async fn save_hook(
+pub(crate) async fn save_hook(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,

@@ -5,8 +5,9 @@
       "dispatch": "exempt",
       "exempt": "embedded-ui",
       "method": "GET",
-      "module": "lib.rs",
+      "module": "http.rs",
       "path": "/",
+      "source": "lib.rs",
       "wave": "\u2014"
     },
     {
@@ -16,6 +17,7 @@
       "method": "GET",
       "module": "inference/activity.rs",
       "path": "/api/v1/agent/activity",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -25,6 +27,7 @@
       "method": "POST",
       "module": "assistant.rs",
       "path": "/api/v1/agent/candidates/{id}/confirm",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -34,6 +37,7 @@
       "method": "POST",
       "module": "assistant.rs",
       "path": "/api/v1/agent/candidates/{id}/dismiss",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -43,6 +47,7 @@
       "method": "GET",
       "module": "assistant.rs",
       "path": "/api/v1/agent/chats",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -52,6 +57,7 @@
       "method": "POST",
       "module": "assistant.rs",
       "path": "/api/v1/agent/chats",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -61,6 +67,7 @@
       "method": "GET",
       "module": "assistant.rs",
       "path": "/api/v1/agent/chats/{id}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -70,6 +77,7 @@
       "method": "POST",
       "module": "assistant.rs",
       "path": "/api/v1/agent/chats/{id}/questions",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -79,6 +87,7 @@
       "method": "POST",
       "module": "assistant.rs",
       "path": "/api/v1/agent/chats/{id}/turns",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -88,6 +97,7 @@
       "method": "GET",
       "module": "assistant.rs",
       "path": "/api/v1/agent/prompts/{role}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -97,6 +107,7 @@
       "method": "PUT",
       "module": "assistant.rs",
       "path": "/api/v1/agent/prompts/{role}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -106,6 +117,7 @@
       "method": "GET",
       "module": "jobs.rs",
       "path": "/api/v1/agent/provider",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -115,6 +127,7 @@
       "method": "PUT",
       "module": "jobs.rs",
       "path": "/api/v1/agent/provider",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -124,6 +137,7 @@
       "method": "POST",
       "module": "jobs.rs",
       "path": "/api/v1/agent/provider/health",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -133,6 +147,7 @@
       "method": "GET",
       "module": "assistant.rs",
       "path": "/api/v1/agent/question-bank",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -142,6 +157,7 @@
       "method": "PUT",
       "module": "assistant.rs",
       "path": "/api/v1/agent/question-bank",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -151,6 +167,7 @@
       "method": "GET",
       "module": "agent_runtime/http.rs",
       "path": "/api/v1/agent/runs",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -160,6 +177,7 @@
       "method": "POST",
       "module": "agent_runtime/http.rs",
       "path": "/api/v1/agent/runs",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -169,6 +187,7 @@
       "method": "GET",
       "module": "agent_runtime/http.rs",
       "path": "/api/v1/agent/runs/{id}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -178,6 +197,7 @@
       "method": "POST",
       "module": "agent_runtime/http.rs",
       "path": "/api/v1/agent/runs/{id}/cancel",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -187,6 +207,7 @@
       "method": "GET",
       "module": "agent_runtime/http.rs",
       "path": "/api/v1/agent/runs/{id}/transcript",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -196,6 +217,7 @@
       "method": "GET",
       "module": "commands/http/mod.rs",
       "path": "/api/v1/approvals",
+      "source": "commands/http/mod.rs",
       "wave": "0"
     },
     {
@@ -205,6 +227,7 @@
       "method": "GET",
       "module": "commands/http/mod.rs",
       "path": "/api/v1/approvals/{id}",
+      "source": "commands/http/mod.rs",
       "wave": "0"
     },
     {
@@ -214,6 +237,7 @@
       "method": "POST",
       "module": "commands/http/mod.rs",
       "path": "/api/v1/approvals/{id}/deny",
+      "source": "commands/http/mod.rs",
       "wave": "0"
     },
     {
@@ -223,6 +247,7 @@
       "method": "POST",
       "module": "commands/http/mod.rs",
       "path": "/api/v1/approvals/{id}/grant",
+      "source": "commands/http/mod.rs",
       "wave": "0"
     },
     {
@@ -232,6 +257,7 @@
       "method": "GET",
       "module": "maintenance.rs",
       "path": "/api/v1/backups",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -241,6 +267,7 @@
       "method": "POST",
       "module": "maintenance.rs",
       "path": "/api/v1/backups",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -250,6 +277,7 @@
       "method": "GET",
       "module": "board.rs",
       "path": "/api/v1/board",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -259,6 +287,7 @@
       "method": "POST",
       "module": "board.rs",
       "path": "/api/v1/board/lists",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -268,6 +297,7 @@
       "method": "POST",
       "module": "board.rs",
       "path": "/api/v1/board/lists/reorder",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -277,6 +307,7 @@
       "method": "PATCH",
       "module": "board.rs",
       "path": "/api/v1/board/lists/{list_id}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -286,6 +317,7 @@
       "method": "POST",
       "module": "board.rs",
       "path": "/api/v1/board/lists/{list_id}/archive",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -295,6 +327,7 @@
       "method": "POST",
       "module": "assistant.rs",
       "path": "/api/v1/brief-items/{id}/decision",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -304,6 +337,7 @@
       "method": "GET",
       "module": "assistant.rs",
       "path": "/api/v1/briefs/{scope_kind}/{scope_id}/items",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -313,6 +347,7 @@
       "method": "POST",
       "module": "assistant.rs",
       "path": "/api/v1/briefs/{scope_kind}/{scope_id}/items",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -322,6 +357,7 @@
       "method": "GET",
       "module": "thread.rs",
       "path": "/api/v1/capacity",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -331,6 +367,7 @@
       "method": "POST",
       "module": "thread.rs",
       "path": "/api/v1/capacity",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -338,8 +375,9 @@
       "dispatch": "legacy-axum",
       "exempt": "\u2014",
       "method": "GET",
-      "module": "lib.rs",
+      "module": "http.rs",
       "path": "/api/v1/captures",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "1"
     },
     {
@@ -347,8 +385,9 @@
       "dispatch": "legacy-axum",
       "exempt": "\u2014",
       "method": "POST",
-      "module": "lib.rs",
+      "module": "http.rs",
       "path": "/api/v1/captures",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "1"
     },
     {
@@ -358,6 +397,7 @@
       "method": "GET",
       "module": "jobs.rs",
       "path": "/api/v1/captures/{occurrence_id}/proposals",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -367,6 +407,7 @@
       "method": "POST",
       "module": "queueing.rs",
       "path": "/api/v1/claims/{id}/hook",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -376,6 +417,7 @@
       "method": "POST",
       "module": "relations.rs",
       "path": "/api/v1/claims/{id}/revisions",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -385,6 +427,7 @@
       "method": "POST",
       "module": "queueing.rs",
       "path": "/api/v1/coach/context",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -394,6 +437,7 @@
       "method": "GET",
       "module": "queueing.rs",
       "path": "/api/v1/coach/questions",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -403,6 +447,7 @@
       "method": "POST",
       "module": "queueing.rs",
       "path": "/api/v1/coach/questions/{id}/answer",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -412,6 +457,7 @@
       "method": "POST",
       "module": "queueing.rs",
       "path": "/api/v1/coach/questions/{id}/defer",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -421,6 +467,7 @@
       "method": "POST",
       "module": "queueing.rs",
       "path": "/api/v1/coach/questions/{id}/dismiss",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -430,6 +477,7 @@
       "method": "GET",
       "module": "queueing.rs",
       "path": "/api/v1/coach/weekly",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -439,6 +487,7 @@
       "method": "POST",
       "module": "queueing.rs",
       "path": "/api/v1/coach/weekly",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -448,6 +497,7 @@
       "method": "GET",
       "module": "commands/http/mod.rs",
       "path": "/api/v1/command-notifications",
+      "source": "commands/http/mod.rs",
       "wave": "\u2014"
     },
     {
@@ -457,6 +507,7 @@
       "method": "POST",
       "module": "commands/http/mod.rs",
       "path": "/api/v1/commands/query",
+      "source": "commands/http/mod.rs",
       "wave": "0"
     },
     {
@@ -466,6 +517,7 @@
       "method": "POST",
       "module": "commands/http/mod.rs",
       "path": "/api/v1/commands/search",
+      "source": "commands/http/mod.rs",
       "wave": "0"
     },
     {
@@ -475,6 +527,7 @@
       "method": "GET",
       "module": "commands/http/mod.rs",
       "path": "/api/v1/commands/{id}",
+      "source": "commands/http/mod.rs",
       "wave": "0"
     },
     {
@@ -484,6 +537,7 @@
       "method": "POST",
       "module": "commands/http/mod.rs",
       "path": "/api/v1/commands/{id}",
+      "source": "commands/http/mod.rs",
       "wave": "0"
     },
     {
@@ -493,6 +547,7 @@
       "method": "GET",
       "module": "parties.rs",
       "path": "/api/v1/directory",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -502,6 +557,7 @@
       "method": "POST",
       "module": "relations.rs",
       "path": "/api/v1/edges",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -511,6 +567,7 @@
       "method": "DELETE",
       "module": "relations.rs",
       "path": "/api/v1/edges/{id}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -520,6 +577,7 @@
       "method": "PATCH",
       "module": "relations.rs",
       "path": "/api/v1/edges/{id}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -529,6 +587,7 @@
       "method": "GET",
       "module": "writing.rs",
       "path": "/api/v1/embedding-model",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -538,6 +597,7 @@
       "method": "PUT",
       "module": "writing.rs",
       "path": "/api/v1/embedding-model",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -545,8 +605,9 @@
       "dispatch": "legacy-axum",
       "exempt": "\u2014",
       "method": "GET",
-      "module": "lib.rs",
+      "module": "http.rs",
       "path": "/api/v1/entities",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "1"
     },
     {
@@ -554,8 +615,9 @@
       "dispatch": "legacy-axum",
       "exempt": "\u2014",
       "method": "POST",
-      "module": "lib.rs",
+      "module": "http.rs",
       "path": "/api/v1/entities",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "1"
     },
     {
@@ -563,8 +625,9 @@
       "dispatch": "legacy-axum",
       "exempt": "\u2014",
       "method": "GET",
-      "module": "lib.rs",
+      "module": "http.rs",
       "path": "/api/v1/entities/{id}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "1"
     },
     {
@@ -572,8 +635,9 @@
       "dispatch": "legacy-axum",
       "exempt": "\u2014",
       "method": "PATCH",
-      "module": "lib.rs",
+      "module": "http.rs",
       "path": "/api/v1/entities/{id}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "1"
     },
     {
@@ -583,6 +647,7 @@
       "method": "GET",
       "module": "resource_board/http.rs",
       "path": "/api/v1/entities/{id}/attachments",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -592,6 +657,7 @@
       "method": "POST",
       "module": "parties.rs",
       "path": "/api/v1/entities/{id}/attachments",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -601,6 +667,7 @@
       "method": "DELETE",
       "module": "parties.rs",
       "path": "/api/v1/entities/{id}/attachments/{reference}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -610,6 +677,7 @@
       "method": "GET",
       "module": "parties.rs",
       "path": "/api/v1/entities/{id}/attachments/{reference}/content",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -619,6 +687,7 @@
       "method": "POST",
       "module": "thread.rs",
       "path": "/api/v1/entities/{id}/clear-dnc",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -626,8 +695,9 @@
       "dispatch": "legacy-axum",
       "exempt": "\u2014",
       "method": "GET",
-      "module": "lib.rs",
+      "module": "http.rs",
       "path": "/api/v1/entities/{id}/dossier",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "1"
     },
     {
@@ -635,8 +705,9 @@
       "dispatch": "legacy-axum",
       "exempt": "\u2014",
       "method": "GET",
-      "module": "lib.rs",
+      "module": "http.rs",
       "path": "/api/v1/entities/{id}/notes",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "1"
     },
     {
@@ -644,8 +715,9 @@
       "dispatch": "legacy-axum",
       "exempt": "\u2014",
       "method": "PUT",
-      "module": "lib.rs",
+      "module": "http.rs",
       "path": "/api/v1/entities/{id}/notes",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "1"
     },
     {
@@ -655,6 +727,7 @@
       "method": "POST",
       "module": "parties.rs",
       "path": "/api/v1/entities/{id}/retire",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -664,6 +737,7 @@
       "method": "GET",
       "module": "parties.rs",
       "path": "/api/v1/entities/{id}/usage",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -671,8 +745,9 @@
       "dispatch": "legacy-axum",
       "exempt": "\u2014",
       "method": "GET",
-      "module": "lib.rs",
+      "module": "http.rs",
       "path": "/api/v1/events",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "1"
     },
     {
@@ -682,6 +757,7 @@
       "method": "POST",
       "module": "maintenance.rs",
       "path": "/api/v1/exports",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -691,6 +767,7 @@
       "method": "GET",
       "module": "assistant.rs",
       "path": "/api/v1/fluency",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -700,6 +777,7 @@
       "method": "PUT",
       "module": "assistant.rs",
       "path": "/api/v1/fluency/{term}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -707,8 +785,9 @@
       "dispatch": "legacy-axum",
       "exempt": "\u2014",
       "method": "GET",
-      "module": "lib.rs",
+      "module": "http.rs",
       "path": "/api/v1/graph",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "1"
     },
     {
@@ -716,8 +795,9 @@
       "dispatch": "legacy-axum",
       "exempt": "\u2014",
       "method": "PUT",
-      "module": "lib.rs",
+      "module": "http.rs",
       "path": "/api/v1/graph/layout",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "1"
     },
     {
@@ -727,6 +807,7 @@
       "method": "POST",
       "module": "relations.rs",
       "path": "/api/v1/graph/related",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -734,8 +815,9 @@
       "dispatch": "exempt",
       "exempt": "session-bootstrap",
       "method": "GET",
-      "module": "lib.rs",
+      "module": "http.rs",
       "path": "/api/v1/health",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "\u2014"
     },
     {
@@ -745,6 +827,7 @@
       "method": "POST",
       "module": "queueing.rs",
       "path": "/api/v1/identity-tags",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -754,6 +837,7 @@
       "method": "POST",
       "module": "maintenance.rs",
       "path": "/api/v1/imports/commit",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -763,6 +847,7 @@
       "method": "POST",
       "module": "maintenance.rs",
       "path": "/api/v1/imports/preview",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -772,6 +857,7 @@
       "method": "GET",
       "module": "queueing.rs",
       "path": "/api/v1/insights",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -781,6 +867,7 @@
       "method": "GET",
       "module": "jobs.rs",
       "path": "/api/v1/jobs/{id}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -790,6 +877,7 @@
       "method": "POST",
       "module": "jobs.rs",
       "path": "/api/v1/jobs/{id}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -799,6 +887,7 @@
       "method": "GET",
       "module": "maintenance.rs",
       "path": "/api/v1/maintenance/operations/{id}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -808,6 +897,7 @@
       "method": "GET",
       "module": "writing.rs",
       "path": "/api/v1/matching/calibrations",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -817,6 +907,7 @@
       "method": "POST",
       "module": "writing.rs",
       "path": "/api/v1/matching/calibrations",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -826,6 +917,7 @@
       "method": "GET",
       "module": "materials.rs",
       "path": "/api/v1/materials/{id}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -835,6 +927,7 @@
       "method": "POST",
       "module": "materials.rs",
       "path": "/api/v1/materials/{id}/approve",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -844,6 +937,7 @@
       "method": "GET",
       "module": "release.rs",
       "path": "/api/v1/materials/{id}/download",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "\u2014"
     },
     {
@@ -853,6 +947,7 @@
       "method": "HEAD",
       "module": "release.rs",
       "path": "/api/v1/materials/{id}/download",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "\u2014"
     },
     {
@@ -862,6 +957,7 @@
       "method": "POST",
       "module": "materials.rs",
       "path": "/api/v1/materials/{id}/gate",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -871,6 +967,7 @@
       "method": "POST",
       "module": "writing.rs",
       "path": "/api/v1/materials/{id}/lint",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -880,6 +977,7 @@
       "method": "POST",
       "module": "materials.rs",
       "path": "/api/v1/materials/{id}/release",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -889,6 +987,7 @@
       "method": "POST",
       "module": "materials.rs",
       "path": "/api/v1/materials/{id}/versions",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -898,6 +997,7 @@
       "method": "GET",
       "module": "materials.rs",
       "path": "/api/v1/opportunities",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -907,6 +1007,7 @@
       "method": "POST",
       "module": "materials.rs",
       "path": "/api/v1/opportunities",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -916,6 +1017,7 @@
       "method": "GET",
       "module": "materials.rs",
       "path": "/api/v1/opportunities/{id}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -925,6 +1027,7 @@
       "method": "GET",
       "module": "materials.rs",
       "path": "/api/v1/opportunities/{id}/exchange",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -934,6 +1037,7 @@
       "method": "POST",
       "module": "materials.rs",
       "path": "/api/v1/opportunities/{id}/exchange",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -943,6 +1047,7 @@
       "method": "POST",
       "module": "materials.rs",
       "path": "/api/v1/opportunities/{id}/exchange/{recipient_id}/attest",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -952,6 +1057,7 @@
       "method": "GET",
       "module": "materials.rs",
       "path": "/api/v1/opportunities/{id}/interests",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -961,6 +1067,7 @@
       "method": "POST",
       "module": "materials.rs",
       "path": "/api/v1/opportunities/{id}/interests",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -970,6 +1077,7 @@
       "method": "GET",
       "module": "writing.rs",
       "path": "/api/v1/opportunities/{id}/matches",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -979,6 +1087,7 @@
       "method": "POST",
       "module": "writing.rs",
       "path": "/api/v1/opportunities/{id}/matches",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -988,6 +1097,7 @@
       "method": "GET",
       "module": "materials.rs",
       "path": "/api/v1/opportunities/{id}/materials",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -997,6 +1107,7 @@
       "method": "POST",
       "module": "materials.rs",
       "path": "/api/v1/opportunities/{id}/materials",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1006,6 +1117,7 @@
       "method": "POST",
       "module": "writing.rs",
       "path": "/api/v1/opportunities/{id}/materials/compose",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1015,6 +1127,7 @@
       "method": "POST",
       "module": "writing.rs",
       "path": "/api/v1/opportunities/{id}/materials/compose/{job_id}/save",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1024,6 +1137,7 @@
       "method": "GET",
       "module": "board.rs",
       "path": "/api/v1/opportunities/{id}/notes",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1033,6 +1147,7 @@
       "method": "PATCH",
       "module": "board.rs",
       "path": "/api/v1/opportunities/{id}/notes",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1042,6 +1157,7 @@
       "method": "POST",
       "module": "board.rs",
       "path": "/api/v1/opportunities/{id}/notes/tasks/toggle",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1051,6 +1167,7 @@
       "method": "POST",
       "module": "materials.rs",
       "path": "/api/v1/opportunities/{id}/participants",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1060,6 +1177,7 @@
       "method": "PATCH",
       "module": "queue_sheet.rs",
       "path": "/api/v1/opportunities/{id}/phase",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1069,6 +1187,7 @@
       "method": "POST",
       "module": "board.rs",
       "path": "/api/v1/opportunities/{id}/placement",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1078,6 +1197,7 @@
       "method": "POST",
       "module": "thread.rs",
       "path": "/api/v1/opportunities/{id}/resolution",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1087,6 +1207,7 @@
       "method": "DELETE",
       "module": "materials.rs",
       "path": "/api/v1/opportunities/{id}/sources/{source_id}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1096,6 +1217,7 @@
       "method": "POST",
       "module": "materials.rs",
       "path": "/api/v1/opportunities/{id}/sources/{source_id}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1105,6 +1227,7 @@
       "method": "PUT",
       "module": "materials.rs",
       "path": "/api/v1/opportunities/{id}/tags",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1114,6 +1237,7 @@
       "method": "GET",
       "module": "materials.rs",
       "path": "/api/v1/outputs",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1123,6 +1247,7 @@
       "method": "POST",
       "module": "maintenance.rs",
       "path": "/api/v1/parties/{id}/erase",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1132,6 +1257,7 @@
       "method": "POST",
       "module": "maintenance.rs",
       "path": "/api/v1/parties/{id}/erase/preview",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1141,6 +1267,7 @@
       "method": "POST",
       "module": "parties.rs",
       "path": "/api/v1/party-imports",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1150,6 +1277,7 @@
       "method": "POST",
       "module": "parties.rs",
       "path": "/api/v1/party-imports/{id}/commit",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1159,6 +1287,7 @@
       "method": "POST",
       "module": "parties.rs",
       "path": "/api/v1/party-imports/{id}/preview",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1168,6 +1297,7 @@
       "method": "POST",
       "module": "jobs.rs",
       "path": "/api/v1/proposals/{batch_id}/resolve",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1177,6 +1307,7 @@
       "method": "GET",
       "module": "queueing.rs",
       "path": "/api/v1/queue",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1186,6 +1317,7 @@
       "method": "POST",
       "module": "materials.rs",
       "path": "/api/v1/releases/{id}/ack",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1195,6 +1327,7 @@
       "method": "GET",
       "module": "resource_board/http.rs",
       "path": "/api/v1/resource-board",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1204,6 +1337,7 @@
       "method": "POST",
       "module": "resource_board/http.rs",
       "path": "/api/v1/resource-board/columns",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1213,6 +1347,7 @@
       "method": "DELETE",
       "module": "resource_board/http.rs",
       "path": "/api/v1/resource-board/columns/{id}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1222,6 +1357,7 @@
       "method": "PATCH",
       "module": "resource_board/http.rs",
       "path": "/api/v1/resource-board/columns/{id}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1231,6 +1367,7 @@
       "method": "POST",
       "module": "resource_board/http.rs",
       "path": "/api/v1/resource-board/moves",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1240,6 +1377,7 @@
       "method": "POST",
       "module": "resource_board/http.rs",
       "path": "/api/v1/resource-card-commits",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1249,6 +1387,7 @@
       "method": "GET",
       "module": "resource_board/http.rs",
       "path": "/api/v1/resource-cards/{id}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1258,6 +1397,7 @@
       "method": "GET",
       "module": "resource_board/http.rs",
       "path": "/api/v1/resource-cards/{id}/deliveries",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1267,6 +1407,7 @@
       "method": "GET",
       "module": "resource_board/http.rs",
       "path": "/api/v1/resource-cards/{id}/deliveries/{send_id}/{material_id}/{version}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1276,6 +1417,7 @@
       "method": "POST",
       "module": "resource_board/http.rs",
       "path": "/api/v1/resource-cards/{id}/erase",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1285,6 +1427,7 @@
       "method": "POST",
       "module": "resource_board/http.rs",
       "path": "/api/v1/resource-cards/{id}/retire",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1294,6 +1437,7 @@
       "method": "POST",
       "module": "materials.rs",
       "path": "/api/v1/resources/{id}/ready",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1303,6 +1447,7 @@
       "method": "POST",
       "module": "maintenance.rs",
       "path": "/api/v1/restore/commit",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1312,6 +1457,7 @@
       "method": "POST",
       "module": "maintenance.rs",
       "path": "/api/v1/restore/preview",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1321,6 +1467,7 @@
       "method": "GET",
       "module": "assistant.rs",
       "path": "/api/v1/segments",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1330,6 +1477,7 @@
       "method": "POST",
       "module": "assistant.rs",
       "path": "/api/v1/segments",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1339,6 +1487,7 @@
       "method": "POST",
       "module": "assistant.rs",
       "path": "/api/v1/segments/{id}/parties",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1348,6 +1497,7 @@
       "method": "GET",
       "module": "thread.rs",
       "path": "/api/v1/sends",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1357,6 +1507,7 @@
       "method": "POST",
       "module": "thread.rs",
       "path": "/api/v1/sends/{id}/outcome",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1366,6 +1517,7 @@
       "method": "POST",
       "module": "thread.rs",
       "path": "/api/v1/sends/{id}/outcome/correction",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1373,8 +1525,9 @@
       "dispatch": "exempt",
       "exempt": "session-bootstrap",
       "method": "GET",
-      "module": "lib.rs",
+      "module": "http.rs",
       "path": "/api/v1/session",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "\u2014"
     },
     {
@@ -1382,8 +1535,9 @@
       "dispatch": "exempt",
       "exempt": "session-bootstrap",
       "method": "POST",
-      "module": "lib.rs",
+      "module": "http.rs",
       "path": "/api/v1/session/bootstrap",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "\u2014"
     },
     {
@@ -1393,6 +1547,7 @@
       "method": "GET",
       "module": "maintenance.rs",
       "path": "/api/v1/settings/maintenance",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1402,6 +1557,7 @@
       "method": "PUT",
       "module": "maintenance.rs",
       "path": "/api/v1/settings/maintenance",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1411,6 +1567,7 @@
       "method": "GET",
       "module": "writing.rs",
       "path": "/api/v1/template-families",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1420,6 +1577,7 @@
       "method": "POST",
       "module": "writing.rs",
       "path": "/api/v1/template-families",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1429,6 +1587,7 @@
       "method": "GET",
       "module": "materials.rs",
       "path": "/api/v1/templates",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1438,6 +1597,7 @@
       "method": "POST",
       "module": "materials.rs",
       "path": "/api/v1/templates",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1447,6 +1607,7 @@
       "method": "POST",
       "module": "writing.rs",
       "path": "/api/v1/templates/build",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1456,6 +1617,7 @@
       "method": "GET",
       "module": "writing.rs",
       "path": "/api/v1/templates/build-candidates/{job_id}",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1465,6 +1627,7 @@
       "method": "POST",
       "module": "writing.rs",
       "path": "/api/v1/templates/{family_id}/versions",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1474,6 +1637,7 @@
       "method": "POST",
       "module": "materials.rs",
       "path": "/api/v1/templates/{id}/activate",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1483,6 +1647,7 @@
       "method": "POST",
       "module": "materials.rs",
       "path": "/api/v1/templates/{id}/approve",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1492,6 +1657,7 @@
       "method": "GET",
       "module": "thread.rs",
       "path": "/api/v1/threads",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1501,6 +1667,7 @@
       "method": "POST",
       "module": "thread.rs",
       "path": "/api/v1/threads/{id}/reopen",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1510,6 +1677,7 @@
       "method": "POST",
       "module": "thread.rs",
       "path": "/api/v1/threads/{id}/send",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "2"
     },
     {
@@ -1519,6 +1687,7 @@
       "method": "GET",
       "module": "blob.rs",
       "path": "/api/v1/uploads",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1528,6 +1697,7 @@
       "method": "POST",
       "module": "blob.rs",
       "path": "/api/v1/uploads",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1537,6 +1707,7 @@
       "method": "POST",
       "module": "blob.rs",
       "path": "/api/v1/uploads/{id}/review",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1546,6 +1717,7 @@
       "method": "GET",
       "module": "writing.rs",
       "path": "/api/v1/voice-samples",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1555,6 +1727,7 @@
       "method": "POST",
       "module": "writing.rs",
       "path": "/api/v1/voice-samples",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1564,6 +1737,7 @@
       "method": "POST",
       "module": "writing.rs",
       "path": "/api/v1/voice-samples/{id}/retire",
+      "source": "commands/http/legacy_routes.rs",
       "wave": "3"
     },
     {
@@ -1571,8 +1745,9 @@
       "dispatch": "exempt",
       "exempt": "embedded-ui",
       "method": "GET",
-      "module": "lib.rs",
+      "module": "http.rs",
       "path": "/assets/{*path}",
+      "source": "lib.rs",
       "wave": "\u2014"
     }
   ],

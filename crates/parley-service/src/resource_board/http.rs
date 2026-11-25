@@ -2,42 +2,8 @@ use super::*;
 use serde::Serialize;
 use serde_json::json;
 
-pub(super) fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/resource-board", get(get_resource_board))
-        .route(
-            "/api/v1/resource-board/columns",
-            post(create_resource_column),
-        )
-        .route(
-            "/api/v1/resource-board/columns/{id}",
-            axum::routing::delete(remove_resource_column).patch(rename_resource_column),
-        )
-        .route("/api/v1/resource-cards/{id}", get(get_resource_card))
-        .route(
-            "/api/v1/resource-cards/{id}/deliveries",
-            get(get_resource_card_deliveries),
-        )
-        .route(
-            "/api/v1/resource-cards/{id}/retire",
-            post(retire_resource_card),
-        )
-        .route(
-            "/api/v1/resource-cards/{id}/erase",
-            post(erase_resource_card),
-        )
-        .route(
-            "/api/v1/resource-cards/{id}/deliveries/{send_id}/{material_id}/{version}",
-            get(get_delivered_resource_version),
-        )
-        .route("/api/v1/resource-card-commits", post(commit_resource_card))
-        .route("/api/v1/resource-board/moves", post(move_resource_card))
-        .route("/api/v1/entities/{id}/attachments", get(list_attachments))
-}
-
 // Handlers.
-
-async fn get_resource_board(
+pub(crate) async fn get_resource_board(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<BoardQuery>,
@@ -54,8 +20,7 @@ async fn get_resource_board(
         Err(error) => rb_error(error),
     }
 }
-
-async fn create_resource_column(
+pub(crate) async fn create_resource_column(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<CreateResourceColumn>,
@@ -66,8 +31,7 @@ async fn create_resource_column(
     };
     command_handler(state.workspace.create_resource_column(&input, &key)).await
 }
-
-async fn remove_resource_column(
+pub(crate) async fn remove_resource_column(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -79,8 +43,7 @@ async fn remove_resource_column(
     };
     command_handler(state.workspace.remove_resource_column(&id, &input, &key)).await
 }
-
-async fn rename_resource_column(
+pub(crate) async fn rename_resource_column(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -92,8 +55,7 @@ async fn rename_resource_column(
     };
     command_handler(state.workspace.rename_resource_column(&id, &input, &key)).await
 }
-
-async fn erase_resource_card(
+pub(crate) async fn erase_resource_card(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -114,8 +76,7 @@ async fn erase_resource_card(
         Err(error) => rb_error(error),
     }
 }
-
-async fn get_resource_card(
+pub(crate) async fn get_resource_card(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -149,8 +110,7 @@ async fn get_resource_card(
         Err(error) => rb_error(error),
     }
 }
-
-async fn get_resource_card_deliveries(
+pub(crate) async fn get_resource_card_deliveries(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -165,14 +125,13 @@ async fn get_resource_card_deliveries(
 }
 
 #[derive(Serialize, sqlx::FromRow)]
-struct DeliveredResourceVersion {
+pub(crate) struct DeliveredResourceVersion {
     resource_title: String,
     resource_revision: i64,
     body: String,
     filename: Option<String>,
 }
-
-async fn get_delivered_resource_version(
+pub(crate) async fn get_delivered_resource_version(
     State(state): State<AppState>,
     Path((id, send_id, material_id, version)): Path<(String, String, String, i64)>,
     headers: HeaderMap,
@@ -203,8 +162,7 @@ async fn get_delivered_resource_version(
         Err(error) => rb_error(error.into()),
     }
 }
-
-async fn retire_resource_card(
+pub(crate) async fn retire_resource_card(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -215,8 +173,7 @@ async fn retire_resource_card(
     };
     command_handler(state.workspace.retire_resource_card(&id, &key)).await
 }
-
-async fn commit_resource_card(
+pub(crate) async fn commit_resource_card(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<ResourceCardCommitInput>,
@@ -227,8 +184,7 @@ async fn commit_resource_card(
     };
     command_handler(state.workspace.commit_resource_card(&input, &key)).await
 }
-
-async fn move_resource_card(
+pub(crate) async fn move_resource_card(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<MoveResourceCardInput>,
@@ -239,8 +195,7 @@ async fn move_resource_card(
     };
     command_handler(state.workspace.move_resource_card(&input, &key)).await
 }
-
-async fn list_attachments(
+pub(crate) async fn list_attachments(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,

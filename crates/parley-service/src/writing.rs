@@ -5,11 +5,10 @@ use super::{
     AppState, WorkspaceError, authenticate, command_error, digest, error, now_utc, now_utc_offset,
 };
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use parley_domain::{lint, template};
 use serde::{Deserialize, Serialize};
@@ -17,69 +16,23 @@ use serde_json::{Value, json};
 use sqlx::{FromRow, Sqlite, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(super) fn routes() -> Router<AppState> {
-    Router::new()
-        .route(
-            "/api/v1/opportunities/{id}/matches",
-            post(start_match).get(get_match),
-        )
-        .route("/api/v1/templates/build", post(build_templates))
-        .route(
-            "/api/v1/templates/build-candidates/{job_id}",
-            get(build_candidates),
-        )
-        .route(
-            "/api/v1/template-families",
-            get(list_template_families).post(create_template_family),
-        )
-        .route(
-            "/api/v1/matching/calibrations",
-            get(get_calibrations).post(reject_client_calibration),
-        )
-        .route(
-            "/api/v1/embedding-model",
-            get(get_embedding_model).put(set_embedding_model),
-        )
-        .route(
-            "/api/v1/voice-samples",
-            get(list_voice_samples).post(create_voice_sample),
-        )
-        .route(
-            "/api/v1/voice-samples/{id}/retire",
-            post(retire_voice_sample),
-        )
-        .route(
-            "/api/v1/templates/{family_id}/versions",
-            post(create_template_version),
-        )
-        .route(
-            "/api/v1/opportunities/{id}/materials/compose",
-            post(compose_material),
-        )
-        .route(
-            "/api/v1/opportunities/{id}/materials/compose/{job_id}/save",
-            post(save_composer_candidate),
-        )
-        .route("/api/v1/materials/{id}/lint", post(lint_material))
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct EmbeddingModelRequest {
+pub(crate) struct EmbeddingModelRequest {
     model: String,
     #[serde(default)]
     expected_profile_revision: Option<i64>,
 }
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct VoiceSampleRequest {
+pub(crate) struct VoiceSampleRequest {
     text: String,
     channel: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct CalibrationRequest {
+pub(crate) struct CalibrationRequest {
     asset_kind: parley_domain::matching::AssetKind,
     fixture_id: String,
     samples: Vec<parley_domain::matching::LabeledScore>,
@@ -87,11 +40,10 @@ struct CalibrationRequest {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct TemplateFamilyRequest {
+pub(crate) struct TemplateFamilyRequest {
     name: String,
 }
-
-async fn list_template_families(
+pub(crate) async fn list_template_families(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
@@ -105,8 +57,7 @@ async fn list_template_families(
     .await;
     match rows{Ok(rows)=>Json(json!({"items":rows.into_iter().map(|(id,name,created_at)|json!({"id":id,"name":name,"created_at":created_at})).collect::<Vec<_>>()})).into_response(),Err(error)=>command_error(error.into())}
 }
-
-async fn create_template_family(
+pub(crate) async fn create_template_family(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<TemplateFamilyRequest>,
@@ -220,8 +171,10 @@ pub(crate) async fn scoring_config(
         .unwrap_or(json!({"cosine":0.5,"tags":0.25,"recency":0.15,"track":0.1}));
     Ok((weights, half_life))
 }
-
-async fn get_calibrations(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+pub(crate) async fn get_calibrations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
     if let Err(response) = authenticate(&headers, &state).await {
         return response.into_response();
     }
@@ -281,8 +234,7 @@ async fn get_calibrations(State(state): State<AppState>, headers: HeaderMap) -> 
         Err(error) => command_error(error),
     }
 }
-
-async fn reject_client_calibration(
+pub(crate) async fn reject_client_calibration(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(_input): Json<CalibrationRequest>,
@@ -296,8 +248,7 @@ async fn reject_client_calibration(
         "Calibration scores are accepted only from a successful local E-match evaluation; client-supplied labels are not evaluation evidence.",
     )
 }
-
-async fn get_embedding_model(
+pub(crate) async fn get_embedding_model(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
@@ -372,8 +323,7 @@ async fn get_embedding_model(
         Err(error) => command_error(error),
     }
 }
-
-async fn set_embedding_model(
+pub(crate) async fn set_embedding_model(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<EmbeddingModelRequest>,
@@ -491,8 +441,7 @@ async fn set_embedding_model(
     }
     (StatusCode::OK, Json(response_body)).into_response()
 }
-
-async fn list_voice_samples(
+pub(crate) async fn list_voice_samples(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
@@ -506,8 +455,7 @@ async fn list_voice_samples(
     .await;
     match rows{Ok(rows)=>Json(json!({"items":rows.into_iter().map(|(id,text,channel,revision,updated_at)|json!({"id":id,"text":text,"channel":channel,"revision":revision,"updated_at":updated_at})).collect::<Vec<_>>()})).into_response(),Err(error)=>command_error(error.into())}
 }
-
-async fn create_voice_sample(
+pub(crate) async fn create_voice_sample(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<VoiceSampleRequest>,
@@ -586,8 +534,7 @@ async fn create_voice_sample(
     }
     (StatusCode::CREATED, Json(response_body)).into_response()
 }
-
-async fn retire_voice_sample(
+pub(crate) async fn retire_voice_sample(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -666,18 +613,18 @@ async fn retire_voice_sample(
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct MatchRequest {
+pub(crate) struct MatchRequest {
     recipient_id: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct MatchQuery {
+pub(crate) struct MatchQuery {
     recipient_id: String,
 }
 
 #[derive(Debug, Serialize, FromRow)]
-struct MatchRunRow {
+pub(crate) struct MatchRunRow {
     id: String,
     opportunity_id: String,
     recipient_id: String,
@@ -691,7 +638,7 @@ pub(crate) type TemplateBuildRequest = super::application::template_build::Build
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct TemplateVersionRequest {
+pub(crate) struct TemplateVersionRequest {
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
@@ -718,7 +665,7 @@ struct TemplateVersionRequest {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ComposeRequest {
+pub(crate) struct ComposeRequest {
     recipient_id: String,
     kind: String,
     template_version_id: String,
@@ -730,13 +677,13 @@ struct ComposeRequest {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct SaveComposerRequest {
+pub(crate) struct SaveComposerRequest {
     body: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ComposeSlot {
+pub(crate) struct ComposeSlot {
     slot: String,
     value: String,
     resource_id: Option<String>,
@@ -744,12 +691,11 @@ struct ComposeSlot {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct LintRequest {
+pub(crate) struct LintRequest {
     version: i64,
     content_sha256: String,
 }
-
-async fn start_match(
+pub(crate) async fn start_match(
     State(state): State<AppState>,
     Path(opportunity_id): Path<String>,
     headers: HeaderMap,
@@ -923,8 +869,7 @@ async fn start_match(
     state.jobs.notify_one();
     (StatusCode::ACCEPTED, Json(result)).into_response()
 }
-
-async fn get_match(
+pub(crate) async fn get_match(
     State(state): State<AppState>,
     Path(opportunity_id): Path<String>,
     headers: HeaderMap,
@@ -944,24 +889,21 @@ async fn get_match(
         Err(error) => command_error(error.into()),
     }
 }
-
-async fn build_templates(
+pub(crate) async fn build_templates(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<TemplateBuildRequest>,
 ) -> impl IntoResponse {
     super::application::template_build::build_templates(State(state), headers, Json(input)).await
 }
-
-async fn build_candidates(
+pub(crate) async fn build_candidates(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(job_id): Path<String>,
 ) -> impl IntoResponse {
     super::application::template_build::list_candidates(State(state), headers, Path(job_id)).await
 }
-
-async fn create_template_version(
+pub(crate) async fn create_template_version(
     State(state): State<AppState>,
     Path(family_id): Path<String>,
     headers: HeaderMap,
@@ -1329,8 +1271,7 @@ async fn create_template_version(
     }
     (StatusCode::CREATED, Json(response_body)).into_response()
 }
-
-async fn compose_material(
+pub(crate) async fn compose_material(
     State(state): State<AppState>,
     Path(opportunity_id): Path<String>,
     headers: HeaderMap,
@@ -1569,8 +1510,7 @@ async fn compose_material(
     state.jobs.notify_one();
     (StatusCode::ACCEPTED, Json(result)).into_response()
 }
-
-async fn save_composer_candidate(
+pub(crate) async fn save_composer_candidate(
     State(state): State<AppState>,
     Path((opportunity_id, job_id)): Path<(String, String)>,
     headers: HeaderMap,
@@ -1908,8 +1848,7 @@ async fn save_composer_candidate(
     }
     (StatusCode::CREATED, Json(response_body)).into_response()
 }
-
-async fn lint_material(
+pub(crate) async fn lint_material(
     State(state): State<AppState>,
     Path(material_id): Path<String>,
     headers: HeaderMap,

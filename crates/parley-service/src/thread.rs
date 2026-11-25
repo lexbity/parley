@@ -17,11 +17,10 @@ use super::release::{
 };
 use super::{AppState, Workspace, WorkspaceError, authenticate, new_id, now_utc};
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use parley_domain::lifecycle::{
     DEFAULT_CAPACITY_PERIOD, DEFAULT_CAPACITY_UNIT, DEFAULT_REPLY_WINDOW_DAYS, DeadlineKind,
@@ -34,33 +33,14 @@ use sqlx::{Sqlite, Transaction};
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 
-pub(super) fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/threads", get(list_threads))
-        .route("/api/v1/threads/{id}/send", post(mark_sent))
-        .route("/api/v1/threads/{id}/reopen", post(reopen_thread))
-        .route("/api/v1/sends/{id}/outcome", post(record_outcome))
-        .route("/api/v1/entities/{id}/clear-dnc", post(clear_party_dnc))
-        .route("/api/v1/sends", get(list_sends))
-        .route(
-            "/api/v1/sends/{id}/outcome/correction",
-            post(correct_outcome),
-        )
-        .route(
-            "/api/v1/opportunities/{id}/resolution",
-            post(record_resolution),
-        )
-        .route("/api/v1/capacity", get(list_capacity).post(set_capacity))
-}
-
 #[derive(Debug, Deserialize)]
-struct SendHistoryQuery {
+pub(crate) struct SendHistoryQuery {
     opportunity_id: String,
     recipient_id: Option<String>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct OutcomeCorrectionInput {
+pub(crate) struct OutcomeCorrectionInput {
     expected_revision: i64,
     class: String,
     rung_accepted: Option<i64>,
@@ -68,8 +48,7 @@ struct OutcomeCorrectionInput {
     note: Option<String>,
     reason: String,
 }
-
-async fn correct_outcome(
+pub(crate) async fn correct_outcome(
     State(state): State<AppState>,
     Path(send_id): Path<String>,
     headers: HeaderMap,
@@ -195,7 +174,7 @@ async fn correct_outcome(
 }
 
 #[allow(clippy::type_complexity)]
-async fn list_sends(
+pub(crate) async fn list_sends(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<SendHistoryQuery>,
@@ -403,7 +382,7 @@ fn parse_thread_cursor(
 }
 
 #[derive(Debug, Deserialize)]
-struct ThreadQuery {
+pub(crate) struct ThreadQuery {
     opportunity_id: Option<String>,
     recipient_id: Option<String>,
     limit: Option<i64>,
@@ -411,21 +390,21 @@ struct ThreadQuery {
 }
 
 #[derive(Debug, Deserialize)]
-struct MaterialVersionRef {
+pub(crate) struct MaterialVersionRef {
     material_id: String,
     version: i64,
     release_id: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct CompanionRef {
+pub(crate) struct CompanionRef {
     material_id: String,
     version: i64,
     release_id: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct DeadlineInput {
+pub(crate) struct DeadlineInput {
     days: Option<i64>,
     date: Option<String>,
     at: Option<String>,
@@ -568,7 +547,7 @@ fn plan_next_action(
     Ok(format!("{}T00:00:00.000Z", target.format("%Y-%m-%d")))
 }
 
-struct ThreadRow {
+pub(crate) struct ThreadRow {
     id: String,
     opportunity_id: String,
     recipient_id: String,
@@ -598,7 +577,7 @@ async fn load_thread(
     })
 }
 
-struct SendRow {
+pub(crate) struct SendRow {
     thread_id: String,
     touch_no: i64,
 }
@@ -1722,8 +1701,7 @@ async fn verify_release(
 // ---------------------------------------------------------------------------
 // HTTP handlers
 // ---------------------------------------------------------------------------
-
-async fn list_threads(
+pub(crate) async fn list_threads(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<ThreadQuery>,
@@ -1761,8 +1739,7 @@ async fn list_threads(
         }
     }
 }
-
-async fn mark_sent(
+pub(crate) async fn mark_sent(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
     headers: HeaderMap,
@@ -1780,8 +1757,7 @@ async fn mark_sent(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn record_outcome(
+pub(crate) async fn record_outcome(
     State(state): State<AppState>,
     Path(send_id): Path<String>,
     headers: HeaderMap,
@@ -1799,8 +1775,7 @@ async fn record_outcome(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn clear_party_dnc(
+pub(crate) async fn clear_party_dnc(
     State(state): State<AppState>,
     Path(party_id): Path<String>,
     headers: HeaderMap,
@@ -1814,8 +1789,7 @@ async fn clear_party_dnc(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn reopen_thread(
+pub(crate) async fn reopen_thread(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
     headers: HeaderMap,
@@ -1829,8 +1803,7 @@ async fn reopen_thread(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn record_resolution(
+pub(crate) async fn record_resolution(
     State(state): State<AppState>,
     Path(opportunity_id): Path<String>,
     headers: HeaderMap,
@@ -1852,8 +1825,7 @@ async fn record_resolution(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn list_capacity(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub(crate) async fn list_capacity(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(error) = authenticate(&headers, &state).await {
         return (error.0, error.1).into_response();
     }
@@ -1862,8 +1834,7 @@ async fn list_capacity(State(state): State<AppState>, headers: HeaderMap) -> Res
         Err(error) => workspace_error(error),
     }
 }
-
-async fn set_capacity(
+pub(crate) async fn set_capacity(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<CapacityInput>,

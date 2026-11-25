@@ -2,11 +2,10 @@
 //! proposals; owner decisions are the only writes to resource/brief facts.
 use super::{AppState, WorkspaceError, digest, new_id, now_utc};
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post, put},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -22,7 +21,7 @@ const MAX_PROMPT_BYTES: usize = 40_000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CreateChat {
+pub(crate) struct CreateChat {
     role: String,
     scope_kind: String,
     #[serde(default)]
@@ -32,7 +31,7 @@ struct CreateChat {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct ChatTurn {
+pub(crate) struct ChatTurn {
     id: String,
     turn_no: i64,
     speaker: String,
@@ -42,7 +41,7 @@ struct ChatTurn {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct ChatRecord {
+pub(crate) struct ChatRecord {
     id: String,
     role: String,
     scope_kind: String,
@@ -56,7 +55,7 @@ struct ChatRecord {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow)]
-struct ChatSummary {
+pub(crate) struct ChatSummary {
     id: String,
     role: String,
     scope_kind: String,
@@ -70,20 +69,20 @@ struct ChatSummary {
 
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-struct ChatListQuery {
+pub(crate) struct ChatListQuery {
     role: Option<String>,
     scope_kind: Option<String>,
     scope_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct QuestionState {
+pub(crate) struct QuestionState {
     question_id: String,
     state: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct CandidateRecord {
+pub(crate) struct CandidateRecord {
     id: String,
     asset_kind: String,
     fields: Value,
@@ -95,20 +94,20 @@ struct CandidateRecord {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct TurnRequest {
+pub(crate) struct TurnRequest {
     text: String,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct QuestionAction {
+pub(crate) struct QuestionAction {
     question_id: String,
     action: String,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CandidateConfirmation {
+pub(crate) struct CandidateConfirmation {
     title: String,
     fields: Value,
     expected_chat_revision: i64,
@@ -118,7 +117,7 @@ struct CandidateConfirmation {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct BriefDecision {
+pub(crate) struct BriefDecision {
     decision: String,
     corrected_text: Option<String>,
     expected_revision: i64,
@@ -126,38 +125,38 @@ struct BriefDecision {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PromptUpdate {
+pub(crate) struct PromptUpdate {
     expected_version_id: String,
     content: String,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct QuestionBankUpdate {
+pub(crate) struct QuestionBankUpdate {
     expected_version_id: String,
     content: Value,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SegmentCreate {
+pub(crate) struct SegmentCreate {
     name: String,
     description: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct SegmentParty {
+pub(crate) struct SegmentParty {
     party_id: String,
     action: String,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Empty {}
+pub(crate) struct Empty {}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct BriefItem {
+pub(crate) struct BriefItem {
     id: String,
     scope_kind: String,
     scope_id: String,
@@ -175,13 +174,13 @@ struct BriefItem {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct FluencyUpdate {
+pub(crate) struct FluencyUpdate {
     status: String,
     expected_revision: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow)]
-struct FluencyRecord {
+pub(crate) struct FluencyRecord {
     term: String,
     status: String,
     revision: i64,
@@ -413,40 +412,7 @@ pub(super) async fn initialize_defaults(pool: &SqlitePool) -> Result<(), Workspa
     Ok(())
 }
 
-pub(super) fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/agent/chats", get(list_chats).post(create_chat))
-        .route("/api/v1/agent/chats/{id}", get(get_chat))
-        .route("/api/v1/agent/chats/{id}/turns", post(add_turn))
-        .route("/api/v1/agent/chats/{id}/questions", post(question_action))
-        .route(
-            "/api/v1/agent/candidates/{id}/confirm",
-            post(confirm_candidate),
-        )
-        .route(
-            "/api/v1/agent/candidates/{id}/dismiss",
-            post(dismiss_candidate),
-        )
-        .route(
-            "/api/v1/agent/question-bank",
-            get(get_question_bank).put(update_question_bank),
-        )
-        .route(
-            "/api/v1/agent/prompts/{role}",
-            get(get_prompt).put(update_prompt),
-        )
-        .route("/api/v1/segments", get(list_segments).post(create_segment))
-        .route("/api/v1/segments/{id}/parties", post(update_segment_party))
-        .route(
-            "/api/v1/briefs/{scope_kind}/{scope_id}/items",
-            get(list_brief_items).post(generate_brief),
-        )
-        .route("/api/v1/brief-items/{id}/decision", post(decide_brief_item))
-        .route("/api/v1/fluency", get(list_fluency))
-        .route("/api/v1/fluency/{term}", put(update_fluency))
-}
-
-async fn create_chat(
+pub(crate) async fn create_chat(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<CreateChat>,
@@ -587,8 +553,7 @@ async fn validate_scope(
         _ => Err("Scope kind is not permitted for this role".into()),
     }
 }
-
-async fn get_chat(
+pub(crate) async fn get_chat(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -610,8 +575,7 @@ async fn get_chat(
         Err(error) => super::command_error(error),
     }
 }
-
-async fn list_chats(
+pub(crate) async fn list_chats(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<ChatListQuery>,
@@ -673,8 +637,7 @@ async fn read_chat(pool: &SqlitePool, id: &str) -> Result<Option<ChatRecord>, Wo
         candidates,
     }))
 }
-
-async fn add_turn(
+pub(crate) async fn add_turn(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -879,8 +842,7 @@ fn brief_error(error: crate::application::brief::BriefError) -> Response {
         }
     }
 }
-
-async fn question_action(
+pub(crate) async fn question_action(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -1029,8 +991,7 @@ async fn question_action(
     }
     response_json(StatusCode::OK, result, state.workspace.epoch())
 }
-
-async fn confirm_candidate(
+pub(crate) async fn confirm_candidate(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -1248,8 +1209,7 @@ async fn confirm_candidate(
     }
     response_json(StatusCode::CREATED, result, state.workspace.epoch())
 }
-
-async fn dismiss_candidate(
+pub(crate) async fn dismiss_candidate(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -1325,8 +1285,10 @@ async fn dismiss_candidate(
     }
     response_json(StatusCode::OK, result, state.workspace.epoch())
 }
-
-async fn get_question_bank(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub(crate) async fn get_question_bank(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = super::authenticate(&headers, &state).await {
         return response.into_response();
     }
@@ -1344,8 +1306,7 @@ async fn get_question_bank(State(state): State<AppState>, headers: HeaderMap) ->
         ),
     }
 }
-
-async fn update_question_bank(
+pub(crate) async fn update_question_bank(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<QuestionBankUpdate>,
@@ -1462,8 +1423,7 @@ fn valid_question_bank(value: &Value) -> bool {
                 })
         })
 }
-
-async fn get_prompt(
+pub(crate) async fn get_prompt(
     State(state): State<AppState>,
     Path(role): Path<String>,
     headers: HeaderMap,
@@ -1492,8 +1452,7 @@ async fn get_prompt(
         ),
     }
 }
-
-async fn update_prompt(
+pub(crate) async fn update_prompt(
     State(state): State<AppState>,
     Path(role): Path<String>,
     headers: HeaderMap,
@@ -1599,8 +1558,7 @@ async fn update_prompt(
     }
     response_json(StatusCode::OK, result, state.workspace.epoch())
 }
-
-async fn list_segments(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub(crate) async fn list_segments(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(response) = super::authenticate(&headers, &state).await {
         return response.into_response();
     }
@@ -1611,8 +1569,7 @@ async fn list_segments(State(state): State<AppState>, headers: HeaderMap) -> Res
     .await;
     match rows{Ok(rows)=>response_json(StatusCode::OK,json!(rows.into_iter().map(|(id,name,description,revision)|json!({"id":id,"name":name,"description":description,"revision":revision})).collect::<Vec<_>>()),state.workspace.epoch()),Err(error)=>super::command_error(error.into())}
 }
-
-async fn create_segment(
+pub(crate) async fn create_segment(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<SegmentCreate>,
@@ -1694,8 +1651,7 @@ async fn create_segment(
     }
     response_json(StatusCode::CREATED, result, state.workspace.epoch())
 }
-
-async fn update_segment_party(
+pub(crate) async fn update_segment_party(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -1834,8 +1790,7 @@ async fn update_segment_party(
     }
     response_json(StatusCode::OK, result, state.workspace.epoch())
 }
-
-async fn list_brief_items(
+pub(crate) async fn list_brief_items(
     State(state): State<AppState>,
     Path((scope_kind, scope_id)): Path<(String, String)>,
     headers: HeaderMap,
@@ -1882,8 +1837,7 @@ async fn fetch_brief_items(
         })
         .collect())
 }
-
-async fn generate_brief(
+pub(crate) async fn generate_brief(
     State(state): State<AppState>,
     Path((scope_kind, scope_id)): Path<(String, String)>,
     headers: HeaderMap,
@@ -1955,8 +1909,7 @@ async fn generate_brief(
     state.jobs.notify_one();
     response_json(StatusCode::ACCEPTED, result, state.workspace.epoch())
 }
-
-async fn decide_brief_item(
+pub(crate) async fn decide_brief_item(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -2111,8 +2064,7 @@ async fn decide_brief_item(
     }
     response_json(StatusCode::OK, result, state.workspace.epoch())
 }
-
-async fn list_fluency(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub(crate) async fn list_fluency(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(response) = super::authenticate(&headers, &state).await {
         return response.into_response();
     }
@@ -2126,8 +2078,7 @@ async fn list_fluency(State(state): State<AppState>, headers: HeaderMap) -> Resp
         Err(error) => super::command_error(error.into()),
     }
 }
-
-async fn update_fluency(
+pub(crate) async fn update_fluency(
     State(state): State<AppState>,
     Path(term): Path<String>,
     headers: HeaderMap,
@@ -2240,17 +2191,14 @@ async fn update_fluency(
     response_json(StatusCode::OK, result, state.workspace.epoch())
 }
 
+/// Single source of operation-key validation lives at the crate root; this
+/// wrapper only adapts the error shape the assistant handlers already use.
 fn idempotency_key(headers: &HeaderMap) -> Result<String, &'static str> {
-    let Some(key) = headers
-        .get("idempotency-key")
-        .and_then(|value| value.to_str().ok())
-    else {
-        return Err("Idempotency-Key is required");
-    };
-    if key.is_empty() || key.len() > 100 {
-        return Err("Idempotency-Key is invalid");
+    match crate::idempotency_key(headers) {
+        Ok(key) => Ok(key),
+        Err((_, "IDEMPOTENCY_KEY_INVALID", _)) => Err("Idempotency-Key is invalid"),
+        Err(_) => Err("Idempotency-Key is required"),
     }
-    Ok(key.to_owned())
 }
 
 pub(super) async fn receipt_response(

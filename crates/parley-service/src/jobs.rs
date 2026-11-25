@@ -2,11 +2,10 @@
 //! explicitly resolves proposal items through the review command.
 use super::{Workspace, WorkspaceError, digest, new_id, now_utc};
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -107,7 +106,7 @@ type JobReadRow = (
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ProviderUpdate {
+pub(crate) struct ProviderUpdate {
     expected_profile_revision: Option<i64>,
     pairing: Option<super::inference::profile::ObservedPairing>,
     endpoint: String,
@@ -119,35 +118,17 @@ struct ProviderUpdate {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ProposalResolution {
+pub(crate) struct ProposalResolution {
     decisions: Vec<ProposalDecisionInput>,
     opportunity_id: Option<String>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ProposalDecisionInput {
+pub(crate) struct ProposalDecisionInput {
     item_id: String,
     action: String,
     target_entity_id: Option<String>,
     corrected_statement: Option<String>,
-}
-
-pub(super) fn routes() -> Router<super::AppState> {
-    Router::new()
-        .route(
-            "/api/v1/agent/provider",
-            get(get_provider).put(update_provider),
-        )
-        .route("/api/v1/agent/provider/health", post(provider_health))
-        .route("/api/v1/jobs/{id}", get(get_job).post(cancel_job))
-        .route(
-            "/api/v1/captures/{occurrence_id}/proposals",
-            get(get_capture_proposals),
-        )
-        .route(
-            "/api/v1/proposals/{batch_id}/resolve",
-            post(resolve_proposals),
-        )
 }
 
 pub(super) fn role_allowed(role: &str) -> bool {
@@ -508,8 +489,10 @@ pub(crate) async fn finish_attempt_error(
        .bind(new_id(id)).bind(&now).bind(id).bind(attempt).bind(if next_status=="queued" {"job.retrying"} else {"job.failed"}).bind(json!({"error_code":code}).to_string()).execute(&mut *tx).await;
     let _ = tx.commit().await;
 }
-
-async fn get_provider(State(state): State<super::AppState>, headers: HeaderMap) -> Response {
+pub(crate) async fn get_provider(
+    State(state): State<super::AppState>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = super::authenticate(&headers, &state).await {
         return response.into_response();
     }
@@ -551,7 +534,7 @@ async fn get_provider(State(state): State<super::AppState>, headers: HeaderMap) 
         Err(error) => super::command_error(error),
     }
 }
-async fn update_provider(
+pub(crate) async fn update_provider(
     State(state): State<super::AppState>,
     headers: HeaderMap,
     Json(input): Json<ProviderUpdate>,
@@ -717,7 +700,7 @@ async fn update_provider(
         Err(error) => super::command_error(error.into()),
     }
 }
-async fn provider_health(
+pub(crate) async fn provider_health(
     State(state): State<super::AppState>,
     headers: HeaderMap,
     payload: String,
@@ -839,8 +822,7 @@ async fn provider_health(
     }))
     .into_response()
 }
-
-async fn get_job(
+pub(crate) async fn get_job(
     State(state): State<super::AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -1046,7 +1028,7 @@ async fn get_job(
     })
     .into_response()
 }
-async fn get_capture_proposals(
+pub(crate) async fn get_capture_proposals(
     State(state): State<super::AppState>,
     Path(occurrence_id): Path<String>,
     headers: HeaderMap,
@@ -1073,7 +1055,7 @@ async fn get_capture_proposals(
     };
     get_job(State(state), Path(id), headers).await
 }
-async fn cancel_job(
+pub(crate) async fn cancel_job(
     State(state): State<super::AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -1199,8 +1181,7 @@ async fn cancel_job(
         Err(error) => super::command_error(error.into()),
     }
 }
-
-async fn resolve_proposals(
+pub(crate) async fn resolve_proposals(
     State(state): State<super::AppState>,
     Path(batch_id): Path<String>,
     headers: HeaderMap,
@@ -1287,7 +1268,7 @@ async fn resolve_proposals(
     }
 }
 
-struct ReviewFailure {
+pub(crate) struct ReviewFailure {
     status: StatusCode,
     code: &'static str,
     message: String,
@@ -1316,7 +1297,7 @@ impl ReviewFailure {
     }
 }
 
-struct ReviewedPlan {
+pub(crate) struct ReviewedPlan {
     item_id: String,
     action: String,
     kind: String,

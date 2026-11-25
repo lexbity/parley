@@ -23,7 +23,7 @@ use axum::{
     body::Body,
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post, put},
+    routing::get,
 };
 use rand::random;
 use serde::de::{DeserializeOwned, Error as DeError, MapAccess, SeqAccess, Visitor};
@@ -44,34 +44,34 @@ static IDS: AtomicU64 = AtomicU64::new(0);
 /// Move a Draft-00 database out of the namespace used by current migrations.
 /// Its rows remain intact as an audit source; conversion below only promotes
 /// unambiguous party identities and records explicit source-key mappings.
-mod agent_runtime;
+pub(crate) mod agent_runtime;
 mod application;
-mod assistant;
-mod blob;
-mod board;
+pub(crate) mod assistant;
+pub(crate) mod blob;
+pub(crate) mod board;
 mod commands;
 mod entity;
 mod generation;
 mod graph;
-mod http;
-mod inference;
-mod jobs;
-mod maintenance;
-mod parties;
+pub(crate) mod http;
+pub(crate) mod inference;
+pub(crate) mod jobs;
+pub(crate) mod maintenance;
+pub(crate) mod parties;
 mod quarantine;
 pub mod relations;
 #[cfg(debug_assertions)]
 pub use maintenance::{MaintenanceSettings, MaintenanceSettingsInput};
 #[doc(hidden)]
 pub use maintenance::{create_backup_for_test, prune_backups_for_test};
-mod materials;
-mod queue_sheet;
-mod queueing;
-mod release;
-mod resource_board;
+pub(crate) mod materials;
+pub(crate) mod queue_sheet;
+pub(crate) mod queueing;
+pub(crate) mod release;
+pub(crate) mod resource_board;
 mod source;
-mod thread;
-mod writing;
+pub(crate) mod thread;
+pub(crate) mod writing;
 mod writing_jobs;
 
 /// Run the offline, reviewed E-match calibration for the active qualified
@@ -867,49 +867,13 @@ pub async fn start_workspace(path: &Path) -> Result<RunningService, String> {
     }
     let app = shell
         .route("/assets/{*path}", get(http::asset))
-        .route("/api/v1/health", get(http::health))
-        .route("/api/v1/session/bootstrap", post(http::bootstrap))
-        .route("/api/v1/session", get(http::session))
-        .route(
-            "/api/v1/entities",
-            get(http::list_entities).post(http::create_entity),
-        )
-        .route(
-            "/api/v1/entities/{id}",
-            get(http::get_entity).patch(http::update_entity),
-        )
-        .route(
-            "/api/v1/entities/{id}/notes",
-            get(http::get_entity_notes).put(http::update_entity_notes),
-        )
-        .route(
-            "/api/v1/entities/{id}/dossier",
-            get(http::get_entity_dossier),
-        )
-        .route("/api/v1/events", get(http::get_events))
-        .route(
-            "/api/v1/captures",
-            get(http::list_captures).post(http::save_capture),
-        )
-        .route("/api/v1/graph", get(http::get_graph))
-        .route("/api/v1/graph/layout", put(http::update_graph_layout))
-        .merge(relations::routes())
-        .merge(board::routes())
-        .merge(materials::routes())
-        .merge(release::routes())
-        .merge(blob::routes())
-        .merge(parties::routes())
-        .merge(thread::routes())
-        .merge(jobs::routes())
-        .merge(inference::activity::routes())
-        .merge(assistant::routes())
-        .merge(writing::routes())
-        .merge(queueing::routes())
-        .merge(queue_sheet::routes())
-        .merge(resource_board::routes())
-        .merge(maintenance::routes())
+        // TD-10 W4: every non-exempt `/api/v1` route — including health,
+        // bootstrap, entities, events, captures, graph and the legacy module
+        // surfaces — registers through the consolidated transport table in
+        // `commands::http::legacy_routes`. The per-module axum routers are
+        // gone; `ci/routes.py` enforces that no `/api/v1` registration
+        // exists anywhere else in the tree.
         .merge(commands::http::routes())
-        .merge(agent_runtime::routes())
         .with_state(state.clone())
         .layer(axum::middleware::from_fn_with_state(
             state,
@@ -1308,7 +1272,7 @@ type Rejection = (StatusCode, &'static str, &'static str);
 /// Small description of a rejected operation key.
 type KeyRejection = Rejection;
 
-fn idempotency_key(headers: &HeaderMap) -> Result<String, KeyRejection> {
+pub(crate) fn idempotency_key(headers: &HeaderMap) -> Result<String, KeyRejection> {
     let Some(key) = headers
         .get("idempotency-key")
         .and_then(|value| value.to_str().ok())

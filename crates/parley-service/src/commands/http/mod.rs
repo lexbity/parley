@@ -17,7 +17,7 @@ use axum::{
         IntoResponse, Response,
         sse::{Event, Sse},
     },
-    routing::{get, post},
+    routing::{delete, get, patch, post, put},
 };
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -94,6 +94,8 @@ enum OperationError {
     Writing(WritingRunError),
 }
 
+mod legacy_routes;
+
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/commands/query", post(query))
@@ -116,6 +118,7 @@ pub(crate) fn routes() -> Router<AppState> {
             "/api/v1/command-notifications",
             get(notifications::notifications),
         )
+        .merge(legacy_routes::legacy_routes())
 }
 
 #[derive(Debug, Deserialize)]

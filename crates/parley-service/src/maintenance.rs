@@ -1,12 +1,11 @@
 //! Owner-controlled backup policy and verified snapshot operations.
 use super::{AppState, Workspace, WorkspaceError, authenticate, new_id, now_utc};
 use axum::{
-    Json, Router,
+    Json,
     body::Body,
     extract::{Path as AxumPath, Request, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -267,13 +266,13 @@ pub struct MaintenanceSettingsInput {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct BlobRecord {
+pub(crate) struct BlobRecord {
     sha256: String,
     size: u64,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Manifest {
+pub(crate) struct Manifest {
     format_version: u32,
     policy_version: u32,
     backup_id: String,
@@ -286,7 +285,7 @@ struct Manifest {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ExportManifest {
+pub(crate) struct ExportManifest {
     format_version: u32,
     policy_version: u32,
     workspace_id: String,
@@ -297,25 +296,25 @@ struct ExportManifest {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ImportCommitInput {
+pub(crate) struct ImportCommitInput {
     preview_id: String,
     preview_digest: String,
     target_must_be_empty: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RestorePreviewInput {
+pub(crate) struct RestorePreviewInput {
     backup_id: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RestoreCommitInput {
+pub(crate) struct RestoreCommitInput {
     preview_id: String,
     preview_digest: String,
     acknowledge_erased_resurrection: bool,
 }
 #[derive(Serialize)]
-struct RestorePreview {
+pub(crate) struct RestorePreview {
     id: String,
     digest: String,
     backup: serde_json::Value,
@@ -324,25 +323,8 @@ struct RestorePreview {
     required_bytes: u64,
 }
 
-pub(super) fn routes() -> Router<AppState> {
-    Router::new()
-        .route(
-            "/api/v1/settings/maintenance",
-            get(get_settings).put(update_settings),
-        )
-        .route("/api/v1/backups", get(list_backups).post(create_backup))
-        .route("/api/v1/exports", post(create_export))
-        .route("/api/v1/imports/preview", post(preview_import))
-        .route("/api/v1/imports/commit", post(commit_import))
-        .route("/api/v1/restore/preview", post(preview_restore))
-        .route("/api/v1/restore/commit", post(commit_restore))
-        .route("/api/v1/parties/{id}/erase/preview", post(preview_erasure))
-        .route("/api/v1/parties/{id}/erase", post(commit_erasure))
-        .route("/api/v1/maintenance/operations/{id}", get(get_operation))
-}
-
 #[derive(Serialize, Deserialize)]
-struct ErasurePreview {
+pub(crate) struct ErasurePreview {
     id: String,
     digest: String,
     domain_cursor: String,
@@ -352,12 +334,12 @@ struct ErasurePreview {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ErasureCommitInput {
+pub(crate) struct ErasureCommitInput {
     preview_id: String,
     preview_digest: String,
 }
 #[derive(Serialize)]
-struct MaintenanceOperation {
+pub(crate) struct MaintenanceOperation {
     id: String,
     kind: String,
     state: String,
@@ -413,8 +395,7 @@ pub(crate) fn start_scheduler(
         }
     })
 }
-
-async fn get_operation(
+pub(crate) async fn get_operation(
     State(s): State<AppState>,
     AxumPath(id): AxumPath<String>,
     h: HeaderMap,
@@ -454,8 +435,7 @@ async fn get_operation(
         ),
     }
 }
-
-async fn preview_erasure(
+pub(crate) async fn preview_erasure(
     State(s): State<AppState>,
     AxumPath(id): AxumPath<String>,
     h: HeaderMap,
@@ -515,8 +495,7 @@ async fn preview_erasure(
         }),
     )
 }
-
-async fn commit_erasure(
+pub(crate) async fn commit_erasure(
     State(s): State<AppState>,
     AxumPath(id): AxumPath<String>,
     h: HeaderMap,
@@ -745,7 +724,7 @@ pub async fn create_backup_for_test(w: &Workspace) -> Result<String, String> {
 pub fn prune_backups_for_test(root: &Path, retain: usize) -> Result<(), String> {
     prune_verified_backups(root, retain)
 }
-async fn get_settings(State(s): State<AppState>, h: HeaderMap) -> Response {
+pub(crate) async fn get_settings(State(s): State<AppState>, h: HeaderMap) -> Response {
     if let Err(e) = authenticate(&h, &s).await {
         return e.into_response();
     }
@@ -758,7 +737,7 @@ async fn get_settings(State(s): State<AppState>, h: HeaderMap) -> Response {
         ),
     }
 }
-async fn update_settings(
+pub(crate) async fn update_settings(
     State(s): State<AppState>,
     h: HeaderMap,
     Json(i): Json<MaintenanceSettingsInput>,
@@ -780,7 +759,7 @@ async fn update_settings(
         ),
     }
 }
-async fn create_backup(State(s): State<AppState>, h: HeaderMap) -> Response {
+pub(crate) async fn create_backup(State(s): State<AppState>, h: HeaderMap) -> Response {
     if let Err(e) = authenticate(&h, &s).await {
         return e.into_response();
     }
@@ -796,8 +775,7 @@ async fn create_backup(State(s): State<AppState>, h: HeaderMap) -> Response {
         ),
     }
 }
-
-async fn create_export(State(s): State<AppState>, h: HeaderMap) -> Response {
+pub(crate) async fn create_export(State(s): State<AppState>, h: HeaderMap) -> Response {
     if let Err(e) = authenticate(&h, &s).await {
         return e.into_response();
     }
@@ -976,8 +954,11 @@ fn write_export_zip(
     f.sync_all().map_err(|e| e.to_string())?;
     Ok(())
 }
-
-async fn preview_import(State(s): State<AppState>, h: HeaderMap, request: Request) -> Response {
+pub(crate) async fn preview_import(
+    State(s): State<AppState>,
+    h: HeaderMap,
+    request: Request,
+) -> Response {
     if let Err(e) = authenticate(&h, &s).await {
         return e.into_response();
     }
@@ -1101,8 +1082,7 @@ async fn preview_import(State(s): State<AppState>, h: HeaderMap, request: Reques
         json!({"id":pid,"digest":digest,"backup":{"id":"full-import","created_at":now,"status":"verified","manifest_sha256":manifest.state_sha256,"workspace_id":manifest.workspace_id,"format_version":manifest.format_version},"current_cursor":cursor.to_string(),"erasure_resurrections":0,"required_bytes":total}),
     )
 }
-
-async fn commit_import(
+pub(crate) async fn commit_import(
     State(s): State<AppState>,
     h: HeaderMap,
     Json(i): Json<ImportCommitInput>,
@@ -1716,7 +1696,7 @@ async fn erase_from_database(
     }
     Ok(())
 }
-async fn list_backups(State(s): State<AppState>, h: HeaderMap) -> Response {
+pub(crate) async fn list_backups(State(s): State<AppState>, h: HeaderMap) -> Response {
     if let Err(e) = authenticate(&h, &s).await {
         return e.into_response();
     }
@@ -1749,8 +1729,7 @@ async fn list_backups(State(s): State<AppState>, h: HeaderMap) -> Response {
         json!({"items":items,"last_successful_at":settings.last_successful_at}),
     )
 }
-
-async fn preview_restore(
+pub(crate) async fn preview_restore(
     State(s): State<AppState>,
     h: HeaderMap,
     Json(i): Json<RestorePreviewInput>,
@@ -1814,8 +1793,7 @@ async fn preview_restore(
         }),
     )
 }
-
-async fn commit_restore(
+pub(crate) async fn commit_restore(
     State(s): State<AppState>,
     h: HeaderMap,
     Json(i): Json<RestoreCommitInput>,
@@ -2235,7 +2213,7 @@ fn file_hash(p: &Path) -> Result<(u64, String), String> {
     let size = std::io::copy(&mut file, &mut digest).map_err(|error| error.to_string())?;
     Ok((size, hex::encode(digest.finalize())))
 }
-struct FileSync;
+pub(crate) struct FileSync;
 impl FileSync {
     fn sync(p: &Path) -> Result<(), String> {
         std::fs::File::open(p)

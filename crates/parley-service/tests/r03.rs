@@ -108,7 +108,10 @@ async fn stage_upload(service: &RunningService, session: &Session, bytes: &[u8])
     let address = service.address;
     let headers = format!(
         "Cookie: {}\r\nX-Parley-Token: {}\r\nX-Parley-Epoch: {}\r\nIdempotency-Key: {}\r\nx-parley-filename: notes.txt\r\nContent-Type: text/plain",
-        session.0, session.1, session.2, next_key()
+        session.0,
+        session.1,
+        session.2,
+        next_key()
     );
     let mut stream = TcpStream::connect(address).await.unwrap();
     stream

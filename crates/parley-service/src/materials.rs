@@ -10,11 +10,10 @@ use super::release::{
 use super::{AppState, Workspace, WorkspaceError, authenticate, digest, new_id, now_utc};
 use crate::application::writer::{EXECUTION_DEADLINE, Failure, JobResult, WriterJob, commit_tx};
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use parley_domain::{gate, template};
 use serde::{Deserialize, Serialize};
@@ -73,57 +72,6 @@ pub(super) async fn material_receipt_store(
     Ok(())
 }
 
-pub(super) fn routes() -> Router<AppState> {
-    Router::new()
-        .route(
-            "/api/v1/opportunities",
-            get(list_opportunities).post(create_opportunity),
-        )
-        .route(
-            "/api/v1/opportunities/{id}/tags",
-            axum::routing::put(set_opportunity_tags),
-        )
-        .route("/api/v1/opportunities/{id}", get(get_opportunity))
-        .route(
-            "/api/v1/opportunities/{id}/participants",
-            post(add_participant),
-        )
-        .route(
-            "/api/v1/opportunities/{id}/sources/{source_id}",
-            post(link_source).delete(unlink_source),
-        )
-        .route(
-            "/api/v1/opportunities/{id}/interests",
-            get(get_interests).post(add_interest),
-        )
-        .route(
-            "/api/v1/opportunities/{id}/exchange",
-            get(get_exchange).post(save_exchange),
-        )
-        .route(
-            "/api/v1/opportunities/{id}/exchange/{recipient_id}/attest",
-            post(attest_exchange),
-        )
-        .route(
-            "/api/v1/templates",
-            post(create_template).get(list_templates),
-        )
-        .route("/api/v1/templates/{id}/approve", post(approve_template))
-        .route("/api/v1/templates/{id}/activate", post(activate_template))
-        .route(
-            "/api/v1/opportunities/{id}/materials",
-            post(create_material).get(list_materials),
-        )
-        .route("/api/v1/materials/{id}", get(get_material))
-        .route("/api/v1/materials/{id}/gate", post(evaluate_material_gate))
-        .route("/api/v1/materials/{id}/versions", post(edit_material))
-        .route("/api/v1/materials/{id}/approve", post(approve_material))
-        .route("/api/v1/materials/{id}/release", post(release_material))
-        .route("/api/v1/releases/{id}/ack", post(ack_release))
-        .route("/api/v1/outputs", get(list_outputs))
-        .route("/api/v1/resources/{id}/ready", post(mark_resource_ready))
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct Opportunity {
     pub id: String,
@@ -136,19 +84,19 @@ pub struct Opportunity {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct OpportunityCreate {
+pub(crate) struct OpportunityCreate {
     title: String,
     primary_party_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct ParticipantInput {
+pub(crate) struct ParticipantInput {
     party_id: String,
     role: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct InterestInput {
+pub(crate) struct InterestInput {
     recipient_id: String,
     side: String,
     statement: String,
@@ -159,7 +107,7 @@ struct InterestInput {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct ExchangeInput {
+pub(crate) struct ExchangeInput {
     recipient_id: String,
     they_get: String,
     i_get: String,
@@ -167,7 +115,7 @@ struct ExchangeInput {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct TemplateInput {
+pub(crate) struct TemplateInput {
     name: String,
     body: String,
     proof_fallback: Option<String>,
@@ -193,12 +141,12 @@ pub struct SentenceBinding {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct AttachmentInput {
+pub(crate) struct AttachmentInput {
     upload_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct MaterialInput {
+pub(crate) struct MaterialInput {
     recipient_id: String,
     kind: String,
     template_version_id: String,
@@ -211,7 +159,7 @@ struct MaterialInput {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct ApprovalInput {
+pub(crate) struct ApprovalInput {
     override_reasons: BTreeMap<String, String>,
 }
 
@@ -255,7 +203,7 @@ pub struct OutputListing {
 }
 
 #[derive(Debug, Deserialize)]
-struct OutputQuery {
+pub(crate) struct OutputQuery {
     limit: Option<i64>,
     cursor: Option<String>,
 }
@@ -281,17 +229,16 @@ fn decode_output_cursor(value: &str) -> Result<(String, String), WorkspaceError>
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct ReleaseAckInput {
+pub(crate) struct ReleaseAckInput {
     succeeded: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct ReadyInput {
+pub(crate) struct ReadyInput {
     #[serde(default)]
     body: Option<Value>,
 }
-
-async fn create_opportunity(
+pub(crate) async fn create_opportunity(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<OpportunityCreate>,
@@ -502,8 +449,7 @@ async fn rest_create_error(
     let body = json!({"_error": {"status": status, "code": code, "message": message}});
     finish_create_job(tx, deadline, body).await
 }
-
-async fn list_opportunities(
+pub(crate) async fn list_opportunities(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(filters): Query<OpportunityFilters>,
@@ -570,7 +516,7 @@ pub(super) struct OpportunitySummary {
 }
 
 #[derive(sqlx::FromRow)]
-struct OpportunitySummaryRow {
+pub(crate) struct OpportunitySummaryRow {
     id: String,
     title: String,
     state: String,
@@ -585,12 +531,11 @@ struct OpportunitySummaryRow {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct OpportunityTagsInput {
+pub(crate) struct OpportunityTagsInput {
     expected_revision: i64,
     tags: Vec<String>,
 }
-
-async fn set_opportunity_tags(
+pub(crate) async fn set_opportunity_tags(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -726,8 +671,7 @@ async fn set_opportunity_tags(
     super::private_headers(&mut r, state.workspace.epoch());
     r
 }
-
-async fn get_opportunity(
+pub(crate) async fn get_opportunity(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -744,11 +688,10 @@ async fn get_opportunity(
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RecipientQuery {
+pub(crate) struct RecipientQuery {
     recipient_id: String,
 }
-
-async fn get_interests(
+pub(crate) async fn get_interests(
     State(state): State<AppState>,
     Path(opportunity_id): Path<String>,
     headers: HeaderMap,
@@ -778,8 +721,7 @@ async fn get_interests(
     let rows=sqlx::query_as::<_,(String,String,String,String,Option<String>,Option<String>,Option<i64>,i64,String,Option<String>,Option<i64>,Option<String>)>("SELECT i.id,i.side,i.statement,i.knowledge_kind,i.check_suggestion,i.claim_id,i.claim_revision,i.revision,i.status,cr.wording,cr.tier,cr.speaker_kind FROM opportunity_interest i LEFT JOIN claim_revision cr ON cr.claim_id=i.claim_id AND cr.revision=i.claim_revision WHERE i.opportunity_id=? AND i.party_id=? ORDER BY i.created_at,i.id").bind(&opportunity_id).bind(&query.recipient_id).fetch_all(state.workspace.pool()).await;
     match rows{Ok(rows)=>Json(json!({"opportunity_id":opportunity_id,"recipient_id":query.recipient_id,"items":rows.into_iter().map(|(id,side,statement,knowledge_kind,check_suggestion,claim_id,claim_revision,revision,status,wording,tier,speaker_kind)|json!({"id":id,"side":side,"statement":statement,"knowledge_kind":knowledge_kind,"check_suggestion":check_suggestion,"claim_id":claim_id,"claim_revision":claim_revision,"revision":revision,"status":status,"claim":claim_id.zip(claim_revision).map(|(claim_id,claim_revision)|json!({"claim_id":claim_id,"revision":claim_revision,"wording":wording,"tier":tier,"speaker_kind":speaker_kind}))})).collect::<Vec<_>>()})).into_response(),Err(error)=>workspace_error(error.into())}
 }
-
-async fn get_exchange(
+pub(crate) async fn get_exchange(
     State(state): State<AppState>,
     Path(opportunity_id): Path<String>,
     headers: HeaderMap,
@@ -823,8 +765,7 @@ async fn get_exchange(
     let current = results.last().cloned();
     Json(json!({"opportunity_id":opportunity_id,"recipient_id":query.recipient_id,"current":current,"versions":results})).into_response()
 }
-
-async fn add_participant(
+pub(crate) async fn add_participant(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -838,8 +779,7 @@ async fn add_participant(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn link_source(
+pub(crate) async fn link_source(
     State(state): State<AppState>,
     Path((id, source_id)): Path<(String, String)>,
     headers: HeaderMap,
@@ -852,8 +792,7 @@ async fn link_source(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn unlink_source(
+pub(crate) async fn unlink_source(
     State(state): State<AppState>,
     Path((id, source_id)): Path<(String, String)>,
     headers: HeaderMap,
@@ -870,8 +809,7 @@ async fn unlink_source(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn add_interest(
+pub(crate) async fn add_interest(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -903,8 +841,7 @@ async fn add_interest(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn save_exchange(
+pub(crate) async fn save_exchange(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -934,8 +871,7 @@ async fn save_exchange(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn attest_exchange(
+pub(crate) async fn attest_exchange(
     State(state): State<AppState>,
     Path((id, recipient_id)): Path<(String, String)>,
     headers: HeaderMap,
@@ -966,8 +902,7 @@ async fn attest_exchange(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn create_template(
+pub(crate) async fn create_template(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<TemplateInput>,
@@ -995,8 +930,10 @@ async fn create_template(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn list_templates(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+pub(crate) async fn list_templates(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
     if let Err(error) = authenticate(&headers, &state).await {
         return (error.0, error.1).into_response();
     }
@@ -1008,8 +945,7 @@ async fn list_templates(State(state): State<AppState>, headers: HeaderMap) -> im
         Err(error) => workspace_error(error.into()),
     }
 }
-
-async fn approve_template(
+pub(crate) async fn approve_template(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -1040,8 +976,7 @@ async fn approve_template(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn activate_template(
+pub(crate) async fn activate_template(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -1072,8 +1007,7 @@ async fn activate_template(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn create_material(
+pub(crate) async fn create_material(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -1087,8 +1021,7 @@ async fn create_material(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn edit_material(
+pub(crate) async fn edit_material(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -1102,8 +1035,7 @@ async fn edit_material(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn list_materials(
+pub(crate) async fn list_materials(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -1116,8 +1048,7 @@ async fn list_materials(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn get_material(
+pub(crate) async fn get_material(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -1131,8 +1062,7 @@ async fn get_material(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn approve_material(
+pub(crate) async fn approve_material(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -1150,8 +1080,7 @@ async fn approve_material(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn evaluate_material_gate(
+pub(crate) async fn evaluate_material_gate(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -1169,8 +1098,7 @@ async fn evaluate_material_gate(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn release_material(
+pub(crate) async fn release_material(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -1183,8 +1111,7 @@ async fn release_material(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn ack_release(
+pub(crate) async fn ack_release(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -1202,8 +1129,7 @@ async fn ack_release(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn list_outputs(
+pub(crate) async fn list_outputs(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<OutputQuery>,
@@ -1221,8 +1147,7 @@ async fn list_outputs(
         Err(error) => workspace_error(error),
     }
 }
-
-async fn mark_resource_ready(
+pub(crate) async fn mark_resource_ready(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -1266,7 +1191,7 @@ pub(super) fn workspace_error(error: WorkspaceError) -> axum::response::Response
 }
 
 impl Workspace {
-    async fn evaluate_material_gate(
+    pub(crate) async fn evaluate_material_gate(
         &self,
         id: &str,
         overrides: &BTreeMap<String, String>,
@@ -1489,15 +1414,16 @@ impl Workspace {
             .collect::<Result<Vec<_>, WorkspaceError>>()?;
         Ok((items, next_cursor))
     }
-
-    async fn get_opportunity(&self, id: &str) -> Result<Option<Opportunity>, WorkspaceError> {
+    pub(crate) async fn get_opportunity(
+        &self,
+        id: &str,
+    ) -> Result<Option<Opportunity>, WorkspaceError> {
         let mut tx = self.pool.begin().await?;
         let opportunity = opportunity_dto(&mut tx, id).await?;
         tx.commit().await?;
         Ok(opportunity)
     }
-
-    async fn add_participant(
+    pub(crate) async fn add_participant(
         &self,
         opportunity_id: &str,
         input: &ParticipantInput,
@@ -1596,8 +1522,7 @@ impl Workspace {
         tx.commit().await?;
         Ok(())
     }
-
-    async fn add_interest(
+    pub(crate) async fn add_interest(
         &self,
         opportunity_id: &str,
         input: &InterestInput,
@@ -1693,8 +1618,7 @@ impl Workspace {
         tx.commit().await?;
         Ok(result)
     }
-
-    async fn save_exchange(
+    pub(crate) async fn save_exchange(
         &self,
         opportunity_id: &str,
         input: &ExchangeInput,
@@ -1767,8 +1691,7 @@ impl Workspace {
         tx.commit().await?;
         Ok(result)
     }
-
-    async fn attest_exchange(
+    pub(crate) async fn attest_exchange(
         &self,
         opportunity_id: &str,
         recipient_id: &str,
@@ -1821,8 +1744,7 @@ impl Workspace {
         tx.commit().await?;
         Ok(result)
     }
-
-    async fn create_template(
+    pub(crate) async fn create_template(
         &self,
         input: &TemplateInput,
         idempotency_key: &str,
@@ -1945,8 +1867,7 @@ impl Workspace {
         tx.commit().await?;
         Ok(result)
     }
-
-    async fn create_material(
+    pub(crate) async fn create_material(
         &self,
         opportunity_id: &str,
         input: &MaterialInput,
@@ -2136,8 +2057,10 @@ impl Workspace {
             .await?
             .ok_or_else(|| WorkspaceError::Invalid("material version was not readable".into()))
     }
-
-    async fn get_material(&self, id: &str) -> Result<Option<MaterialRecord>, WorkspaceError> {
+    pub(crate) async fn get_material(
+        &self,
+        id: &str,
+    ) -> Result<Option<MaterialRecord>, WorkspaceError> {
         let row = sqlx::query_as::<
             _,
             (
@@ -2235,8 +2158,7 @@ impl Workspace {
             attachment,
         }))
     }
-
-    async fn list_materials(
+    pub(crate) async fn list_materials(
         &self,
         opportunity_id: &str,
     ) -> Result<Vec<MaterialRecord>, WorkspaceError> {
@@ -2375,8 +2297,7 @@ impl Workspace {
         };
         Ok(OutputListing { items, next_cursor })
     }
-
-    async fn approve_material(
+    pub(crate) async fn approve_material(
         &self,
         id: &str,
         overrides: &BTreeMap<String, String>,
@@ -2440,8 +2361,7 @@ impl Workspace {
             json!({"id":id_approval,"material_id":material.id,"version":material.version,"content_sha256":material.hash,"gate":checked,"approved_at":now}),
         )
     }
-
-    async fn mark_resource_ready(
+    pub(crate) async fn mark_resource_ready(
         &self,
         id: &str,
         body_override: Option<&Value>,
