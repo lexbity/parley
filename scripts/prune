@@ -6,6 +6,10 @@
 # Playwright; other projects may need `playwright install` again) and
 # --registry (cargo registry caches; re-fetched on demand).
 #
+# Migration files are versioned by ci/migrations.py: plan slices own versions
+# below 0900 and out-of-plan work uses the reserved band 0900-0999. Migrations
+# are source, not regenerable cache, and are never removed by this script.
+#
 # Usage: scripts/prune [--dry-run] [--playwright-cache] [--registry]
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)

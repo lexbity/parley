@@ -56,7 +56,7 @@ See [ARCHITECTURE](ARCHITECTURE.md#boundary-rule).
 - [ ] `scripts/check-slice <slice>` passes for affected Slices.
 - [ ] `scripts/prove <slice>` passes with fresh evidence.
 - [ ] New or changed endpoints have contract fixtures.
-- [ ] Migrations are ordered, checksummed, and reversible through a verified backup.
+- [ ] Migrations are ordered, checksummed, and reversible through a verified backup. Plan slices allocate below `0900`; out-of-plan work uses the reserved band `0900`–`0999` and is registered in `ci/migrations.py`.
 - [ ] No Workspace file, fixture secret, or private text is committed.
 - [ ] Docs that own an affected topic are updated in the same PR.
 - [ ] Commit subjects follow the convention above.

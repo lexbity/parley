@@ -81,8 +81,15 @@ The service reports copies that remain outside its control.
 ## Migrations
 
 Migrations are ordered, checksummed SQL files in `migrations/`.
-The current sequence runs from `0001_workspace.sql` to `0019_queue_sheet.sql`.
+The current sequence runs from `0001_workspace.sql` to `0036_inference_activity.sql`.
 The schema version is separate from the wire version.
+
+Plan slices own the next sequential version below `0900`. Out-of-plan work
+(technical debt, performance, tooling) allocates from the reserved band
+`0900`–`0999`; owners are registered in `ci/migrations.py`. A band entry may be
+reserved before its file lands, and the reservation does not affect a slice
+gate until the file exists. The band stops two branches from choosing the same
+next number.
 
 - Take a backup before migrating a populated Workspace.
 - Migrate on a working copy, then verify counts, foreign keys, and hashes.
@@ -90,13 +97,15 @@ The schema version is separate from the wire version.
 - Forward migration only; rollback uses a verified prior generation.
 - A failed migration leaves the prior Workspace recoverable.
 
-Check migrations from the repository root:
+Check migrations and the allocation policy from the repository root:
 
 ```sh
 python3 ci/migrations.py --through s11
+python3 ci/migrations.py --check-bands
 ```
 
-Replace `s11` with the Slice under verification.
+Replace `s11` with the Slice under verification. `--check-bands` runs the
+allocation gate alone, without applying migrations. `--through` includes it.
 
 ## Disk hygiene
 
@@ -131,6 +140,7 @@ Rotation is set at 5 MiB with three files.
 |---|---|---|
 | `workspace is active but its control channel is unavailable` | Another launcher owns the lock; its socket is missing | Stop stale processes and relaunch. Never delete a live lock. |
 | Migration verifier fails | SQLx CLI does not match the library | Install `sqlx-cli@0.9.1` and rerun the verifier. |
+| Migration band violation | A plan slice claimed a version `≥0900`, or out-of-plan work claimed one `<0900` | Reallocate in the correct range and register the owner in `ci/migrations.py`. |
 | Cursor rejected as invalid or gapped | Filters changed or retained events were pruned | Reset the client query and refetch snapshots. |
 | Release capability expired | The one-use grant was spent or timed out | Request a new grant with a new operation key. |
 | Release disabled after a correction | A dependency revision or Gate result changed | Create a new Material version and review it. |
