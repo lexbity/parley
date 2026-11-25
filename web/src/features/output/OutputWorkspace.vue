@@ -3,7 +3,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import {
   newOperationKey, parley,
-  type ContactThread, type GateReport, type Material, type MaterialInput, type Opportunity, type OpportunitySummary,
+  type ContactThread, type GateReport, type Material, type MaterialInput, type MaterialSummary, type Opportunity, type OpportunitySummary,
   type ReleasedMaterial, type Resource, type SentenceBinding, type SlotFill,
   type StructuredReadiness, type WritingInterest, type WritingMatch, type WritingTemplate,
 } from '../../api/client';
@@ -20,7 +20,7 @@ import type { SelectOption } from '../../shared/select-options';
  */
 const props = defineProps<{
   resources: Resource[];
-  outputs: Material[];
+  outputs: MaterialSummary[];
   active: boolean;
   recordId: string | null;
   location: string | null;
@@ -114,7 +114,15 @@ const selectedOpportunity = computed(() => scopedRecord.value && {
 const opportunityOptions = computed<SelectOption[]>(() => opportunities.value.map(item => ({ value: item.id, label: item.title })));
 const recipient = computed(() => participants.value.find((item) => item.id === recipientId.value) ?? null);
 const boundTemplate = computed(() => templates.value.find((item) => item.id === draft.value.templateId) ?? null);
-const boundMaterial = computed(() => (draft.value.materialId ? props.outputs.find((item) => item.id === draft.value.materialId) ?? null : null));
+/** Registry summaries carry no letter body, so the full record for an opened
+ *  version is read on demand through GET /materials/{id} and cached here. */
+const fullMaterials = reactive(new Map<string, Material>());
+/** Bodies for the versions dialog are fetched only while that dialog is open. */
+const versionBodies = reactive(new Map<string, string>());
+const boundMaterial = computed(() => {
+  const id = draft.value.materialId;
+  return id ? fullMaterials.get(id) ?? null : null;
+});
 const boundResource = computed(() => props.resources.find((item) => item.id === draft.value.resourceId) ?? null);
 const exchangeVersion = computed(() => Number(exchange.value.current?.version ?? 0));
 const exchangeAttested = computed(() => exchange.value.current?.fairness_attested === true);
@@ -330,18 +338,33 @@ watch(recipientId, () => {
   selection.value = draft.value.resourceId;
 });
 
-function loadMaterial(material: Material) {
-  const key = `${material.opportunity_id}\u0000${material.recipient_id}`;
-  selectScope(material.opportunity_id, material.recipient_id);
+async function loadMaterial(summary: MaterialSummary, full?: Material) {
+  // Scope must settle first so the editor and versions dialog read the same
+  // opportunity/recipient pair as the material being opened.
+  await selectScope(summary.opportunity_id, summary.recipient_id);
+  const key = `${summary.opportunity_id}\u0000${summary.recipient_id}`;
   const current = draftsByScope.get(key) ?? baseDraft();
-  current.body = material.body;
-  current.materialId = material.id;
+  current.materialId = summary.id;
   current.resourceId = '';
   bindingsDirty.value = false;
   draftsByScope.set(key, current);
   mobilePane.value = 'editor';
   leftTab.value = 'drafts';
   resetMessages();
+  if (full) {
+    fullMaterials.set(full.id, full);
+    current.body = full.body;
+  } else {
+    // The registry omits bodies; read this one version in full. A failed read
+    // keeps the summary visible with an empty editor body rather than losing
+    // the owner's current scope.
+    void parley.getMaterial(summary.id).then((record) => {
+      if (draft.value.materialId !== record.id) return;
+      fullMaterials.set(record.id, record);
+      current.body = record.body;
+      if (modal.value === 'gate') gateReport.value = record.gate;
+    }).catch(() => { /* Transport recovery keeps the last confirmed body. */ });
+  }
   // Binding a material changes which thread the panel needs; refresh it now.
   void pollThreads();
 }
@@ -452,6 +475,12 @@ async function openTool(name: string) {
     gateReasons.value = {};
     gateMatchesReasons.value = false;
     if (boundMaterial.value?.status === 'draft') void evaluateGate();
+  } else if (name === 'versions') {
+    versionBodies.clear();
+    void Promise.all(scopeMaterials.value.map(async (item) => {
+      const record = await parley.getMaterial(item.id);
+      versionBodies.set(item.id, record.body);
+    })).catch(() => { /* Keep any bodies already loaded during transport recovery. */ });
   } else if (name === 'voice') {
     selectedVoiceIds.value = selectedVoiceIds.value.filter((id) => voiceSamples.value.some((sample) => sample.id === id));
   }
@@ -866,7 +895,7 @@ async function consumeDeepLink(id: string | null) {
   try {
     const material = await parley.getMaterial(id);
     consumedRecord.value = id;
-    loadMaterial(material);
+    await loadMaterial(material, material);
     void openTool('versions');
     return;
   } catch { /* Not a material id; try an opportunity id. */ }
@@ -1791,7 +1820,7 @@ onBeforeUnmount(() => {
             <span class="ow-pill">{{ material.status }}</span>
           </div>
           <label>Saved wording<textarea
-            :value="material.body"
+            :value="versionBodies.get(material.id) ?? ''"
             readonly
             rows="4"
           /></label>

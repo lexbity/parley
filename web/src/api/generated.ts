@@ -3710,6 +3710,22 @@ export interface components {
             next_cursor: string | null;
         };
         MaterialList: components["schemas"]["MaterialRecord"][];
+        MaterialSummary: {
+            id: string;
+            opportunity_id: string;
+            recipient_id: string;
+            recipient_name: string;
+            kind: string;
+            version: number;
+            content_sha256: string;
+            /** @enum {string} */
+            status: "draft" | "approved" | "released";
+        };
+        MaterialSummaryList: components["schemas"]["MaterialSummary"][];
+        MaterialPage: {
+            items: components["schemas"]["MaterialSummary"][];
+            next_cursor: ((string | null) | null) | null;
+        };
         CreateResourceColumn: {
             title: string;
         };
@@ -6441,7 +6457,12 @@ export interface operations {
     };
     listOutputs: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Bounded read. When present the response is a MaterialPage envelope. */
+                limit?: number;
+                /** @description Opaque keyset token from MaterialPage.next_cursor; only valid with limit. */
+                cursor?: string;
+            };
             header: {
                 "X-Parley-Token": components["parameters"]["MutationToken"];
                 "X-Parley-Epoch": components["parameters"]["Epoch"];
@@ -6451,13 +6472,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Searchable index sharing opportunity and material IDs. */
+            /** @description Registry summaries (no letter bodies). Bounded reads use the page envelope; unbounded array form is removed at the AR10 cut. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MaterialList"];
+                    "application/json": components["schemas"]["MaterialSummaryList"] | components["schemas"]["MaterialPage"];
                 };
             };
         };

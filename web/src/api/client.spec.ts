@@ -37,13 +37,13 @@ describe('ParleyClient S03 opportunity and release commands', () => {
         id: 'op', title: 'x', state: 'open', revision: 1, participants: [7],
         tags: [], next_task: null, next_deadline: null, missing_material: true,
       }], next_cursor: null }))
-      .mockResolvedValueOnce(response([{}]))
+      .mockResolvedValueOnce(response({ items: [{}], next_cursor: null }))
       .mockResolvedValueOnce(response({}));
     const client = new ParleyClient();
     await client.connect();
     await expect(client.listOpportunitiesPage()).rejects.toThrow('opportunity summary is malformed');
     await expect(client.listOpportunitiesPage()).rejects.toThrow('opportunity participant is malformed');
-    await expect(client.listOutputs()).rejects.toThrow('material is malformed');
+    await expect(client.listOutputs()).rejects.toThrow('material summary is malformed');
     await expect(client.releaseMaterial('bad')).rejects.toThrow('release is malformed');
   });
 
@@ -55,23 +55,24 @@ describe('ParleyClient S03 opportunity and release commands', () => {
       tags: [], next_task: null, next_deadline: null, missing_material: false,
     };
     const material = { id: 'mat-1', opportunity_id: 'op-1', recipient_id: 'party 1', recipient_name: 'Dana Lee', kind: 'outreach', version: 1, body: 'Hello Dana.', content_sha256: 'a'.repeat(64), status: 'approved', gate: null, attachment: null };
+    const outputSummary = { id: material.id, opportunity_id: material.opportunity_id, recipient_id: material.recipient_id, recipient_name: material.recipient_name, kind: material.kind, version: material.version, content_sha256: material.content_sha256, status: material.status };
     const released = { release_id: 'release-1', material_id: 'mat-1', version: 1, recipient_id: 'party 1', body: 'Hello Dana.', content_sha256: 'a'.repeat(64), issued_at: '2026-11-21T12:00:00Z', attachment: null };
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(sessionResponse())
       .mockResolvedValueOnce(response(opportunity, 201))
       .mockResolvedValueOnce(response({ items: [summary], next_cursor: null }))
-      .mockResolvedValueOnce(response([material]))
+      .mockResolvedValueOnce(response({ items: [outputSummary], next_cursor: null }))
       .mockResolvedValueOnce(response(released))
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
     const client = new ParleyClient();
     await client.connect();
     expect(await client.createOpportunity('Onboarding', 'party 1')).toEqual(opportunity);
     expect(await client.listOpportunitiesPage()).toEqual({ items: [summary], nextCursor: null });
-    expect(await client.listOutputs()).toEqual([material]);
+    expect(await client.listOutputs()).toEqual([outputSummary]);
     expect(await client.releaseMaterial('mat-1')).toEqual(released);
     await client.acknowledgeRelease('release-1', true);
     expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual([
-      '/api/v1/opportunities', '/api/v1/opportunities?limit=50', '/api/v1/outputs',
+      '/api/v1/opportunities', '/api/v1/opportunities?limit=50', '/api/v1/outputs?limit=200',
       '/api/v1/materials/mat-1/release', '/api/v1/releases/release-1/ack',
     ]);
     for (const [, init] of fetchMock.mock.calls.slice(1)) {

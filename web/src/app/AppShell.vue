@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /* global MouseEvent, HTMLElement, EventTarget, KeyboardEvent */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
-import { ApiError, parley, type AdminOperation, type GraphEntity, type Material, type ProviderConfig, type ProviderPairing, type ProviderSettings, type StructuredReadiness, type Resource } from '../api/client';
+import { ApiError, parley, type AdminOperation, type GraphEntity, type MaterialSummary, type ProviderConfig, type ProviderPairing, type ProviderSettings, type StructuredReadiness, type Resource } from '../api/client';
 import type { CommandDescriptor, CommandManifest, CommandSuccess } from '../api/commands';
 import { tabs } from './tabs';
 import { resolveRoute, routeForTab } from './router';
@@ -53,7 +53,7 @@ function toggleInterviewer() {
 const resourcesWorkspace = ref<InstanceType<typeof ResourcesWorkspace> | null>(null);
 const partyDesk = ref<InstanceType<typeof PartyDesk> | null>(null);
 const lastTabPaths = new Map<string, string>();
-const outputs = shallowRef<Material[]>([]);
+const outputs = shallowRef<MaterialSummary[]>([]);
 const outputError = ref('');
 const resources = shallowRef<Resource[]>([]);
 const status = ref('');

@@ -5,7 +5,7 @@ import {
   parley,
   ApiError,
   newOperationKey,
-  type Material,
+  type MaterialSummary,
   type QueueSheetResponse,
   type QueueSheetRow,
   type SheetPhase,
@@ -25,7 +25,7 @@ import type { SelectOption } from '../../shared/select-options';
 
 defineOptions({ name: 'QueueWorkspace' });
 
-const props = withDefaults(defineProps<{ outputs: Material[]; routeId?: string | null; active?: boolean }>(), { routeId: null, active: true });
+const props = withDefaults(defineProps<{ outputs: MaterialSummary[]; routeId?: string | null; active?: boolean }>(), { routeId: null, active: true });
 const emit = defineEmits<{ navigate: [path: string]; binding: [value: QueuePaletteBinding] }>();
 
 type View = 'sheet' | 'daily' | 'insights';

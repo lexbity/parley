@@ -447,7 +447,17 @@ async fn s06_verified_file_release_download_returns_exact_bytes_and_one_grant() 
     let (status, outputs) = request(port, "GET", "/api/v1/outputs", None).await;
     assert_eq!(status, 200);
     assert_eq!(outputs[0]["id"], material_id);
-    assert_eq!(outputs[0]["attachment"]["sha256"], sha);
+    assert!(outputs[0].get("attachment").is_none());
+    // Attachment metadata is on the full record, read on demand by the UI.
+    let (status, full) = request(
+        port,
+        "GET",
+        &format!("/api/v1/materials/{material_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(full["attachment"]["sha256"], sha);
 
     // HEAD-as-GET must be refused without touching the one-use grant
     // (RFC-0004 IQ2: navigation, link preview and prefetch must not
@@ -520,6 +530,89 @@ async fn s06_verified_file_release_download_returns_exact_bytes_and_one_grant() 
     service.shutdown().await;
     let _ = fs::remove_file(path);
     let _ = fs::remove_dir_all(blobs_dir);
+}
+
+#[tokio::test]
+async fn s06_output_registry_pages_summaries_without_letter_bodies() {
+    let (path, _workspace, port, service) = setup().await;
+    let recipient = create_party(port, "Dana Lee").await;
+    let template = activate_minimal_template(port).await;
+    let mut ids = Vec::new();
+    for index in 0..2 {
+        let (status, opportunity) = request(
+            port,
+            "POST",
+            "/api/v1/opportunities",
+            Some(json!({"title":format!("Registry {index}"),"primary_party_id":recipient})),
+        )
+        .await;
+        assert_eq!(status, 201, "{opportunity}");
+        let opportunity_id = opportunity["id"].as_str().unwrap().to_owned();
+        let exchange = prepare_exchange(port, &opportunity_id, &recipient).await;
+        let (status, material) = create_handoff_material(
+            port,
+            &opportunity_id,
+            &recipient,
+            &template,
+            exchange,
+            None,
+            "A letter body far too large to ship in every registry read.",
+        )
+        .await;
+        assert_eq!(status, 201, "{material}");
+        ids.push(material["id"].as_str().unwrap().to_owned());
+    }
+
+    // Unbounded array form is a projection: metadata only, no body/gate/blob.
+    let (status, all) = request(port, "GET", "/api/v1/outputs", None).await;
+    assert_eq!(status, 200, "{all}");
+    let all = all.as_array().unwrap();
+    assert_eq!(all.len(), 2);
+    for item in all {
+        assert!(item.get("id").is_some());
+        assert_eq!(item["status"], "draft");
+        assert!(item.get("body").is_none(), "registry must not carry bodies");
+        assert!(item.get("gate").is_none());
+        assert!(item.get("attachment").is_none());
+    }
+
+    // Bounded form pages one row at a time with an opaque cursor.
+    let (status, first) = request(port, "GET", "/api/v1/outputs?limit=1", None).await;
+    assert_eq!(status, 200, "{first}");
+    assert_eq!(first["items"].as_array().unwrap().len(), 1);
+    let cursor = first["next_cursor"].as_str().unwrap().to_owned();
+    let (status, second) = request(
+        port,
+        "GET",
+        &format!("/api/v1/outputs?limit=1&cursor={cursor}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{second}");
+    assert_eq!(second["items"].as_array().unwrap().len(), 1);
+    assert!(second["next_cursor"].is_null());
+    let mut seen = std::collections::BTreeSet::new();
+    for page in [&first, &second] {
+        assert!(seen.insert(page["items"][0]["id"].as_str().unwrap().to_owned()));
+        assert!(page["items"][0].get("body").is_none());
+    }
+    assert_eq!(seen.len(), 2);
+
+    // The full record is still available on demand, with its body intact.
+    let (status, full) = request(port, "GET", &format!("/api/v1/materials/{}", ids[0]), None).await;
+    assert_eq!(status, 200, "{full}");
+    assert_eq!(
+        full["body"],
+        "A letter body far too large to ship in every registry read."
+    );
+
+    let (status, invalid) = request(port, "GET", "/api/v1/outputs?limit=0", None).await;
+    assert_eq!(status, 422, "{invalid}");
+    let (status, invalid) = request(port, "GET", "/api/v1/outputs?limit=1&cursor=zz", None).await;
+    assert_eq!(status, 422, "{invalid}");
+
+    service.shutdown().await;
+    let _ = fs::remove_file(path);
 }
 
 #[tokio::test]

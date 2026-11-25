@@ -94,6 +94,27 @@ async function openTool(wrapper: ReturnType<typeof mount>, group: string, comman
 }
 
 describe('OutputWorkspace', () => {
+  it('reads the full letter body on demand because the registry carries summaries only', async () => {
+    stubAuthoring();
+    const saved = material({ status: 'approved', body: 'Full letter body from the on-demand read.' });
+    const summary = {
+      id: saved.id, opportunity_id: saved.opportunity_id, recipient_id: saved.recipient_id,
+      recipient_name: saved.recipient_name, kind: saved.kind, version: saved.version,
+      content_sha256: saved.content_sha256, status: saved.status,
+    };
+    const wrapper = mountWorkspace({ outputs: [summary] });
+    const getMaterial = vi.spyOn(parley, 'getMaterial').mockResolvedValue(saved);
+    await settle();
+
+    await wrapper.findAll('button').find((button) => button.text().startsWith('Drafts'))!.trigger('click');
+    await wrapper.findAll('button').find((button) => button.text().includes('Outreach'))!.trigger('click');
+    await settle();
+
+    expect(getMaterial).toHaveBeenCalledWith(saved.id);
+    expect((wrapper.get('#ow-message').element as HTMLTextAreaElement).value).toBe(saved.body);
+    wrapper.unmount();
+  });
+
   it('polls only the bound opportunity and recipient thread, never the whole list', async () => {
     vi.spyOn(globalThis.document, 'visibilityState', 'get').mockReturnValue('visible');
     stubAuthoring();

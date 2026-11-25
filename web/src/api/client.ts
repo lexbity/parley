@@ -19,6 +19,7 @@ export type OpportunitySummary = components['schemas']['OpportunitySummary'];
 export type GateCheck = { id: string; severity: 'hard' | 'soft'; pass: boolean; detail: string; overridden: boolean };
 export type GateReport = { checks: GateCheck[]; copy_enabled: boolean };
 export type Material = Omit<components['schemas']['MaterialRecord'], 'gate'> & { gate: GateReport | null };
+export type MaterialSummary = components['schemas']['MaterialSummary'];
 export type MaterialInput = components['schemas']['MaterialInput'];
 export type SlotFill = components['schemas']['SlotFill'];
 export type SentenceBinding = components['schemas']['SentenceBinding'];
@@ -704,6 +705,25 @@ function decodeMaterial(value: unknown): Material {
   };
 }
 
+function decodeMaterialSummary(value: unknown): MaterialSummary {
+  const item = object(value);
+  if (!item || !Number.isSafeInteger(item.version) || Number(item.version) < 1
+    || !/^[a-f0-9]{64}$/.test(String(item.content_sha256))
+    || !['draft', 'approved', 'released'].includes(String(item.status))) {
+    throw new Error('Invalid response: material summary is malformed');
+  }
+  return {
+    id: requiredString(item.id, 'material.id'),
+    opportunity_id: requiredString(item.opportunity_id, 'material.opportunity_id'),
+    recipient_id: requiredString(item.recipient_id, 'material.recipient_id'),
+    recipient_name: requiredString(item.recipient_name, 'material.recipient_name'),
+    kind: requiredString(item.kind, 'material.kind'),
+    version: Number(item.version),
+    content_sha256: String(item.content_sha256),
+    status: item.status as MaterialSummary['status'],
+  };
+}
+
 function decodeGateReport(value: unknown): GateReport {
   const report = object(value);
   if (!report || !Array.isArray(report.checks) || typeof report.copy_enabled !== 'boolean') throw new Error('Invalid response: gate report is malformed');
@@ -733,11 +753,6 @@ function decodeReleasedMaterial(value: unknown): ReleasedMaterial {
     issued_at: requiredString(item.issued_at, 'release.issued_at'),
     attachment: decodeAttachment(item.attachment),
   };
-}
-
-function decodeArray<T>(value: unknown, field: string, decode: (item: unknown) => T): T[] {
-  if (!Array.isArray(value)) throw new Error(`Invalid response: ${field} must be a list`);
-  return value.map(decode);
 }
 
 function decodeSavedSource(value: unknown): SavedSource {
@@ -1358,8 +1373,15 @@ export class ParleyClient {
     return decodeOpportunity(await this.request(`/opportunities/${encodeURIComponent(id)}`, { signal }));
   }
 
-  async listOutputs(): Promise<Material[]> {
-    return decodeArray(await this.request('/outputs'), 'outputs', decodeMaterial);
+  async listOutputs(): Promise<MaterialSummary[]> {
+    // Bounded registry read: the server returns summaries only (no bodies)
+    // and answers with a MaterialPage envelope when limit is present.
+    const payload = object(await this.request('/outputs?limit=200'));
+    if (!payload || !Array.isArray(payload.items)
+      || (payload.next_cursor !== null && typeof payload.next_cursor !== 'string')) {
+      throw new Error('Invalid response: output page is malformed');
+    }
+    return payload.items.map(decodeMaterialSummary);
   }
 
   async getWritingInterests(opportunityId: string, recipientId: string): Promise<WritingInterest[]> {

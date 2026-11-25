@@ -230,6 +230,41 @@ pub struct MaterialRecord {
     pub attachment: Option<AttachmentInfo>,
 }
 
+/// Registry projection for `GET /outputs`. It deliberately omits the letter
+/// body, gate snapshot and attachment metadata: the full record is read on
+/// demand through `GET /materials/{id}` when a version is opened.
+#[derive(Debug, Serialize)]
+pub struct MaterialSummary {
+    pub id: String,
+    pub opportunity_id: String,
+    pub recipient_id: String,
+    pub recipient_name: String,
+    pub kind: String,
+    pub version: i64,
+    pub content_sha256: String,
+    pub status: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MaterialPage {
+    pub items: Vec<MaterialSummary>,
+    pub next_cursor: Option<String>,
+}
+
+/// Positional projection of the registry query; the trailing `updated_at` is
+/// only used to mint the next keyset cursor, never sent to the client.
+type MaterialSummaryRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    String,
+    String,
+    String,
+);
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ReleaseAckInput {
     succeeded: bool,
@@ -1114,13 +1149,49 @@ async fn ack_release(
     }
 }
 
-async fn list_outputs(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+/// Opaque keyset cursor for `ORDER BY m.updated_at DESC,m.id`. Hex keeps the
+/// token safe in a raw query string.
+fn encode_output_cursor(updated_at: &str, id: &str) -> String {
+    hex::encode(json!([updated_at, id]).to_string().as_bytes())
+}
+
+fn parse_output_cursor(raw: &str) -> Result<(String, String), WorkspaceError> {
+    hex::decode(raw)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<(String, String)>(&bytes).ok())
+        .ok_or_else(|| WorkspaceError::Invalid("invalid output cursor".into()))
+}
+
+#[derive(Debug, Deserialize)]
+struct OutputListQuery {
+    limit: Option<i64>,
+    cursor: Option<String>,
+}
+
+async fn list_outputs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<OutputListQuery>,
+) -> impl IntoResponse {
     if let Err(error) = authenticate(&headers, &state).await {
         return (error.0, error.1).into_response();
     }
-    match state.workspace.list_outputs().await {
-        Ok(value) => (StatusCode::OK, Json(value)).into_response(),
-        Err(error) => workspace_error(error),
+    // Bounded reads answer with the standard page envelope; the unbounded
+    // array form stays only for the named removal cut, as on /opportunities.
+    if query.limit.is_some() {
+        match state
+            .workspace
+            .list_outputs_page(query.limit, query.cursor.as_deref())
+            .await
+        {
+            Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+            Err(error) => workspace_error(error),
+        }
+    } else {
+        match state.workspace.list_outputs().await {
+            Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+            Err(error) => workspace_error(error),
+        }
     }
 }
 
@@ -2134,18 +2205,97 @@ impl Workspace {
         Ok(rows)
     }
 
-    async fn list_outputs(&self) -> Result<Vec<MaterialRecord>, WorkspaceError> {
-        let ids: Vec<String> =
-            sqlx::query_scalar("SELECT id FROM material ORDER BY updated_at DESC,id")
-                .fetch_all(&self.pool)
-                .await?;
-        let mut rows = Vec::with_capacity(ids.len());
-        for id in ids {
-            if let Some(row) = self.get_material(&id).await? {
-                rows.push(row);
-            }
+    async fn list_outputs(&self) -> Result<Vec<MaterialSummary>, WorkspaceError> {
+        self.list_outputs_inner(None, None)
+            .await
+            .map(|(items, _)| items)
+    }
+
+    async fn list_outputs_page(
+        &self,
+        limit: Option<i64>,
+        cursor: Option<&str>,
+    ) -> Result<MaterialPage, WorkspaceError> {
+        let (items, next_cursor) = self.list_outputs_inner(limit, cursor).await?;
+        Ok(MaterialPage { items, next_cursor })
+    }
+
+    /// One set-based query replaces the old 1+3n pattern (one id scan, then
+    /// three reads per material through `get_material`). Status is derived
+    /// with scalar EXISTS checks; bodies, gate snapshots and attachment
+    /// metadata are not read at all, so the payload no longer grows with the
+    /// size of accumulated letters.
+    async fn list_outputs_inner(
+        &self,
+        limit: Option<i64>,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<MaterialSummary>, Option<String>), WorkspaceError> {
+        if limit.is_some_and(|value| !(1..=200).contains(&value)) {
+            return Err(WorkspaceError::Invalid("invalid output page size".into()));
         }
-        Ok(rows)
+        let after = match cursor {
+            Some(raw) => Some(parse_output_cursor(raw)?),
+            None => None,
+        };
+        let mut q = QueryBuilder::<Sqlite>::new(
+            "SELECT m.id,m.opportunity_id,m.recipient_id,e.name,m.kind,mv.version_no,mv.content_sha256, \
+             CASE WHEN EXISTS(SELECT 1 FROM release_record r WHERE r.material_id=m.id AND r.version_no=mv.version_no) THEN 'released' \
+                  WHEN EXISTS(SELECT 1 FROM approval a WHERE a.material_id=m.id AND a.version_no=mv.version_no) THEN 'approved' \
+                  ELSE 'draft' END,m.updated_at \
+             FROM material m JOIN entity e ON e.id=m.recipient_id \
+             JOIN material_version mv ON mv.material_id=m.id AND mv.version_no=m.head_version WHERE 1=1",
+        );
+        if let Some((updated_at, id)) = after {
+            q.push(" AND (m.updated_at < ")
+                .push_bind(updated_at.clone())
+                .push(" OR (m.updated_at = ")
+                .push_bind(updated_at)
+                .push(" AND m.id > ")
+                .push_bind(id)
+                .push("))");
+        }
+        q.push(" ORDER BY m.updated_at DESC,m.id");
+        if let Some(limit) = limit {
+            q.push(" LIMIT ").push_bind(limit + 1);
+        }
+        let mut rows: Vec<MaterialSummaryRow> = q.build_query_as().fetch_all(&self.pool).await?;
+        let next_cursor = if let Some(limit) = limit {
+            let more = rows.len() > limit as usize;
+            rows.truncate(limit as usize);
+            if more {
+                rows.last().map(|row| encode_output_cursor(&row.8, &row.0))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let items = rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    opportunity_id,
+                    recipient_id,
+                    recipient_name,
+                    kind,
+                    version,
+                    content_sha256,
+                    status,
+                    _updated_at,
+                )| MaterialSummary {
+                    id,
+                    opportunity_id,
+                    recipient_id,
+                    recipient_name,
+                    kind,
+                    version,
+                    content_sha256,
+                    status,
+                },
+            )
+            .collect();
+        Ok((items, next_cursor))
     }
 
     async fn approve_material(

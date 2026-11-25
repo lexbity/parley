@@ -28,6 +28,7 @@ function stubWorkspace(parties: GraphEntity[] = [], sources: SavedSource[] = [],
   vi.spyOn(parley, 'getOpportunity').mockRejectedValue(new Error('no opportunity'));
   vi.spyOn(parley, 'getEntity').mockRejectedValue(new Error('no entity'));
   vi.spyOn(parley, 'listOutputs').mockResolvedValue([]);
+  vi.spyOn(parley, 'getMaterial').mockRejectedValue(new Error('no material'));
   vi.spyOn(parley, 'listWritingTemplates').mockResolvedValue([]);
   vi.spyOn(parley, 'listTemplateFamilies').mockResolvedValue([]);
   vi.spyOn(parley, 'listVoiceSamples').mockResolvedValue([]);
@@ -426,6 +427,7 @@ describe('AppShell', () => {
     vi.spyOn(parley, 'getOpportunity').mockResolvedValue({ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: [] });
     vi.spyOn(parley, 'getEntity').mockResolvedValue({ id: 'p1', kind: 'person', name: 'Dana Lee', focus: '', revision: 1 });
     vi.spyOn(parley, 'listOutputs').mockResolvedValue([approved]);
+    vi.spyOn(parley, 'getMaterial').mockResolvedValue(approved);
     vi.spyOn(parley, 'createOpportunity').mockRejectedValueOnce(new Error('opportunity denied'));
     const release = vi.spyOn(parley, 'releaseMaterial').mockResolvedValue({ release_id: 'r1', material_id: 'm1', version: 1, recipient_id: 'p1', body: 'Hi Dana.', content_sha256: approved.content_sha256, issued_at: '2026-11-21T12:00:00Z', attachment: null });
     const acknowledge = vi.spyOn(parley, 'acknowledgeRelease').mockResolvedValue();
@@ -464,6 +466,11 @@ describe('AppShell', () => {
     vi.spyOn(parley, 'getOpportunity').mockResolvedValue({ id: 'o1', title: 'Onboarding', state: 'open', revision: 1, participant_ids: ['p1'], source_variant_ids: [], material_ids: [] });
     vi.spyOn(parley, 'getEntity').mockResolvedValue({ id: 'p1', kind: 'person', name: 'Dana Lee', focus: '', revision: 1 });
     vi.spyOn(parley, 'listOutputs').mockResolvedValue([approved, draft]);
+    vi.spyOn(parley, 'getMaterial').mockImplementation(async (id) => {
+      const record = [approved, draft].find((item) => item.id === id);
+      if (!record) throw new Error('no material');
+      return record;
+    });
     vi.spyOn(parley, 'evaluateMaterialGate').mockResolvedValue({ checks: [], copy_enabled: true });
     vi.spyOn(parley, 'releaseMaterial').mockResolvedValue({ release_id: 'r2', material_id: 'm2', version: 2, recipient_id: 'p1', body: 'Hi Dana.', content_sha256: approved.content_sha256, issued_at: '2026-11-21T12:00:00Z', attachment: null });
     const acknowledge = vi.spyOn(parley, 'acknowledgeRelease').mockResolvedValue();
