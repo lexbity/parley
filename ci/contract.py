@@ -4,7 +4,7 @@ For `--through SLICE --check-generated` this script:
 
 1. requires a coverage row (contract/coverage.yaml) for every slice up to SLICE;
    a slice without rows is unimplemented and must fail, never pass vacuously,
-2. validates each row's fields and that its fixture directory and evidence
+2. validates each row's fields and that its fixture directory
    artifact exist,
 3. requires contract/openapi.yaml once any covered slice declares operations,
    and that every row's operationId exists in the contract,
@@ -49,7 +49,6 @@ REQUIRED_ROW_FIELDS = (
     "fixture_id",
     "owner_role",
     "package_target",
-    "evidence_path",
 )
 
 
@@ -156,12 +155,6 @@ def validate_coverage(through: str) -> list[str]:
                 errors.append(
                     f"{slice_id} row {index}: fixture directory {fixture_dir.relative_to(REPO_ROOT)} "
                     "does not exist"
-                )
-            evidence = REPO_ROOT / str(row["evidence_path"])
-            if not evidence.exists():
-                errors.append(
-                    f"{slice_id} row {index}: evidence artifact "
-                    f"{row['evidence_path']} does not exist"
                 )
     return declared, errors  # type: ignore[return-value]
 

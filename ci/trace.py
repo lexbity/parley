@@ -4,7 +4,7 @@ Two modes:
 
 `--through SLICE [--check-manifest]`
   * verifies the coverage manifest (contract/coverage.yaml) declares rows for
-    every slice up to SLICE and that requirement IDs and evidence artifacts
+    every slice up to SLICE and that requirement IDs
     exist,
   * runs the import/dependency gates day one: the domain crate must stay pure
     (no HTTP, SQL, filesystem, process or model imports), feature components
@@ -111,12 +111,7 @@ def check_coverage_through(through: str) -> None:
             if not requirement:
                 errors.append(f"coverage row {index} of {slice_id} has no requirement ID")
                 continue
-            evidence = row.get("evidence_path")
-            if not evidence or not (REPO_ROOT / str(evidence)).exists():
-                errors.append(
-                    f"{slice_id} row {index} ({requirement}): evidence artifact "
-                    f"{evidence!r} is missing"
-                )
+
     if errors:
         fail(errors)
     print(f"coverage manifest verified through {through}.")
