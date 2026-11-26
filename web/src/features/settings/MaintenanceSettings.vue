@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /* global File, URL, document, Event, HTMLInputElement, setTimeout */
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
-import { ApiError, parley, type BackupRecord, type ErasePreview, type GraphEntity, type MaintenanceOperation, type MaintenanceSettings as Settings, type RestorePreview } from '../../api/client';
+import { ApiError, newOperationKey, parley, type BackupRecord, type ErasePreview, type GraphEntity, type MaintenanceOperation, type MaintenanceSettings as Settings, type RestorePreview } from '../../api/client';
 const emit=defineEmits<{erased:[]}>();
 const parties=ref<GraphEntity[]>([]);
 async function loadParties(){ const page=await parley.queryDirectory({limit:200}); parties.value=page.rows; }
@@ -19,12 +19,21 @@ watch(selectedBackup, resetRestore);
 watch(partyId, resetErasure);
 watch(partyName, resetErasure);
 async function load(){try{const [s,b]=await Promise.all([parley.getMaintenanceSettings(),parley.listBackups()]);settings.value=settingsDirty.value?{...settings.value,revision:s.revision,last_successful_at:s.last_successful_at}:s;backups.value=b.items;if(!selectedBackup.value)selectedBackup.value=b.items.find((x)=>x.status==='verified')?.id??'';}catch(e){error.value=e instanceof Error?e.message:'Could not load maintenance settings.';}finally{settingsLoading.value=false;}}
-async function action(fn:()=>Promise<void>){if(busy.value)return;busy.value=true;error.value='';status.value='';try{await fn();}catch(e){error.value=e instanceof Error?e.message:'Maintenance action failed.';}finally{busy.value=false;}}
-async function save(){await action(async()=>{settings.value=await parley.updateMaintenanceSettings({backup_directory:settings.value.backup_directory.trim(),interval_hours:settings.value.interval_hours,retention_count:settings.value.retention_count,expected_revision:settings.value.revision});settingsDirty.value=false;status.value='Backup destination and schedule saved.';});}
-async function backup(){await action(async()=>{const item=await parley.createBackup();backups.value=[item,...backups.value];selectedBackup.value=item.id;status.value=`Verified backup ${item.id} created.`;});}
-async function exportData(){await action(async()=>{const blob=await parley.createFullExport();const href=URL.createObjectURL(blob);const a=document.createElement('a');a.href=href;a.download='parley-personal-export.zip';a.click();URL.revokeObjectURL(href);status.value='Personal export downloaded. This archive is owner data, not an approved recipient-facing release.';});}
+const approvalKeys: Record<string, string> = {};
+function keyFor(action: string): string {
+  // A destructive mutation stops at the approval inbox (TD-10 W3) with the
+  // intent frozen to this key; the retry must reuse it or the grant never
+  // matches.
+  if (!approvalKeys[action]) approvalKeys[action] = newOperationKey();
+  return approvalKeys[action];
+}
+function clearKey(action: string): void { delete approvalKeys[action]; }
+async function action(name: string, fn:()=>Promise<void>){if(busy.value)return;busy.value=true;error.value='';status.value='';try{await fn();clearKey(name);}catch(e){if(e instanceof ApiError&&e.code==='approval_required'){status.value='Owner approval required. Approve it in the Approvals panel, then repeat this action.';}else{clearKey(name);error.value=e instanceof Error?e.message:'Maintenance action failed.';}}finally{busy.value=false;}}
+async function save(){await action('save',async()=>{settings.value=await parley.updateMaintenanceSettings({backup_directory:settings.value.backup_directory.trim(),interval_hours:settings.value.interval_hours,retention_count:settings.value.retention_count,expected_revision:settings.value.revision},keyFor('save'));settingsDirty.value=false;status.value='Backup destination and schedule saved.';});}
+async function backup(){await action('backup',async()=>{const item=await parley.createBackup();backups.value=[item,...backups.value];selectedBackup.value=item.id;status.value=`Verified backup ${item.id} created.`;});}
+async function exportData(){await action('export',async()=>{const blob=await parley.createFullExport();const href=URL.createObjectURL(blob);const a=document.createElement('a');a.href=href;a.download='parley-personal-export.zip';a.click();URL.revokeObjectURL(href);status.value='Personal export downloaded. This archive is owner data, not an approved recipient-facing release.';});}
 async function previewRestore() {
-  await action(async () => {
+  await action('restore-preview', async () => {
     const id = selectedBackup.value;
     if (!id) throw new Error('Choose a verified backup.');
     resetRestore();
@@ -36,15 +45,15 @@ async function previewRestore() {
   void nextTick(() => restoreConfirmation.value?.focus());
 }
 async function commitRestore() {
-  await action(async () => {
+  await action('restore-commit', async () => {
     if (!restorePreview.value || previewedBackup.value !== selectedBackup.value || !acknowledge.value) throw new Error('Review the selected backup and acknowledge the replacement.');
-    await parley.commitRestore(restorePreview.value, true);
+    await parley.commitRestore(restorePreview.value, true, keyFor('restore-commit'));
     resetRestore();
     status.value = 'Restore published. The workspace epoch changed. Reopen Parley to sign in again.';
   });
 }
 async function previewImport() {
-  await action(async () => {
+  await action('import-preview', async () => {
     const file = importFile.value;
     if (!file) throw new Error('Choose a Parley export archive.');
     resetImport();
@@ -54,9 +63,9 @@ async function previewImport() {
   void nextTick(() => importConfirmation.value?.focus());
 }
 async function commitImport() {
-  await action(async () => {
+  await action('import-commit', async () => {
     if (!importPreview.value || !emptyTarget.value) throw new Error('Confirm the target is empty.');
-    await parley.commitFullImport(importPreview.value);
+    await parley.commitFullImport(importPreview.value, keyFor('import-commit'));
     resetImport();
     status.value = 'Personal data import published. A session reset is required.';
   });
@@ -66,7 +75,7 @@ function chooseFile(event: Event) {
   resetImport();
 }
 async function previewErase() {
-  await action(async () => {
+  await action('erase-preview', async () => {
     const id = partyId.value;
     const name = partyName.value;
     if (!id) throw new Error('Select a person or organization.');
@@ -81,9 +90,9 @@ async function previewErase() {
 async function waitSession(epoch:string){for(let n=0;n<180;n++){try{await parley.refreshSession(epoch);return;}catch{await new Promise(r=>setTimeout(r,1000));}}throw Error('New workspace session is not available yet. Erasure is not reported complete.');}
 async function waitOperation(op:MaintenanceOperation){await waitSession(op.epoch);for(let n=0;n<180;n++){try{const current=await parley.getMaintenanceOperation(op.id);if(current.state==='complete')return current;if(current.state==='failed')throw Error(`Cleanup failed (${current.error_code??'unknown'}).`);}catch(e){if(e instanceof ApiError&&e.status<500)throw e;if(e instanceof Error&&e.message.startsWith('Cleanup failed'))throw e;if(n===179)throw e;}await new Promise(r=>setTimeout(r,1000));}throw Error('Erasure cleanup is still pending.');}
 async function erase() {
-  await action(async () => {
+  await action('erase', async () => {
     if (!erasure.value || previewedParty.value !== partyId.value || !nameMatches.value) throw new Error('Review the selected party and type the exact name.');
-    const started = await parley.eraseParty(previewedParty.value, erasure.value);
+    const started = await parley.eraseParty(previewedParty.value, erasure.value, keyFor('erase'));
     resetErasure();
     status.value = 'Erasure committed. Waiting for the new workspace session and cleanup.';
     const done = await waitOperation(started);

@@ -3,17 +3,31 @@ import { expect, type Page } from '@playwright/test';
 import { openOwnerPage, test, type OwnerSession } from './fixtures';
 import { addParty, openParties } from './parties';
 
+async function approvePendingApproval(page: Page, settings: ReturnType<typeof openDataSettings>) {
+  // TD-10 W3: destructive maintenance mutations stop at the approval inbox
+  // with the intent frozen to the operation key the UI pinned; the owner
+  // approves there and repeats the action, which consumes the grant.
+  await expect(settings.getByRole('status')).toContainText(/owner approval required/i);
+  const inbox = page.locator('section.approval-inbox');
+  const approve = inbox.getByRole('button', { name: /^Approve approval for/ }).first();
+  await expect(approve).toBeVisible({ timeout: 15000 });
+  await approve.click();
+  await expect(inbox.getByRole('status')).toContainText('approved', { timeout: 15000 });
+}
+
 async function openDataSettings(page: Page) {
   await page.getByRole('link', { name: 'Settings', exact: true }).click();
   await page.getByRole('navigation', { name: 'Settings sections' }).getByRole('link', { name: 'Backup and data' }).click();
   return page.locator('section.maintenance');
 }
 
-async function configureBackups(settings: Awaited<ReturnType<typeof openDataSettings>>, directory: string) {
+async function configureBackups(page: Page, settings: Awaited<ReturnType<typeof openDataSettings>>, directory: string) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await settings.getByLabel('Owner-selected backup directory').fill(directory);
   await settings.getByLabel('Backup interval in hours').fill('24');
   await settings.getByLabel('Verified backups to retain').fill('14');
+  await settings.getByRole('button', { name: 'Save backup settings' }).click();
+  await approvePendingApproval(page, settings);
   await settings.getByRole('button', { name: 'Save backup settings' }).click();
   await expect(settings.getByRole('status')).toContainText('schedule saved');
   await settings.getByRole('button', { name: 'Create verified backup now' }).click();
@@ -36,7 +50,7 @@ async function awaitMaintenanceRestart(page: Page, ownerSession: OwnerSession, o
 test('s11_backup_destination_schedule_and_verified_snapshot_are_saved', async ({ page }, testInfo) => {
   await page.goto('/');
   const settings = await openDataSettings(page);
-  await configureBackups(settings, testInfo.outputPath('owner-backups'));
+  await configureBackups(page, settings, testInfo.outputPath('owner-backups'));
   await page.reload();
   await expect(settings.getByLabel('Backup interval in hours')).toHaveValue('24');
   await expect(settings.getByRole('region', { name: 'Verified backups' })).toContainText(/verified/i);
@@ -60,19 +74,23 @@ test('s11_personal_export_and_empty_target_import_are_distinct_from_recipient_ma
   await expect(commit).toBeDisabled();
   await confirm.check();
   await commit.click();
+  await approvePendingApproval(page, settings);
+  await commit.click();
   await expect(settings.getByRole('status')).toContainText('session reset is required');
 });
 
 test('s11_restore_preview_commit_rotates_session_and_reports_erasure_effects', async ({ page, ownerSession }, testInfo) => {
   await page.goto('/');
   const settings = await openDataSettings(page);
-  await configureBackups(settings, testInfo.outputPath('owner-backups'));
+  await configureBackups(page, settings, testInfo.outputPath('owner-backups'));
   await settings.getByRole('button', { name: 'Verify restore preview' }).click();
   await expect(settings.getByText(/0 erased records may return/)).toBeVisible();
   const commit = settings.getByRole('button', { name: 'Commit verified restore' });
   await expect(commit).toBeDisabled();
   await settings.getByLabel('I understand this replaces current data and may restore erased information.').check();
-  const committed = page.waitForResponse(response => response.url().endsWith('/api/v1/restore/commit'));
+  await commit.click();
+  await approvePendingApproval(page, settings);
+  const committed = page.waitForResponse(response => response.url().endsWith('/api/v1/restore/commit') && response.ok());
   await commit.click();
   await expect(settings.getByRole('status')).toContainText('epoch changed');
   await awaitMaintenanceRestart(page, ownerSession, await (await committed).json());
@@ -99,7 +117,9 @@ test('s11_party_erasure_is_preview_bound_and_reports_external_copies', async ({ 
   const commit = erasure.getByRole('button', { name: 'Erase ' + name, exact: true });
   await expect(commit).toBeDisabled();
   await confirmation.fill(name);
-  const committed = page.waitForResponse(response => response.url().endsWith('/erase'));
+  await commit.click();
+  await approvePendingApproval(page, settings);
+  const committed = page.waitForResponse(response => response.url().endsWith('/erase') && response.ok());
   await commit.click();
   const response = await committed;
   expect(response.status()).toBe(202);

@@ -1070,6 +1070,7 @@ export class ParleyClient {
       upload.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
       upload.setRequestHeader('X-Parley-Purpose', 'card-attachment');
       upload.setRequestHeader('X-Parley-Filename', new URLSearchParams({ name: file.name }).toString());
+      upload.setRequestHeader('Idempotency-Key', newOperationKey());
       if (this.session) {
         upload.setRequestHeader('X-Parley-Token', this.session.mutation_token);
         upload.setRequestHeader('X-Parley-Epoch', this.session.epoch);

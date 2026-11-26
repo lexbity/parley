@@ -1,6 +1,6 @@
 import { mount, flushPromises } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { parley, type BackupRecord, type ErasePreview, type GraphEntity, type RestorePreview } from '../../api/client';
+import { ApiError, parley, type BackupRecord, type ErasePreview, type GraphEntity, type RestorePreview  } from '../../api/client';
 import MaintenanceSettings from './MaintenanceSettings.vue';
 
 const parties: GraphEntity[] = [
@@ -52,7 +52,20 @@ describe('MaintenanceSettings', () => {
     await wrapper.get('input[maxlength="4096"]').setValue('/new/backups');
     await wrapper.get('form').trigger('submit');
     await flushPromises();
-    expect(parley.updateMaintenanceSettings).toHaveBeenCalledWith(expect.objectContaining({ backup_directory: '/new/backups', expected_revision: 1 }));
+    expect(parley.updateMaintenanceSettings).toHaveBeenCalledWith(expect.objectContaining({ backup_directory: '/new/backups', expected_revision: 1 }), expect.any(String));
+    // TD-10 W3: a destructive save stops at the approval inbox with the
+    // intent frozen to the operation key; the retry must reuse that key so
+    // the granted approval matches.
+    vi.mocked(parley.updateMaintenanceSettings).mockRejectedValueOnce(new ApiError('approval required', 403, 'approval_required'));
+    await wrapper.get('form').trigger('submit');
+    await flushPromises();
+    expect(wrapper.text()).toContain('Owner approval required');
+    // The refused call pinned the key; the retry reuses it so the granted
+    // approval matches the frozen intent.
+    const pinnedKey = vi.mocked(parley.updateMaintenanceSettings).mock.calls[1][1] as string;
+    await wrapper.get('form').trigger('submit');
+    await flushPromises();
+    expect(vi.mocked(parley.updateMaintenanceSettings).mock.calls[2][1]).toBe(pinnedKey);
     expect(wrapper.text()).toContain('Backup destination and schedule saved.');
     await button(wrapper, 'Create verified backup now').trigger('click');
     await flushPromises();
@@ -74,7 +87,7 @@ describe('MaintenanceSettings', () => {
     await wrapper.get('article input[type="checkbox"]').setValue(true);
     await button(wrapper, 'Commit verified restore').trigger('click');
     await flushPromises();
-    expect(parley.commitRestore).toHaveBeenCalledWith(snapshot, true);
+    expect(parley.commitRestore).toHaveBeenCalledWith(snapshot, true, expect.any(String));
     expect(wrapper.text()).toContain('Restore published');
     wrapper.unmount();
   });
@@ -94,7 +107,7 @@ describe('MaintenanceSettings', () => {
     await wrapper.get('article input[type="checkbox"]').setValue(true);
     await button(wrapper, 'Commit full data import').trigger('click');
     await flushPromises();
-    expect(parley.commitFullImport).toHaveBeenCalledWith(snapshot);
+    expect(parley.commitFullImport).toHaveBeenCalledWith(snapshot, expect.any(String));
     expect(wrapper.text()).toContain('Personal data import published.');
     wrapper.unmount();
   });
@@ -117,7 +130,7 @@ describe('MaintenanceSettings', () => {
     await panel.get('input').setValue('Dana Lee');
     await button(wrapper, 'Erase Dana Lee').trigger('click');
     await flushPromises();
-    expect(parley.eraseParty).toHaveBeenCalledWith('p1', erasure);
+    expect(parley.eraseParty).toHaveBeenCalledWith('p1', erasure, expect.any(String));
     expect(parley.refreshSession).toHaveBeenCalledWith(operation.epoch);
     expect(parley.getMaintenanceOperation).toHaveBeenCalledWith(operation.id);
     expect(wrapper.text()).toContain('Erasure completed');
