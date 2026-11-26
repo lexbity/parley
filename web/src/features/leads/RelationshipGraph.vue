@@ -393,6 +393,11 @@ onBeforeUnmount(() => { generation.value++; resizeObserver?.disconnect(); if (al
 </template>
 
 <style scoped>
+/* The app ships one light theme; xyflow's stylesheet follows the OS
+   `color-scheme` and would otherwise invert the canvas on dark-mode hosts. */
+:deep(.vue-flow) {
+  color-scheme: light;
+}
 .network-pane { min-width: 0; overflow: hidden; }
 .network-pane .pane-bar { flex-wrap: wrap; border-bottom: 0; }
 .network-pane .pane-bar button { min-height: 2.5rem; }

@@ -270,6 +270,11 @@ onBeforeUnmount(() => { observer?.disconnect(); if (alignFrame) cancelAnimationF
 </template>
 
 <style scoped>
+/* The app ships one light theme; xyflow's stylesheet follows the OS
+   `color-scheme` and would otherwise invert the canvas on dark-mode hosts. */
+:deep(.vue-flow) {
+  color-scheme: light;
+}
 .canvas {
   min-height: 21rem;
   height: clamp(24rem, 47vh, 33rem);
