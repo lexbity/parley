@@ -1,0 +1,78 @@
+# Packaging pipeline for the qualified Parley launcher archive.
+#
+# GoReleaser does NOT build Parley. `scripts/release` is the single
+# qualified producer: it runs the full verification suite, embeds the Vue
+# bundle, vendors the pinned Node worker runtime, qualifies the archive
+# (including the upgrade/recovery drill) and pins every digest. This config
+# repackages that qualified archive into native Linux packages:
+#
+#   .deb / .rpm / archlinux  via nfpms  (FHS layout, depends on bubblewrap)
+#
+# The AppImage is produced by scripts/package-appimage (appimagetool), and
+# the AUR PKGBUILD lives in packaging/aur/ — both consume the same archive.
+# Publishing stays with the existing draft-prerelease job in
+# .github/workflows/release.yml, so this pipeline runs with --skip-publish.
+#
+# Inputs (environment):
+#   PARLEY_QUALIFIED_ARCHIVE  the qualified *.tar.gz from scripts/release
+#   PARLEY_QUALIFIED_DIR      its directory (holds SHA256SUMS)
+
+version: 2
+
+project_name: parley
+
+builds:
+  - skip: true
+
+before:
+  hooks:
+    # Extract the qualified archive into a fixed package root (dist/pkgroot)
+    # so the nfpm file mappings below stay stable across versions.
+    - ./scripts/goreleaser-prepare
+
+checksum:
+  disable: true
+
+nfpms:
+  - id: parley-linux
+    package_name: parley
+    file_name_template: "{{ .ProjectName }}-{{ .Version }}-linux-x86_64.{{ .Ext }}"
+    vendor: Parley contributors
+    homepage: https://github.com/prestinliu/Parley-App
+    maintainer: Prestin Liu <liuprestin@gmail.com>
+    description: >
+      Local-first outreach workspace. Parley helps one person decide whom
+      they can help, prepare an honest offer, and remember what happened.
+      All records stay in a local workspace; the service never sends
+      anything.
+    license: Apache-2.0
+    formats:
+      - deb
+      - rpm
+      - archlinux
+    # The inference sandbox hard-requires a root-owned /usr/bin/bwrap
+    # (supervisor.rs) and unprivileged user namespaces; the vendored Node
+    # worker ships inside the package, so there is no nodejs dependency.
+    dependencies:
+      - bubblewrap
+    recommends:
+      - chromium
+    contents:
+      - src: dist/pkgroot/bin/parley
+        dst: /usr/bin/parley
+      - src: dist/pkgroot/libexec/parley-agent/
+        dst: /usr/libexec/parley-agent/
+      - src: dist/pkgroot/LICENSE
+        dst: /usr/share/licenses/parley/LICENSE
+      - src: dist/pkgroot/INSTALL.md
+        dst: /usr/share/doc/parley/INSTALL.md
+    deb:
+      lintian_overrides:
+        - statically-linked-binary
+    rpm:
+      group: Applications/Productivity
+
+release:
+  # Publishing belongs to the draft-prerelease job in release.yml, which
+  # verifies SHA256SUMS and keeps drafts idempotent.
+  disable: true

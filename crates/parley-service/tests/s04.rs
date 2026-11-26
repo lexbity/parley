@@ -364,8 +364,14 @@ async fn s04_fresh_workspace_serves_empty_model_text() {
     let (path, _workspace, port, service) = setup().await;
     let (status, view) = request(port, "GET", "/api/v1/agent/provider", None).await;
     assert_eq!(status, 200, "{view:?}");
-    assert_eq!(view["model"], "", "the unsaved model tag renders as empty text");
-    assert!(view["profile_revision"].is_i64(), "the seeded revision is present");
+    assert_eq!(
+        view["model"], "",
+        "the unsaved model tag renders as empty text"
+    );
+    assert!(
+        view["profile_revision"].is_i64(),
+        "the seeded revision is present"
+    );
     assert_eq!(view["endpoint"], "http://127.0.0.1:11434");
     assert_eq!(view["pairing"], json!(null));
     service.shutdown().await;

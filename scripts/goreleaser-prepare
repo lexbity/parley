@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# GoReleaser prebuilt hook: extract the qualified launcher archive into a
+# fixed package root (dist/pkgroot) so the nfpm file mappings stay stable
+# across versions. Inputs are documented in .goreleaser.yaml.
+set -euo pipefail
+: "${PARLEY_QUALIFIED_ARCHIVE:?Set PARLEY_QUALIFIED_ARCHIVE to the scripts/release archive.}"
+: "${PARLEY_QUALIFIED_DIR:?Set PARLEY_QUALIFIED_DIR to the archive's directory.}"
+rm -rf dist/pkgroot
+mkdir -p dist/pkgroot
+tar -xzf "$PARLEY_QUALIFIED_ARCHIVE" -C dist/pkgroot --strip-components=1

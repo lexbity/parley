@@ -3,7 +3,7 @@ import { expect, type Page } from '@playwright/test';
 import { openOwnerPage, test, type OwnerSession } from './fixtures';
 import { addParty, openParties } from './parties';
 
-async function approvePendingApproval(page: Page, settings: ReturnType<typeof openDataSettings>) {
+async function approvePendingApproval(page: Page, settings: Awaited<ReturnType<typeof openDataSettings>>) {
   // TD-10 W3: destructive maintenance mutations stop at the approval inbox
   // with the intent frozen to the operation key the UI pinned; the owner
   // approves there and repeats the action, which consumes the grant.

@@ -41,6 +41,29 @@ The upgrade drill starts the previous executable, writes synthetic records, crea
 
 Before a real upgrade, create a verified backup in **Settings**, stop Parley, and keep a copy of the whole Workspace and the previous software version. Extract the candidate into its own directory and try it against a stopped copy. Use the previous executable with a pre-upgrade Workspace when recovering. Preserve the upgraded Workspace for export and review if it contains later changes. [Workspace backup and restore](OPERATIONS.md)
 
+## Windows port surface
+
+Packaging a Windows build is small next to the runtime port. The concrete
+implementation gap, in dependency order:
+
+1. Launcher handoff and single-instance control move from the Unix control
+   socket (`crates/parley-cli/src/main.rs`) to named pipes.
+2. Workspace locking and the generation selector gain `LockFileEx` paths
+   (`crates/parley-service/src/generation.rs`, `lib.rs`).
+3. Owner-only POSIX permission checks (secret key, control directory, blob
+   store) map to Windows ACLs.
+4. The agent runtime feed gains a checksum-pinned `node-v26.12.0-win-x64`
+   archive and a platform-aware runtime manifest
+   (`scripts/build-agent`, `supervisor.rs`).
+5. The inference sandbox has no Windows equivalent: bubblewrap and Linux
+   user namespaces do not exist there. A Windows build either ships without
+   local inference (capture, gate, exchange, packs all work model-less) or
+   takes on an AppContainer isolation project.
+6. The release pipeline gains a Windows qualification job; wine can only
+   ever provide a boot smoke — it cannot stand in for the real workspace,
+   socket and child-process behavior the drills cover. Real qualification
+   runs on a Windows 11 runner per the Tauri checklist below.
+
 ## Qualify a public Tauri release
 
 Build and sign platform installers after the Tauri shell can start or reuse the existing local service. Qualify Linux x86_64 on Ubuntu 24.04, Windows x64 on Windows 11, and macOS arm64 on macOS 15 before advertising those targets. Windows needs a working OS-level Workspace lock and launcher handoff. Exercise installation, the single writer across browser and desktop, session bootstrap, native file and clipboard handling, shutdown and restart, accessibility, and migration and recovery with the previous installer. Record the supported OS and WebView versions alongside the artifact digests.

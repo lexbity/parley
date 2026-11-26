@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# Build a Parley AppImage from a qualified launcher archive.
+#
+# The archive layout (bin/parley, libexec/parley-agent/) is preserved inside
+# the AppDir so the launcher's relative agent resolution
+# (<exe-dir>/../libexec/parley-agent, supervisor.rs) keeps working, along
+# with its build-time runtime manifest digest.
+#
+# Usage:
+#   scripts/package-appimage --archive QUALIFIED.tar.gz [--output DIR]
+#                            [--appimagetool PATH]
+#
+# Environment:
+#   APPIMAGETOOL  path to the pinned appimagetool x86_64 AppImage (optional;
+#                 downloaded and digest-verified on first use)
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+output=""
+archive=""
+appimagetool="${APPIMAGETOOL:-}"
+
+APPIMAGETOOL_VERSION="1.9.1"
+APPIMAGETOOL_SHA256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
+APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
+
+usage() {
+  printf '%s\n' "Usage: scripts/package-appimage --archive ARCHIVE [--output DIR] [--appimagetool PATH]" >&2
+  exit 2
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --archive) archive=$2; shift 2 ;;
+    --output) output=$2; shift 2 ;;
+    --appimagetool) appimagetool=$2; shift 2 ;;
+    *) usage ;;
+  esac
+done
+
+[[ -n "$archive" ]] || usage
+[[ -f "$archive" ]] || { printf 'package-appimage: archive not found: %s\n' "$archive" >&2; exit 1; }
+[[ "$(uname -s)-$(uname -m)" == "Linux-x86_64" ]] || {
+  printf 'package-appimage: AppImage packaging qualifies Linux x86_64 only.\n' >&2
+  exit 1
+}
+
+output=${output:-"$(pwd)/parley-appimage"}
+mkdir -p "$output"
+
+fail() { printf 'package-appimage: %s\n' "$*" >&2; exit 1; }
+
+# --- appimagetool (pinned, digest-verified, extracted-run so no FUSE needed) ---
+if [[ -z "$appimagetool" ]]; then
+  cache="$root/artifacts/dev-tools"
+  mkdir -p "$cache"
+  appimagetool="$cache/appimagetool-x86_64-${APPIMAGETOOL_VERSION}.AppImage"
+  if [[ ! -f "$appimagetool" ]]; then
+    printf 'package-appimage: downloading appimagetool %s\n' "$APPIMAGETOOL_VERSION"
+    curl --fail --silent --show-error --location --retry 3 \
+      --output "$appimagetool" "$APPIMAGETOOL_URL"
+  fi
+fi
+[[ -f "$appimagetool" ]] || fail "appimagetool not found: $appimagetool"
+
+actual=$(sha256sum "$appimagetool" | awk '{print $1}')
+if [[ -n "$APPIMAGETOOL_SHA256" && "$actual" != "$APPIMAGETOOL_SHA256" ]]; then
+  fail "appimagetool digest mismatch ($actual)"
+fi
+chmod +x "$appimagetool"
+run_appimagetool() {
+  # Extracted-run: no FUSE requirement on build hosts.
+  "$appimagetool" --appimage-extract-and-run "$@"
+}
+
+# --- AppDir from the qualified archive ---
+version=$(sed -n 's/.*parley-\([0-9][0-9.]*\)-linux-x86_64.*/\1/p' <<<"$(basename "$archive")")
+[[ -n "$version" ]] || fail "archive name must be parley-<version>-linux-x86_64.tar.gz"
+
+appid="parley"
+appdir="$output/${appid}.AppDir"
+rm -rf "$appdir"
+mkdir -p "$appdir/usr/bin" "$appdir/usr/libexec" \
+  "$appdir/usr/share/applications" "$appdir/usr/share/icons/hicolor/scalable/apps"
+
+tar -xzf "$archive" -C "$appdir/usr" --strip-components=1
+
+cat > "$appdir/usr/share/applications/parley.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Parley
+GenericName=Outreach workspace
+Comment=Prepare an honest offer and remember what happened — locally.
+Exec=parley
+Icon=parley
+Categories=Development;Office;
+Terminal=false
+DESKTOP
+
+cat > "$appdir/usr/share/icons/hicolor/scalable/apps/parley.svg" <<'ICON'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect x="4" y="4" width="56" height="56" rx="12" fill="#225744"/>
+  <text x="32" y="43" font-family="Georgia, serif" font-size="32" fill="#eff3e9" text-anchor="middle">P</text>
+</svg>
+ICON
+
+# appimagetool requires a root .desktop file and icon at fixed locations.
+cp "$appdir/usr/share/applications/parley.desktop" "$appdir/${appid}.desktop"
+cp "$appdir/usr/share/icons/hicolor/scalable/apps/parley.svg" "$appdir/${appid}.svg"
+
+# --- build ---
+image="$output/Parley-${version}-linux-x86_64.AppImage"
+rm -f "$image"
+run_appimagetool --comp gzip --no-appstream "$appdir" "$image"
+sha256sum "$image" > "$image.sha256"
+printf 'package-appimage: %s\n' "$image"

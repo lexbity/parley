@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Render an AUR-ready repository (PKGBUILD + .SRCINFO) from a qualified
+Parley launcher archive.
+
+Reads the archive's release-manifest.json for the version and the archive's
+own digest, renders packaging/aur/PKGBUILD with those values, and emits a
+hand-written .SRCINFO (no pacman tooling required). Publishing is a manual
+git push from a machine whose AUR SSH key is registered for the package
+base; CI keeps that credential out of the release workflow.
+
+Usage:
+  scripts/package-aur --archive QUALIFIED.tar.gz [--output DIR]
+"""
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import re
+import shutil
+
+ROOT = Path(__file__).resolve().parents[1]
+VERSION = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?")
+
+SRCINFO = """pkgbase = parley
+pkgname = parley
+pkgver = {pkgver}
+pkgrel = 1
+epoch =
+pkgdesc = Local-first outreach workspace: prepare an honest offer and remember what happened
+url = https://github.com/prestinliu/Parley-App
+arch = x86_64
+license = Apache-2.0
+depends = bubblewrap
+optdepends = chromium
+source = parley-{pkgver}-linux-x86_64.tar.gz::https://github.com/prestinliu/Parley-App/releases/download/v{pkgver}/parley-{pkgver}-linux-x86_64.tar.gz
+sha256sums = {digest}
+"""
+
+
+def sha256(path):
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--archive", type=Path, required=True, help="Qualified parley-<version>-linux-x86_64.tar.gz")
+    parser.add_argument("--output", type=Path, help="Directory for the rendered AUR repository (default: <archive dir>/aur)")
+    args = parser.parse_args()
+
+    archive = args.archive.resolve()
+    if not archive.is_file():
+        raise SystemExit(f"package-aur: archive not found: {archive}")
+    # The manifest sits inside the tarball; read it without full extraction.
+    import tarfile
+    with tarfile.open(archive, "r:gz") as bundle:
+        prefix = archive.name.removesuffix(".tar.gz")
+        member = bundle.getmember(f"{prefix}/release-manifest.json")
+        manifest = json.load(bundle.extractfile(member))
+    version = manifest["version"]
+    if not VERSION.fullmatch(version):
+        raise SystemExit(f"package-aur: unsupported version in manifest: {version}")
+    if manifest.get("tag") != f"v{version}":
+        raise SystemExit("package-aur: the archive must come from a tagged build")
+
+    output = (args.output or archive.parent / "aur").resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    shutil.copy(ROOT / "packaging/aur/PKGBUILD", output / "PKGBUILD")
+    pkgbuild = (output / "PKGBUILD").read_text(encoding="utf-8")
+    pkgbuild = pkgbuild.replace("_pkgver=0.0.0-PLACEHOLDER", f"_pkgver={version}")
+    pkgbuild = pkgbuild.replace("sha256sums=(PLACEHOLDER-ARCHIVE-SHA256)", f"sha256sums=('{sha256(archive)}')")
+    (output / "PKGBUILD").write_text(pkgbuild, encoding="utf-8")
+
+    pkgver = version.replace("-", ".")
+    (output / ".SRCINFO").write_text(SRCINFO.format(pkgver=pkgver, digest=sha256(archive)), encoding="utf-8")
+
+    print(f"AUR repository rendered in {output}")
+    print("Publish from a machine with the AUR SSH key registered for 'parley':")
+    print(f"  git -C {output} init && git -C {output} add -A && git -C {output} commit -m 'parley v{version}'")
+    print(f"  git -C {output} remote add origin ssh://aur@aur.archlinux.org/parley.git")
+    print(f"  git -C {output} push -u origin master")
+
+
+if __name__ == "__main__":
+    main()

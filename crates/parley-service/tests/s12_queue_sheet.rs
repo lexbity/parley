@@ -579,17 +579,30 @@ async fn s12_pack_settings_validate_activate_and_remap() {
 
     let party = create_party(port, "Pack Mover").await;
     let opportunity = create_opportunity(port, "Remap my stage", &party).await;
-    let (status, view) = phase_change(port, &opportunity, "exploring", 1, None, "pack-phase-seed").await;
+    let (status, view) =
+        phase_change(port, &opportunity, "exploring", 1, None, "pack-phase-seed").await;
     assert_eq!(status, 200, "{view:?}");
 
     // Default settings: the seeded pack, revision 1, the reference document.
-    let (status, settings) = request(port, "GET", "/api/v1/settings", None, "pack-settings-read").await;
+    let (status, settings) =
+        request(port, "GET", "/api/v1/settings", None, "pack-settings-read").await;
     assert_eq!(status, 200, "{settings:?}");
     assert_eq!(settings["revision"], 1);
     assert_eq!(settings["active_pack_id"], "job_search");
     assert_eq!(settings["active_pack_version"], "1.0.0");
-    assert!(settings["active_document"].as_str().unwrap().contains("Exploring"));
-    assert!(settings["available_packs"].as_array().unwrap().iter().any(|pack| pack["id"] == "lead_gen"));
+    assert!(
+        settings["active_document"]
+            .as_str()
+            .unwrap()
+            .contains("Exploring")
+    );
+    assert!(
+        settings["available_packs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|pack| pack["id"] == "lead_gen")
+    );
 
     // An invalid document validates as invalid; the active pack is untouched.
     let (status, result) = request(
@@ -602,7 +615,13 @@ async fn s12_pack_settings_validate_activate_and_remap() {
     .await;
     assert_eq!(status, 200, "{result:?}");
     assert_eq!(result["valid"], false);
-    assert!(result["errors"].as_array().unwrap().iter().any(|issue| issue["field"] == "version"));
+    assert!(
+        result["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["field"] == "version")
+    );
 
     // A valid document validates and comes back normalized.
     let (status, result) = request(
@@ -668,7 +687,14 @@ async fn s12_pack_settings_validate_activate_and_remap() {
     assert_eq!(activated["revision"], 2);
     assert_eq!(activated["active_pack_id"], "lead_gen");
 
-    let (status, settings) = request(port, "GET", "/api/v1/settings", None, "pack-settings-read-2").await;
+    let (status, settings) = request(
+        port,
+        "GET",
+        "/api/v1/settings",
+        None,
+        "pack-settings-read-2",
+    )
+    .await;
     assert_eq!(status, 200, "{settings:?}");
     assert_eq!(settings["revision"], 2);
     assert_eq!(settings["active_document"], lead_gen);
@@ -678,15 +704,26 @@ async fn s12_pack_settings_validate_activate_and_remap() {
             .fetch_all(workspace.pool())
             .await
             .unwrap();
-    assert_eq!(stages, vec![("identified".into(), "Identified".into()), ("briefed".into(), "Briefed".into()), ("contacted".into(), "Contacted".into())]);
+    assert_eq!(
+        stages,
+        vec![
+            ("identified".into(), "Identified".into()),
+            ("briefed".into(), "Briefed".into()),
+            ("contacted".into(), "Contacted".into())
+        ]
+    );
 
     let (stage_id, stage_pack): (Option<String>, Option<String>) =
-        sqlx::query_as("SELECT stage_id,stage_pack_id FROM opportunity WHERE id=?",)
+        sqlx::query_as("SELECT stage_id,stage_pack_id FROM opportunity WHERE id=?")
             .bind(&opportunity)
             .fetch_one(workspace.pool())
             .await
             .unwrap();
-    assert_eq!(stage_id.as_deref(), Some("identified"), "the mapping moved the stage");
+    assert_eq!(
+        stage_id.as_deref(),
+        Some("identified"),
+        "the mapping moved the stage"
+    );
     assert_eq!(stage_pack.as_deref(), Some("lead_gen"));
 
     let policy: i64 = sqlx::query_scalar(
@@ -695,7 +732,10 @@ async fn s12_pack_settings_validate_activate_and_remap() {
     .fetch_one(workspace.pool())
     .await
     .unwrap();
-    assert_eq!(policy, 15, "the policy fragment is derived from the document");
+    assert_eq!(
+        policy, 15,
+        "the policy fragment is derived from the document"
+    );
 
     // Same-key replay replays the stored result: revision does not advance.
     let (status, replay) = request(
@@ -707,7 +747,10 @@ async fn s12_pack_settings_validate_activate_and_remap() {
     )
     .await;
     assert_eq!(status, 200, "{replay:?}");
-    assert_eq!(replay["revision"], 2, "replay returns the stored receipt result");
+    assert_eq!(
+        replay["revision"], 2,
+        "replay returns the stored receipt result"
+    );
     let current: i64 = sqlx::query_scalar("SELECT settings_revision FROM owner_profile WHERE id=1")
         .fetch_one(workspace.pool())
         .await

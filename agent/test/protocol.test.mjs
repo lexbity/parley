@@ -6,7 +6,7 @@ import { compileSchema, MAX_FRAME, parseJson, readFrames } from "../src/protocol
 
 const runtimeSchema = readFileSync(new URL("../../contract/agent/runtime-v1.schema.json", import.meta.url))
 const validate = compileSchema(parseJson(runtimeSchema))
-const ack = { v: 1, seq: 1, kind: "hello_ack", body: { capabilities: ["structured_role", "delegated"], max_frame_bytes: MAX_FRAME } }
+const ack = { v: 1, seq: 1, kind: "hello_ack", body: { capabilities: ["structured_role", "delegated", "embed"], max_frame_bytes: MAX_FRAME } }
 
 async function collect(...chunks) {
   const items = []

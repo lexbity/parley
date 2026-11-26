@@ -62,10 +62,10 @@ describe('MaintenanceSettings', () => {
     expect(wrapper.text()).toContain('Owner approval required');
     // The refused call pinned the key; the retry reuses it so the granted
     // approval matches the frozen intent.
-    const pinnedKey = vi.mocked(parley.updateMaintenanceSettings).mock.calls[1][1] as string;
+    const pinnedKey = vi.mocked(parley.updateMaintenanceSettings).mock.calls[1]![1] as string;
     await wrapper.get('form').trigger('submit');
     await flushPromises();
-    expect(vi.mocked(parley.updateMaintenanceSettings).mock.calls[2][1]).toBe(pinnedKey);
+    expect(vi.mocked(parley.updateMaintenanceSettings).mock.calls[2]![1]).toBe(pinnedKey);
     expect(wrapper.text()).toContain('Backup destination and schedule saved.');
     await button(wrapper, 'Create verified backup now').trigger('click');
     await flushPromises();

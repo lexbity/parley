@@ -159,7 +159,7 @@ try {
     const postUpgrade = 'Post-upgrade Party';
     const baselineWorkspace = await withLauncher(baseline, join(seed, 'workspace.sqlite'), async (running) => {
       await addParty(running, preUpgrade);
-      const backup = await running.api.post('/api/v1/backups', { headers: privateHeaders(running.session) });
+      const backup = await running.api.post('/api/v1/backups', { headers: { ...privateHeaders(running.session), 'Idempotency-Key': randomUUID() } });
       expect(backup.status(), 'Create the verified pre-upgrade backup').toBe(200);
       expect(await backup.json()).toMatchObject({ status: 'verified', workspace_id: running.session.workspace_id });
       return running.session.workspace_id;

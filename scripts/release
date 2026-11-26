@@ -259,7 +259,10 @@ def main():
                              "--output", str(runtime), env=env, capture=True)
         if runtime_digest != sha256(runtime / "runtime-manifest.json"):
             raise ReleaseError("Worker builder returned an inconsistent manifest digest.")
-        env["PARLEY_RUNTIME_MANIFEST_SHA256"] = runtime_digest
+        # The release manifest pin is compile-time (option_env!) and must gate
+        # only the release launcher build: exposing it to `cargo test` would
+        # make the debug test binaries verify the supervisor tests' own
+        # fixture bundle against it and fail with RUNNER_INSTALL_INVALID.
         for script in ("lint", "test"):
             run("pnpm", "--dir", "agent", "run", script, env=env)
         run("cargo", "fmt", "--all", "--", "--check", env=env)
@@ -268,14 +271,15 @@ def main():
         for script in ("typecheck", "lint", "test", "build"):
             run("pnpm", "--dir", "web", "run", script, env=env)
         for verifier, flag in (("contract", "--check-generated"), ("migrations", None), ("trace", "--check-manifest")):
-            command = [str(python), f"ci/{verifier}.py", "--through", "ar01"]
+            command = [str(python), f"ci/{verifier}.py", "--through", "ar08"]
             if flag:
                 command.append(flag)
             run(*command, env=env)
         digests = web_hashes()
         timestamp = int(run("git", "show", "-s", "--format=%ct", "HEAD", capture=True))
         run("cargo", "build", "--locked", "--release", "--bin", "parley", "--target-dir", str(target_dir),
-            env={**env, "PARLEY_REQUIRE_WEB_ASSETS": "1", "SOURCE_DATE_EPOCH": str(timestamp)})
+            env={**env, "PARLEY_REQUIRE_WEB_ASSETS": "1", "PARLEY_RUNTIME_MANIFEST_SHA256": runtime_digest,
+                 "SOURCE_DATE_EPOCH": str(timestamp)})
         binary = native_dir / "parley"
         if run(str(binary), "--version", capture=True) != f"parley {version}":
             raise ReleaseError("Launcher version does not match the workspace version.")

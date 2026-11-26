@@ -1,0 +1,40 @@
+# Maintainer: Prestin Liu <liuprestin@gmail.com>
+#
+# AUR package template for the qualified Parley launcher. The release
+# pipeline (scripts/package-aur) renders this into a ready-to-push AUR
+# repository: Parley ships as a prebuilt, digest-pinned archive, so the
+# package installs the qualified binaries rather than rebuilding.
+#
+# Publishing requires an AUR account with an SSH key registered for the
+# parley package base; CI deliberately keeps that credential out of the
+# release workflow. From a machine with the key:
+#
+#   scripts/package-aur --archive QUALIFIED.tar.gz [--output DIR]
+#   git -C <output>/parley init/commit/push ssh://aur@aur.archlinux.org/parley.git
+#
+# Upstream release asset:
+#   https://github.com/prestinliu/Parley-App/releases/tag/vVERSION
+
+pkgname=parley
+_pkgver=0.0.0-PLACEHOLDER
+pkgver=${_pkgver//-/.}
+pkgrel=1
+pkgdesc="Local-first outreach workspace: prepare an honest offer and remember what happened"
+arch=(x86_64)
+url="https://github.com/prestinliu/Parley-App"
+license=(Apache-2.0)
+depends=(bubblewrap)
+optdepends=(chromium)
+source=("parley-${_pkgver}-linux-x86_64.tar.gz::${url}/releases/download/v${_pkgver}/parley-${_pkgver}-linux-x86_64.tar.gz")
+sha256sums=(PLACEHOLDER-ARCHIVE-SHA256)
+options=(!strip)
+
+package() {
+  install -Dm755 "$srcdir/parley-$_pkgver-linux-x86_64/bin/parley" "$pkgdir/usr/bin/parley"
+  install -Dm644 "$srcdir/parley-$_pkgver-linux-x86_64/LICENSE" "$pkgdir/usr/share/licenses/parley/LICENSE"
+  install -Dm644 "$srcdir/parley-$_pkgver-linux-x86_64/INSTALL.md" "$pkgdir/usr/share/doc/parley/INSTALL.md"
+
+  cd "$srcdir/parley-$_pkgver-linux-x86_64/libexec/parley-agent"
+  find . -type f -exec install -Dm644 {} "$pkgdir/usr/libexec/parley-agent/{}" \;
+  chmod 755 "$pkgdir/usr/libexec/parley-agent/node"
+}

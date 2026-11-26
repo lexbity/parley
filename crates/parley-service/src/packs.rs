@@ -16,8 +16,8 @@ use parley_domain::pack as pack_domain;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::WorkspaceError;
 use crate::AppState;
+use crate::WorkspaceError;
 
 /// The reference job_search document. Its stages MUST stay in lockstep with
 /// the `pack_stage` rows seeded by 0019 (same stage ids, labels, classes and
@@ -67,9 +67,13 @@ pub const LEAD_GEN_DOCUMENT: &str = concat!(
 
 const REFERENCE_PACKS: [(&str, &str, &str, &str); 2] = [
     ("job_search", "Job search", "1.0.0", JOB_SEARCH_DOCUMENT),
-    ("lead_gen", "Client lead generation", "1.0.0", LEAD_GEN_DOCUMENT),
+    (
+        "lead_gen",
+        "Client lead generation",
+        "1.0.0",
+        LEAD_GEN_DOCUMENT,
+    ),
 ];
-
 
 #[derive(Deserialize)]
 pub(crate) struct PackValidateInput {
@@ -123,10 +127,17 @@ async fn read_active_pack(
             .map(|(_, _, _, document)| (*document).to_owned())
             .ok_or_else(|| WorkspaceError::Invalid("The active pack document is missing".into()))?,
     };
-    Ok(ActivePack { pack_id: row.0, pack_version: row.1, settings_revision: row.2, document })
+    Ok(ActivePack {
+        pack_id: row.0,
+        pack_version: row.1,
+        settings_revision: row.2,
+        document,
+    })
 }
 
-async fn read_stored_packs(connection: &mut sqlx::SqliteConnection) -> Result<Vec<StoredPack>, WorkspaceError> {
+async fn read_stored_packs(
+    connection: &mut sqlx::SqliteConnection,
+) -> Result<Vec<StoredPack>, WorkspaceError> {
     let rows: Vec<(String, String, String, String)> = sqlx::query_as(
         "SELECT pack_id,version,name,document FROM pack_document ORDER BY validated_at DESC",
     )
@@ -135,14 +146,22 @@ async fn read_stored_packs(connection: &mut sqlx::SqliteConnection) -> Result<Ve
     .map_err(WorkspaceError::Database)?;
     Ok(rows
         .into_iter()
-        .map(|(pack_id, version, name, document)| StoredPack { pack_id, version, name, document })
+        .map(|(pack_id, version, name, document)| StoredPack {
+            pack_id,
+            version,
+            name,
+            document,
+        })
         .collect())
 }
 
 fn available_packs(active: &ActivePack, stored: &[StoredPack]) -> Value {
     let mut packs: Vec<Value> = Vec::new();
     let mut push = |id: &str, name: &str, version: &str, document: &str| {
-        if packs.iter().any(|pack| pack["id"] == *id && pack["version"] == *version) {
+        if packs
+            .iter()
+            .any(|pack| pack["id"] == *id && pack["version"] == *version)
+        {
             return;
         }
         packs.push(json!({"id": id, "name": name, "version": version, "document": document}));
@@ -155,7 +174,12 @@ fn available_packs(active: &ActivePack, stored: &[StoredPack]) -> Value {
     for (id, name, version, document) in REFERENCE_PACKS {
         push(id, name, version, document);
     }
-    push(&active.pack_id, &active.pack_id, &active.pack_version, &active.document);
+    push(
+        &active.pack_id,
+        &active.pack_id,
+        &active.pack_version,
+        &active.document,
+    );
     Value::Array(packs)
 }
 
@@ -169,7 +193,10 @@ fn settings_body(active: &ActivePack, stored: &[StoredPack]) -> Value {
     })
 }
 
-pub(crate) async fn get_pack_settings(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub(crate) async fn get_pack_settings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
     if let Err(response) = super::authenticate(&headers, &state).await {
         return response.into_response();
     }
@@ -229,9 +256,17 @@ pub(crate) async fn validate_pack(
         }
         stored_ok = true;
     }
-    let pack = if valid { pack_domain::parse_pack(&normalized).ok() } else { None };
+    let pack = if valid {
+        pack_domain::parse_pack(&normalized).ok()
+    } else {
+        None
+    };
     let (pack_id, version, normalized_document) = match (&pack, valid && stored_ok) {
-        (Some(pack), true) => (Value::String(pack.id.clone()), Value::String(pack.version.clone()), Value::String(normalized.clone())),
+        (Some(pack), true) => (
+            Value::String(pack.id.clone()),
+            Value::String(pack.version.clone()),
+            Value::String(normalized.clone()),
+        ),
         _ => (Value::Null, Value::Null, Value::Null),
     };
     let body = json!({
@@ -249,14 +284,18 @@ pub(crate) async fn validate_pack(
 }
 
 fn issue_list(issues: &[pack_domain::PackIssue]) -> Value {
-    Value::Array(issues
-        .iter()
-        .map(|issue| json!({
-            "line": issue.line.map(|line| line as i64),
-            "field": issue.field,
-            "message": issue.message,
-        }))
-        .collect())
+    Value::Array(
+        issues
+            .iter()
+            .map(|issue| {
+                json!({
+                    "line": issue.line.map(|line| line as i64),
+                    "field": issue.field,
+                    "message": issue.message,
+                })
+            })
+            .collect(),
+    )
 }
 
 pub(crate) async fn activate_pack(
@@ -288,13 +327,28 @@ async fn activate(
             "Pack identity or document is missing or oversized",
         );
     }
-    let key = match headers.get("idempotency-key").and_then(|value| value.to_str().ok()) {
+    let key = match headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+    {
         Some(value) if !value.trim().is_empty() && value.len() <= 200 => value.to_owned(),
-        _ => return super::error(StatusCode::BAD_REQUEST, "IDEMPOTENCY_KEY_REQUIRED", "A 1-200 byte Idempotency-Key is required"),
+        _ => {
+            return super::error(
+                StatusCode::BAD_REQUEST,
+                "IDEMPOTENCY_KEY_REQUIRED",
+                "A 1-200 byte Idempotency-Key is required",
+            );
+        }
     };
     let canonical = match serde_json::to_vec(&input) {
         Ok(bytes) => crate::digest(&bytes),
-        Err(_) => return super::error(StatusCode::BAD_REQUEST, "PACK_INPUT_INVALID", "Request body is not canonical JSON"),
+        Err(_) => {
+            return super::error(
+                StatusCode::BAD_REQUEST,
+                "PACK_INPUT_INVALID",
+                "Request body is not canonical JSON",
+            );
+        }
     };
 
     // Validate BEFORE opening the write transaction: an invalid document is a
@@ -338,11 +392,16 @@ async fn activate(
     match prior {
         Ok(Some((old, result))) if old == canonical => {
             let _ = tx.commit().await;
-            return Json(serde_json::from_str::<Value>(&result).unwrap_or(Value::Null)).into_response();
+            return Json(serde_json::from_str::<Value>(&result).unwrap_or(Value::Null))
+                .into_response();
         }
         Ok(Some(_)) => {
             let _ = tx.rollback().await;
-            return super::error(StatusCode::CONFLICT, "IDEMPOTENCY_CONFLICT", "This key was already used for another pack activation");
+            return super::error(
+                StatusCode::CONFLICT,
+                "IDEMPOTENCY_CONFLICT",
+                "This key was already used for another pack activation",
+            );
         }
         Err(error) => {
             let _ = tx.rollback().await;
@@ -352,9 +411,11 @@ async fn activate(
     }
 
     let (current_pack_id, current_pack_version, settings_revision): (String, String, i64) =
-        match sqlx::query_as("SELECT pack_id,pack_version,settings_revision FROM owner_profile WHERE id=1")
-            .fetch_one(&mut *tx)
-            .await
+        match sqlx::query_as(
+            "SELECT pack_id,pack_version,settings_revision FROM owner_profile WHERE id=1",
+        )
+        .fetch_one(&mut *tx)
+        .await
         {
             Ok(row) => row,
             Err(error) => {
@@ -370,7 +431,8 @@ async fn activate(
             "Pack settings changed; reload and review the current selection",
         );
     }
-    let identity_changed = input.pack_id != current_pack_id || input.version != current_pack_version;
+    let identity_changed =
+        input.pack_id != current_pack_id || input.version != current_pack_version;
     if identity_changed && input.stage_mapping.is_empty() {
         let _ = tx.rollback().await;
         return super::error(
@@ -405,7 +467,11 @@ async fn activate(
         let resolved = stage_rows
             .iter()
             .find(|(slug, _, _, _, _)| slug == target)
-            .or_else(|| stage_rows.iter().find(|(_, label, _, _, _)| label == target))
+            .or_else(|| {
+                stage_rows
+                    .iter()
+                    .find(|(_, label, _, _, _)| label == target)
+            })
             .map(|(slug, _, _, _, _)| slug.clone());
         let Some(new_stage) = resolved else {
             let _ = tx.rollback().await;
@@ -483,7 +549,12 @@ async fn activate(
     {
         Ok(rows) => rows
             .into_iter()
-            .map(|(pack_id, version, name, document)| StoredPack { pack_id, version, name, document })
+            .map(|(pack_id, version, name, document)| StoredPack {
+                pack_id,
+                version,
+                name,
+                document,
+            })
             .collect(),
         Err(error) => {
             let _ = tx.rollback().await;

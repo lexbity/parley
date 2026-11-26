@@ -85,9 +85,20 @@ jobs:
           name: predecessor-launcher
           path: artifacts/releases/predecessor
 
+      - name: Download the pinned worker Node runtime
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^NODE = "\([0-9.]*\)".*/\1/p' scripts/build-agent | head -1)
+          test -n "$version"
+          mkdir -p artifacts/runtime
+          curl --fail --silent --show-error --location --retry 3 \
+            --output artifacts/runtime/node.tar.xz \
+            "https://nodejs.org/dist/v${version}/node-v${version}-linux-x64.tar.xz"
+
       - name: Build and qualify the internal archive
         env:
           PREVIOUS_ARCHIVE: ${{ needs.predecessor.outputs.archive }}
+          PARLEY_NODE_ARCHIVE: ${{ github.workspace }}/artifacts/runtime/node.tar.xz
         run: |
           set -euo pipefail
           args=()
@@ -103,8 +114,58 @@ jobs:
           path: artifacts/releases/candidate/
           if-no-files-found: error
 
-  draft:
+  package:
     needs: qualify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PARLEY_QUALIFIED_DIR: ${{ github.workspace }}/qualified
+    steps:
+      - name: Resolve the qualified archive path
+        run: echo "PARLEY_QUALIFIED_ARCHIVE=${PARLEY_QUALIFIED_DIR}/parley-${GITHUB_REF_NAME#v}-linux-x86_64.tar.gz" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: qualified-launcher
+          path: qualified
+
+      - name: Install GoReleaser (packaging only; no publish)
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: --version
+          install-only: true
+
+      - name: Package deb, rpm and archlinux packages
+        run: |
+          set -euo pipefail
+          test -f "$PARLEY_QUALIFIED_ARCHIVE"
+          goreleaser release --skip-publish --clean
+
+      - name: Build the AppImage
+        run: |
+          set -euo pipefail
+          scripts/package-appimage \
+            --archive "$PARLEY_QUALIFIED_ARCHIVE" \
+            --output dist/appimage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packaged-formats
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.pkg.tar.zst
+            dist/*.AppImage
+            dist/*.sha256
+          if-no-files-found: error
+
+  draft:
+    needs: [qualify, package]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -114,6 +175,10 @@ jobs:
         with:
           name: qualified-launcher
           path: candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: packaged-formats
+          path: packaged
 
       - name: Stage a draft prerelease
         env:
@@ -138,6 +203,19 @@ jobs:
             done
             if (( ${#missing[@]} )); then
               gh release upload --repo "$GITHUB_REPOSITORY" -- "$tag" "${missing[@]}"
+            fi
+            if [[ -d packaged ]]; then
+              (cd packaged && sha256sum -- *.deb *.rpm *.pkg.tar.zst *.AppImage > PACKAGES_SHA256SUMS)
+              assets=$(gh release view --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' -- "$tag" || true)
+              for file in packaged/* PACKAGES_SHA256SUMS; do
+                base=$(basename "$file")
+                if [[ -n "$assets" ]] && printf '%s\n' "$assets" | grep -Fxq -- "$base"; then
+                  gh release download --repo "$GITHUB_REPOSITORY" --dir existing-packaged --pattern "$base" -- "$tag"
+                  cmp -- "$file" "existing-packaged/$base"
+                else
+                  gh release upload --repo "$GITHUB_REPOSITORY" -- "$tag" "$file"
+                fi
+              done
             fi
           else
             gh release create --repo "$GITHUB_REPOSITORY" --verify-tag --draft --prerelease --latest=false \
