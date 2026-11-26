@@ -668,4 +668,114 @@ mod tests {
         assert!(error.contains("invalid response"), "{error}");
         close_after_write.await.unwrap();
     }
+
+    #[tokio::test]
+    async fn prepare_accepts_short_version_flag_and_a_normal_launch_decision() {
+        assert!(matches!(
+            prepare(&["-V".to_owned()]).await.unwrap(),
+            Prepared::Version
+        ));
+        let root = temp_dir("prepare-launch");
+        std::fs::create_dir_all(&root).unwrap();
+        let workspace = root.join("workspace.sqlite");
+        let prepared = prepare(&[
+            "--workspace".to_owned(),
+            workspace.display().to_string(),
+            "--headless".to_owned(),
+        ])
+        .await
+        .unwrap();
+        let Prepared::Launch {
+            workspace: resolved,
+            headless,
+            lock,
+        } = prepared
+        else {
+            panic!("expected a launch decision");
+        };
+        assert_eq!(resolved, workspace);
+        assert!(headless);
+        assert!(lock.is_some(), "the launcher owns the workspace lock");
+        drop(lock);
+    }
+
+    #[tokio::test]
+    async fn prepare_names_calibrate_matching_usage_and_active_workspace_errors() {
+        let failure = prepare(&["calibrate-matching".to_owned()])
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code, 2);
+        assert!(failure.message.contains("--workspace PATH"));
+        let failure = prepare(&["calibrate-matching".to_owned(), "--workspace".to_owned()])
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code, 2);
+
+        let root = temp_dir("prepare-calibrate");
+        std::fs::create_dir_all(&root).unwrap();
+        let workspace = root.join("workspace.sqlite");
+        let held = acquire_workspace_lock(&workspace).unwrap().unwrap();
+        let failure = prepare(&[
+            "calibrate-matching".to_owned(),
+            "--workspace".to_owned(),
+            workspace.display().to_string(),
+        ])
+        .await
+        .unwrap_err();
+        assert_eq!(failure.code, 2);
+        assert!(
+            failure.message.contains("workspace is active"),
+            "{failure:?}"
+        );
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn serve_launcher_control_replaces_stale_sockets_and_ignores_bad_handshakes() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let root = temp_dir("control-edge");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("launcher.sock");
+        // A leftover regular file at the socket path must not block the bind.
+        std::fs::write(&path, b"stale").unwrap();
+        let workspace = root.join("workspace.sqlite");
+        let service = parley_service::start_workspace(&workspace).await.unwrap();
+        let task = serve_launcher_control(path.clone(), service.bootstrap_issuer())
+            .await
+            .unwrap();
+
+        // A wrong handshake is ignored; closing mid-request ends that read.
+        let mut wrong = tokio::net::UnixStream::connect(&path).await.unwrap();
+        wrong.write_all(b"NOT-A-HANDSHAKE").await.unwrap();
+        wrong.shutdown().await.unwrap();
+
+        // The listener survives the rejected client and serves a valid one.
+        let mut good = tokio::net::UnixStream::connect(&path).await.unwrap();
+        good.write_all(b"PARLEY-LAUNCH-V1\n").await.unwrap();
+        let mut reply = String::new();
+        good.read_to_string(&mut reply).await.unwrap();
+        let mut lines = reply.lines();
+        assert_eq!(lines.next(), Some(service.address.to_string().as_str()));
+        assert!(lines.next().is_some_and(|secret| !secret.is_empty()));
+        assert!(lines.next().is_none());
+
+        task.abort();
+        service.shutdown().await;
+        let _ = std::fs::remove_file(&workspace);
+    }
+
+    #[tokio::test]
+    async fn launch_reports_workspace_startup_failure() {
+        let root = temp_dir("launch-fail");
+        std::fs::create_dir_all(&root).unwrap();
+        let lock = File::create(root.join("lock")).unwrap();
+        let code = launch(
+            PathBuf::from("/proc/parley-cannot-exist/workspace.sqlite"),
+            true,
+            Some(lock),
+        )
+        .await;
+        assert_eq!(code, 2, "startup failure is a fail-closed exit code");
+    }
 }

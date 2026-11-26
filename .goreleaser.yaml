@@ -11,7 +11,7 @@
 # The AppImage is produced by scripts/package-appimage (appimagetool), and
 # the AUR PKGBUILD lives in packaging/aur/ — both consume the same archive.
 # Publishing stays with the existing draft-prerelease job in
-# .github/workflows/release.yml, so this pipeline runs with --skip-publish.
+# .github/workflows/release.yml, so this pipeline runs with --skip=publish.
 #
 # Inputs (environment):
 #   PARLEY_QUALIFIED_ARCHIVE  the qualified *.tar.gz from scripts/release
@@ -26,8 +26,9 @@ builds:
 
 before:
   hooks:
-    # Extract the qualified archive into a fixed package root (dist/pkgroot)
-    # so the nfpm file mappings below stay stable across versions.
+    # Extract the qualified archive into a fixed package root under artifacts/
+    # so the nfpm file mappings below stay stable across versions. This must
+    # stay outside dist/, which GoReleaser v2 empties/validates after hooks.
     - ./scripts/goreleaser-prepare
 
 checksum:
@@ -35,8 +36,14 @@ checksum:
 
 nfpms:
   - id: parley-linux
+    # GoReleaser OSS cannot import prebuilt binaries (that is a Pro feature).
+    # `meta` packages contents without needing a GoReleaser build artifact;
+    # every file below comes from the qualified archive staged by the hook.
+    # Meta packages carry an architecture-neutral header (all/noarch/any);
+    # the x86_64 payload is pinned by the archive name and its SHA256SUMS.
+    meta: true
     package_name: parley
-    file_name_template: "{{ .ProjectName }}-{{ .Version }}-linux-x86_64.{{ .Ext }}"
+    file_name_template: "{{ .ProjectName }}-{{ .Version }}-linux-x86_64{{ .ConventionalExtension }}"
     vendor: Parley contributors
     homepage: https://github.com/prestinliu/Parley-App
     maintainer: Prestin Liu <liuprestin@gmail.com>
@@ -58,13 +65,13 @@ nfpms:
     recommends:
       - chromium
     contents:
-      - src: dist/pkgroot/bin/parley
+      - src: artifacts/pkgroot/bin/parley
         dst: /usr/bin/parley
-      - src: dist/pkgroot/libexec/parley-agent/
+      - src: artifacts/pkgroot/libexec/parley-agent/
         dst: /usr/libexec/parley-agent/
-      - src: dist/pkgroot/LICENSE
+      - src: artifacts/pkgroot/LICENSE
         dst: /usr/share/licenses/parley/LICENSE
-      - src: dist/pkgroot/INSTALL.md
+      - src: artifacts/pkgroot/INSTALL.md
         dst: /usr/share/doc/parley/INSTALL.md
     deb:
       lintian_overrides:

@@ -69,8 +69,10 @@ if [[ -n "$APPIMAGETOOL_SHA256" && "$actual" != "$APPIMAGETOOL_SHA256" ]]; then
 fi
 chmod +x "$appimagetool"
 run_appimagetool() {
-  # Extracted-run: no FUSE requirement on build hosts.
-  "$appimagetool" --appimage-extract-and-run "$@"
+  # Extracted-run: no FUSE requirement on build hosts. Pin ARCH because the
+  # tool cannot always infer it from the payload, and this script qualifies
+  # Linux x86_64 only.
+  ARCH=x86_64 "$appimagetool" --appimage-extract-and-run "$@"
 }
 
 # --- AppDir from the qualified archive ---
@@ -111,6 +113,8 @@ cp "$appdir/usr/share/icons/hicolor/scalable/apps/parley.svg" "$appdir/${appid}.
 # --- build ---
 image="$output/Parley-${version}-linux-x86_64.AppImage"
 rm -f "$image"
-run_appimagetool --comp gzip --no-appstream "$appdir" "$image"
+# The pinned appimagetool bundles an mksquashfs with zstd support only, so
+# the compressor is explicit rather than left to a version-dependent default.
+run_appimagetool --comp zstd --no-appstream "$appdir" "$image"
 sha256sum "$image" > "$image.sha256"
 printf 'package-appimage: %s\n' "$image"
